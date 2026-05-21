@@ -4430,6 +4430,31 @@ export type FileStatusResponses = {
 
 export type FileStatusResponse = FileStatusResponses[keyof FileStatusResponses]
 
+export type FileWriteData = {
+  body?: {
+    content: string
+    encoding?: "base64"
+    path: string
+  }
+  path?: never
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/file/write"
+}
+
+export type FileWriteResponses = {
+  /**
+   * File written
+   */
+  200: {
+    path: string
+  }
+}
+
+export type FileWriteResponse = FileWriteResponses[keyof FileWriteResponses]
+
 export type InstanceDisposeData = {
   body?: never
   path?: never
@@ -5399,6 +5424,30 @@ export type ProviderListResponses = {
 }
 
 export type ProviderListResponse = ProviderListResponses[keyof ProviderListResponses]
+
+export type ProviderPingData = {
+  body?: never
+  path?: never
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/provider/ping"
+}
+
+export type ProviderPingResponses = {
+  /**
+   * Provider ping results
+   */
+  200: {
+    [key: string]: {
+      connected: boolean
+      latencyMs: number | null
+    }
+  }
+}
+
+export type ProviderPingResponse = ProviderPingResponses[keyof ProviderPingResponses]
 
 export type ProviderAuthData = {
   body?: never

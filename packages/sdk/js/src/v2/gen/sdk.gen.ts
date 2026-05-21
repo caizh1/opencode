@@ -46,6 +46,7 @@ import type {
   FilePartSource,
   FileReadResponses,
   FileStatusResponses,
+  FileWriteResponses,
   FindFilesResponses,
   FindSymbolsResponses,
   FindTextResponses,
@@ -97,6 +98,7 @@ import type {
   ProviderAuthResponses,
   ProviderListResponses,
   ProviderOauthAuthorizeErrors,
+  ProviderPingResponses,
   ProviderOauthAuthorizeResponses,
   ProviderOauthCallbackErrors,
   ProviderOauthCallbackResponses,
@@ -1541,6 +1543,47 @@ export class File extends HeyApiClient {
       ...params,
     })
   }
+
+  /**
+   * Write file
+   *
+   * Write a file to the project directory, creating parent directories as needed.
+   */
+  public write<ThrowOnError extends boolean = false>(
+    parameters: {
+      directory?: string
+      workspace?: string
+      path: string
+      content: string
+      encoding?: "base64"
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+            { in: "body", key: "path" },
+            { in: "body", key: "content" },
+            { in: "body", key: "encoding" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<FileWriteResponses, unknown, ThrowOnError>({
+      url: "/file/write",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
 }
 
 export class Instance extends HeyApiClient {
@@ -2940,6 +2983,36 @@ export class Provider extends HeyApiClient {
     )
     return (options?.client ?? this.client).get<ProviderAuthResponses, unknown, ThrowOnError>({
       url: "/provider/auth",
+      ...options,
+      ...params,
+    })
+  }
+
+  /**
+   * Ping connected providers
+   *
+   * Check connectivity and measure latency for all connected AI providers.
+   */
+  public ping<ThrowOnError extends boolean = false>(
+    parameters?: {
+      directory?: string
+      workspace?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<ProviderPingResponses, unknown, ThrowOnError>({
+      url: "/provider/ping",
       ...options,
       ...params,
     })

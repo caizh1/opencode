@@ -73,6 +73,7 @@ import { permissionHandlers } from "./handlers/permission"
 import { projectHandlers } from "./handlers/project"
 import { providerHandlers } from "./handlers/provider"
 import { ptyConnectRoute, ptyHandlers } from "./handlers/pty"
+import { fileDownloadRoute } from "./handlers/file-download"
 import { questionHandlers } from "./handlers/question"
 import { sessionHandlers } from "./handlers/session"
 import { syncHandlers } from "./handlers/sync"
@@ -113,8 +114,8 @@ const rootApiRoutes = HttpApiBuilder.layer(RootHttpApi).pipe(
   Layer.provide(httpApiAuthLayer),
 )
 const instanceRouterLayer = authorizationRouterMiddleware
-  .combine(instanceRouterMiddleware)
   .combine(workspaceRouterMiddleware)
+  .combine(instanceRouterMiddleware)
   .layer.pipe(Layer.provide(Socket.layerWebSocketConstructorGlobal), Layer.provide(ServerAuth.Config.defaultLayer))
 const eventApiRoutes = HttpApiBuilder.layer(EventApi).pipe(
   Layer.provide(eventHandlers),
@@ -140,7 +141,7 @@ const instanceApiRoutes = HttpApiBuilder.layer(InstanceHttpApi).pipe(
   ]),
 )
 
-const rawInstanceRoutes = Layer.mergeAll(ptyConnectRoute).pipe(Layer.provide(instanceRouterLayer))
+const rawInstanceRoutes = Layer.mergeAll(ptyConnectRoute, fileDownloadRoute).pipe(Layer.provide(instanceRouterLayer))
 const instanceRoutes = Layer.mergeAll(rawInstanceRoutes, instanceApiRoutes).pipe(
   Layer.provide([
     httpApiAuthLayer,

@@ -37,6 +37,16 @@ export const FindSymbolQuery = Schema.Struct({
   query: Schema.String,
 })
 
+export const FileWritePayload = Schema.Struct({
+  path: Schema.String,
+  content: Schema.String,
+  encoding: Schema.optional(Schema.Literals(["base64"])),
+})
+
+export const FileWriteSuccess = Schema.Struct({
+  path: Schema.String,
+})
+
 export const FilePaths = {
   findText: "/find",
   findFile: "/find/file",
@@ -44,6 +54,8 @@ export const FilePaths = {
   list: "/file",
   content: "/file/content",
   status: "/file/status",
+  write: "/file/write",
+  download: "/file/download",
 } as const
 
 export const FileApi = HttpApi.make("file")
@@ -108,6 +120,17 @@ export const FileApi = HttpApi.make("file")
             identifier: "file.status",
             summary: "Get file status",
             description: "Get the git status of all files in the project.",
+          }),
+        ),
+        HttpApiEndpoint.post("write", FilePaths.write, {
+          query: WorkspaceRoutingQuery,
+          payload: FileWritePayload,
+          success: described(FileWriteSuccess, "File written"),
+        }).annotateMerge(
+          OpenApi.annotations({
+            identifier: "file.write",
+            summary: "Write file",
+            description: "Write a file to the project directory, creating parent directories as needed.",
           }),
         ),
       )

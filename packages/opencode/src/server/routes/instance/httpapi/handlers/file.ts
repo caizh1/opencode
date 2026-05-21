@@ -1,14 +1,21 @@
 import * as InstanceState from "@/effect/instance-state"
 import { File } from "@/file"
+import { FileWatcher } from "@/file/watcher"
 import { Ripgrep } from "@/file/ripgrep"
+import { Bus } from "@/bus"
+import { AppFileSystem } from "@opencode-ai/core/filesystem"
 import { Effect } from "effect"
-import { HttpApiBuilder } from "effect/unstable/httpapi"
+import { HttpApiBuilder, HttpApiError } from "effect/unstable/httpapi"
 import { InstanceHttpApi } from "../api"
+import { FileWritePayload } from "../groups/file"
+import path from "path"
 
 export const fileHandlers = HttpApiBuilder.group(InstanceHttpApi, "file", (handlers) =>
   Effect.gen(function* () {
     const svc = yield* File.Service
     const ripgrep = yield* Ripgrep.Service
+    const fs = yield* AppFileSystem.Service
+    const bus = yield* Bus.Service
 
     const findText = Effect.fn("FileHttpApi.findText")(function* (ctx: { query: { pattern: string } }) {
       return (yield* ripgrep
@@ -43,6 +50,33 @@ export const fileHandlers = HttpApiBuilder.group(InstanceHttpApi, "file", (handl
       return yield* svc.status()
     })
 
+    const write = Effect.fn("FileHttpApi.write")(function* (ctx: {
+      payload: typeof FileWritePayload.Type
+    }) {
+      const instance = yield* InstanceState.context
+      const targetDir = instance.directory
+      const targetPath = path.isAbsolute(ctx.payload.path)
+        ? path.resolve(targetDir, path.relative("/", ctx.payload.path))
+        : path.resolve(targetDir, ctx.payload.path)
+      if (!targetPath.startsWith(path.resolve(targetDir))) {
+        return yield* new HttpApiError.BadRequest({})
+      }
+      const raw = ctx.payload.content
+      const isDataUrl = raw.includes(";base64,")
+      const base64Body = isDataUrl ? raw.slice(raw.indexOf(";base64,") + 8) : raw
+      const content = (ctx.payload.encoding === "base64" || isDataUrl)
+        ? Buffer.from(base64Body, "base64")
+        : Buffer.from(raw, "utf-8")
+      const exists = yield* fs.existsSafe(targetPath)
+      yield* fs.writeWithDirs(targetPath, content)
+      yield* bus.publish(File.Event.Edited, { file: targetPath })
+      yield* bus.publish(FileWatcher.Event.Updated, {
+        file: targetPath,
+        event: exists ? "change" : "add",
+      })
+      return { path: ctx.payload.path }
+    })
+
     return handlers
       .handle("findText", findText)
       .handle("findFile", findFile)
@@ -50,5 +84,6 @@ export const fileHandlers = HttpApiBuilder.group(InstanceHttpApi, "file", (handl
       .handle("list", list)
       .handle("content", content)
       .handle("status", status)
+      .handle("write", write)
   }),
 )

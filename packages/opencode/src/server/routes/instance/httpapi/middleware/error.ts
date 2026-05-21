@@ -16,7 +16,12 @@ export const errorLayer = HttpRouter.middleware<{ handles: unknown }>()((effect)
         if (HttpServerRespondable.isRespondable(reason.defect)) return false
         return true
       })
-      if (!defect) return Effect.failCause(cause)
+      if (!defect) {
+        const pretty = Cause.pretty(cause)
+        console.error("[server] unhandled error:", pretty)
+        log.error("failed", { cause: pretty })
+        return Effect.failCause(cause)
+      }
 
       const error = defect.defect
       if (
@@ -26,7 +31,9 @@ export const errorLayer = HttpRouter.middleware<{ handles: unknown }>()((effect)
         return Effect.succeed(HttpServerResponse.jsonUnsafe(error.toObject(), { status: 400 }))
       }
 
-      log.error("failed", { error, cause: Cause.pretty(cause) })
+      const pretty = Cause.pretty(cause)
+      console.error("[server] defect:", String(error), pretty)
+      log.error("failed", { error, cause: pretty })
 
       return Effect.succeed(
         HttpServerResponse.jsonUnsafe(
