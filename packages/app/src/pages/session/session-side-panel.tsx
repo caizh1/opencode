@@ -396,6 +396,26 @@ export function SessionSidePanel(props: {
                         {language.t("session.files.all")}
                       </Tabs.Trigger>
                     </Tabs.List>
+                    <div class="flex items-center justify-end px-2 py-0.5 bg-background-base border-b border-border-weaker-base">
+                      <TooltipKeybind
+                        title={language.t("session.files.uploadFolder")}
+                        keybind=""
+                        class="flex items-center"
+                      >
+                        <IconButton
+                          icon="folder-add-left"
+                          variant="ghost"
+                          iconSize="small"
+                          class="size-6"
+                          onClick={() => {
+                            void import("@/components/dialog-upload-folder").then((x) => {
+                              dialog.show(() => <x.DialogUploadFolder />)
+                            })
+                          }}
+                          aria-label={language.t("session.files.uploadFolder")}
+                        />
+                      </TooltipKeybind>
+                    </div>
                     <Tabs.Content value="changes" class="bg-background-stronger px-3 py-0">
                       <Switch>
                         <Match when={props.hasReview() || !props.diffsReady()}>
