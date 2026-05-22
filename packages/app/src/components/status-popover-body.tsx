@@ -1,6 +1,7 @@
 import { Button } from "@opencode-ai/ui/button"
 import { useDialog } from "@opencode-ai/ui/context/dialog"
 import { Icon } from "@opencode-ai/ui/icon"
+import { ProviderIcon } from "@opencode-ai/ui/provider-icon"
 import { Switch } from "@opencode-ai/ui/switch"
 import { Tabs } from "@opencode-ai/ui/tabs"
 import { useMutation, useQueryClient } from "@tanstack/solid-query"
@@ -15,10 +16,13 @@ import { useSDK } from "@/context/sdk"
 import { normalizeServerUrl, ServerConnection, useServer } from "@/context/server"
 import { useSync } from "@/context/sync"
 import { useCheckServerHealth, type ServerHealth } from "@/utils/server-health"
+import { useProviders } from "@/hooks/use-providers"
+import { checkProvidersHealth, type ProvidersHealth } from "@/utils/provider-health"
 import { useQueryOptions } from "@/context/global-sync"
 import { pathKey } from "@/utils/path-key"
 
 const pollMs = 10_000
+const providerPollMs = 30_000
 
 const pluginEmptyMessage = (value: string, file: string): JSXElement => {
   const parts = value.split(file)
@@ -166,6 +170,34 @@ const useMcpToggleMutation = () => {
   }))
 }
 
+const useProviderHealth = (enabled: Accessor<boolean>) => {
+  const sdk = useSDK()
+  const [health, setHealth] = createStore({} as ProvidersHealth)
+
+  createEffect(() => {
+    if (!enabled()) {
+      setHealth(reconcile({}))
+      return
+    }
+    let dead = false
+
+    const refresh = async () => {
+      const results = await checkProvidersHealth(sdk.client)
+      if (dead) return
+      setHealth(reconcile(results))
+    }
+
+    refresh().catch((err) => console.error("[provider-health] refresh failed:", err))
+    const id = setInterval(() => void refresh().catch((err) => console.error("[provider-health] refresh failed:", err)), providerPollMs)
+    onCleanup(() => {
+      dead = true
+      clearInterval(id)
+    })
+  })
+
+  return health
+}
+
 export function StatusPopoverBody(props: { shown: Accessor<boolean> }) {
   const sync = useSync()
   const server = useServer()
@@ -173,6 +205,7 @@ export function StatusPopoverBody(props: { shown: Accessor<boolean> }) {
   const dialog = useDialog()
   const language = useLanguage()
   const navigate = useNavigate()
+  const providers = useProviders()
 
   const fail = (err: unknown) => {
     showToast({
@@ -213,6 +246,8 @@ export function StatusPopoverBody(props: { shown: Accessor<boolean> }) {
   )
   const pluginCount = createMemo(() => plugins().length)
   const pluginEmpty = createMemo(() => pluginEmptyMessage(language.t("dialog.plugins.empty"), "opencode.json"))
+  const providerList = createMemo(() => providers.connected())
+  const providerHealth = useProviderHealth(props.shown)
 
   return (
     <div class="flex items-center gap-1 w-[360px] rounded-xl shadow-[var(--shadow-lg-border-base)]">
@@ -236,6 +271,10 @@ export function StatusPopoverBody(props: { shown: Accessor<boolean> }) {
           <Tabs.Trigger value="lsp" data-slot="tab" class="text-12-regular">
             {lspCount() > 0 ? `${lspCount()} ` : ""}
             {language.t("status.popover.tab.lsp")}
+          </Tabs.Trigger>
+          <Tabs.Trigger value="providers" data-slot="tab" class="text-12-regular">
+            {providerList().length > 0 ? `${providerList().length} ` : ""}
+            {language.t("status.popover.tab.providers")}
           </Tabs.Trigger>
           <Tabs.Trigger value="plugins" data-slot="tab" class="text-12-regular">
             {pluginCount() > 0 ? `${pluginCount()} ` : ""}
@@ -392,6 +431,58 @@ export function StatusPopoverBody(props: { shown: Accessor<boolean> }) {
                       <span class="text-14-regular text-text-base truncate">{item.name || item.id}</span>
                     </div>
                   )}
+                </For>
+              </Show>
+            </div>
+          </div>
+        </Tabs.Content>
+
+        <Tabs.Content value="providers">
+          <div class="flex flex-col px-2 pb-2">
+            <div class="flex flex-col p-3 bg-background-base rounded-sm min-h-14">
+              <Show
+                when={providerList().length > 0}
+                fallback={
+                  <div class="text-14-regular text-text-base text-center my-auto">{language.t("dialog.provider.empty")}</div>
+                }
+              >
+                <For each={providerList()}>
+                  {(p) => {
+                    const health = () => providerHealth[p.id]
+                    return (
+                      <div class="flex items-center gap-2 w-full min-h-8 px-2 py-1 rounded-md">
+                        <ProviderIcon id={p.id} class="size-4 shrink-0 icon-strong-base" />
+                        <span class="text-14-regular text-text-base truncate flex-1 min-w-0">{p.name}</span>
+                        <Show when={health()}>
+                          {(h) => (
+                            <Show
+                              when={h().connected}
+                              fallback={
+                                <span class="text-11-regular text-text-weaker shrink-0">
+                                  {language.t("status.popover.provider.notConnected")}
+                                </span>
+                              }
+                            >
+                              <Show
+                                when={h().latencyMs !== null}
+                                fallback={
+                                  <div class="size-1.5 rounded-full shrink-0 bg-icon-success-base" />
+                                }
+                              >
+                                <div class="flex items-center gap-1 shrink-0">
+                                  <div class="size-1.5 rounded-full bg-icon-success-base" />
+                                  <span class="text-11-regular text-text-weaker tabular-nums">{h().latencyMs}ms</span>
+                                </div>
+                              </Show>
+                            </Show>
+                          )}
+                        </Show>
+                        <Show when={!health()}>
+                          <div class="size-1.5 rounded-full shrink-0 bg-border-weak-base" />
+                        </Show>
+                      </div>
+                    )
+                  }}
                 </For>
               </Show>
             </div>

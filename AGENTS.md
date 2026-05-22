@@ -1,3 +1,7 @@
+===============================================================================
+  🏷️  AGENTS.MD LOADED — TAG: opencode-agents-v1
+===============================================================================
+
 - To regenerate the JavaScript SDK, run `./packages/sdk/js/script/build.ts`.
 - ALWAYS USE PARALLEL TOOLS WHEN APPLICABLE.
 - The default branch in this repo is `dev`.
@@ -125,3 +129,76 @@ const table = sqliteTable("session", {
 ## Type Checking
 
 - Always run `bun typecheck` from package directories (e.g., `packages/opencode`), never `tsc` directly.
+
+## Linux 交叉编译流程（Windows 构建 Linux 可执行文件）
+
+前置条件：Bun、Python 3.11+（用于 node-gyp 原生模块编译）、依赖已通过 `bun install` 安装。
+
+### 1. 构建 Web UI（SolidJS 前端）
+
+```powershell
+cd packages/app
+bun run build
+```
+
+输出在 `packages/app/dist/`，后续构建脚本会将其嵌入二进制。
+
+### 2. 安装 Linux 平台原生依赖
+
+```powershell
+cd packages/opencode
+bun install --os="linux" --cpu="x64" @opentui/core@0.2.14 @parcel/watcher@2.5.1
+bun install --os="linux" --cpu="arm64" @opentui/core@0.2.14 @parcel/watcher@2.5.1
+```
+
+这会在 bun 缓存中下载 Linux 平台的 `@opentui/core-linux-*` 和 `@parcel/watcher-linux-*-glibc/musl` 原生包，供交叉编译使用。
+
+### 3. 编译 Linux 二进制
+
+```powershell
+# 必须设 channel 为 latest（否则数据库路径变为 opencode-dev.db 导致历史丢失）
+$env:OPENCODE_CHANNEL="latest"
+
+# 跳过分发版原生包安装（已在 Step 2 手动完成），构建所有 6 个 Linux 变体
+bun run script/build.ts --skip-install
+```
+
+### 4. 若构建因 darwin/win32 中断，临时修改 build.ts
+
+全量 `allTargets` 包含 darwin/win32 目标，它们缺少对应的原生包会报错退出。只保留 linux 目标：
+
+```ts
+// packages/opencode/script/build.ts:83 处暂时删除 darwin/win32
+const allTargets = [
+  { os: "linux", arch: "arm64" },
+  { os: "linux", arch: "x64" },
+  { os: "linux", arch: "x64", avx2: false },
+  { os: "linux", arch: "arm64", abi: "musl" },
+  { os: "linux", arch: "x64", abi: "musl" },
+  { os: "linux", arch: "x64", abi: "musl", avx2: false },
+]
+```
+
+构建完毕后恢复 darwin/win32 条目。
+
+### 5. 输出产物
+
+全部在 `packages/opencode/dist/` 下：
+
+| 目录 | 二进制路径 | 适用环境 |
+|------|-----------|---------|
+| `opencode-linux-x64` | `bin/opencode` | Linux x64 glibc |
+| `opencode-linux-x64-baseline` | `bin/opencode` | x64 无 AVX2 glibc |
+| `opencode-linux-x64-musl` | `bin/opencode` | Alpine x64 musl |
+| `opencode-linux-x64-baseline-musl` | `bin/opencode` | Alpine x64 无 AVX2 |
+| `opencode-linux-arm64` | `bin/opencode` | ARM64 glibc |
+| `opencode-linux-arm64-musl` | `bin/opencode` | ARM64 musl |
+
+### 6. 关键注意事项
+
+| 事项 | 说明 |
+|------|------|
+| `$env:OPENCODE_CHANNEL="latest"` | **必须**，否则数据库路径为 `~/.local/share/opencode/opencode-dev.db` 而非 `opencode.db`，导致已有历史记录无法加载 |
+| `--skip-install` | 跳过 Step 2 已完成的原生包安装流程 |
+| build.ts allTargets | 临时移除 darwin/win32 避免构建中断 |
+| 启动命令 | `./opencode web --host --port` |

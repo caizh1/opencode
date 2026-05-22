@@ -103,10 +103,15 @@ export const providerHandlers = HttpApiBuilder.group(InstanceHttpApi, "provider"
       return true
     })
 
+    const ping = Effect.fn("ProviderHttpApi.ping")(function* () {
+      return yield* provider.ping()
+    })
+
     return handlers
       .handle("list", list)
       .handle("auth", auth)
       .handleRaw("authorize", authorizeRaw)
       .handle("callback", callback)
+      .handle("ping", ping)
   }),
 )

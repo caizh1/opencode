@@ -1,8 +1,7 @@
-import * as InstanceState from "@/effect/instance-state"
 import { AppFileSystem } from "@opencode-ai/core/filesystem"
 import * as Log from "@opencode-ai/core/util/log"
 import { Effect } from "effect"
-import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http"
+import { HttpServerRequest, HttpServerResponse } from "effect/unstable/http"
 import path from "path"
 
 const log = Log.create({ service: "download" })
@@ -16,14 +15,7 @@ function emit(msg: string, data?: unknown) {
 const errorResponse = (message: string, detail: string) =>
   HttpServerResponse.jsonUnsafe({ error: message, detail }, { status: 500 })
 
-export const fileDownloadRoute = HttpRouter.use((router) =>
-  Effect.gen(function* () {
-    const fs = yield* AppFileSystem.Service
-    yield* router.add("GET", "/file/download", handleDownload(fs))
-  }),
-)
-
-const handleDownload = (fs: AppFileSystem.Interface) =>
+export const handleDownload = (fs: AppFileSystem.Interface) =>
   Effect.fn("FileHttpApi.download")(function* () {
     const request = yield* HttpServerRequest.HttpServerRequest
     const url = new URL(request.url, "http://localhost")
@@ -33,8 +25,7 @@ const handleDownload = (fs: AppFileSystem.Interface) =>
       return yield* HttpServerResponse.empty({ status: 400 })
     }
 
-    const instance = yield* InstanceState.context
-    const targetDir = instance.directory
+    const targetDir = url.searchParams.get("directory") ?? request.headers["x-opencode-directory"] ?? process.cwd()
     const targetPath = path.isAbsolute(rawPath)
       ? path.resolve(targetDir, path.relative("/", rawPath))
       : path.resolve(targetDir, rawPath)

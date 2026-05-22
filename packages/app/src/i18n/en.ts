@@ -548,6 +548,9 @@ export const dict = {
   "session.files.all": "All files",
   "session.files.empty": "No files",
   "session.files.binaryContent": "Binary file (content cannot be displayed)",
+  "session.files.uploadFolder": "Upload folder",
+  "session.files.download": "Download",
+  "session.files.delete": "Delete",
 
   "session.messages.renderEarlier": "Render earlier messages",
   "session.messages.loadingEarlier": "Loading earlier messages...",
@@ -609,6 +612,8 @@ export const dict = {
   "status.popover.tab.mcp": "MCP",
   "status.popover.tab.lsp": "LSP",
   "status.popover.tab.plugins": "Plugins",
+  "status.popover.tab.providers": "Providers",
+  "status.popover.provider.notConnected": "Unreachable",
   "status.popover.action.manageServers": "Manage servers",
 
   "session.share.popover.title": "Publish on web",
@@ -959,4 +964,19 @@ export const dict = {
   "workspace.reset.archived.one": "1 session will be archived.",
   "workspace.reset.archived.many": "{{count}} sessions will be archived.",
   "workspace.reset.note": "This will reset the workspace to match the default branch.",
+
+  "dialog.uploadFolder.title": "Upload folder",
+  "dialog.uploadFolder.dropHint": "Drop files here or click to select",
+  "dialog.uploadFolder.target.label": "Target folder",
+  "dialog.uploadFolder.target.placeholder": "Select or type a folder path",
+  "dialog.uploadFolder.action.upload": "Upload",
+  "dialog.uploadFolder.action.cancel": "Cancel",
+  "dialog.uploadFolder.action.another": "Upload another",
+  "dialog.uploadFolder.fileCount": "files selected",
+  "dialog.uploadFolder.moreFiles": "and {count} more files",
+  "dialog.uploadFolder.empty": "No files to upload",
+  "dialog.uploadFolder.progress": "Uploading...",
+  "dialog.uploadFolder.success": "Upload complete",
+  "dialog.uploadFolder.partialError": "Some files failed to upload",
+  "dialog.uploadFolder.allFailed": "All files failed to upload",
 }

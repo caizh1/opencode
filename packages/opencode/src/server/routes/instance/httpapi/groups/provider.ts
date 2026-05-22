@@ -80,6 +80,16 @@ export const ProviderApi = HttpApi.make("provider")
             description: "Handle the OAuth callback from a provider after user authorization.",
           }),
         ),
+        HttpApiEndpoint.post("ping", `${root}/ping`, {
+          query: WorkspaceRoutingQuery,
+          success: described(Schema.Record(Schema.String, Provider.PingResult), "Provider ping results"),
+        }).annotateMerge(
+          OpenApi.annotations({
+            identifier: "provider.ping",
+            summary: "Ping connected providers",
+            description: "Check connectivity and measure latency for all connected AI providers.",
+          }),
+        ),
       )
       .annotateMerge(
         OpenApi.annotations({

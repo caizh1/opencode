@@ -8,17 +8,12 @@ let embeddedUIPromise: Promise<Record<string, string> | null> | undefined
 
 export const UI_UPSTREAM = new URL("https://app.opencode.ai")
 
-export const csp = (hash = "") =>
-  `default-src 'self'; script-src 'self' 'wasm-unsafe-eval'${hash ? ` 'sha256-${hash}'` : ""}; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self' data:; media-src 'self' data:; connect-src * data:`
+export const csp = () =>
+  `default-src 'self'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self' data:; media-src 'self' data:; connect-src * data:`
 export const DEFAULT_CSP = csp()
 
-export function themePreloadHash(body: string) {
-  return body.match(/<script\b(?![^>]*\bsrc\s*=)[^>]*\bid=(['"])oc-theme-preload-script\1[^>]*>([\s\S]*?)<\/script>/i)
-}
-
-export function cspForHtml(body: string) {
-  const match = themePreloadHash(body)
-  return csp(match ? createHash("sha256").update(match[2]).digest("base64") : "")
+export function cspForHtml(_body: string) {
+  return csp()
 }
 
 function requestBody(request: HttpServerRequest.HttpServerRequest) {

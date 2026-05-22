@@ -461,11 +461,21 @@ export default function FileTree(props: {
                     <ContextMenu.Content>
                       <ContextMenu.Item
                         onSelect={() => {
-                          const url = `${sdk.url}/file/download?path=${encodeURIComponent(node.path)}`
+                          const url = `${sdk.url}/file/download?directory=${encodeURIComponent(sdk.directory)}&path=${encodeURIComponent(node.path)}`
                           window.open(url, "_blank")
                         }}
                       >
                         <ContextMenu.ItemLabel>{language.t("session.files.download")}</ContextMenu.ItemLabel>
+                      </ContextMenu.Item>
+                      <ContextMenu.Separator />
+                      <ContextMenu.Item
+                        onSelect={async () => {
+                          if (!window.confirm(`Delete "${node.name}"?`)) return
+                          const res = await fetch(`${sdk.url}/file/delete?path=${encodeURIComponent(node.path)}&directory=${encodeURIComponent(sdk.directory)}`, { method: "DELETE" })
+                          if (res.ok) file.tree.refresh("")
+                        }}
+                      >
+                        <ContextMenu.ItemLabel>{language.t("session.files.delete")}</ContextMenu.ItemLabel>
                       </ContextMenu.Item>
                     </ContextMenu.Content>
                   </ContextMenu.Portal>
@@ -524,11 +534,21 @@ export default function FileTree(props: {
                     <ContextMenu.Content>
                       <ContextMenu.Item
                         onSelect={() => {
-                          const url = `${sdk.url}/file/download?path=${encodeURIComponent(node.path)}`
+                          const url = `${sdk.url}/file/download?directory=${encodeURIComponent(sdk.directory)}&path=${encodeURIComponent(node.path)}`
                           window.open(url, "_blank")
                         }}
                       >
                         <ContextMenu.ItemLabel>{language.t("session.files.download")}</ContextMenu.ItemLabel>
+                      </ContextMenu.Item>
+                      <ContextMenu.Separator />
+                      <ContextMenu.Item
+                        onSelect={async () => {
+                          if (!window.confirm(`Delete "${node.name}"?`)) return
+                          const res = await fetch(`${sdk.url}/file/delete?path=${encodeURIComponent(node.path)}&directory=${encodeURIComponent(sdk.directory)}`, { method: "DELETE" })
+                          if (res.ok) file.tree.refresh("")
+                        }}
+                      >
+                        <ContextMenu.ItemLabel>{language.t("session.files.delete")}</ContextMenu.ItemLabel>
                       </ContextMenu.Item>
                     </ContextMenu.Content>
                   </ContextMenu.Portal>

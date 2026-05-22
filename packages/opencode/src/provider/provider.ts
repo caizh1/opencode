@@ -986,8 +986,15 @@ export class InitError extends Schema.TaggedErrorClass<InitError>()("ProviderIni
 
 export type Error = ModelNotFoundError | InitError
 
+export const PingResult = Schema.Struct({
+  connected: Schema.Boolean,
+  latencyMs: Schema.optional(Schema.NullOr(Schema.Number)),
+})
+export type PingResult = Types.DeepMutable<Schema.Schema.Type<typeof PingResult>>
+
 export interface Interface {
   readonly list: () => Effect.Effect<Record<ProviderID, Info>>
+  readonly ping: () => Effect.Effect<Record<string, PingResult>>
   readonly getProvider: (providerID: ProviderID) => Effect.Effect<Info>
   readonly getModel: (providerID: ProviderID, modelID: ModelID) => Effect.Effect<Model, ModelNotFoundError>
   readonly getLanguage: (model: Model) => Effect.Effect<LanguageModelV3, ModelNotFoundError>
@@ -1505,6 +1512,44 @@ export const layer = Layer.effect(
 
     const list = Effect.fn("Provider.list")(() => InstanceState.use(state, (s) => s.providers))
 
+    const ping = Effect.fn("Provider.ping")(function* () {
+      const s = yield* InstanceState.get(state)
+      const entries = Object.entries(s.providers)
+      if (entries.length === 0) return {}
+
+      const results = yield* Effect.all(
+        entries.map(([id, info]) =>
+          Effect.gen(function* () {
+            const baseURL: string | undefined =
+              (info.options?.["baseURL"] as string | undefined) ??
+              (Object.values(info.models)[0] as { api?: { url?: string } } | undefined)?.api?.url
+            if (!baseURL) return [id, { connected: true, latencyMs: null }] as const
+
+            const key = info.key ?? (info.options?.["apiKey"] as string | undefined)
+            const headers: Record<string, string> = { Accept: "*/*" }
+            if (key) headers["Authorization"] = `Bearer ${key}`
+            const start = performance.now()
+            const ctl = new AbortController()
+            const timer = setTimeout(() => ctl.abort(), 5000)
+            const ok = yield* Effect.promise(async () => {
+              try {
+                await fetch(baseURL, { headers, signal: ctl.signal })
+                return true
+              } catch {
+                return false
+              }
+            })
+            clearTimeout(timer)
+            if (!ok) return [id, { connected: false, latencyMs: null }] as const
+            return [id, { connected: true, latencyMs: Math.round(performance.now() - start) }] as const
+          }),
+        ),
+        { concurrency: "unbounded" },
+      )
+
+      return Object.fromEntries(results)
+    })
+
     async function resolveSDK(model: Model, s: State, envs: Record<string, string | undefined>) {
       try {
         using _ = log.time("getSDK", {
@@ -1806,7 +1851,7 @@ export const layer = Layer.effect(
       }
     })
 
-    return Service.of({ list, getProvider, getModel, getLanguage, closest, getSmallModel, defaultModel })
+    return Service.of({ list, ping, getProvider, getModel, getLanguage, closest, getSmallModel, defaultModel })
   }),
 )
 
