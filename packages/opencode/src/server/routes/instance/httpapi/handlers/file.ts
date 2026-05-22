@@ -5,7 +5,7 @@ import { Ripgrep } from "@/file/ripgrep"
 import { Bus } from "@/bus"
 import { AppFileSystem } from "@opencode-ai/core/filesystem"
 import { Effect } from "effect"
-import { HttpApiBuilder, HttpApiError } from "effect/unstable/httpapi"
+import { HttpApiBuilder } from "effect/unstable/httpapi"
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http"
 import { InstanceHttpApi } from "../api"
 import { FileWritePayload } from "../groups/file"
@@ -26,16 +26,16 @@ export const fileHandlers = HttpApiBuilder.group(InstanceHttpApi, "file", (handl
         const request = yield* HttpServerRequest.HttpServerRequest
         const url = new URL(request.url, "http://localhost")
         const rawPath = url.searchParams.get("path")
-        if (!rawPath) return yield* HttpServerResponse.empty({ status: 400 })
+        if (!rawPath) return HttpServerResponse.empty({ status: 400 })
         const targetDir = url.searchParams.get("directory") ?? request.headers["x-opencode-directory"] ?? process.cwd()
         const targetPath = path.isAbsolute(rawPath)
           ? path.resolve(targetDir, path.relative("/", rawPath))
           : path.resolve(targetDir, rawPath)
         if (!targetPath.startsWith(path.resolve(targetDir))) {
-          return yield* HttpServerResponse.empty({ status: 403 })
+          return HttpServerResponse.empty({ status: 403 })
         }
         const exists = yield* fs.existsSafe(targetPath)
-        if (!exists) return yield* HttpServerResponse.empty({ status: 404 })
+        if (!exists) return HttpServerResponse.empty({ status: 404 })
         const isDir = yield* fs.isDir(targetPath)
         yield* fs.remove(targetPath, { recursive: isDir, force: true })
         yield* bus.publish(File.Event.Edited, { file: targetPath })
@@ -88,7 +88,7 @@ export const fileHandlers = HttpApiBuilder.group(InstanceHttpApi, "file", (handl
         ? path.resolve(targetDir, path.relative("/", ctx.payload.path))
         : path.resolve(targetDir, ctx.payload.path)
       if (!targetPath.startsWith(path.resolve(targetDir))) {
-        return yield* new HttpApiError.BadRequest({})
+        return HttpServerResponse.jsonUnsafe({ error: "Bad Request" }, { status: 400 })
       }
       const raw = ctx.payload.content
       const isDataUrl = raw.includes(";base64,")
@@ -96,8 +96,8 @@ export const fileHandlers = HttpApiBuilder.group(InstanceHttpApi, "file", (handl
       const content = (ctx.payload.encoding === "base64" || isDataUrl)
         ? Buffer.from(base64Body, "base64")
         : Buffer.from(raw, "utf-8")
-      const exists = yield* fs.existsSafe(targetPath)
-      yield* fs.writeWithDirs(targetPath, content)
+      const exists = yield* fs.existsSafe(targetPath).pipe(Effect.orDie)
+      yield* fs.writeWithDirs(targetPath, content).pipe(Effect.orDie)
       yield* bus.publish(File.Event.Edited, { file: targetPath })
       yield* bus.publish(FileWatcher.Event.Updated, {
         file: targetPath,

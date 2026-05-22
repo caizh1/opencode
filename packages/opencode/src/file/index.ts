@@ -3,7 +3,7 @@ import { InstanceState } from "@/effect/instance-state"
 
 import { AppFileSystem } from "@opencode-ai/core/filesystem"
 import { Git } from "@/git"
-import { Effect, Layer, Context, Schema, Scope } from "effect"
+import { Effect, Layer, Context, Schema, Scope, Option } from "effect"
 import * as Stream from "effect/Stream"
 import { formatPatch, structuredPatch } from "diff"
 import fuzzysort from "fuzzysort"
@@ -30,6 +30,8 @@ export const Node = Schema.Struct({
   absolute: Schema.String,
   type: Schema.Literals(["file", "directory"]),
   ignored: Schema.Boolean,
+  mtime: Schema.optional(NonNegativeInt),
+  size: Schema.optional(NonNegativeInt),
 }).annotate({ identifier: "FileNode" })
 export type Node = DeepMutable<Schema.Schema.Type<typeof Node>>
 
@@ -591,18 +593,31 @@ export const layer = Layer.effect(
         if (exclude.includes(entry.name)) continue
         const absolute = path.join(resolved, entry.name)
         const file = path.relative(ctx.directory, absolute)
-        const type = entry.type === "directory" ? "directory" : "file"
-        nodes.push({
+        const nodeType: Node["type"] = entry.type === "directory" ? "directory" : "file"
+        const base = {
           name: entry.name,
           path: file,
           absolute,
-          type,
-          ignored: ignored(type === "directory" ? file + "/" : file),
-        })
+          type: nodeType,
+          ignored: ignored(nodeType === "directory" ? file + "/" : file),
+        }
+        const info = yield* appFs.stat(absolute).pipe(Effect.catch(() => Effect.succeed(undefined)))
+        if (info) {
+          nodes.push({
+            ...base,
+            mtime: Option.getOrElse(info.mtime, () => new Date(0)).getTime(),
+            size: Number(info.size),
+          })
+        } else {
+          nodes.push({ ...base, mtime: undefined, size: undefined })
+        }
       }
+
       return nodes.sort((a, b) => {
         if (a.type !== b.type) return a.type === "directory" ? -1 : 1
-        return a.name.localeCompare(b.name)
+        const aTime = a.mtime ?? 0
+        const bTime = b.mtime ?? 0
+        return bTime - aTime
       })
     })
 

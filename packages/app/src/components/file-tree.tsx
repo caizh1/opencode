@@ -81,6 +81,26 @@ const kindDotColor = (kind: Kind) => {
   return "background-color: var(--icon-diff-modified-base)"
 }
 
+const formatRelTime = (mtime?: number) => {
+  if (mtime == null) return ""
+  const diff = Date.now() - mtime
+  if (diff < 0) return "just now"
+  if (diff < 60_000) return "just now"
+  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}m ago`
+  if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)}h ago`
+  if (diff < 604_800_000) return `${Math.floor(diff / 86_400_000)}d ago`
+  const date = new Date(mtime)
+  return `${date.getMonth() + 1}/${date.getDate()}`
+}
+
+const formatSize = (bytes?: number) => {
+  if (bytes == null) return ""
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+  return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`
+}
+
 const visibleKind = (node: FileNode, kinds?: ReadonlyMap<string, Kind>, marks?: Set<string>) => {
   const kind = kinds?.get(node.path)
   if (!kind) return
@@ -176,6 +196,11 @@ const FileTreeNode = (
         style={active() ? color() : undefined}
       >
         {local.node.name}
+      </span>
+      <span class="shrink-0 text-[10px] leading-none text-text-weaker ml-auto whitespace-nowrap">
+        {formatRelTime(local.node.mtime)}
+        &nbsp;
+        {formatSize(local.node.size)}
       </span>
       {(() => {
         const value = kind()
@@ -382,7 +407,9 @@ export default function FileTree(props: {
       if (a.type !== b.type) {
         return a.type === "directory" ? -1 : 1
       }
-      return a.name.localeCompare(b.name)
+      const aTime = a.mtime ?? 0
+      const bTime = b.mtime ?? 0
+      return bTime - aTime
     })
 
     return out
@@ -472,7 +499,7 @@ export default function FileTree(props: {
                         onSelect={async () => {
                           if (!window.confirm(`Delete "${node.name}"?`)) return
                           const res = await fetch(`${sdk.url}/file/delete?path=${encodeURIComponent(node.path)}&directory=${encodeURIComponent(sdk.directory)}`, { method: "DELETE" })
-                          if (res.ok) file.tree.refresh("")
+                          if (res.ok) await file.tree.refresh(props.path)
                         }}
                       >
                         <ContextMenu.ItemLabel>{language.t("session.files.delete")}</ContextMenu.ItemLabel>
@@ -545,7 +572,7 @@ export default function FileTree(props: {
                         onSelect={async () => {
                           if (!window.confirm(`Delete "${node.name}"?`)) return
                           const res = await fetch(`${sdk.url}/file/delete?path=${encodeURIComponent(node.path)}&directory=${encodeURIComponent(sdk.directory)}`, { method: "DELETE" })
-                          if (res.ok) file.tree.refresh("")
+                          if (res.ok) await file.tree.refresh(props.path)
                         }}
                       >
                         <ContextMenu.ItemLabel>{language.t("session.files.delete")}</ContextMenu.ItemLabel>

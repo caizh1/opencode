@@ -1527,6 +1527,10 @@ export type FileNode = {
   absolute: string
   type: "file" | "directory"
   ignored: boolean
+  /** File modification time as Unix timestamp in milliseconds */
+  mtime?: number
+  /** File size in bytes */
+  size?: number
 }
 
 export type FileContent = {

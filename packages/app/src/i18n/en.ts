@@ -551,6 +551,7 @@ export const dict = {
   "session.files.uploadFolder": "Upload folder",
   "session.files.download": "Download",
   "session.files.delete": "Delete",
+  "session.files.refresh": "Refresh",
 
   "session.messages.renderEarlier": "Render earlier messages",
   "session.messages.loadingEarlier": "Loading earlier messages...",

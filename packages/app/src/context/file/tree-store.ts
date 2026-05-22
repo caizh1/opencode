@@ -46,6 +46,8 @@ export function createFileTreeStore(options: TreeStoreOptions) {
     const current = tree.dir[dir]
     if (!opts?.force && current?.loaded) return Promise.resolve()
 
+    if (opts?.force) inflight.delete(dir)
+
     const pending = inflight.get(dir)
     if (pending) return pending
 

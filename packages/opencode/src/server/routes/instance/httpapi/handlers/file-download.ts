@@ -22,7 +22,7 @@ export const handleDownload = (fs: AppFileSystem.Interface) =>
     const rawPath = url.searchParams.get("path")
     if (!rawPath) {
       emit("missing path param")
-      return yield* HttpServerResponse.empty({ status: 400 })
+      return HttpServerResponse.empty({ status: 400 })
     }
 
     const targetDir = url.searchParams.get("directory") ?? request.headers["x-opencode-directory"] ?? process.cwd()
@@ -34,7 +34,7 @@ export const handleDownload = (fs: AppFileSystem.Interface) =>
 
     if (!targetPath.startsWith(path.resolve(targetDir))) {
       emit("path traversal blocked", { targetPath })
-      return yield* HttpServerResponse.empty({ status: 403 })
+      return HttpServerResponse.empty({ status: 403 })
     }
 
     const isDir = yield* fs.isDir(targetPath)
@@ -42,7 +42,7 @@ export const handleDownload = (fs: AppFileSystem.Interface) =>
 
     if (!isFile && !isDir) {
       emit("not found", { targetPath, isDir, isFile })
-      return yield* HttpServerResponse.empty({ status: 404 })
+      return HttpServerResponse.empty({ status: 404 })
     }
 
     emit("resolved", { isDir, isFile, targetPath })
@@ -185,7 +185,7 @@ function collectFiles(
   fs: AppFileSystem.Interface,
   dir: string,
   rootDir: string,
-): Effect.Effect<Array<{ relativePath: string; content: Uint8Array }>> {
+): Effect.Effect<Array<{ relativePath: string; content: Uint8Array }>, Error> {
   return Effect.gen(function* () {
     const entries = yield* fs.readDirectoryEntries(dir)
     const results: Array<{ relativePath: string; content: Uint8Array }> = []
