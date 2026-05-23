@@ -1,6 +1,5 @@
 import { NamedError } from "@opencode-ai/core/util/error"
 import * as Log from "@opencode-ai/core/util/log"
-import { ConfigError } from "@/config/error"
 import { Cause, Effect } from "effect"
 import { HttpRouter, HttpServerError, HttpServerRespondable, HttpServerResponse } from "effect/unstable/http"
 
@@ -24,21 +23,16 @@ export const errorLayer = HttpRouter.middleware<{ handles: unknown }>()((effect)
       }
 
       const error = defect.defect
-      if (
-        error instanceof NamedError &&
-        (ConfigError.InvalidError.isInstance(error) || ConfigError.JsonError.isInstance(error))
-      ) {
-        return Effect.succeed(HttpServerResponse.jsonUnsafe(error.toObject(), { status: 400 }))
-      }
-
+      const ref = `err_${crypto.randomUUID().slice(0, 8)}`
       const pretty = Cause.pretty(cause)
-      console.error("[server] defect:", String(error), pretty)
-      log.error("failed", { error, cause: pretty })
+      console.error("[server] defect:", ref, String(error), pretty)
+      log.error("failed", { ref, error, cause: pretty })
 
       return Effect.succeed(
         HttpServerResponse.jsonUnsafe(
           new NamedError.Unknown({
             message: "Unexpected server error. Check server logs for details.",
+            ref,
           }).toObject(),
           { status: 500 },
         ),
