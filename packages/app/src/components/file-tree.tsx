@@ -498,8 +498,16 @@ export default function FileTree(props: {
                       <ContextMenu.Item
                         onSelect={async () => {
                           if (!window.confirm(`Delete "${node.name}"?`)) return
-                          const res = await fetch(`${sdk.url}/file/delete?path=${encodeURIComponent(node.path)}&directory=${encodeURIComponent(sdk.directory)}`, { method: "DELETE" })
-                          if (res.ok) await file.tree.refresh(props.path)
+                          try {
+                            const res = await fetch(`${sdk.url}/file/delete?path=${encodeURIComponent(node.path)}&directory=${encodeURIComponent(sdk.directory)}`, { method: "DELETE" })
+                            if (res.ok) {
+                              const parentDir = (() => {
+                                const idx = node.path.lastIndexOf("/")
+                                return idx === -1 ? "" : node.path.slice(0, idx)
+                              })()
+                              await file.tree.refresh(parentDir)
+                            }
+                          } catch {}
                         }}
                       >
                         <ContextMenu.ItemLabel>{language.t("session.files.delete")}</ContextMenu.ItemLabel>
@@ -571,8 +579,16 @@ export default function FileTree(props: {
                       <ContextMenu.Item
                         onSelect={async () => {
                           if (!window.confirm(`Delete "${node.name}"?`)) return
-                          const res = await fetch(`${sdk.url}/file/delete?path=${encodeURIComponent(node.path)}&directory=${encodeURIComponent(sdk.directory)}`, { method: "DELETE" })
-                          if (res.ok) await file.tree.refresh(props.path)
+                          try {
+                            const res = await fetch(`${sdk.url}/file/delete?path=${encodeURIComponent(node.path)}&directory=${encodeURIComponent(sdk.directory)}`, { method: "DELETE" })
+                            if (res.ok) {
+                              const parentDir = (() => {
+                                const idx = node.path.lastIndexOf("/")
+                                return idx === -1 ? "" : node.path.slice(0, idx)
+                              })()
+                              await file.tree.refresh(parentDir)
+                            }
+                          } catch {}
                         }}
                       >
                         <ContextMenu.ItemLabel>{language.t("session.files.delete")}</ContextMenu.ItemLabel>

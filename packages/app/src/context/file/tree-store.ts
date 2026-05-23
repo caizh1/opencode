@@ -1,4 +1,5 @@
 import { createStore, produce, reconcile } from "solid-js/store"
+import { batch } from "solid-js"
 import type { FileNode } from "@opencode-ai/sdk/v2"
 
 type DirectoryState = {
@@ -99,15 +100,11 @@ export function createFileTreeStore(options: TreeStoreOptions) {
           }),
         )
 
-        setTree(
-          "dir",
-          dir,
-          produce((draft) => {
-            draft.loaded = true
-            draft.loading = false
-            draft.children = nextChildren
-          }),
-        )
+        batch(() => {
+          setTree("dir", dir, "loaded", true)
+          setTree("dir", dir, "loading", false)
+          setTree("dir", dir, "children", nextChildren)
+        })
       })
       .catch((e) => {
         if (options.scope() !== directory) return

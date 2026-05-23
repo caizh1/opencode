@@ -8,7 +8,7 @@ import { Spinner } from "@opencode-ai/ui/spinner"
 import { showToast } from "@opencode-ai/ui/toast"
 import { Tooltip, TooltipKeybind } from "@opencode-ai/ui/tooltip"
 import { getFilename } from "@opencode-ai/core/util/path"
-import { createEffect, createMemo, createSignal, For, onMount, Show } from "solid-js"
+import { createEffect, createMemo, createSignal, For, onCleanup, onMount, Show } from "solid-js"
 import { createStore } from "solid-js/store"
 import { Portal } from "solid-js/web"
 import { useCommand } from "@/context/command"
@@ -16,6 +16,7 @@ import { useLanguage } from "@/context/language"
 import { useLayout } from "@/context/layout"
 import { usePlatform } from "@/context/platform"
 import { useServer } from "@/context/server"
+import { useGlobalSDK } from "@/context/global-sdk"
 import { useSettings } from "@/context/settings"
 import { useSync } from "@/context/sync"
 import { useTerminal } from "@/context/terminal"
@@ -276,35 +277,59 @@ export function SessionHeader() {
     setRightMount(document.getElementById("opencode-titlebar-right"))
   })
 
+  const globalSDK = useGlobalSDK()
+  const [stats, setStats] = createSignal({ activeSessions: 0, connections: 0 })
+  onMount(() => {
+    const unsub = globalSDK.event.listen((e: any) => {
+      if (e.details?.type === "server.heartbeat") {
+        setStats({
+          activeSessions: e.details.properties?.activeSessions ?? 0,
+          connections: e.details.properties?.connections ?? 0,
+        })
+      }
+    })
+    onCleanup(unsub)
+  })
+
   return (
     <>
       <Show when={search() && centerMount()}>
         {(mount) => (
           <Portal mount={mount()}>
-            <Button
-              type="button"
-              variant="ghost"
-              size="small"
-              class="hidden md:flex w-[240px] max-w-full min-w-0 items-center gap-2 justify-between rounded-md border border-border-weak-base bg-surface-panel shadow-none cursor-default"
-              onClick={() => command.trigger("file.open")}
-              aria-label={language.t("session.header.searchFiles")}
-            >
-              <div class="flex min-w-0 flex-1 items-center overflow-visible">
-                <span class="flex-1 min-w-0 text-12-regular text-text-weak truncate text-left">
-                  {language.t("session.header.search.placeholder", {
-                    project: name(),
-                  })}
-                </span>
-              </div>
+            <div class="hidden md:flex items-center">
+              <Button
+                type="button"
+                variant="ghost"
+                size="small"
+                class="w-[240px] max-w-full min-w-0 items-center gap-2 justify-between rounded-md border border-border-weak-base bg-surface-panel shadow-none cursor-default"
+                onClick={() => command.trigger("file.open")}
+                aria-label={language.t("session.header.searchFiles")}
+              >
+                <div class="flex min-w-0 flex-1 items-center overflow-visible">
+                  <span class="flex-1 min-w-0 text-12-regular text-text-weak truncate text-left">
+                    {language.t("session.header.search.placeholder", {
+                      project: name(),
+                    })}
+                  </span>
+                </div>
 
-              <Show when={hotkey()}>
-                {(keybind) => (
-                  <Keybind class="shrink-0 !border-0 !bg-transparent !shadow-none px-0 text-text-weaker">
-                    {keybind()}
-                  </Keybind>
-                )}
-              </Show>
-            </Button>
+                <Show when={hotkey()}>
+                  {(keybind) => (
+                    <Keybind class="shrink-0 !border-0 !bg-transparent !shadow-none px-0 text-text-weaker">
+                      {keybind()}
+                    </Keybind>
+                  )}
+                </Show>
+              </Button>
+              <div
+                class="flex ml-3 items-center gap-1.5 text-12-regular text-text-weak shrink-0 cursor-default"
+                title={`${stats().activeSessions} active sessions / ${stats().connections} connections`}
+              >
+                <span class="tabular-nums">{stats().activeSessions}</span>
+                <span class="opacity-60">&bull;</span>
+                <span class="tabular-nums">{stats().connections}</span>
+              </div>
+            </div>
           </Portal>
         )}
       </Show>

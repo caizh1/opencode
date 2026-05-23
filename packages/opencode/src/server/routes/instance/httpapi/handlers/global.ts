@@ -13,6 +13,8 @@ import { HttpApiBuilder } from "effect/unstable/httpapi"
 import * as Sse from "effect/unstable/encoding/Sse"
 import { RootHttpApi } from "../api"
 import { GlobalUpgradeInput } from "../groups/global"
+import { ConnectionTracker } from "../connection-tracker"
+import { ActiveSessionTracker } from "../active-session-tracker"
 
 const log = Log.create({ service: "server" })
 
@@ -33,8 +35,20 @@ function parseBody(body: string) {
   }
 }
 
-function eventResponse() {
+function eventResponse(request: HttpServerRequest.HttpServerRequest) {
   log.info("global event connected")
+  const id = ConnectionTracker.register()
+
+  const cleanup = () => {
+    ConnectionTracker.unregister(id)
+    log.info("global event disconnected")
+  }
+
+  const rawRes = (request.source as any)?.socket?._httpMessage
+  if (rawRes && typeof rawRes.once === "function") {
+    rawRes.once("close", cleanup)
+  }
+
   const events = Stream.callback<GlobalBusEvent>((queue) => {
     const handler = (event: GlobalBusEvent) => Queue.offerUnsafe(queue, event)
     return Effect.acquireRelease(
@@ -44,7 +58,16 @@ function eventResponse() {
   })
   const heartbeat = Stream.tick("10 seconds").pipe(
     Stream.drop(1),
-    Stream.map(() => ({ payload: { id: Bus.createID(), type: "server.heartbeat", properties: {} } })),
+    Stream.map(() => ({
+      payload: {
+        id: Bus.createID(),
+        type: "server.heartbeat",
+        properties: {
+          activeSessions: ActiveSessionTracker.activeCount(),
+          connections: ConnectionTracker.count(),
+        },
+      },
+    })),
   )
 
   return HttpServerResponse.stream(
@@ -53,7 +76,7 @@ function eventResponse() {
       Stream.map(eventData),
       Stream.pipeThroughChannel(Sse.encode()),
       Stream.encodeText,
-      Stream.ensuring(Effect.sync(() => log.info("global event disconnected"))),
+      Stream.ensuring(Effect.sync(cleanup)),
     ),
     {
       contentType: "text/event-stream",
@@ -76,8 +99,10 @@ export const globalHandlers = HttpApiBuilder.group(RootHttpApi, "global", (handl
       return { healthy: true as const, version: InstallationVersion }
     })
 
-    const event = Effect.fn("GlobalHttpApi.event")(function* () {
-      return eventResponse()
+    const event = Effect.fn("GlobalHttpApi.event")(function* (ctx: {
+      request: HttpServerRequest.HttpServerRequest
+    }) {
+      return eventResponse(ctx.request)
     })
 
     const configGet = Effect.fn("GlobalHttpApi.configGet")(function* () {
@@ -93,6 +118,13 @@ export const globalHandlers = HttpApiBuilder.group(RootHttpApi, "global", (handl
     const dispose = Effect.fn("GlobalHttpApi.dispose")(function* () {
       yield* disposeAllInstancesAndEmitGlobalDisposed()
       return true
+    })
+
+    const connections = Effect.fn("GlobalHttpApi.connections")(function* () {
+      return {
+        activeSessions: ActiveSessionTracker.activeCount(),
+        connections: ConnectionTracker.count(),
+      }
     })
 
     const upgrade = Effect.fn("GlobalHttpApi.upgrade")(function* (ctx: { payload: typeof GlobalUpgradeInput.Type }) {
@@ -153,5 +185,6 @@ export const globalHandlers = HttpApiBuilder.group(RootHttpApi, "global", (handl
       .handle("configUpdate", configUpdate)
       .handle("dispose", dispose)
       .handleRaw("upgrade", upgradeRaw)
+      .handle("connections", connections)
   }),
 )

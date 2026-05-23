@@ -402,3 +402,68 @@ input:where([type="button"], [type="reset"], [type="submit"]),
     font-size: 16px !important;
   }
 }
+
+[data-component="mermaid-diagram"] {
+  position: relative;
+  margin: 8px 0;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--color-background-stronger);
+}
+
+[data-slot="mermaid-viewport"] {
+  overflow: auto;
+  position: relative;
+}
+
+[data-slot="mermaid-content"] {
+  display: inline-block;
+}
+
+[data-slot="mermaid-controls"] {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  display: flex;
+  gap: 4px;
+  align-items: center;
+  opacity: 1;
+  pointer-events: none;
+  background: var(--color-background);
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  padding: 4px 6px;
+}
+
+[data-slot="mermaid-controls"] [data-slot="mermaid-zoom-btn"] {
+  pointer-events: auto;
+  width: 26px;
+  height: 26px;
+  border-radius: 5px;
+  border: 1px solid var(--color-border);
+  background: var(--color-background-stronger);
+  color: var(--text-base);
+  font-size: 13px;
+  font-family: var(--font-family-sans);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+}
+
+[data-slot="mermaid-controls"] [data-slot="mermaid-zoom-btn"]:hover {
+  background: var(--color-surface-raised-base-hover);
+}
+
+[data-slot="mermaid-zoom-icon"] {
+  pointer-events: auto;
+  width: 26px;
+  height: 26px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-weak);
+  flex-shrink: 0;
+}

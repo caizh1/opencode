@@ -39,7 +39,13 @@ export const GlobalPaths = {
   config: "/global/config",
   dispose: "/global/dispose",
   upgrade: "/global/upgrade",
+  connections: "/global/connections",
 } as const
+
+const GlobalConnections = Schema.Struct({
+  activeSessions: Schema.Number,
+  connections: Schema.Number,
+})
 
 export const GlobalApi = HttpApi.make("global").add(
   HttpApiGroup.make("global")
@@ -100,6 +106,15 @@ export const GlobalApi = HttpApi.make("global").add(
           identifier: "global.upgrade",
           summary: "Upgrade opencode",
           description: "Upgrade opencode to the specified version or latest if not specified.",
+        }),
+      ),
+      HttpApiEndpoint.get("connections", GlobalPaths.connections, {
+        success: described(GlobalConnections, "Active connections info"),
+      }).annotateMerge(
+        OpenApi.annotations({
+          identifier: "global.connections",
+          summary: "Get active connections",
+          description: "Get the number of active sessions and SSE connections currently on the server.",
         }),
       ),
     )
