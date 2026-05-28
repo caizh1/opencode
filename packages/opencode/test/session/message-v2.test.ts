@@ -243,6 +243,60 @@ describe("session.message-v2.toModelMessage", () => {
     ])
   })
 
+  test("skips display-only DOCX file parts while keeping parsed context", async () => {
+    const messageID = "m-user"
+    const input: MessageV2.WithParts[] = [
+      {
+        info: userInfo(messageID),
+        parts: [
+          {
+            ...basePart(messageID, "p1"),
+            type: "text",
+            text: "Read this",
+          },
+          {
+            ...basePart(messageID, "p2"),
+            type: "file",
+            mime: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            url: "data:application/vnd.openxmlformats-officedocument.wordprocessingml.document;base64,AAA",
+            filename: "brief.docx",
+            metadata: { opencodeDocx: { displayOnly: true, kind: "original" } },
+          },
+          {
+            ...basePart(messageID, "p3"),
+            type: "text",
+            text: "<docx>Parsed text</docx>",
+            synthetic: true,
+          },
+          {
+            ...basePart(messageID, "p4"),
+            type: "file",
+            mime: "image/png",
+            url: "data:image/png;base64,BBB",
+            filename: "image1.png",
+            metadata: { opencodeDocx: { hidden: true, modelContext: true, kind: "image" } },
+          },
+        ] as MessageV2.Part[],
+      },
+    ]
+
+    expect(await MessageV2.toModelMessages(input, model)).toStrictEqual([
+      {
+        role: "user",
+        content: [
+          { type: "text", text: "Read this" },
+          { type: "text", text: "<docx>Parsed text</docx>" },
+          {
+            type: "file",
+            mediaType: "image/png",
+            data: "data:image/png;base64,BBB",
+            filename: "image1.png",
+          },
+        ],
+      },
+    ])
+  })
+
   test("converts user text/file parts and injects compaction/subtask prompts", async () => {
     const messageID = "m-user"
 

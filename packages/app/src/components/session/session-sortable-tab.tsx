@@ -10,7 +10,7 @@ import { useFile } from "@/context/file"
 import { useLanguage } from "@/context/language"
 import { useCommand } from "@/context/command"
 
-export function FileVisual(props: { path: string; active?: boolean }): JSX.Element {
+export function FileVisual(props: { path: string; active?: boolean; dirty?: boolean }): JSX.Element {
   return (
     <div class="flex items-center gap-x-1.5 min-w-0">
       <Show
@@ -23,6 +23,9 @@ export function FileVisual(props: { path: string; active?: boolean }): JSX.Eleme
         </span>
       </Show>
       <span class="text-14-medium truncate">{getFilename(props.path)}</span>
+      <Show when={props.dirty}>
+        <span class="size-1.5 rounded-full bg-text-strong shrink-0" />
+      </Show>
     </div>
   )
 }
@@ -33,11 +36,25 @@ export function SortableTab(props: { tab: string; onTabClose: (tab: string) => v
   const command = useCommand()
   const sortable = createSortable(props.tab)
   const path = createMemo(() => file.pathFromTab(props.tab))
+  const dirty = createMemo(() => {
+    const value = path()
+    if (!value) return false
+    return file.isDirty(value)
+  })
   const content = createMemo(() => {
     const value = path()
     if (!value) return
-    return <FileVisual path={value} />
+    return <FileVisual path={value} dirty={dirty()} />
   })
+  const close = () => {
+    const value = path()
+    if (value && file.isDirty(value)) {
+      if (typeof window === "undefined") return
+      if (!window.confirm(language.t("session.files.edit.discardConfirm", { name: getFilename(value) }))) return
+      file.discardEdit(value)
+    }
+    props.onTabClose(props.tab)
+  }
   return (
     <div use:sortable class="h-full flex items-center" classList={{ "opacity-0": sortable.isActiveDraggable }}>
       <div class="relative">
@@ -54,13 +71,13 @@ export function SortableTab(props: { tab: string; onTabClose: (tab: string) => v
                 icon="close-small"
                 variant="ghost"
                 class="h-5 w-5"
-                onClick={() => props.onTabClose(props.tab)}
+                onClick={close}
                 aria-label={language.t("common.closeTab")}
               />
             </TooltipKeybind>
           }
           hideCloseButton
-          onMiddleClick={() => props.onTabClose(props.tab)}
+          onMiddleClick={close}
         >
           <Show when={content()}>{(value) => value()}</Show>
         </Tabs.Trigger>

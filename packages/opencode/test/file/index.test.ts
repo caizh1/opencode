@@ -122,6 +122,41 @@ describe("file/index Filesystem patterns", () => {
         expect(result.content).toBe("line1\nline2\nline3")
       }),
     )
+
+    it.instance("decodes GB18030 text files", () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        yield* Effect.promise(() =>
+          fs.writeFile(path.join(test.directory, "gb18030.txt"), Buffer.from([0xd6, 0xd0, 0xce, 0xc4])),
+        )
+
+        const result = yield* read("gb18030.txt")
+
+        expect(result.type).toBe("text")
+        expect(result.content).toBe("中文")
+        expect(result.charset).toBe("gb18030")
+      }),
+    )
+
+    it.instance("treats Mermaid diagram sources as text files", () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        yield* Effect.promise(() =>
+          fs.writeFile(path.join(test.directory, "diagram.mmd"), "graph TD\nA-->B", "utf-8"),
+        )
+        yield* Effect.promise(() =>
+          fs.writeFile(path.join(test.directory, "sequence.mermaid"), "sequenceDiagram\nA->>B: hello", "utf-8"),
+        )
+
+        const mmd = yield* read("diagram.mmd")
+        const mermaid = yield* read("sequence.mermaid")
+
+        expect(mmd.type).toBe("text")
+        expect(mmd.content).toBe("graph TD\nA-->B")
+        expect(mermaid.type).toBe("text")
+        expect(mermaid.content).toBe("sequenceDiagram\nA->>B: hello")
+      }),
+    )
   })
 
   describe("read() - binary content", () => {
@@ -149,6 +184,25 @@ describe("file/index Filesystem patterns", () => {
         const result = yield* read("binary.so")
         expect(result.type).toBe("binary")
         expect(result.content).toBe("")
+      }),
+    )
+
+    it.instance("returns base64 content for DOCX files only", () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const docx = Buffer.from([0x50, 0x4b, 0x03, 0x04])
+        yield* Effect.promise(() => fs.writeFile(path.join(test.directory, "document.docx"), docx))
+        yield* Effect.promise(() => fs.writeFile(path.join(test.directory, "legacy.doc"), Buffer.from([0xd0, 0xcf])))
+
+        const result = yield* read("document.docx")
+        const legacy = yield* read("legacy.doc")
+
+        expect(result.type).toBe("text")
+        expect(result.encoding).toBe("base64")
+        expect(result.mimeType).toBe("application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+        expect(result.content).toBe(docx.toString("base64"))
+        expect(legacy.type).toBe("binary")
+        expect(legacy.content).toBe("")
       }),
     )
   })

@@ -15,6 +15,7 @@ import { useSync } from "@/context/sync"
 import { useTerminal } from "@/context/terminal"
 import { showToast } from "@opencode-ai/ui/toast"
 import { findLast } from "@opencode-ai/core/util/array"
+import { getFilename } from "@opencode-ai/core/util/path"
 import { createSessionTabs } from "@/pages/session/helpers"
 import { extractPromptFromParts } from "@/utils/prompt"
 import { UserMessage } from "@opencode-ai/sdk/v2"
@@ -227,7 +228,30 @@ export const useSessionCommands = (actions: SessionCommandContext) => {
   const closeTab = () => {
     const tab = closableTab()
     if (!tab) return
+    const path = file.pathFromTab(tab)
+    if (path && file.isDirty(path)) {
+      if (typeof window === "undefined") return
+      if (!window.confirm(language.t("session.files.edit.discardConfirm", { name: getFilename(path) }))) return
+      file.discardEdit(path)
+    }
     tabs().close(tab)
+  }
+
+  const saveActiveFile = () => {
+    const tab = activeFileTab()
+    if (!tab) return
+    const path = file.pathFromTab(tab)
+    if (!path) return
+    void file.save(path)
+  }
+
+  const canSaveActiveFile = () => {
+    const tab = activeFileTab()
+    if (!tab) return false
+    const path = file.pathFromTab(tab)
+    if (!path) return false
+    const state = file.get(path)
+    return Boolean(state?.editing && state.dirty && !state.saving)
   }
 
   const addSelection = () => {
@@ -428,6 +452,13 @@ export const useSessionCommands = (actions: SessionCommandContext) => {
       keybind: "mod+k,mod+p",
       slash: "open",
       onSelect: openFile,
+    }),
+    fileCommand({
+      id: "file.save",
+      title: language.t("command.file.save"),
+      keybind: "mod+s",
+      disabled: !canSaveActiveFile(),
+      onSelect: saveActiveFile,
     }),
     fileCommand({
       id: "tab.close",

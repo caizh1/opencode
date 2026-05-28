@@ -1,4 +1,4 @@
-import { batch, createSignal, For, Show } from "solid-js"
+import { batch, createMemo, createSignal, For, Show } from "solid-js"
 import { useSDK } from "@/context/sdk"
 import { useFile } from "@/context/file"
 import { useDialog } from "@opencode-ai/ui/context/dialog"
@@ -7,7 +7,8 @@ import { Button } from "@opencode-ai/ui/button"
 import { Icon } from "@opencode-ai/ui/icon"
 import { showToast } from "@opencode-ai/ui/toast"
 import { useLanguage } from "@/context/language"
-import { readFileAsDataUrl, fileDisplayPath } from "@/utils/folder-traversal"
+import { fileDisplayPath } from "@/utils/folder-traversal"
+import { uploadProgress } from "@/utils/upload-progress"
 
 type UploadState = "select" | "uploading" | "done" | "error"
 
@@ -15,6 +16,8 @@ type UploadEntry = {
   file: File
   path: string
   size: number
+  loaded: number
+  total: number
   status: "pending" | "uploading" | "done" | "error"
   error?: string
 }
@@ -50,7 +53,7 @@ export function DialogUploadFolder() {
     for (let i = 0; i < files.length; i++) {
       const file = files[i]
       const path = fileDisplayPath(file)
-      uploadEntries.push({ file, path, size: file.size, status: "pending" })
+      uploadEntries.push({ file, path, size: file.size, loaded: 0, total: file.size, status: "pending" })
     }
     uploadEntries.sort((a, b) => a.path.localeCompare(b.path))
     setEntries(uploadEntries)
@@ -69,7 +72,7 @@ export function DialogUploadFolder() {
     const uploadEntries: UploadEntry[] = []
     for (const file of files) {
       const path = fileDisplayPath(file)
-      uploadEntries.push({ file, path, size: file.size, status: "pending" })
+      uploadEntries.push({ file, path, size: file.size, loaded: 0, total: file.size, status: "pending" })
     }
     uploadEntries.sort((a, b) => a.path.localeCompare(b.path))
     setEntries(uploadEntries)
@@ -78,6 +81,29 @@ export function DialogUploadFolder() {
 
   const handleDragOver = (e: DragEvent) => {
     e.preventDefault()
+  }
+
+  const uploadFile = (entry: UploadEntry, path: string, onProgress: (loaded: number) => void) => {
+    return new Promise<void>((resolve, reject) => {
+      const xhr = new XMLHttpRequest()
+      const url = `${sdk.url}/file/upload?directory=${encodeURIComponent(sdk.directory)}&path=${encodeURIComponent(path)}`
+      xhr.open("PUT", url)
+      xhr.setRequestHeader("content-type", entry.file.type || "application/octet-stream")
+      xhr.upload.onprogress = (event) => {
+        if (!event.lengthComputable) return
+        onProgress(event.loaded)
+      }
+      xhr.onload = () => {
+        if (xhr.status >= 200 && xhr.status < 300) {
+          resolve()
+          return
+        }
+        reject(new Error(xhr.responseText || `Upload failed (${xhr.status})`))
+      }
+      xhr.onerror = () => reject(new Error("Upload failed"))
+      xhr.onabort = () => reject(new Error("Upload aborted"))
+      xhr.send(entry.file)
+    })
   }
 
   const uploadFiles = async () => {
@@ -96,28 +122,23 @@ export function DialogUploadFolder() {
     for (let i = 0; i < items.length; i++) {
       setCurrentIndex(i)
       const entry = items[i]
-      setEntries((prev) => prev.map((e, idx) => (idx === i ? { ...e, status: "uploading" } : e)))
+      setEntries((prev) => prev.map((e, idx) => (idx === i ? { ...e, loaded: 0, status: "uploading" } : e)))
 
       try {
-        const dataUrl = await readFileAsDataUrl(entry.file)
-        if (!dataUrl) throw new Error("Failed to read file")
-
         const dir = targetDir().trim()
         const filePath = dir ? `${dir}/${entry.path}` : entry.path
 
-        const result = await sdk.client.file.write({
-          path: filePath,
-          content: dataUrl,
-          encoding: "base64",
+        await uploadFile(entry, filePath, (loaded) => {
+          setEntries((prev) =>
+            prev.map((e, idx) => (idx === i ? { ...e, loaded: Math.min(loaded, e.total) } : e)),
+          )
         })
-
-        if (result.error) throw new Error(String(result.error))
-        setEntries((prev) => prev.map((e, idx) => (idx === i ? { ...e, status: "done" } : e)))
+        setEntries((prev) => prev.map((e, idx) => (idx === i ? { ...e, loaded: e.total, status: "done" } : e)))
         done++
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err)
         setEntries((prev) =>
-          prev.map((e, idx) => (idx === i ? { ...e, status: "error", error: message } : e)),
+          prev.map((e, idx) => (idx === i ? { ...e, loaded: e.total, status: "error", error: message } : e)),
         )
         failed++
       }
@@ -138,12 +159,15 @@ export function DialogUploadFolder() {
   const formatSize = (bytes: number) => {
     if (bytes < 1024) return `${bytes} B`
     if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
-    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+    if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+    return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`
   }
 
   const totalSize = () => entries().reduce((sum, e) => sum + e.size, 0)
   const doneCount = () => entries().filter((e) => e.status === "done").length
   const errorCount = () => entries().filter((e) => e.status === "error").length
+  const currentEntry = createMemo(() => entries()[currentIndex()])
+  const progress = createMemo(() => uploadProgress(entries()))
 
   return (
     <Dialog
@@ -220,15 +244,29 @@ export function DialogUploadFolder() {
                   <Show
                     when={entry.status === "done"}
                     fallback={
-                      <Show when={entry.status === "error"}>
-                        <div class="size-3 shrink-0 rounded-full bg-red-500" />
+                      <Show
+                        when={entry.status === "error"}
+                        fallback={
+                          <Show when={entry.status === "uploading"}>
+                            <div class="size-3 shrink-0 rounded-full bg-blue-500" />
+                          </Show>
+                        }
+                      >
+                        <div class="size-3 shrink-0 rounded-full bg-red-500" title={entry.error} />
                       </Show>
                     }
                   >
                     <div class="size-3 shrink-0 rounded-full bg-green-500" />
                   </Show>
                   <span class="truncate flex-1 min-w-0">{entry.path}</span>
-                  <span class="shrink-0 text-text-weak">{formatSize(entry.size)}</span>
+                  <span class="shrink-0 text-text-weak">
+                    <Show
+                      when={entry.status === "uploading"}
+                      fallback={formatSize(entry.size)}
+                    >
+                      {formatSize(entry.loaded)} / {formatSize(entry.total)}
+                    </Show>
+                  </span>
                 </div>
               )}
             </For>
@@ -241,17 +279,42 @@ export function DialogUploadFolder() {
         </Show>
 
         <Show when={state() === "uploading"}>
-          <div class="text-13-regular text-text-weak text-center">
-            {language.t("dialog.uploadFolder.progress")
-              .replace("{current}", String(doneCount() + errorCount()))
-              .replace("{total}", String(entries().length))}
+          <div class="flex items-center justify-between text-12-regular text-text-weak px-1">
+            <span>
+              {language.t("dialog.uploadFolder.progress")
+                .replace("{current}", String(doneCount() + errorCount()))
+                .replace("{total}", String(entries().length))}
+            </span>
+            <span>
+              {formatSize(progress().loaded)} / {formatSize(progress().total)} ({progress().percent}%)
+            </span>
           </div>
           <div class="h-1 rounded-full bg-background-stronger overflow-hidden">
             <div
               class="h-full bg-blue-500 transition-all duration-200"
-              style={{ width: `${((doneCount() + errorCount()) / Math.max(1, entries().length)) * 100}%` }}
+              style={{ width: `${progress().percent}%` }}
             />
           </div>
+          <Show when={currentEntry()}>
+            {(entry) => (
+              <div class="flex flex-col gap-1 px-1">
+                <div class="flex items-center justify-between gap-3 text-12-regular text-text-weak">
+                  <span class="truncate min-w-0">{entry().path}</span>
+                  <span class="shrink-0">
+                    {formatSize(entry().loaded)} / {formatSize(entry().total)}
+                  </span>
+                </div>
+                <div class="h-1 rounded-full bg-background-stronger overflow-hidden">
+                  <div
+                    class="h-full bg-blue-500/70 transition-all duration-200"
+                    style={{
+                      width: `${entry().total === 0 ? 100 : Math.round((entry().loaded / entry().total) * 100)}%`,
+                    }}
+                  />
+                </div>
+              </div>
+            )}
+          </Show>
         </Show>
 
         <Show when={state() === "done"}>

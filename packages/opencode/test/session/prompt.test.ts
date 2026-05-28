@@ -50,6 +50,7 @@ import { Format } from "../../src/format"
 import { Reference } from "../../src/reference/reference"
 import { RepositoryCache } from "../../src/reference/repository-cache"
 import { TestInstance } from "../fixture/fixture"
+import { createDocx } from "../fixture/docx"
 import { awaitWithTimeout, pollWithTimeout, testEffect } from "../lib/effect"
 import { reply, TestLLMServer } from "../lib/llm-server"
 import { SyncEvent } from "@/sync"
@@ -1849,6 +1850,59 @@ noLLMServer.instance(
       yield* sessions.remove(session.id)
     }),
   { config: cfg },
+)
+
+noLLMServer.instance(
+  "expands uploaded DOCX into display-only original plus parsed model context",
+  () =>
+    Effect.gen(function* () {
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const session = yield* sessions.create({})
+      const bytes = yield* Effect.promise(() => createDocx())
+
+      const msg = yield* prompt.prompt({
+        sessionID: session.id,
+        agent: "build",
+        noReply: true,
+        parts: [
+          { type: "text", text: "review this" },
+          {
+            type: "file",
+            mime: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            url:
+              "data:application/vnd.openxmlformats-officedocument.wordprocessingml.document;base64," +
+              Buffer.from(bytes).toString("base64"),
+            filename: "brief.docx",
+          },
+        ],
+      })
+
+      if (msg.info.role !== "user") throw new Error("expected user message")
+
+      const original = msg.parts.find(
+        (part) =>
+          part.type === "file" && part.filename === "brief.docx" && part.metadata?.opencodeDocx?.displayOnly === true,
+      )
+      const parsed = msg.parts.find(
+        (part) => part.type === "text" && part.synthetic && part.text.includes('<docx filename="brief.docx">'),
+      )
+      const image = msg.parts.find(
+        (part) =>
+          part.type === "file" &&
+          part.filename === "image1.png" &&
+          part.metadata?.opencodeDocx?.hidden === true &&
+          part.metadata.opencodeDocx.modelContext === true,
+      )
+
+      expect(original).toBeDefined()
+      expect(parsed).toBeDefined()
+      expect(image).toBeDefined()
+
+      yield* sessions.remove(session.id)
+    }),
+  { config: cfg },
+  30_000,
 )
 
 noLLMServer.instance(

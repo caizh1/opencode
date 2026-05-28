@@ -41,6 +41,7 @@ export const FileWritePayload = Schema.Struct({
   path: Schema.String,
   content: Schema.String,
   encoding: Schema.optional(Schema.Literals(["base64"])),
+  charset: Schema.optional(File.TextCharset),
 })
 
 export const FileWriteSuccess = Schema.Struct({
@@ -55,6 +56,7 @@ export const FilePaths = {
   content: "/file/content",
   status: "/file/status",
   write: "/file/write",
+  upload: "/file/upload",
   download: "/file/download",
 } as const
 

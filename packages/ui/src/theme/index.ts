@@ -49,6 +49,7 @@ export {
   everforestTheme,
   flexokiTheme,
   githubTheme,
+  gptWebTheme,
   gruvboxTheme,
   kanagawaTheme,
   lucentOrngTheme,

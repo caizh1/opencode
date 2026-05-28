@@ -391,9 +391,10 @@ export const SessionReview = (props: SessionReviewProps) => {
                 <For each={items()}>
                   {(diff) => {
                     const file = diff.file
+                    const mediaKind = createMemo(() => mediaKindFromPath(file))
 
-                    // binary files have empty diffs that we can't render
-                    const diffCanRender = () => diff.additions !== 0 || diff.deletions !== 0
+                    // Previewable media and documents can render even when git reports a binary zero-line diff.
+                    const diffCanRender = () => diff.additions !== 0 || diff.deletions !== 0 || !!mediaKind()
 
                     const expanded = createMemo(() => open().includes(file))
                     const mounted = createMemo(() => expanded() && (!!store.visible[file] || pinned(file)))
@@ -405,7 +406,6 @@ export const SessionReview = (props: SessionReviewProps) => {
                     const beforeText = () => text(diff, "deletions")
                     const afterText = () => text(diff, "additions")
                     const changedLines = () => diff.additions + diff.deletions
-                    const mediaKind = createMemo(() => mediaKindFromPath(file))
 
                     const tooLarge = createMemo(() => {
                       if (!expanded()) return false
@@ -632,6 +632,8 @@ export const SessionReview = (props: SessionReviewProps) => {
                                     media={{
                                       mode: "auto",
                                       path: file,
+                                      before: beforeText(),
+                                      after: afterText(),
                                       deleted: diff.status === "deleted",
                                       readFile: diff.status === "deleted" ? undefined : props.readFile,
                                     }}

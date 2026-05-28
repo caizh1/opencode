@@ -27,6 +27,12 @@ export type FileState = {
   loading?: boolean
   error?: string
   content?: FileContent
+  editing?: boolean
+  draft?: string
+  dirty?: boolean
+  saving?: boolean
+  saveError?: string
+  staleExternalChange?: boolean
 }
 
 export function selectionFromLines(range: SelectedLineRange): FileSelection {

@@ -39,7 +39,9 @@ import { ShellID } from "@/tool/shell/id"
 import { AppFileSystem } from "@opencode-ai/core/filesystem"
 import { Truncate } from "@/tool/truncate"
 import { Image } from "@/image/image"
-import { decodeDataUrl } from "@/util/data-url"
+import { extractDocx, formatDocxForModel, isDocxMime } from "@/document/docx"
+import { isDocxModelContext, withDocxMetadata } from "@/document/docx-metadata"
+import { decodeDataUrl, decodeDataUrlBytes } from "@/util/data-url"
 import { Process } from "@/util/process"
 import { Cause, Effect, Exit, Latch, Layer, Option, Scope, Context, Schema, Types } from "effect"
 import * as EffectLogger from "@opencode-ai/core/effect/logger"
@@ -843,6 +845,70 @@ export const layer = Layer.effect(
           const url = new URL(part.url)
           switch (url.protocol) {
             case "data:":
+              if (isDocxMime(part.mime)) {
+                const display = {
+                  ...part,
+                  messageID: info.id,
+                  sessionID: input.sessionID,
+                  metadata: withDocxMetadata(part.metadata, { displayOnly: true, kind: "original" }),
+                }
+                const decoded = decodeDataUrlBytes(part.url)
+                if (!decoded) {
+                  return [
+                    display,
+                    {
+                      messageID: info.id,
+                      sessionID: input.sessionID,
+                      type: "text",
+                      synthetic: true,
+                      text: `Failed to parse DOCX ${part.filename ?? "attachment"}: invalid data URL.`,
+                    },
+                  ]
+                }
+
+                const docx = yield* Effect.tryPromise(() => extractDocx(decoded.bytes)).pipe(Effect.exit)
+                if (Exit.isFailure(docx)) {
+                  const error = Cause.squash(docx.cause)
+                  return [
+                    display,
+                    {
+                      messageID: info.id,
+                      sessionID: input.sessionID,
+                      type: "text",
+                      synthetic: true,
+                      text: `Failed to parse DOCX ${part.filename ?? "attachment"}: ${
+                        error instanceof Error ? error.message : String(error)
+                      }`,
+                    },
+                  ]
+                }
+
+                return [
+                  display,
+                  {
+                    messageID: info.id,
+                    sessionID: input.sessionID,
+                    type: "text",
+                    synthetic: true,
+                    text: formatDocxForModel({ filename: part.filename, docx: docx.value }),
+                  },
+                  ...docx.value.images.map((image) => ({
+                    messageID: info.id,
+                    sessionID: input.sessionID,
+                    type: "file" as const,
+                    mime: image.mime,
+                    url: `data:${image.mime};base64,${image.data}`,
+                    filename: image.filename,
+                    metadata: withDocxMetadata(undefined, {
+                      hidden: true,
+                      modelContext: true,
+                      kind: "image",
+                      source: part.filename,
+                      index: image.index,
+                    }),
+                  })),
+                ]
+              }
               if (part.mime === "text/plain") {
                 return [
                   {
@@ -1077,16 +1143,33 @@ export const layer = Layer.effect(
         { message: info, parts: resolvedParts },
       )
 
-      const parts = yield* Effect.forEach(resolvedParts, (part) =>
-        part.type === "file" && part.mime.startsWith("image/")
-          ? image.normalize(part).pipe(
-              Effect.catchIf(
-                (error) => error instanceof Image.ResizerUnavailableError,
-                () => Effect.succeed(part),
-              ),
-            )
-          : Effect.succeed(part),
-      )
+      const parts = yield* Effect.forEach(resolvedParts, (part) => {
+        if (part.type !== "file" || !part.mime.startsWith("image/")) return Effect.succeed([part])
+
+        return image.normalize(part).pipe(
+          Effect.catchIf(
+            (error) => error instanceof Image.ResizerUnavailableError,
+            () => Effect.succeed(part),
+          ),
+          Effect.map((part) => [part]),
+          Effect.catch((error) =>
+            isDocxModelContext(part)
+              ? Effect.succeed([
+                  {
+                    id: PartID.ascending(),
+                    messageID: info.id,
+                    sessionID: input.sessionID,
+                    type: "text" as const,
+                    synthetic: true,
+                    text: `[DOCX image omitted: ${part.filename ?? "image"} could not be decoded or resized: ${
+                      error instanceof Error ? error.message : String(error)
+                    }]`,
+                  },
+                ])
+              : Effect.fail(error),
+          ),
+        )
+      }).pipe(Effect.map((items) => items.flat()))
 
       const parsed = decodeMessageInfo(info, { errors: "all", propertyOrder: "original" })
       if (Exit.isFailure(parsed)) {
@@ -1720,6 +1803,7 @@ export const CommandInput = Schema.Struct({
           filename: Schema.optional(Schema.String),
           url: Schema.String,
           source: Schema.optional(MessageV2.FilePartSource),
+          metadata: Schema.optional(Schema.Record(Schema.String, Schema.Any)),
         }),
       ]).annotate({ discriminator: "type" }),
     ),

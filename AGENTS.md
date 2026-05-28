@@ -150,7 +150,7 @@ const table = sqliteTable("session", {
 
 | 规则 | 原因 |
 |------|------|
-| **`OPENCODE_CHANNEL=latest`** 必须在编译前设置 | 否则数据库路径为 `~/.local/share/opencode/opencode-dev.db`（非 `opencode.db`），已有对话历史全部"丢失" |
+| **`OPENCODE_CHANNEL=latest`** 必须在 `packages/app` 的 `bun run build` 前设置，也必须在 Linux 二进制编译前设置 | 否则 Web UI 会被 Vite 固化为 `dev`，左上角显示 `DEV`；后续 Dockerfile ENV 或只在 `build-linux.ts` 前设置都无法修复，必须重新 app build → gen embed → rebuild Linux。同时数据库路径会变成 `~/.local/share/opencode/opencode-dev.db`（非 `opencode.db`），已有对话历史全部"丢失" |
 | **`minify: false` + `splitting: false`**（已写入 `build-linux.ts`） | `minify: true` 在 Windows→Linux 交叉编译时触发 TDZ `Cannot access 'w' before initialization` |
 | **CSP 必须用 `'unsafe-inline'`，不能混用 hash**（已写入 `ui.ts`） | 浏览器规范：同时存在 `'unsafe-inline'` 和 `'sha256-...'` 时忽略前者，内联脚本被拦截，UI 按钮文字不显示 |
 | **前端代码改了必须 `bun run build` + 重新生成 embed** | Vite 内容哈希 → 文件名变化 → 旧的 `opencode-web-ui.gen.ts` 引用不存在的文件 |
@@ -164,7 +164,7 @@ const table = sqliteTable("session", {
 ```powershell
 # ======== Step 1: 构建 Web UI（仅当前端代码有改动时） ========
 cd packages/app
-bun run build
+$env:OPENCODE_CHANNEL="latest"; bun run build
 # 输出: app/dist/ （包含 Vite 编译后的 SolidJS 前端资源）
 
 # ======== Step 2: 重新生成嵌入式 UI 文件列表 ========
@@ -177,12 +177,17 @@ bun install --os="linux" --cpu="x64" @opentui/core@0.2.14 @parcel/watcher@2.5.1
 # 下载 @opentui/core-linux-x64 和 @parcel/watcher-linux-x64-glibc 到 bun 缓存
 
 # ======== Step 4: 编译 Linux 二进制 ========
-$env:OPENCODE_CHANNEL="latest"
-bun run script/build-linux.ts
+$env:OPENCODE_CHANNEL="latest"; bun run script/build-linux.ts
 # 输出: dist-linux/opencode-linux-x64/bin/opencode（约 145MB）
 
-# ======== Step 5: 打包分发 ========
-cd dist-linux
+# ======== Step 5: 打包前校验 Web UI channel ========
+cd ../app/dist
+Get-ChildItem assets -Filter *.js | Select-String -Pattern 'VITE_OPENCODE_CHANNEL:\"prod\"'
+Get-ChildItem assets -Filter *.js | Select-String -Pattern 'VITE_OPENCODE_CHANNEL:\"(dev|beta)\"' | Measure-Object
+# 第二条 Count 必须是 0；否则重新执行 Step 1 → Step 2 → Step 4
+
+# ======== Step 6: 打包分发 ========
+cd ../../opencode/dist-linux
 tar -czvf opencode-linux-x64.tar.gz -C opencode-linux-x64 bin/opencode
 ```
 

@@ -1,6 +1,8 @@
 import type { AgentPart as MessageAgentPart, FilePart, Part, TextPart } from "@opencode-ai/sdk/v2"
 import type { AgentPart, FileAttachmentPart, ImageAttachmentPart, Prompt } from "@/context/prompt"
 
+const DOCX_METADATA_KEY = "opencodeDocx"
+
 type Inline =
   | {
       type: "file"
@@ -47,6 +49,15 @@ function textPartValue(parts: Part[]) {
     if (part.text.length > best.text.length) return part
     return best
   }, undefined)
+}
+
+function record(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === "object" && !Array.isArray(value)
+}
+
+function hiddenAttachment(part: FilePart) {
+  const metadata = part.metadata?.[DOCX_METADATA_KEY]
+  return record(metadata) && metadata.hidden === true
 }
 
 /**
@@ -101,7 +112,7 @@ export function extractPromptFromParts(parts: Part[], opts?: { directory?: strin
         continue
       }
 
-      if (filePart.url.startsWith("data:")) {
+      if (filePart.url.startsWith("data:") && !hiddenAttachment(filePart)) {
         images.push({
           type: "image",
           id: filePart.id,

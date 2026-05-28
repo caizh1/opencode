@@ -62,6 +62,13 @@ describe("buildRequestParts", () => {
           mime: "application/pdf",
           dataUrl: "data:application/pdf;base64,BBB",
         },
+        {
+          type: "image",
+          id: "img_3",
+          filename: "c.docx",
+          mime: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+          dataUrl: "data:application/vnd.openxmlformats-officedocument.wordprocessingml.document;base64,CCC",
+        },
       ],
       text: "check these",
       messageID: "msg_multi",
@@ -71,8 +78,8 @@ describe("buildRequestParts", () => {
 
     const files = result.requestParts.filter((part) => part.type === "file" && part.url.startsWith("data:"))
 
-    expect(files).toHaveLength(2)
-    expect(files.map((part) => (part.type === "file" ? part.filename : ""))).toEqual(["a.png", "b.pdf"])
+    expect(files).toHaveLength(3)
+    expect(files.map((part) => (part.type === "file" ? part.filename : ""))).toEqual(["a.png", "b.pdf", "c.docx"])
   })
 
   test("deduplicates context files when prompt already includes same path", () => {

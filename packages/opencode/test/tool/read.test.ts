@@ -19,6 +19,7 @@ import { disposeAllInstances, provideInstance, TestInstance, tmpdirScoped } from
 import { testEffect } from "../lib/effect"
 import { Reference } from "@/reference/reference"
 import { RepositoryCache } from "@/reference/repository-cache"
+import { createDocx } from "../fixture/docx"
 
 const FIXTURES_DIR = path.join(import.meta.dir, "fixtures")
 
@@ -605,6 +606,27 @@ describe("tool.read loaded instructions", () => {
 })
 
 describe("tool.read binary detection", () => {
+  it.live(
+    "extracts DOCX text and embedded images",
+    () =>
+      Effect.gen(function* () {
+        const dir = yield* tmpdirScoped()
+        yield* put(path.join(dir, "brief.docx"), yield* Effect.promise(() => createDocx()))
+
+        const result = yield* exec(dir, { filePath: path.join(dir, "brief.docx") })
+        expect(result.output).toContain("DOCX read successfully")
+        expect(result.output).toContain("Hello World")
+        expect(result.output).toContain("[Image 1: image1.png]")
+        expect(result.attachments).toHaveLength(1)
+        expect(result.attachments?.[0]).toMatchObject({
+          filename: "image1.png",
+          mime: "image/png",
+          metadata: { opencodeDocx: { hidden: true, modelContext: true, kind: "image" } },
+        })
+      }),
+    30_000,
+  )
+
   it.live("rejects text extension files with null bytes", () =>
     Effect.gen(function* () {
       const dir = yield* tmpdirScoped()

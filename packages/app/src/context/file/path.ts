@@ -127,7 +127,7 @@ export function createPathHelpers(scope: () => string) {
     if (path.startsWith("/") || path.startsWith("\\")) {
       path = path.slice(1)
     }
-    return path
+    return windows ? path.replace(/\\/g, "/") : path
   }
 
   const tab = (input: string) => {

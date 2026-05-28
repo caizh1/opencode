@@ -54,6 +54,7 @@ export const dict = {
   "command.session.new": "新建会话",
 
   "command.file.open": "打开文件",
+  "command.file.save": "保存文件",
 
   "command.tab.close": "关闭标签页",
 
@@ -432,6 +433,8 @@ export const dict = {
   "toast.model.none.description": "请先连接提供商以总结此会话",
   "toast.file.loadFailed.title": "加载文件失败",
   "toast.file.listFailed.title": "列出文件失败",
+  "toast.file.saved.title": "文件已保存",
+  "toast.file.saveFailed.title": "保存文件失败",
   "toast.context.noLineSelection.title": "未选择行",
   "toast.context.noLineSelection.description": "请先在文件标签中选择行范围。",
   "toast.session.share.copyFailed.title": "无法复制链接到剪贴板",
@@ -523,6 +526,14 @@ export const dict = {
   "session.files.all": "所有文件",
   "session.files.empty": "无文件",
   "session.files.binaryContent": "二进制文件（无法显示内容）",
+  "session.files.edit.edit": "编辑",
+  "session.files.edit.discard": "放弃",
+  "session.files.edit.unsaved": "未保存",
+  "session.files.edit.saved": "已保存",
+  "session.files.edit.saveFailed": "保存失败",
+  "session.files.edit.readOnly": "只读",
+  "session.files.edit.externalChange": "文件已在外部变更。保存会覆盖磁盘上的最新版本。",
+  "session.files.edit.discardConfirm": "放弃“{{name}}”中未保存的更改吗？",
   "session.messages.renderEarlier": "显示更早的消息",
   "session.messages.loadingEarlier": "正在加载更早的消息...",
   "session.messages.loadEarlier": "加载更早的消息",

@@ -60,6 +60,8 @@ import type {
   FileReadResponses,
   FileStatusErrors,
   FileStatusResponses,
+  FileTextCharset,
+  FileWriteErrors,
   FileWriteResponses,
   FindFilesErrors,
   FindFilesResponses,
@@ -73,6 +75,8 @@ import type {
   GlobalConfigGetResponses,
   GlobalConfigUpdateErrors,
   GlobalConfigUpdateResponses,
+  GlobalConnectionsErrors,
+  GlobalConnectionsResponses,
   GlobalDisposeErrors,
   GlobalDisposeResponses,
   GlobalEventErrors,
@@ -132,10 +136,11 @@ import type {
   ProviderListErrors,
   ProviderListResponses,
   ProviderOauthAuthorizeErrors,
-  ProviderPingResponses,
   ProviderOauthAuthorizeResponses,
   ProviderOauthCallbackErrors,
   ProviderOauthCallbackResponses,
+  ProviderPingErrors,
+  ProviderPingResponses,
   PtyConnectErrors,
   PtyConnectResponses,
   PtyConnectTokenErrors,
@@ -591,6 +596,18 @@ export class Global extends HeyApiClient {
         ...options?.headers,
         ...params.headers,
       },
+    })
+  }
+
+  /**
+   * Get active connections
+   *
+   * Get the number of active sessions and SSE connections currently on the server.
+   */
+  public connections<ThrowOnError extends boolean = false>(options?: Options<never, ThrowOnError>) {
+    return (options?.client ?? this.client).get<GlobalConnectionsResponses, GlobalConnectionsErrors, ThrowOnError>({
+      url: "/global/connections",
+      ...options,
     })
   }
 
@@ -1633,12 +1650,13 @@ export class File extends HeyApiClient {
    * Write a file to the project directory, creating parent directories as needed.
    */
   public write<ThrowOnError extends boolean = false>(
-    parameters: {
+    parameters?: {
       directory?: string
       workspace?: string
-      path: string
-      content: string
+      path?: string
+      content?: string
       encoding?: "base64"
+      charset?: FileTextCharset
     },
     options?: Options<never, ThrowOnError>,
   ) {
@@ -1652,11 +1670,12 @@ export class File extends HeyApiClient {
             { in: "body", key: "path" },
             { in: "body", key: "content" },
             { in: "body", key: "encoding" },
+            { in: "body", key: "charset" },
           ],
         },
       ],
     )
-    return (options?.client ?? this.client).post<FileWriteResponses, unknown, ThrowOnError>({
+    return (options?.client ?? this.client).post<FileWriteResponses, FileWriteErrors, ThrowOnError>({
       url: "/file/write",
       ...options,
       ...params,
@@ -3096,7 +3115,7 @@ export class Provider extends HeyApiClient {
         },
       ],
     )
-    return (options?.client ?? this.client).post<ProviderPingResponses, unknown, ThrowOnError>({
+    return (options?.client ?? this.client).post<ProviderPingResponses, ProviderPingErrors, ThrowOnError>({
       url: "/provider/ping",
       ...options,
       ...params,
@@ -3912,6 +3931,9 @@ export class Session2 extends HeyApiClient {
         filename?: string
         url: string
         source?: FilePartSource
+        metadata?: {
+          [key: string]: unknown
+        }
       }>
     },
     options?: Options<never, ThrowOnError>,

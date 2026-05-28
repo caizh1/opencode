@@ -1,0 +1,233 @@
+html[data-theme="gpt-web"] {
+  --gpt-panel: light-dark(#ffffff, #212121);
+  --gpt-panel-muted: light-dark(#f7f7f8, #171717);
+  --gpt-panel-raised: light-dark(#ffffff, #2f2f2f);
+  --gpt-panel-hover: light-dark(#f1f1f3, #383838);
+  --gpt-bubble-user: light-dark(#f4f4f4, #2f2f2f);
+  --gpt-bubble-user-hover: light-dark(#eeeeee, #3a3a3a);
+  --gpt-border: light-dark(#e5e5e5, #3a3a3a);
+  --gpt-border-strong: light-dark(#d9d9e3, #4b4b4b);
+  --gpt-shadow-soft: 0 1px 2px light-dark(rgb(0 0 0 / 0.04), rgb(0 0 0 / 0.22));
+  --gpt-shadow-panel:
+    0 0 0 1px light-dark(rgb(0 0 0 / 0.06), rgb(255 255 255 / 0.08)),
+    0 12px 32px light-dark(rgb(0 0 0 / 0.08), rgb(0 0 0 / 0.34));
+  --gpt-radius-sm: 8px;
+  --gpt-radius-md: 12px;
+  --gpt-radius-lg: 18px;
+  --radius-md: 0.5rem;
+  --radius-lg: 0.75rem;
+  --radius-xl: 1rem;
+  --v2-background-bg-base: var(--gpt-panel);
+  --v2-background-bg-deep: var(--gpt-panel-muted);
+  --v2-background-bg-layer-01: light-dark(#f7f7f8, #2a2a2a);
+  --v2-background-bg-layer-02: light-dark(#ececf1, #383838);
+  --v2-background-bg-layer-03: light-dark(#d9d9e3, #4b4b4b);
+  --v2-background-bg-accent: var(--icon-interactive-base);
+  --v2-border-border-muted: light-dark(rgb(0 0 0 / 0.08), rgb(255 255 255 / 0.08));
+  --v2-border-border-base: light-dark(rgb(0 0 0 / 0.12), rgb(255 255 255 / 0.12));
+  --v2-border-border-strong: light-dark(rgb(0 0 0 / 0.18), rgb(255 255 255 / 0.18));
+  --v2-overlay-simple-overlay-hover: light-dark(rgb(0 0 0 / 0.05), rgb(255 255 255 / 0.08));
+  --v2-overlay-simple-overlay-pressed: light-dark(rgb(0 0 0 / 0.08), rgb(255 255 255 / 0.12));
+  --v2-elevation-raised: var(--gpt-shadow-soft);
+  --v2-elevation-floating: var(--gpt-shadow-panel);
+  --v2-elevation-overlay: var(--gpt-shadow-panel);
+  --v2-elevation-button-neutral:
+    0 0 0 1px var(--gpt-border), 0 1px 2px light-dark(rgb(0 0 0 / 0.04), rgb(0 0 0 / 0.24));
+  --v2-elevation-button-contrast:
+    0 0 0 1px light-dark(rgb(0 0 0 / 0.16), rgb(255 255 255 / 0.2)),
+    0 1px 2px light-dark(rgb(0 0 0 / 0.08), rgb(0 0 0 / 0.3));
+  --shadow-xs-border: 0 0 0 1px var(--gpt-border), var(--gpt-shadow-soft);
+  --shadow-xs-border-base: 0 0 0 1px var(--gpt-border), var(--gpt-shadow-soft);
+  --shadow-lg-border-base: var(--gpt-shadow-panel);
+  background: var(--gpt-panel-muted);
+}
+
+html[data-theme="gpt-web"] body {
+  background: var(--gpt-panel-muted);
+}
+
+html[data-theme="gpt-web"] [data-component="sidebar-rail"] {
+  background: var(--gpt-panel-muted);
+  border-right: 1px solid var(--gpt-border);
+}
+
+html[data-theme="gpt-web"] main,
+html[data-theme="gpt-web"] [data-component="session-new-design"],
+html[data-theme="gpt-web"] .bg-background-base,
+html[data-theme="gpt-web"] .bg-background-stronger,
+html[data-theme="gpt-web"] .bg-v2-background-bg-base {
+  background-color: var(--gpt-panel);
+}
+
+html[data-theme="gpt-web"] .bg-v2-background-bg-deep {
+  background-color: var(--gpt-panel-muted);
+}
+
+html[data-theme="gpt-web"] [data-session-title] {
+  background: linear-gradient(to bottom, var(--gpt-panel) 0 64%, color-mix(in srgb, var(--gpt-panel) 0%, transparent));
+}
+
+html[data-theme="gpt-web"] [data-slot="session-title-child"],
+html[data-theme="gpt-web"] [data-slot="session-title-parent"] {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+html[data-theme="gpt-web"] [data-component="session-turn"] {
+  color: var(--text-base);
+}
+
+html[data-theme="gpt-web"] [data-slot="session-turn-message-container"] {
+  padding-left: clamp(16px, 3vw, 28px);
+  padding-right: clamp(16px, 3vw, 28px);
+}
+
+html[data-theme="gpt-web"] [data-component="user-message"] {
+  color: var(--text-strong);
+}
+
+html[data-theme="gpt-web"] [data-component="user-message"] [data-slot="user-message-body"],
+html[data-theme="gpt-web"] [data-component="user-message"] [data-slot="user-message-attachments"] {
+  max-width: min(78%, 680px);
+}
+
+html[data-theme="gpt-web"] [data-component="user-message"] [data-slot="user-message-text"] {
+  background: var(--gpt-bubble-user);
+  border-color: transparent;
+  border-radius: var(--gpt-radius-lg);
+  padding: 10px 14px;
+  box-shadow: none;
+}
+
+html[data-theme="gpt-web"] [data-component="user-message"]:hover [data-slot="user-message-text"] {
+  background: var(--gpt-bubble-user-hover);
+}
+
+html[data-theme="gpt-web"] [data-component="assistant-message"] {
+  gap: 10px;
+}
+
+html[data-theme="gpt-web"] [data-component="text-part"] {
+  margin-top: 18px;
+  color: var(--text-base);
+}
+
+html[data-theme="gpt-web"] [data-component="markdown"] {
+  color: var(--text-base);
+}
+
+html[data-theme="gpt-web"] [data-component="markdown"] pre,
+html[data-theme="gpt-web"] [data-component="markdown-code"],
+html[data-theme="gpt-web"] [data-component="bash-output"],
+html[data-theme="gpt-web"] [data-component="tool-output"] {
+  border-color: var(--gpt-border);
+  border-radius: var(--gpt-radius-md);
+  background: var(--gpt-panel-muted);
+}
+
+html[data-theme="gpt-web"] [data-component="tool-part-wrapper"],
+html[data-theme="gpt-web"] [data-component="edit-tool"],
+html[data-theme="gpt-web"] [data-component="write-tool"],
+html[data-theme="gpt-web"] [data-component="apply-patch-tool"],
+html[data-theme="gpt-web"] [data-component="session-turn-diffs-group"],
+html[data-theme="gpt-web"] [data-component="context-tool-group-list"],
+html[data-theme="gpt-web"] [data-component="todos"],
+html[data-theme="gpt-web"] .error-card {
+  border-radius: var(--gpt-radius-md);
+}
+
+html[data-theme="gpt-web"] [data-component="tool-trigger"],
+html[data-theme="gpt-web"] [data-component="edit-trigger"],
+html[data-theme="gpt-web"] [data-component="write-trigger"],
+html[data-theme="gpt-web"] [data-slot="apply-patch-trigger-content"],
+html[data-theme="gpt-web"] [data-slot="session-turn-diffs-header"] {
+  border-radius: var(--gpt-radius-sm);
+}
+
+html[data-theme="gpt-web"] [data-component="session-prompt-dock"] {
+  background: linear-gradient(to top, var(--gpt-panel) 82%, color-mix(in srgb, var(--gpt-panel) 0%, transparent));
+  padding-bottom: 16px;
+}
+
+html[data-theme="gpt-web"] [data-component="session-prompt-dock"] > div {
+  max-width: min(820px, calc(100vw - 32px));
+}
+
+html[data-theme="gpt-web"] [data-component="session-composer"],
+html[data-theme="gpt-web"] [data-component="session-new-composer"] {
+  background: var(--gpt-panel-raised);
+  border: 1px solid var(--gpt-border);
+  border-radius: 24px;
+  box-shadow: var(--gpt-shadow-panel);
+}
+
+html[data-theme="gpt-web"] [data-component="session-composer-text"],
+html[data-theme="gpt-web"] [data-component="session-new-design-text"],
+html[data-theme="gpt-web"] [data-component="prompt-input"] {
+  color: var(--text-strong);
+}
+
+html[data-theme="gpt-web"] [data-component="button"],
+html[data-theme="gpt-web"] [data-component="icon-button"],
+html[data-theme="gpt-web"] [data-component="button-v2"] {
+  border-radius: var(--gpt-radius-sm);
+}
+
+html[data-theme="gpt-web"] [data-component="button"][data-variant="ghost"]:hover:not(:disabled),
+html[data-theme="gpt-web"] [data-component="icon-button"][data-variant="ghost"]:hover:not(:disabled) {
+  background: var(--gpt-panel-hover);
+}
+
+html[data-theme="gpt-web"] [data-component="tabs"] [data-slot="tabs-list"],
+html[data-theme="gpt-web"] [data-component="tabs-v2"] [data-slot="tabs-v2-list"] {
+  background: var(--gpt-panel-muted);
+  border-color: var(--gpt-border);
+}
+
+html[data-theme="gpt-web"] [data-component="tabs"] [data-slot="tabs-trigger-wrapper"],
+html[data-theme="gpt-web"] [data-component="tabs-v2"] [data-slot="tabs-v2-trigger-wrapper"] {
+  border-radius: var(--gpt-radius-sm);
+}
+
+html[data-theme="gpt-web"] [data-component="dialog-content"],
+html[data-theme="gpt-web"] [data-component="popover-content"],
+html[data-theme="gpt-web"] [data-component="dropdown-menu-content"],
+html[data-theme="gpt-web"] [data-component="dropdown-menu-sub-content"] {
+  background: var(--gpt-panel-raised);
+  border-color: var(--gpt-border);
+  border-radius: var(--gpt-radius-md);
+  box-shadow: var(--gpt-shadow-panel);
+}
+
+html[data-theme="gpt-web"] [data-component="dropdown-menu-content"] [data-slot="dropdown-menu-item"]:hover,
+html[data-theme="gpt-web"] [data-component="dropdown-menu-sub-content"] [data-slot="dropdown-menu-item"]:hover,
+html[data-theme="gpt-web"] [data-component="dropdown-menu-content"] [data-slot="dropdown-menu-sub-trigger"]:hover,
+html[data-theme="gpt-web"] [data-component="dropdown-menu-sub-content"] [data-slot="dropdown-menu-sub-trigger"]:hover {
+  background: var(--gpt-panel-hover);
+}
+
+html[data-theme="gpt-web"] [data-component="session-turn-diff-view"],
+html[data-theme="gpt-web"] [data-component="file-tree"],
+html[data-theme="gpt-web"] [data-component="terminal-panel"],
+html[data-theme="gpt-web"] [data-slot="tabs-content"] {
+  background: var(--gpt-panel);
+}
+
+html[data-theme="gpt-web"] [data-component="session-progress-bar"] {
+  background: var(--icon-interactive-base);
+}
+
+html[data-theme="gpt-web"] ::selection {
+  background: light-dark(rgb(16 163 127 / 0.22), rgb(25 195 125 / 0.32));
+}
+
+@media (max-width: 767px) {
+  html[data-theme="gpt-web"] [data-component="user-message"] [data-slot="user-message-body"],
+  html[data-theme="gpt-web"] [data-component="user-message"] [data-slot="user-message-attachments"] {
+    max-width: 88%;
+  }
+
+  html[data-theme="gpt-web"] [data-component="session-prompt-dock"] > div {
+    max-width: calc(100vw - 20px);
+  }
+}

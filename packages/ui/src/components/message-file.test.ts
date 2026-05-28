@@ -21,6 +21,18 @@ describe("message-file", () => {
     expect(attached(file())).toBe(false)
   })
 
+  test("hides DOCX-derived model context attachments", () => {
+    expect(
+      attached(
+        file({
+          url: "data:image/png;base64,AAA",
+          mime: "image/png",
+          metadata: { opencodeDocx: { hidden: true, modelContext: true } },
+        }),
+      ),
+    ).toBe(false)
+  })
+
   test("treats only non-attachment source ranges as inline references", () => {
     expect(
       inline(

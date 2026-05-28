@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test"
+import { createPathHelpers } from "./path"
 import { invalidateFromWatcher } from "./watcher"
 
 describe("file watcher invalidation", () => {
@@ -25,6 +26,33 @@ describe("file watcher invalidation", () => {
 
     expect(loads).toEqual(["src/new.ts"])
     expect(refresh).toEqual(["src"])
+  })
+
+  test("refreshes loaded parent for Windows unlink paths", () => {
+    const path = createPathHelpers(() => "C:\\repo")
+    const refresh: string[] = []
+
+    for (const file of ["C:\\repo\\src\\deleted.ts", "src\\other.ts"]) {
+      invalidateFromWatcher(
+        {
+          type: "file.watcher.updated",
+          properties: {
+            file,
+            event: "unlink",
+          },
+        },
+        {
+          normalize: path.normalize,
+          hasFile: () => false,
+          loadFile: () => {},
+          node: () => undefined,
+          isDirLoaded: (dir) => dir === "src",
+          refreshDir: (dir) => refresh.push(dir),
+        },
+      )
+    }
+
+    expect(refresh).toEqual(["src", "src"])
   })
 
   test("reloads files that are open in tabs", () => {

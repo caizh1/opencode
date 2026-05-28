@@ -22,6 +22,8 @@ export const dict = {
   "ui.sessionReview.largeDiff.renderAnyway": "仍然渲染",
   "ui.fileMedia.kind.image": "圖片",
   "ui.fileMedia.kind.audio": "音訊",
+  "ui.fileMedia.kind.svg": "SVG",
+  "ui.fileMedia.kind.document": "Word 文件",
   "ui.fileMedia.state.removed": "{{kind}}已移除",
   "ui.fileMedia.state.loading": "正在載入{{kind}}...",
   "ui.fileMedia.state.error": "載入{{kind}}失敗",

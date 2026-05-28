@@ -21,6 +21,9 @@ export const dict: Record<string, string> = {
 
   "ui.fileMedia.kind.image": "image",
   "ui.fileMedia.kind.audio": "audio",
+  "ui.fileMedia.kind.svg": "SVG",
+  "ui.fileMedia.kind.mermaid": "diagram",
+  "ui.fileMedia.kind.document": "Word document",
   "ui.fileMedia.state.removed": "Removed {{kind}} file.",
   "ui.fileMedia.state.loading": "Loading {{kind}}...",
   "ui.fileMedia.state.error": "Unable to load {{kind}}.",

@@ -10,6 +10,8 @@ import { assertExternalDirectoryEffect } from "./external-directory"
 import { Instruction } from "../session/instruction"
 import { isPdfAttachment, sniffAttachmentMime } from "@/util/media"
 import { Reference } from "@/reference/reference"
+import { extractDocx, formatDocxForModel, isDocxMime } from "@/document/docx"
+import { withDocxMetadata } from "@/document/docx-metadata"
 
 const DEFAULT_READ_LIMIT = 2000
 const MAX_LINE_LENGTH = 2000
@@ -266,6 +268,34 @@ export const ReadTool = Tool.define(
 
       const mime = sniffAttachmentMime(sample, AppFileSystem.mimeType(filepath))
       const isImage = SUPPORTED_IMAGE_MIMES.has(mime)
+
+      if (isDocxMime(mime)) {
+        const bytes = yield* fs.readFile(filepath)
+        const docx = yield* Effect.tryPromise(() => extractDocx(bytes))
+        const output = `DOCX read successfully\n\n${formatDocxForModel({ filename: path.basename(filepath), docx })}`
+        return {
+          title,
+          output,
+          metadata: {
+            preview: docx.text.split("\n").slice(0, 20).join("\n"),
+            truncated: false,
+            loaded: loaded.map((item) => item.filepath),
+          },
+          attachments: docx.images.map((image) => ({
+            type: "file" as const,
+            mime: image.mime,
+            url: `data:${image.mime};base64,${image.data}`,
+            filename: image.filename,
+            metadata: withDocxMetadata(undefined, {
+              hidden: true,
+              modelContext: true,
+              kind: "image",
+              source: path.basename(filepath),
+              index: image.index,
+            }),
+          })),
+        }
+      }
 
       if (isImage || isPdfAttachment(mime)) {
         const bytes = yield* fs.readFile(filepath)

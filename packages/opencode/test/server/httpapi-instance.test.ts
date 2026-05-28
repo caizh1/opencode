@@ -4,8 +4,10 @@ import { describe, expect } from "bun:test"
 import { Config, Context, Effect, FileSystem, Layer, Path } from "effect"
 import { HttpClient, HttpClientRequest, HttpRouter, HttpServer } from "effect/unstable/http"
 import * as Socket from "effect/unstable/socket/Socket"
+import nodePath from "path"
 import { WorkspaceID } from "../../src/control-plane/schema"
 import { ControlPaths } from "../../src/server/routes/instance/httpapi/groups/control"
+import { FilePaths } from "../../src/server/routes/instance/httpapi/groups/file"
 import { InstancePaths } from "../../src/server/routes/instance/httpapi/groups/instance"
 import { SessionPaths } from "../../src/server/routes/instance/httpapi/groups/session"
 import { PermissionID } from "../../src/permission/schema"
@@ -54,6 +56,20 @@ const it = testEffect(Layer.mergeAll(testStateLayer, httpApiServerLayer))
 const handlerContext = Context.empty() as Context.Context<unknown>
 
 const directoryHeader = (dir: string) => HttpClientRequest.setHeader("x-opencode-directory", dir)
+const uploadRequest = (dir: string, file: string, body?: BodyInit) =>
+  Effect.promise(() =>
+    HttpApiApp.webHandler().handler(
+      new Request(
+        `http://localhost${FilePaths.upload}?directory=${encodeURIComponent(dir)}&path=${encodeURIComponent(file)}`,
+        {
+          method: "PUT",
+          headers: body ? { "content-type": "application/octet-stream" } : undefined,
+          body,
+        },
+      ),
+      handlerContext,
+    ),
+  )
 
 describe("instance HttpApi", () => {
   it.live("serves the OpenAPI document", () =>
@@ -70,6 +86,133 @@ describe("instance HttpApi", () => {
           "/session": expect.any(Object),
         }),
       })
+    }),
+  )
+
+  it.live("writes text files through file.write and creates parent directories", () =>
+    Effect.gen(function* () {
+      const dir = yield* tmpdirScoped({ git: true })
+      const response = yield* HttpClientRequest.post(FilePaths.write).pipe(
+        directoryHeader(dir),
+        HttpClientRequest.bodyJson({ path: "nested/note.txt", content: "hello" }),
+        Effect.flatMap(HttpClient.execute),
+      )
+
+      expect(response.status).toBe(200)
+      expect(yield* response.json).toEqual({ path: "nested/note.txt" })
+      expect(yield* Effect.promise(() => Bun.file(nodePath.join(dir, "nested", "note.txt")).text())).toBe("hello")
+
+      const read = yield* HttpClientRequest.get(
+        `${FilePaths.content}?path=${encodeURIComponent("nested/note.txt")}`,
+      ).pipe(directoryHeader(dir), HttpClient.execute)
+
+      expect(read.status).toBe(200)
+      expect(yield* read.json).toMatchObject({ type: "text", content: "hello" })
+    }),
+  )
+
+  it.live("writes text files with the requested charset", () =>
+    Effect.gen(function* () {
+      const dir = yield* tmpdirScoped({ git: true })
+      const response = yield* HttpClientRequest.post(FilePaths.write).pipe(
+        directoryHeader(dir),
+        HttpClientRequest.bodyJson({ path: "gb18030.txt", content: "中文", charset: "gb18030" }),
+        Effect.flatMap(HttpClient.execute),
+      )
+
+      expect(response.status).toBe(200)
+      expect(
+        Buffer.from(yield* Effect.promise(() => Bun.file(nodePath.join(dir, "gb18030.txt")).arrayBuffer())).toString(
+          "hex",
+        ),
+      ).toBe("d6d0cec4")
+
+      const read = yield* HttpClientRequest.get(`${FilePaths.content}?path=${encodeURIComponent("gb18030.txt")}`).pipe(
+        directoryHeader(dir),
+        HttpClient.execute,
+      )
+
+      expect(read.status).toBe(200)
+      expect(yield* read.json).toMatchObject({ type: "text", content: "中文", charset: "gb18030" })
+    }),
+  )
+
+  it.live("rejects file.write paths outside the workspace", () =>
+    Effect.gen(function* () {
+      const dir = yield* tmpdirScoped({ git: true })
+      const sibling = `${dir}-sibling`
+      const response = yield* HttpClientRequest.post(FilePaths.write).pipe(
+        directoryHeader(dir),
+        HttpClientRequest.bodyJson({
+          path: `../${nodePath.basename(sibling)}/outside.txt`,
+          content: "outside",
+        }),
+        Effect.flatMap(HttpClient.execute),
+      )
+
+      expect(response.status).toBe(400)
+      expect(yield* Effect.promise(() => Bun.file(nodePath.join(sibling, "outside.txt")).exists())).toBe(false)
+    }),
+  )
+
+  it.live("uploads raw binary files and creates parent directories", () =>
+    Effect.gen(function* () {
+      const dir = yield* tmpdirScoped({ git: true })
+      const bytes = new Uint8Array([0, 1, 2, 3, 255])
+      const response = yield* uploadRequest(dir, "nested/data.bin", bytes)
+
+      expect(response.status).toBe(200)
+      expect(yield* Effect.promise(() => response.json())).toEqual({ path: "nested/data.bin" })
+      const written = new Uint8Array(
+        yield* Effect.promise(() => Bun.file(nodePath.join(dir, "nested", "data.bin")).arrayBuffer()),
+      )
+      expect(Array.from(written)).toEqual(Array.from(bytes))
+    }),
+  )
+
+  it.live("overwrites existing files through raw upload", () =>
+    Effect.gen(function* () {
+      const dir = yield* tmpdirScoped({ git: true })
+      yield* Effect.promise(() => Bun.write(nodePath.join(dir, "existing.bin"), new Uint8Array([1, 1, 1])))
+
+      const bytes = new Uint8Array([9, 8, 7])
+      const response = yield* uploadRequest(dir, "existing.bin", bytes)
+
+      expect(response.status).toBe(200)
+      const written = new Uint8Array(
+        yield* Effect.promise(() => Bun.file(nodePath.join(dir, "existing.bin")).arrayBuffer()),
+      )
+      expect(Array.from(written)).toEqual(Array.from(bytes))
+    }),
+  )
+
+  it.live("rejects raw upload paths outside the workspace", () =>
+    Effect.gen(function* () {
+      const dir = yield* tmpdirScoped({ git: true })
+      const sibling = `${dir}-sibling`
+      const response = yield* uploadRequest(dir, `../${nodePath.basename(sibling)}/outside.bin`, new Uint8Array([1]))
+
+      expect(response.status).toBe(403)
+      expect(yield* Effect.promise(() => Bun.file(nodePath.join(sibling, "outside.bin")).exists())).toBe(false)
+    }),
+  )
+
+  it.live("rejects raw uploads without a path or body", () =>
+    Effect.gen(function* () {
+      const dir = yield* tmpdirScoped({ git: true })
+      const missingPath = yield* Effect.promise(() =>
+        HttpApiApp.webHandler().handler(
+          new Request(`http://localhost${FilePaths.upload}?directory=${encodeURIComponent(dir)}`, {
+            method: "PUT",
+            body: new Uint8Array([1]),
+          }),
+          handlerContext,
+        ),
+      )
+      const missingBody = yield* uploadRequest(dir, "empty.bin")
+
+      expect(missingPath.status).toBe(400)
+      expect(missingBody.status).toBe(400)
     }),
   )
 

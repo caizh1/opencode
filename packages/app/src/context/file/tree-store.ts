@@ -40,6 +40,13 @@ export function createFileTreeStore(options: TreeStoreOptions) {
     setTree("dir", path, { expanded: false })
   }
 
+  const withinDir = (path: string, dir: string) => dir === "" || path === dir || path.startsWith(dir + "/")
+
+  const loadedDirs = (dir: string) =>
+    Object.entries(tree.dir)
+      .filter(([path, state]) => state.loaded && withinDir(path, dir))
+      .map(([path]) => path)
+
   const listDir = (input: string, opts?: { force?: boolean }) => {
     const dir = options.normalizeDir(input)
     ensureDir(dir)
@@ -65,21 +72,24 @@ export function createFileTreeStore(options: TreeStoreOptions) {
 
     const promise = options
       .list(dir)
-      .then((nodes) => {
+      .then((items) => {
         if (options.scope() !== directory) return
+        const nodes = items.map((node) => ({ ...node, path: options.normalizeDir(node.path) }))
         const prevChildren = tree.dir[dir]?.children ?? []
         const nextChildren = nodes.map((node) => node.path)
         const nextSet = new Set(nextChildren)
+        const nextNodes = new Map(nodes.map((node) => [node.path, node]))
+        const removedDirs = prevChildren.filter((child) => {
+          const existing = tree.node[child]
+          if (existing?.type !== "directory") return false
+          return nextNodes.get(child)?.type !== "directory"
+        })
 
         setTree(
           "node",
           produce((draft) => {
-            const removedDirs: string[] = []
-
             for (const child of prevChildren) {
               if (nextSet.has(child)) continue
-              const existing = draft[child]
-              if (existing?.type === "directory") removedDirs.push(child)
               delete draft[child]
             }
 
@@ -101,6 +111,17 @@ export function createFileTreeStore(options: TreeStoreOptions) {
         )
 
         batch(() => {
+          if (removedDirs.length > 0) {
+            setTree(
+              "dir",
+              produce((draft) => {
+                for (const key of Object.keys(draft)) {
+                  if (!removedDirs.some((removed) => withinDir(key, removed))) continue
+                  delete draft[key]
+                }
+              }),
+            )
+          }
           setTree("dir", dir, "loaded", true)
           setTree("dir", dir, "loading", false)
           setTree("dir", dir, "children", nextChildren)
@@ -124,6 +145,23 @@ export function createFileTreeStore(options: TreeStoreOptions) {
 
     inflight.set(dir, promise)
     return promise
+  }
+
+  const refreshDir = async (input: string) => {
+    const dir = options.normalizeDir(input)
+    const directory = options.scope()
+    const dirs = loadedDirs(dir)
+
+    await listDir(dir, { force: true })
+    if (options.scope() !== directory) return
+
+    for (const child of dirs.toSorted((a, b) => a.split("/").length - b.split("/").length)) {
+      if (child === dir) continue
+      if (options.scope() !== directory) return
+      if (!tree.dir[child]?.loaded) continue
+      if (tree.node[child]?.type !== "directory") continue
+      await listDir(child, { force: true })
+    }
   }
 
   const expandDir = (input: string) => {
@@ -158,6 +196,7 @@ export function createFileTreeStore(options: TreeStoreOptions) {
 
   return {
     listDir,
+    refreshDir,
     expandDir,
     collapseDir,
     dirState,

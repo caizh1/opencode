@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test"
+import { DOCX_MIME } from "@/constants/file-picker"
 import { attachmentMime } from "./files"
 import { pasteMode } from "./paste"
 
@@ -6,6 +7,18 @@ describe("attachmentMime", () => {
   test("keeps PDFs when the browser reports the mime", async () => {
     const file = new File(["%PDF-1.7"], "guide.pdf", { type: "application/pdf" })
     expect(await attachmentMime(file)).toBe("application/pdf")
+  })
+
+  test("keeps DOCX files when the browser reports the mime", async () => {
+    const file = new File([Uint8Array.of(0x50, 0x4b, 0x03, 0x04)], "guide.docx", { type: DOCX_MIME })
+    expect(await attachmentMime(file)).toBe(DOCX_MIME)
+  })
+
+  test("keeps DOCX files by extension when the browser reports octet-stream", async () => {
+    const file = new File([Uint8Array.of(0x50, 0x4b, 0x03, 0x04)], "guide.docx", {
+      type: "application/octet-stream",
+    })
+    expect(await attachmentMime(file)).toBe(DOCX_MIME)
   })
 
   test("normalizes structured text types to text/plain", async () => {

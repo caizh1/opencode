@@ -403,7 +403,8 @@ input:where([type="button"], [type="reset"], [type="submit"]),
   }
 }
 
-[data-component="mermaid-diagram"] {
+[data-component="mermaid-diagram"],
+[data-component="zoomable-media-preview"] {
   position: relative;
   margin: 8px 0;
   border: 1px solid var(--color-border);
@@ -419,6 +420,11 @@ input:where([type="button"], [type="reset"], [type="submit"]),
 
 [data-slot="mermaid-content"] {
   display: inline-block;
+}
+
+[data-component="zoomable-media-preview"] img {
+  user-select: none;
+  -webkit-user-drag: none;
 }
 
 [data-slot="mermaid-controls"] {

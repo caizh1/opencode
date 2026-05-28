@@ -14,6 +14,7 @@ const imports = files.map((f, i) => {
 })
 const entries = files.map((f, i) => `  ${JSON.stringify(f)}: file_${i},`)
 await Bun.write(path.join(dir, "opencode-web-ui.gen.ts"),
+  "// @ts-nocheck\n" +
   "// Import all files as file_$i with type: \"file\"\n" +
   imports.join("\n") + "\n" +
   "// Export with original mappings\n" +

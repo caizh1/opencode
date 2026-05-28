@@ -24,6 +24,16 @@ import { createFileViewCache } from "./file/view-cache"
 import { createFileTreeStore } from "./file/tree-store"
 import { invalidateFromWatcher } from "./file/watcher"
 import {
+  applyFileContentState,
+  discardFileEditState,
+  editableFileContent,
+  failFileSaveState,
+  saveFileDraftState,
+  setFileSavingState,
+  startFileEditState,
+  updateFileDraftState,
+} from "./file/edit"
+import {
   selectionFromLines,
   type FileState,
   type FileSelection,
@@ -47,6 +57,13 @@ function errorMessage(error: unknown, fallback: string) {
   if (error instanceof Error && error.message) return error.message
   if (typeof error === "string" && error) return error
   return fallback
+}
+
+function parentDir(file: string) {
+  const normalized = file.replaceAll("\\", "/")
+  const index = normalized.lastIndexOf("/")
+  if (index < 0) return ""
+  return normalized.slice(0, index)
 }
 
 export const { use: useFile, provider: FileProvider } = createSimpleContext({
@@ -86,6 +103,7 @@ export const { use: useFile, provider: FileProvider } = createSimpleContext({
     const evictContent = (keep?: Set<string>) => {
       evictContentLru(keep, (target) => {
         if (!store.file[target]) return
+        if (store.file[target].editing) return
         setStore(
           "file",
           target,
@@ -132,9 +150,7 @@ export const { use: useFile, provider: FileProvider } = createSimpleContext({
         "file",
         file,
         produce((draft) => {
-          draft.loaded = true
-          draft.loading = false
-          draft.content = content
+          Object.assign(draft, applyFileContentState(draft, content))
         }),
       )
     }
@@ -229,6 +245,105 @@ export const { use: useFile, provider: FileProvider } = createSimpleContext({
       return state
     }
 
+    const isEditable = (input: string) => editableFileContent(store.file[path.normalize(input)]?.content)
+
+    const isDirty = (input: string) => Boolean(store.file[path.normalize(input)]?.dirty)
+
+    const startEdit = (input: string) => {
+      const file = path.normalize(input)
+      if (!editableFileContent(store.file[file]?.content)) return false
+      setStore(
+        "file",
+        file,
+        produce((draft) => {
+          Object.assign(draft, startFileEditState(draft))
+        }),
+      )
+      return true
+    }
+
+    const updateDraft = (input: string, content: string) => {
+      const file = path.normalize(input)
+      if (!store.file[file]?.editing) return
+      setStore(
+        "file",
+        file,
+        produce((draft) => {
+          Object.assign(draft, updateFileDraftState(draft, content))
+        }),
+      )
+    }
+
+    const discardEdit = (input: string) => {
+      const file = path.normalize(input)
+      if (!store.file[file]) return
+      setStore(
+        "file",
+        file,
+        produce((draft) => {
+          Object.assign(draft, discardFileEditState(draft))
+        }),
+      )
+    }
+
+    const save = (input: string) => {
+      const file = path.normalize(input)
+      const state = store.file[file]
+      if (!state?.editing || !editableFileContent(state.content) || state.saving) return Promise.resolve(false)
+      const content = state.draft ?? state.content.content
+
+      setStore(
+        "file",
+        file,
+        produce((draft) => {
+          Object.assign(draft, setFileSavingState(draft))
+        }),
+      )
+
+      return sdk.client.file
+        .write({
+          path: file,
+          content,
+          charset: state.content.charset,
+        })
+        .then((result) => {
+          if (result.error) throw new Error(String(result.error))
+
+          setStore(
+            "file",
+            file,
+            produce((draft) => {
+              Object.assign(draft, saveFileDraftState(draft, content))
+            }),
+          )
+          const saved = store.file[file].content
+          if (saved) touchFileContent(file, approxBytes(saved))
+          evictContent(new Set([file]))
+          void tree.refreshDir(parentDir(file))
+          showToast({
+            variant: "success",
+            title: language.t("toast.file.saved.title"),
+          })
+          return true
+        })
+        .catch((e) => {
+          const message = errorMessage(e, language.t("error.chain.unknown"))
+          setStore(
+            "file",
+            file,
+            produce((draft) => {
+              Object.assign(draft, failFileSaveState(draft, message))
+            }),
+          )
+          showToast({
+            variant: "error",
+            title: language.t("toast.file.saveFailed.title"),
+            description: message,
+          })
+          return false
+        })
+    }
+
     function withPath(input: string, action: (file: string) => unknown) {
       return action(path.normalize(input))
     }
@@ -252,7 +367,7 @@ export const { use: useFile, provider: FileProvider } = createSimpleContext({
       pathFromTab: path.pathFromTab,
       tree: {
         list: tree.listDir,
-        refresh: (input: string) => tree.listDir(input, { force: true }),
+        refresh: tree.refreshDir,
         state: tree.dirState,
         children: tree.children,
         expand: tree.expandDir,
@@ -267,6 +382,12 @@ export const { use: useFile, provider: FileProvider } = createSimpleContext({
       },
       get,
       load,
+      isEditable,
+      isDirty,
+      startEdit,
+      updateDraft,
+      discardEdit,
+      save,
       scrollTop,
       scrollLeft,
       setScrollTop,

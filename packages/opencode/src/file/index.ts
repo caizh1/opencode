@@ -53,12 +53,24 @@ const Patch = Schema.Struct({
   index: Schema.optional(Schema.String),
 })
 
+export const TextCharset = Schema.Literals([
+  "utf-8-bom",
+  "utf-16le",
+  "utf-16be",
+  "gb18030",
+  "big5",
+  "windows-1252",
+  "latin1",
+]).annotate({ identifier: "FileTextCharset" })
+export type TextCharset = DeepMutable<Schema.Schema.Type<typeof TextCharset>>
+
 export const Content = Schema.Struct({
   type: Schema.Literals(["text", "binary"]),
   content: Schema.String,
   diff: Schema.optional(Schema.String),
   patch: Schema.optional(Patch),
   encoding: Schema.optional(Schema.Literal("base64")),
+  charset: Schema.optional(TextCharset),
   mimeType: Schema.optional(Schema.String),
 }).annotate({ identifier: "FileContent" })
 export type Content = DeepMutable<Schema.Schema.Type<typeof Content>>
@@ -225,6 +237,8 @@ const text = new Set([
   "toml",
   "md",
   "mdx",
+  "mmd",
+  "mermaid",
   "txt",
   "xml",
   "html",
@@ -272,12 +286,14 @@ const mime: Record<string, string> = {
   heic: "image/heic",
   heif: "image/heif",
 }
+const docxMime = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 
 type Entry = { files: string[]; dirs: string[] }
 
 const ext = (file: string) => path.extname(file).toLowerCase().slice(1)
 const name = (file: string) => path.basename(file).toLowerCase()
 const isImageByExtension = (file: string) => image.has(ext(file))
+const isDocxByExtension = (file: string) => ext(file) === "docx"
 const isTextByExtension = (file: string) => text.has(ext(file))
 const isTextByName = (file: string) => textName.has(name(file))
 const isBinaryByExtension = (file: string) => binary.has(ext(file))
@@ -292,6 +308,56 @@ function shouldEncode(mimeType: string) {
   if (type.includes("charset=")) return false
   const top = type.split("/", 2)[0]
   return ["image", "audio", "video", "font", "model", "multipart"].includes(top)
+}
+
+const nonUtfCharsets = ["gb18030", "big5", "windows-1252", "latin1"] as const
+type DecodedText = { content: string; charset?: TextCharset }
+
+function decodeStrict(bytes: Uint8Array, encoding: string) {
+  try {
+    return new TextDecoder(encoding, { fatal: true }).decode(bytes)
+  } catch {
+    return
+  }
+}
+
+function textScore(value: string) {
+  const cjk = value.match(/[\u3400-\u9fff\uf900-\ufaff]/gu)?.length ?? 0
+  const kana = value.match(/[\u3040-\u30ff]/gu)?.length ?? 0
+  const controls = value.match(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/gu)?.length ?? 0
+  return cjk * 20 + kana * 8 - controls * 40
+}
+
+function decodeText(bytes: Uint8Array): DecodedText {
+  if (bytes.length === 0) return { content: "" }
+
+  if (bytes.length >= 3 && bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf) {
+    return { content: (decodeStrict(bytes.slice(3), "utf-8") ?? "").trim(), charset: "utf-8-bom" }
+  }
+  if (bytes.length >= 2 && bytes[0] === 0xff && bytes[1] === 0xfe) {
+    return { content: (decodeStrict(bytes.slice(2), "utf-16le") ?? "").trim(), charset: "utf-16le" }
+  }
+  if (bytes.length >= 2 && bytes[0] === 0xfe && bytes[1] === 0xff) {
+    return { content: (decodeStrict(bytes.slice(2), "utf-16be") ?? "").trim(), charset: "utf-16be" }
+  }
+
+  const utf8 = decodeStrict(bytes, "utf-8")
+  if (utf8 !== undefined) return { content: utf8.trim() }
+
+  const decoded = nonUtfCharsets
+    .map((charset) => {
+      const content = decodeStrict(bytes, charset)
+      if (content === undefined) return
+      return { charset, content, score: textScore(content) }
+    })
+    .filter((item): item is { charset: (typeof nonUtfCharsets)[number]; content: string; score: number } =>
+      Boolean(item),
+    )
+    .toSorted((a, b) => b.score - a.score)
+
+  const best = decoded[0]
+  if (!best) return { content: "" }
+  return { content: best.content.trim(), charset: best.charset }
 }
 
 const hidden = (item: string) => {
@@ -309,6 +375,8 @@ const sortHiddenLast = (items: string[], prefer: boolean) => {
   }
   return [...visible, ...hiddenItems]
 }
+
+const apiPath = (file: string) => (path.sep === "\\" ? file.replaceAll("\\", "/") : file)
 
 interface State {
   cache: Entry
@@ -495,7 +563,7 @@ export const layer = Layer.effect(
         const full = path.isAbsolute(item.path) ? item.path : path.join(ctx.directory, item.path)
         return {
           ...item,
-          path: path.relative(ctx.directory, full),
+          path: apiPath(path.relative(ctx.directory, full)),
         }
       })
     })
@@ -507,6 +575,20 @@ export const layer = Layer.effect(
 
       if (!containsPath(full, ctx)) {
         throw new Error("Access denied: path escapes project directory")
+      }
+
+      if (isDocxByExtension(file)) {
+        const exists = yield* appFs.existsSafe(full)
+        if (exists) {
+          const bytes = yield* appFs.readFile(full).pipe(Effect.catch(() => Effect.succeed(new Uint8Array())))
+          return {
+            type: "text" as const,
+            content: Buffer.from(bytes).toString("base64"),
+            mimeType: docxMime,
+            encoding: "base64" as const,
+          }
+        }
+        return { type: "text" as const, content: "" }
       }
 
       if (isImageByExtension(file)) {
@@ -545,10 +627,11 @@ export const layer = Layer.effect(
         }
       }
 
-      const content = yield* appFs.readFileString(full).pipe(
-        Effect.map((s) => s.trim()),
-        Effect.catch(() => Effect.succeed("")),
+      const decoded = yield* appFs.readFile(full).pipe(
+        Effect.map(decodeText),
+        Effect.catch(() => Effect.succeed(decodeText(new Uint8Array()))),
       )
+      const content = decoded.content
 
       if (ctx.project.vcs === "git") {
         let diff = yield* gitText(["-c", "core.fsmonitor=false", "diff", "--", file])
@@ -561,12 +644,12 @@ export const layer = Layer.effect(
             context: Infinity,
             ignoreWhitespace: true,
           })
-          return { type: "text" as const, content, patch, diff: formatPatch(patch) }
+          return { type: "text" as const, content, charset: decoded.charset, patch, diff: formatPatch(patch) }
         }
-        return { type: "text" as const, content }
+        return { type: "text" as const, content, charset: decoded.charset }
       }
 
-      return { type: "text" as const, content }
+      return { type: "text" as const, content, charset: decoded.charset }
     })
 
     const list = Effect.fn("File.list")(function* (dir?: string) {
@@ -595,7 +678,7 @@ export const layer = Layer.effect(
       for (const entry of entries) {
         if (exclude.includes(entry.name)) continue
         const absolute = path.join(resolved, entry.name)
-        const file = path.relative(ctx.directory, absolute)
+        const file = apiPath(path.relative(ctx.directory, absolute))
         const nodeType: Node["type"] = entry.type === "directory" ? "directory" : "file"
         const base = {
           name: entry.name,

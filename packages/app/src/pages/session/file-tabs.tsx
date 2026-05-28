@@ -1,18 +1,22 @@
-import { createEffect, createMemo, createSignal, Match, on, onCleanup, Switch } from "solid-js"
+import { createEffect, createMemo, createSignal, Match, on, onCleanup, Show, Switch } from "solid-js"
 import { createStore } from "solid-js/store"
 import { Dynamic } from "solid-js/web"
 import { makeEventListener } from "@solid-primitives/event-listener"
 import type { FileSearchHandle } from "@opencode-ai/ui/file"
 import { useFileComponent } from "@opencode-ai/ui/context/file"
+import type { MediaKind } from "@opencode-ai/ui/pierre/media"
 import { cloneSelectedLineRange, previewSelectedLines } from "@opencode-ai/ui/pierre/selection-bridge"
 import { createLineCommentController } from "@opencode-ai/ui/line-comment-annotations"
 import { sampledChecksum } from "@opencode-ai/core/util/encode"
 import { DropdownMenu } from "@opencode-ai/ui/dropdown-menu"
+import { Button } from "@opencode-ai/ui/button"
 import { IconButton } from "@opencode-ai/ui/icon-button"
 import { Tabs } from "@opencode-ai/ui/tabs"
 import { ScrollView } from "@opencode-ai/ui/scroll-view"
 import { showToast } from "@opencode-ai/ui/toast"
+import { getFilename } from "@opencode-ai/core/util/path"
 import { selectionFromLines, useFile, type FileSelection, type SelectedLineRange } from "@/context/file"
+import { FileEditor } from "@/components/file-editor"
 import { useComments } from "@/context/comments"
 import { useLanguage } from "@/context/language"
 import { usePrompt } from "@/context/prompt"
@@ -200,6 +204,15 @@ export function FileTabContent(props: { tab: string }) {
   })
   const contents = createMemo(() => state()?.content?.content ?? "")
   const cacheKey = createMemo(() => sampledChecksum(contents()))
+  const editing = createMemo(() => Boolean(state()?.editing))
+  const draft = createMemo(() => state()?.draft ?? contents())
+  const editable = createMemo(() => {
+    const p = path()
+    if (!p) return false
+    return file.isEditable(p)
+  })
+  const dirty = createMemo(() => Boolean(state()?.dirty))
+  const saving = createMemo(() => Boolean(state()?.saving))
   const selectedLines = createMemo<SelectedLineRange | null>(() => {
     const p = path()
     if (!p) return null
@@ -338,13 +351,48 @@ export function FileTabContent(props: { tab: string }) {
     ),
   })
 
+  const confirmDiscard = (filePath: string) => {
+    if (!file.isDirty(filePath)) return true
+    if (typeof window === "undefined") return false
+    return window.confirm(language.t("session.files.edit.discardConfirm", { name: getFilename(filePath) }))
+  }
+
+  const startEdit = () => {
+    const p = path()
+    if (!p) return
+    file.startEdit(p)
+  }
+
+  const saveEdit = () => {
+    const p = path()
+    if (!p) return
+    void file.save(p)
+  }
+
+  const discardEdit = () => {
+    const p = path()
+    if (!p) return
+    if (!confirmDiscard(p)) return
+    file.discardEdit(p)
+  }
+
   createEffect(() => {
     if (typeof window === "undefined") return
 
     const onKeyDown = (event: KeyboardEvent) => {
       if (activeFileTab() !== props.tab) return
       if (!(event.metaKey || event.ctrlKey) || event.altKey || event.shiftKey) return
-      if (event.key.toLowerCase() !== "f") return
+      const key = event.key.toLowerCase()
+
+      if (key === "s" && editing()) {
+        event.preventDefault()
+        event.stopPropagation()
+        saveEdit()
+        return
+      }
+
+      if (key !== "f") return
+      if (editing()) return
 
       event.preventDefault()
       event.stopPropagation()
@@ -428,7 +476,7 @@ export function FileTabContent(props: { tab: string }) {
           path: path(),
           current: state()?.content,
           onLoad: scrollSync.queueRestore,
-          onError: (args: { kind: "image" | "audio" | "svg" }) => {
+          onError: (args: { kind: MediaKind }) => {
             if (args.kind !== "svg") return
             showToast({
               variant: "error",
@@ -440,17 +488,79 @@ export function FileTabContent(props: { tab: string }) {
     </div>
   )
 
+  const toolbar = () => (
+    <div class="shrink-0 border-b border-border-weak-base px-4 py-2 flex items-center justify-between gap-3">
+      <div class="min-w-0 flex flex-wrap items-center gap-x-3 gap-y-1 text-12-regular text-text-weak">
+        <Show when={editing() && saving()}>
+          <span>{language.t("common.saving")}</span>
+        </Show>
+        <Show when={editing() && !saving() && dirty()}>
+          <span>{language.t("session.files.edit.unsaved")}</span>
+        </Show>
+        <Show when={editing() && !saving() && !dirty()}>
+          <span>{language.t("session.files.edit.saved")}</span>
+        </Show>
+        <Show when={state()?.staleExternalChange}>
+          <span class="text-text-strong">{language.t("session.files.edit.externalChange")}</span>
+        </Show>
+        <Show when={state()?.saveError}>
+          {(error) => (
+            <span class="text-text-strong">
+              {language.t("session.files.edit.saveFailed")}: {error()}
+            </span>
+          )}
+        </Show>
+        <Show when={!editing() && !editable()}>
+          <span>{language.t("session.files.edit.readOnly")}</span>
+        </Show>
+      </div>
+      <div class="shrink-0 flex items-center gap-2">
+        <Show when={!editing() && editable()}>
+          <Button size="small" variant="secondary" icon="edit" onClick={startEdit}>
+            {language.t("session.files.edit.edit")}
+          </Button>
+        </Show>
+        <Show when={editing()}>
+          <Button size="small" variant="ghost" icon="arrow-undo-down" disabled={saving()} onClick={discardEdit}>
+            {language.t("session.files.edit.discard")}
+          </Button>
+          <Button size="small" variant="primary" icon="check" disabled={!dirty() || saving()} onClick={saveEdit}>
+            {saving() ? language.t("common.saving") : language.t("common.save")}
+          </Button>
+        </Show>
+      </div>
+    </div>
+  )
+
   return (
-    <Tabs.Content value={props.tab} class="mt-3 relative h-full">
-      <ScrollView class="h-full" viewportRef={scrollSync.setViewport} onScroll={scrollSync.handleScroll as any}>
+    <Tabs.Content value={props.tab} class="mt-3 relative h-full flex flex-col overflow-hidden">
+      <Show when={state()?.loaded}>{toolbar()}</Show>
+      <div class="min-h-0 flex-1">
         <Switch>
-          <Match when={state()?.loaded}>{renderFile(contents())}</Match>
+          <Match when={state()?.loaded && editing()}>
+            <FileEditor
+              path={path() ?? ""}
+              value={draft()}
+              onChange={(next) => {
+                const p = path()
+                if (!p) return
+                file.updateDraft(p, next)
+              }}
+              onSave={saveEdit}
+              class="h-full"
+            />
+          </Match>
+          <Match when={state()?.loaded}>
+            <ScrollView class="h-full" viewportRef={scrollSync.setViewport} onScroll={scrollSync.handleScroll as any}>
+              {renderFile(contents())}
+            </ScrollView>
+          </Match>
           <Match when={state()?.loading}>
             <div class="px-6 py-4 text-text-weak">{language.t("common.loading")}...</div>
           </Match>
           <Match when={state()?.error}>{(err) => <div class="px-6 py-4 text-text-weak">{err()}</div>}</Match>
         </Switch>
-      </ScrollView>
+      </div>
     </Tabs.Content>
   )
 }

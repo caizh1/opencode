@@ -47,6 +47,7 @@ export const dict = {
 
   "command.session.new": "New session",
   "command.file.open": "Open file",
+  "command.file.save": "Save file",
   "command.tab.close": "Close tab",
   "command.context.addSelection": "Add selection to context",
   "command.context.addSelection.description": "Add selected lines from the current file",
@@ -270,7 +271,7 @@ export const dict = {
 
   "prompt.popover.emptyResults": "No matching results",
   "prompt.popover.emptyCommands": "No matching commands",
-  "prompt.dropzone.label": "Drop images, PDFs, or text files here",
+  "prompt.dropzone.label": "Drop images, PDFs, DOCX, or text files here",
   "prompt.dropzone.file.label": "Drop to @mention file",
   "prompt.slash.badge.custom": "custom",
   "prompt.slash.badge.skill": "skill",
@@ -285,7 +286,7 @@ export const dict = {
   "prompt.action.stop": "Stop",
 
   "prompt.toast.pasteUnsupported.title": "Unsupported attachment",
-  "prompt.toast.pasteUnsupported.description": "Only images, PDFs, or text files can be attached here.",
+  "prompt.toast.pasteUnsupported.description": "Only images, PDFs, DOCX, or text files can be attached here.",
   "prompt.toast.modelAgentRequired.title": "Select an agent and model",
   "prompt.toast.modelAgentRequired.description": "Choose an agent and model before sending a prompt.",
   "prompt.toast.worktreeCreateFailed.title": "Failed to create worktree",
@@ -441,6 +442,8 @@ export const dict = {
 
   "toast.file.loadFailed.title": "Failed to load file",
   "toast.file.listFailed.title": "Failed to list files",
+  "toast.file.saved.title": "File saved",
+  "toast.file.saveFailed.title": "Failed to save file",
 
   "toast.context.noLineSelection.title": "No line selection",
   "toast.context.noLineSelection.description": "Select a line range in a file tab first.",
@@ -562,6 +565,14 @@ export const dict = {
   "session.files.download": "Download",
   "session.files.delete": "Delete",
   "session.files.refresh": "Refresh",
+  "session.files.edit.edit": "Edit",
+  "session.files.edit.discard": "Discard",
+  "session.files.edit.unsaved": "Unsaved",
+  "session.files.edit.saved": "Saved",
+  "session.files.edit.saveFailed": "Save failed",
+  "session.files.edit.readOnly": "Read-only",
+  "session.files.edit.externalChange": "File changed on disk. Saving will overwrite the latest version.",
+  "session.files.edit.discardConfirm": 'Discard unsaved changes in "{{name}}"?',
 
   "session.messages.renderEarlier": "Render earlier messages",
   "session.messages.loadingEarlier": "Loading earlier messages...",
@@ -988,8 +999,8 @@ export const dict = {
   "dialog.uploadFolder.fileCount": "files selected",
   "dialog.uploadFolder.moreFiles": "and {count} more files",
   "dialog.uploadFolder.empty": "No files to upload",
-  "dialog.uploadFolder.progress": "Uploading...",
-  "dialog.uploadFolder.success": "Upload complete",
-  "dialog.uploadFolder.partialError": "Some files failed to upload",
+  "dialog.uploadFolder.progress": "Uploading {current} of {total}",
+  "dialog.uploadFolder.success": "Upload complete ({count} files)",
+  "dialog.uploadFolder.partialError": "{count} failed",
   "dialog.uploadFolder.allFailed": "All files failed to upload",
 }

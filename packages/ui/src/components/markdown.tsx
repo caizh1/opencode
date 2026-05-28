@@ -7,6 +7,7 @@ import { ComponentProps, createEffect, createResource, createSignal, onCleanup, 
 import { isServer } from "solid-js/web"
 import { stream } from "./markdown-stream"
 import { renderMermaid, isMermaid } from "./mermaid-renderer"
+import { createMermaidContainer } from "./mermaid-viewer"
 
 type Entry = {
   hash: string
@@ -237,132 +238,6 @@ function touch(key: string, value: Entry) {
   const first = cache.keys().next().value
   if (!first) return
   cache.delete(first)
-}
-
-function createZoomButton(label: string, onClick: () => void): HTMLButtonElement {
-  const btn = document.createElement("button")
-  btn.type = "button"
-  btn.setAttribute("data-slot", "mermaid-zoom-btn")
-  btn.textContent = label
-  btn.addEventListener("mousedown", (e) => e.preventDefault())
-  btn.addEventListener("click", (e) => {
-    e.stopPropagation()
-    onClick()
-  })
-  return btn
-}
-
-function createMermaidContainer(svg: string): HTMLElement {
-  const wrapper = document.createElement("div")
-  wrapper.setAttribute("data-component", "mermaid-diagram")
-
-  const viewport = document.createElement("div")
-  viewport.setAttribute("data-slot", "mermaid-viewport")
-
-  const content = document.createElement("div")
-  content.setAttribute("data-slot", "mermaid-content")
-  content.innerHTML = svg
-  content.dataset.scale = "1"
-
-  const svgEl = content.querySelector<SVGSVGElement>("svg")
-  let naturalW = 0
-  let naturalH = 0
-  if (svgEl) {
-    const vb = svgEl.getAttribute("viewBox")
-    if (vb) {
-      const parts = vb.split(/\s+/)
-      if (parts.length === 4) {
-        naturalW = parseInt(parts[2])
-        naturalH = parseInt(parts[3])
-        content.dataset.vbW = String(naturalW)
-        content.dataset.vbH = String(naturalH)
-      }
-    }
-    svgEl.style.display = "block"
-    svgEl.style.maxWidth = "none"
-    svgEl.style.maxHeight = "none"
-  }
-  if (naturalH > 0) viewport.style.height = Math.min(naturalH, 600) + "px"
-  if (naturalW > 0) viewport.style.maxWidth = "100%"
-
-  const controls = document.createElement("div")
-  controls.setAttribute("data-slot", "mermaid-controls")
-
-  const applyScale = () => {
-    if (!svgEl) return
-    const scale = parseFloat(content.dataset.scale || "1")
-    const w = content.dataset.vbW
-    const h = content.dataset.vbH
-    if (!w || !h) return
-    svgEl.style.width = (parseFloat(w) * scale) + "px"
-    svgEl.style.height = (parseFloat(h) * scale) + "px"
-  }
-
-  const setScale = (s: number) => {
-    content.dataset.scale = String(Math.max(0.1, Math.min(5, s)))
-    applyScale()
-  }
-
-  const adjustZoom = (delta: number) => {
-    const cur = parseFloat(content.dataset.scale || "1")
-    setScale(Math.round((cur + delta) * 10) / 10)
-  }
-
-  const resetZoom = () => {
-    setScale(1)
-  }
-
-  controls.appendChild(createZoomButton("\u2212", () => adjustZoom(-0.2)))
-  controls.appendChild(createZoomButton("1:1", () => resetZoom()))
-  controls.appendChild(createZoomButton("+", () => adjustZoom(0.2)))
-
-  const zoomIcon = document.createElement("div")
-  zoomIcon.setAttribute("data-slot", "mermaid-zoom-icon")
-  zoomIcon.innerHTML = '<svg width="14" height="14" viewBox="0 0 20 20" fill="none"><circle cx="8.5" cy="8.5" r="5.5" stroke="currentColor" stroke-width="1.5"/><path d="M12.5 12.5l5 5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><path d="M8.5 6v5M6 8.5h5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>'
-  controls.insertBefore(zoomIcon, controls.firstChild)
-
-  let dragging = false
-  let dragStartX = 0
-  let dragStartY = 0
-  let scrollStartX = 0
-  let scrollStartY = 0
-
-  viewport.addEventListener("mousedown", (e) => {
-    if (e.button !== 0) return
-    dragging = true
-    dragStartX = e.clientX
-    dragStartY = e.clientY
-    scrollStartX = viewport.scrollLeft
-    scrollStartY = viewport.scrollTop
-    viewport.style.cursor = "grabbing"
-  })
-
-  window.addEventListener("mousemove", (e) => {
-    if (!dragging) return
-    viewport.scrollLeft = scrollStartX - (e.clientX - dragStartX)
-    viewport.scrollTop = scrollStartY - (e.clientY - dragStartY)
-  })
-
-  window.addEventListener("mouseup", () => {
-    if (!dragging) return
-    dragging = false
-    viewport.style.cursor = ""
-  })
-
-  viewport.addEventListener("wheel", (e) => {
-    if (!e.ctrlKey && !e.metaKey) return
-    e.preventDefault()
-    adjustZoom(e.deltaY > 0 ? -0.1 : 0.1)
-  }, { passive: false })
-
-  viewport.appendChild(content)
-
-  wrapper.appendChild(viewport)
-  wrapper.appendChild(controls)
-
-  applyScale()
-
-  return wrapper
 }
 
 export function Markdown(

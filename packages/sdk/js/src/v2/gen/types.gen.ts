@@ -568,6 +568,9 @@ export type FilePart = {
   filename?: string
   url: string
   source?: FilePartSource
+  metadata?: {
+    [key: string]: unknown
+  }
 }
 
 export type ToolStatePending = {
@@ -1548,11 +1551,11 @@ export type FileNode = {
   absolute: string
   type: "file" | "directory"
   ignored: boolean
-  /** File modification time as Unix timestamp in milliseconds */
   mtime?: number
-  /** File size in bytes */
   size?: number
 }
+
+export type FileTextCharset = "utf-8-bom" | "utf-16le" | "utf-16be" | "gb18030" | "big5" | "windows-1252" | "latin1"
 
 export type FileContent = {
   type: "text" | "binary"
@@ -1573,6 +1576,7 @@ export type FileContent = {
     index?: string
   }
   encoding?: "base64"
+  charset?: FileTextCharset
   mimeType?: string
 }
 
@@ -1816,6 +1820,9 @@ export type FilePartInput = {
   filename?: string
   url: string
   source?: FilePartSource
+  metadata?: {
+    [key: string]: unknown
+  }
 }
 
 export type AgentPartInput = {
@@ -4089,6 +4096,34 @@ export type GlobalUpgradeResponses = {
 
 export type GlobalUpgradeResponse = GlobalUpgradeResponses[keyof GlobalUpgradeResponses]
 
+export type GlobalConnectionsData = {
+  body?: never
+  path?: never
+  query?: never
+  url: "/global/connections"
+}
+
+export type GlobalConnectionsErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+}
+
+export type GlobalConnectionsError = GlobalConnectionsErrors[keyof GlobalConnectionsErrors]
+
+export type GlobalConnectionsResponses = {
+  /**
+   * Active connections info
+   */
+  200: {
+    activeSessions: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+    connections: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  }
+}
+
+export type GlobalConnectionsResponse = GlobalConnectionsResponses[keyof GlobalConnectionsResponses]
+
 export type EventSubscribeData = {
   body?: never
   path?: never
@@ -4724,9 +4759,10 @@ export type FileStatusResponse = FileStatusResponses[keyof FileStatusResponses]
 
 export type FileWriteData = {
   body?: {
+    path: string
     content: string
     encoding?: "base64"
-    path: string
+    charset?: FileTextCharset
   }
   path?: never
   query?: {
@@ -4735,6 +4771,15 @@ export type FileWriteData = {
   }
   url: "/file/write"
 }
+
+export type FileWriteErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+}
+
+export type FileWriteError = FileWriteErrors[keyof FileWriteErrors]
 
 export type FileWriteResponses = {
   /**
@@ -5944,30 +5989,6 @@ export type ProviderListResponses = {
 
 export type ProviderListResponse = ProviderListResponses[keyof ProviderListResponses]
 
-export type ProviderPingData = {
-  body?: never
-  path?: never
-  query?: {
-    directory?: string
-    workspace?: string
-  }
-  url: "/provider/ping"
-}
-
-export type ProviderPingResponses = {
-  /**
-   * Provider ping results
-   */
-  200: {
-    [key: string]: {
-      connected: boolean
-      latencyMs: number | null
-    }
-  }
-}
-
-export type ProviderPingResponse = ProviderPingResponses[keyof ProviderPingResponses]
-
 export type ProviderAuthData = {
   body?: never
   path?: never
@@ -6071,6 +6092,39 @@ export type ProviderOauthCallbackResponses = {
 }
 
 export type ProviderOauthCallbackResponse = ProviderOauthCallbackResponses[keyof ProviderOauthCallbackResponses]
+
+export type ProviderPingData = {
+  body?: never
+  path?: never
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/provider/ping"
+}
+
+export type ProviderPingErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+}
+
+export type ProviderPingError = ProviderPingErrors[keyof ProviderPingErrors]
+
+export type ProviderPingResponses = {
+  /**
+   * Provider ping results
+   */
+  200: {
+    [key: string]: {
+      connected: boolean
+      latencyMs?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+    }
+  }
+}
+
+export type ProviderPingResponse = ProviderPingResponses[keyof ProviderPingResponses]
 
 export type SessionListData = {
   body?: never
@@ -6832,6 +6886,9 @@ export type SessionCommandData = {
       filename?: string
       url: string
       source?: FilePartSource
+      metadata?: {
+        [key: string]: unknown
+      }
     }>
   }
   path: {

@@ -202,6 +202,8 @@ const ICON_MAPS: IconMaps = {
     // Documentation
     md: "Markdown",
     mdx: "Mdx",
+    mmd: "Mermaid",
+    mermaid: "Mermaid",
     tex: "Tex",
 
     // Programming languages
