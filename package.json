@@ -1,0 +1,278 @@
+{
+  "name": "opencode-remote",
+  "displayName": "OpenCode Remote",
+  "description": "Remote opencode serve client for VS Code",
+  "version": "0.0.21",
+  "publisher": "local",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/anomalyco/opencode"
+  },
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.94.0"
+  },
+  "categories": [
+    "AI",
+    "Other"
+  ],
+  "activationEvents": [
+    "onView:opencodeRemote.sidebar",
+    "onCommand:opencode.openTerminal",
+    "onCommand:opencode.openNewTerminal",
+    "onCommand:opencode.addFilepathToTerminal",
+    "onCommand:opencode.remote.connect",
+    "onCommand:opencode.remote.disconnect",
+    "onCommand:opencode.remote.testConnection",
+    "onCommand:opencode.remote.openChat",
+    "onCommand:opencode.remote.newSession",
+    "onCommand:opencode.remote.askSelection",
+    "onCommand:opencode.remote.askCurrentFile",
+    "onCommand:opencode.remote.addFileToContext",
+    "onCommand:opencode.remote.clearContext"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "opencode.openTerminal",
+        "title": "Open opencode",
+        "category": "OpenCode"
+      },
+      {
+        "command": "opencode.openNewTerminal",
+        "title": "Open opencode in new tab",
+        "category": "OpenCode"
+      },
+      {
+        "command": "opencode.addFilepathToTerminal",
+        "title": "Add Filepath to Terminal",
+        "category": "OpenCode"
+      },
+      {
+        "command": "opencode.remote.connect",
+        "title": "Connect to Remote OpenCode",
+        "category": "OpenCode Remote"
+      },
+      {
+        "command": "opencode.remote.disconnect",
+        "title": "Disconnect Remote OpenCode",
+        "category": "OpenCode Remote"
+      },
+      {
+        "command": "opencode.remote.testConnection",
+        "title": "Test Remote OpenCode Connection",
+        "category": "OpenCode Remote"
+      },
+      {
+        "command": "opencode.remote.openChat",
+        "title": "Open Remote OpenCode Chat",
+        "category": "OpenCode Remote"
+      },
+      {
+        "command": "opencode.remote.newSession",
+        "title": "New Remote OpenCode Session",
+        "category": "OpenCode Remote"
+      },
+      {
+        "command": "opencode.remote.askSelection",
+        "title": "Ask OpenCode About Selection",
+        "category": "OpenCode Remote"
+      },
+      {
+        "command": "opencode.remote.askCurrentFile",
+        "title": "Ask OpenCode About Current File",
+        "category": "OpenCode Remote"
+      },
+      {
+        "command": "opencode.remote.addFileToContext",
+        "title": "Add File to OpenCode Context",
+        "category": "OpenCode Remote"
+      },
+      {
+        "command": "opencode.remote.clearContext",
+        "title": "Clear OpenCode Context",
+        "category": "OpenCode Remote"
+      }
+    ],
+    "configuration": {
+      "title": "OpenCode Remote",
+      "properties": {
+        "opencode.remote.serverUrl": {
+          "type": "string",
+          "default": "http://localhost:4096",
+          "description": "Remote opencode serve base URL."
+        },
+        "opencode.remote.username": {
+          "type": "string",
+          "default": "opencode",
+          "description": "HTTP Basic Auth username for remote opencode serve."
+        },
+        "opencode.remote.defaultModel": {
+          "type": "string",
+          "default": "",
+          "description": "Optional default model in provider/model format."
+        },
+        "opencode.remote.defaultAgent": {
+          "type": "string",
+          "default": "",
+          "description": "Optional default agent name for chat requests."
+        },
+        "opencode.remote.localOnlyAgent": {
+          "type": "string",
+          "default": "vscode-local",
+          "description": "Agent name to use only when strict local-only agent mode is enabled. Configure this agent on the remote OpenCode server with file-system tools denied."
+        },
+        "opencode.remote.context.maxFileBytes": {
+          "type": "number",
+          "default": 16000,
+          "minimum": 1000,
+          "description": "Maximum text bytes to include per local file context."
+        },
+        "opencode.remote.context.maxFiles": {
+          "type": "number",
+          "default": 8,
+          "minimum": 1,
+          "maximum": 50,
+          "description": "Maximum number of local files to include in one request."
+        },
+        "opencode.remote.context.includeDiagnostics": {
+          "type": "boolean",
+          "default": true,
+          "description": "Include VS Code diagnostics in chat context by default."
+        },
+        "opencode.remote.context.includeGitDiff": {
+          "type": "boolean",
+          "default": false,
+          "description": "Include git diff in chat context by default."
+        },
+        "opencode.remote.context.localOnlyMode": {
+          "type": "boolean",
+          "default": true,
+          "description": "Prefer VS Code supplied local context and warn/block file questions when no local file content was captured."
+        },
+        "opencode.remote.context.strictLocalOnlyAgent": {
+          "type": "boolean",
+          "default": false,
+          "description": "Send opencode.remote.localOnlyAgent as the request agent. Enable only after configuring that agent on the remote OpenCode server."
+        },
+        "opencode.remote.completion.enabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enable remote OpenCode inline completions."
+        },
+        "opencode.remote.completion.debounceMs": {
+          "type": "number",
+          "default": 350,
+          "minimum": 0,
+          "description": "Debounce time before requesting inline completions."
+        },
+        "opencode.remote.completion.logLevel": {
+          "type": "string",
+          "enum": [
+            "off",
+            "info",
+            "debug"
+          ],
+          "default": "info",
+          "description": "Output logging level for remote OpenCode inline completions."
+        }
+      }
+    },
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "opencodeRemote",
+          "title": "OpenCode",
+          "icon": "media/opencode.svg"
+        }
+      ]
+    },
+    "views": {
+      "opencodeRemote": [
+        {
+          "id": "opencodeRemote.sidebar",
+          "name": "Chat",
+          "type": "webview"
+        }
+      ]
+    },
+    "menus": {
+      "editor/context": [
+        {
+          "command": "opencode.remote.askSelection",
+          "when": "editorHasSelection",
+          "group": "opencode@1"
+        },
+        {
+          "command": "opencode.remote.askCurrentFile",
+          "group": "opencode@2"
+        },
+        {
+          "command": "opencode.remote.addFileToContext",
+          "group": "opencode@3"
+        }
+      ],
+      "view/title": [
+        {
+          "command": "opencode.remote.newSession",
+          "when": "view == opencodeRemote.sidebar",
+          "group": "navigation@1"
+        },
+        {
+          "command": "opencode.remote.testConnection",
+          "when": "view == opencodeRemote.sidebar",
+          "group": "navigation@2"
+        }
+      ]
+    },
+    "keybindings": [
+      {
+        "command": "opencode.openTerminal",
+        "title": "Run opencode",
+        "key": "cmd+escape",
+        "mac": "cmd+escape",
+        "win": "ctrl+escape",
+        "linux": "ctrl+escape"
+      },
+      {
+        "command": "opencode.openNewTerminal",
+        "title": "Run opencode",
+        "key": "cmd+shift+escape",
+        "mac": "cmd+shift+escape",
+        "win": "ctrl+shift+escape",
+        "linux": "ctrl+shift+escape"
+      },
+      {
+        "command": "opencode.addFilepathToTerminal",
+        "title": "opencode: Insert At-Mentioned",
+        "key": "cmd+alt+k",
+        "mac": "cmd+alt+k",
+        "win": "ctrl+alt+K",
+        "linux": "ctrl+alt+K"
+      }
+    ]
+  },
+  "scripts": {
+    "vscode:prepublish": "bun run package",
+    "compile": "bun run check-types && bun run lint && tsc --project tsconfig.json",
+    "watch:tsc": "tsc --noEmit --watch --project tsconfig.json",
+    "package": "bun run check-types && bun run lint && tsc --project tsconfig.json",
+    "check-types": "tsc --noEmit",
+    "lint": "eslint src",
+    "test": "bun test",
+    "test:vscode": "bun run package && node ./dist/test/runTest.js",
+    "vsix": "bun run package && vsce package --no-dependencies"
+  },
+  "devDependencies": {
+    "@types/mocha": "^10.0.10",
+    "@types/node": "20.x",
+    "@types/vscode": "^1.94.0",
+    "@typescript-eslint/eslint-plugin": "^8.31.1",
+    "@typescript-eslint/parser": "^8.31.1",
+    "@vscode/test-electron": "^2.5.2",
+    "@vscode/vsce": "^3.2.2",
+    "eslint": "^9.25.1",
+    "typescript": "^5.8.3"
+  }
+}

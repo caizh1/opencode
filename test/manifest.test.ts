@@ -1,0 +1,65 @@
+import { describe, expect, test } from "bun:test"
+import { existsSync, readFileSync } from "node:fs"
+import { join } from "node:path"
+
+describe("extension manifest", () => {
+  const manifest = JSON.parse(readFileSync(join(import.meta.dir, "..", "package.json"), "utf8"))
+  const newViewID = "opencodeRemote.sidebar"
+  const oldViewID = ["opencodeRemote", "chat"].join(".")
+
+  test("does not contribute editor title buttons", () => {
+    expect(manifest.contributes?.menus?.["editor/title"]).toBeUndefined()
+  })
+
+  test("keeps local terminal commands available", () => {
+    const commands = new Set((manifest.contributes?.commands ?? []).map((command: { command: string }) => command.command))
+    expect(commands.has("opencode.openTerminal")).toBe(true)
+    expect(commands.has("opencode.openNewTerminal")).toBe(true)
+  })
+
+  test("keeps remote chat commands available", () => {
+    const commands = new Set((manifest.contributes?.commands ?? []).map((command: { command: string }) => command.command))
+    expect(commands.has("opencode.remote.openChat")).toBe(true)
+    expect(commands.has("opencode.remote.connect")).toBe(true)
+  })
+
+  test("contributes local-only guard settings", () => {
+    const properties = manifest.contributes?.configuration?.properties ?? {}
+    expect(properties["opencode.remote.context.localOnlyMode"]?.default).toBe(true)
+    expect(properties["opencode.remote.context.strictLocalOnlyAgent"]?.default).toBe(false)
+    expect(properties["opencode.remote.localOnlyAgent"]?.default).toBe("vscode-local")
+  })
+
+  test("contributes completion log level setting", () => {
+    const properties = manifest.contributes?.configuration?.properties ?? {}
+    expect(properties["opencode.remote.completion.logLevel"]).toMatchObject({
+      type: "string",
+      enum: ["off", "info", "debug"],
+      default: "info",
+    })
+  })
+
+  test("contributes a dedicated OpenCode activity bar container", () => {
+    const containers = manifest.contributes?.viewsContainers?.activitybar ?? []
+    expect(containers).toContainEqual({
+      id: "opencodeRemote",
+      title: "OpenCode",
+      icon: "media/opencode.svg",
+    })
+    expect(existsSync(join(import.meta.dir, "..", "media", "opencode.svg"))).toBe(true)
+  })
+
+  test("places the chat webview in the OpenCode container instead of Explorer", () => {
+    const explorerViews = manifest.contributes?.views?.explorer ?? []
+    const opencodeViews = manifest.contributes?.views?.opencodeRemote ?? []
+
+    expect(manifest.activationEvents).toContain(`onView:${newViewID}`)
+    expect(JSON.stringify(manifest)).not.toContain(oldViewID)
+    expect(explorerViews.some((view: { id: string }) => view.id === newViewID)).toBe(false)
+    expect(opencodeViews).toContainEqual({
+      id: newViewID,
+      name: "Chat",
+      type: "webview",
+    })
+  })
+})
