@@ -4,3 +4,7 @@ node_modules/
 *.log
 out/
 .vscode-test/
+
+# Local OpenCode configuration
+.opencode/
+opencode.json
