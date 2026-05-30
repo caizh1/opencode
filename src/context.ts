@@ -123,6 +123,8 @@ export async function buildCompletionPrompt(input: {
   return [
     "You are an inline code completion engine.",
     "Return only the exact text to insert at the cursor. Do not use Markdown. Do not explain.",
+    "Preserve required leading newlines and indentation. If the cursor is after a block-opening line, begin with a newline and the correct next-line indentation.",
+    completionLanguageRules(input.document.languageId),
     "",
     `<file path="${relativePath(input.document.uri)}" language="${input.document.languageId}">`,
     "<prefix>",
@@ -136,6 +138,27 @@ export async function buildCompletionPrompt(input: {
   ]
     .filter(Boolean)
     .join("\n")
+}
+
+function completionLanguageRules(languageId: string) {
+  switch (languageId) {
+    case "c":
+    case "cpp":
+      return "Language rule: this is C/C++; do not use Python-style colon blocks. Use braces for functions and control blocks. Return real code, not placeholders like condition."
+    case "javascript":
+    case "javascriptreact":
+    case "typescript":
+    case "typescriptreact":
+    case "java":
+    case "go":
+    case "rust":
+    case "csharp":
+      return "Language rule: use brace-delimited blocks for functions and control flow. Return real code, not placeholders like condition."
+    case "python":
+      return "Language rule: preserve Python colon blocks and indentation. Return real code, not placeholders like condition."
+    default:
+      return "Language rule: follow the file language syntax exactly. Return real code, not placeholders."
+  }
 }
 
 async function buildLocalContext(

@@ -1,6 +1,12 @@
 import * as vscode from "vscode"
+import { buildCompletionEditResult, type CompletionEdit, type CompletionEditInput, type CompletionRange } from "./completion-edit"
+import { completionFormatCommand } from "./completion-format-command"
+import { inferCompletionIndent } from "./completion-indent"
+import { CompletionRequestCoordinator, type CompletionRequestOutcome } from "./completion-request-coordinator"
+import { INLINE_COMPLETION_SESSION_TITLE } from "./completion-session"
+import { completionInsertText } from "./completion-text"
 import { buildCompletionPrompt, relativePath } from "./context"
-import { isSessionNotFoundError, messageText, parseModel, RemoteOpenCodeClient } from "./remote-client"
+import { isSessionNotFoundError, parseModel, RemoteOpenCodeClient } from "./remote-client"
 import type { RemoteSettings } from "./types"
 
 type CompletionDeps = {
@@ -10,11 +16,14 @@ type CompletionDeps = {
 }
 
 export class RemoteCompletionProvider implements vscode.InlineCompletionItemProvider {
-  private abort?: AbortController
   private sessionID?: string
-  private readonly cache = new Map<string, string>()
+  private readonly requests: CompletionRequestCoordinator
 
-  constructor(private readonly deps: CompletionDeps) {}
+  constructor(private readonly deps: CompletionDeps) {
+    this.requests = new CompletionRequestCoordinator({
+      logInfo: (message) => this.logInfo(this.deps.getSettings(), message),
+    })
+  }
 
   async provideInlineCompletionItems(
     document: vscode.TextDocument,
@@ -38,68 +47,131 @@ export class RemoteCompletionProvider implements vscode.InlineCompletionItemProv
       return
     }
 
-    const line = document.lineAt(position.line).text.slice(0, position.character)
+    const lineText = document.lineAt(position.line).text
+    const line = lineText.slice(0, position.character)
+    const lineSuffix = lineText.slice(position.character)
+    const currentWord = currentWordBeforeCursor(line, position.line)
     if (!line.trim() && position.character === 0) {
       this.logDebug(settings, `skip: empty line at column 0 ${requestDetails(document, position, settings)}`)
       return
     }
 
-    const key = `${document.uri.toString()}:${position.line}:${position.character}:${line}`
-    const cached = this.cache.get(key)
-    if (cached) {
-      this.logDebug(settings, `cache hit ${requestDetails(document, position, settings)} chars=${cached.length}`)
-      return [new vscode.InlineCompletionItem(cached)]
-    }
-
     const started = Date.now()
-    let phase = "debounce"
     const details = requestDetails(document, position, settings)
     this.logInfo(settings, `triggered ${details}`)
-    await delay(settings.completion.debounceMs)
-    if (token.isCancellationRequested) {
-      this.logDebug(settings, `cancelled during debounce ${details} elapsedMs=${elapsedMs(started)}`)
-      return
+    const indent = inferCompletionIndent({
+      lines: documentLines(document),
+      line: position.line,
+      linePrefix: line,
+      fallbackIndentUnit: fallbackIndentUnitForDocument(document),
+    })
+    const editInput = {
+      languageId: document.languageId,
+      linePrefix: line,
+      lineSuffix,
+      position: { line: position.line, character: position.character },
+      indent,
+      currentWord: currentWord?.text,
+      currentWordRange: currentWord?.range,
+    }
+    const localFallback = buildCompletionEditResult({ text: "", ...editInput }).edit
+    const start = this.requests.request({
+      key: completionRequestKey(document, position, lineText),
+      details,
+      debounceMs: settings.completion.debounceMs,
+      localFallback,
+      runRemote: (signal) =>
+        this.remoteCompletionOutcome({
+          client,
+          document,
+          position,
+          settings,
+          details,
+          started,
+          signal,
+          editInput,
+        }),
+      onRemoteReady: () => this.triggerInlineSuggestRefresh(document, position, settings, details),
+    })
+
+    if (start.immediate?.edit) {
+      this.logReturned(settings, start.immediate.source, start.immediate.edit, details, started)
+      return [this.inlineItem(start.immediate.edit, document)]
     }
 
-    this.abort?.abort()
-    const abort = new AbortController()
-    this.abort = abort
-    const cancellationListener = token.onCancellationRequested(() => abort.abort())
+    if (!start.pending) return
 
-    try {
-      phase = "prompt"
-      const prompt = await buildCompletionPrompt({ document, position, settings })
-      phase = "request"
-      this.logInfo(settings, `sent ${details}`)
-      const response = await this.sendCompletion(client, prompt, settings, abort.signal)
-      phase = "response"
-      const insertText = cleanupCompletion(messageText(response))
-      if (!insertText) {
-        this.logInfo(settings, `empty ${details} elapsedMs=${elapsedMs(started)}`)
-        return
-      }
-      this.cache.set(key, insertText)
-      if (this.cache.size > 100) {
-        const first = this.cache.keys().next().value
-        if (first) this.cache.delete(first)
-      }
-      this.logInfo(settings, `done ${details} elapsedMs=${elapsedMs(started)} chars=${insertText.length}`)
-      return [new vscode.InlineCompletionItem(insertText)]
-    } catch (error) {
-      if (abort.signal.aborted || token.isCancellationRequested) {
-        this.logInfo(settings, `cancelled phase=${phase} ${details} elapsedMs=${elapsedMs(started)}`)
-      } else {
-        this.logInfo(settings, `Completion failed: ${formatError(error)} ${details} elapsedMs=${elapsedMs(started)}`)
-      }
+    const outcome = await waitForOutcome(start.pending, token)
+    if (!outcome) {
+      this.logInfo(settings, `cancelled reason=vscode-token ${details} elapsedMs=${elapsedMs(started)}`)
       return
-    } finally {
-      cancellationListener.dispose()
+    }
+    if (!outcome.edit) return
+
+    this.logReturned(settings, outcome.source, outcome.edit, details, started)
+    return [this.inlineItem(outcome.edit, document)]
+  }
+
+  private async remoteCompletionOutcome(input: {
+    client: RemoteOpenCodeClient
+    document: vscode.TextDocument
+    position: vscode.Position
+    settings: RemoteSettings
+    details: string
+    started: number
+    signal: AbortSignal
+    editInput: Omit<CompletionEditInput, "text">
+  }): Promise<CompletionRequestOutcome> {
+    try {
+      const prompt = await buildCompletionPrompt({
+        document: input.document,
+        position: input.position,
+        settings: input.settings,
+      })
+      this.logInfo(input.settings, `sent ${input.details}`)
+      const response = await this.sendCompletion(input.client, prompt, input.settings, input.signal)
+      this.logInfo(input.settings, `received ${input.details} elapsedMs=${elapsedMs(input.started)}`)
+
+      const visibleText = completionInsertText(response)
+      if (!visibleText) {
+        this.logInfo(
+          input.settings,
+          `empty reason=filtered-or-no-visible-text ${input.details} elapsedMs=${elapsedMs(input.started)}`,
+        )
+        return { reason: "filtered-or-no-visible-text", source: "remote" }
+      }
+
+      const result = buildCompletionEditResult({
+        text: visibleText,
+        ...input.editInput,
+      })
+      const edit = result.edit
+      if (!edit) {
+        this.logInfo(
+          input.settings,
+          `edit-rejected reason=${result.reason} ${input.details} elapsedMs=${elapsedMs(input.started)}`,
+        )
+        return { reason: result.reason, source: "remote" }
+      }
+
+      this.logInfo(input.settings, `edit-ready ${editDetails(edit)} ${input.details} elapsedMs=${elapsedMs(input.started)} chars=${edit.insertText.length}`)
+      this.logDebug(input.settings, `edit ${editDetails(edit)} visibleChars=${visibleText.length} ${input.details}`)
+      return { edit, source: "remote" }
+    } catch (error) {
+      if (input.signal.aborted) {
+        return { reason: "cancelled", source: "remote" }
+      }
+      this.logInfo(
+        input.settings,
+        `Completion failed: ${formatError(error)} ${input.details} elapsedMs=${elapsedMs(input.started)}`,
+      )
+      return { reason: "remote-error", source: "remote" }
     }
   }
 
   private async getSession(client: RemoteOpenCodeClient, signal: AbortSignal) {
     if (this.sessionID) return this.sessionID
-    const session = await client.createSession("VS Code inline completion", signal)
+    const session = await client.createSession(INLINE_COMPLETION_SESSION_TITLE, signal)
     this.sessionID = session.id
     return session.id
   }
@@ -145,17 +217,76 @@ export class RemoteCompletionProvider implements vscode.InlineCompletionItemProv
     if (settings.completion.logLevel !== "debug") return
     this.deps.output.appendLine(`[completion] ${message}`)
   }
+
+  private logReturned(
+    settings: RemoteSettings,
+    source: "cache" | "local-fallback" | "remote",
+    edit: CompletionEdit,
+    details: string,
+    started: number,
+  ) {
+    this.logDebug(settings, `edit ${editDetails(edit)} ${details}`)
+    this.logInfo(settings, `returned source=${source} ${editDetails(edit)} ${details} elapsedMs=${elapsedMs(started)} chars=${edit.insertText.length}`)
+  }
+
+  private triggerInlineSuggestRefresh(
+    document: vscode.TextDocument,
+    position: vscode.Position,
+    settings: RemoteSettings,
+    details: string,
+  ) {
+    const active = vscode.window.activeTextEditor
+    if (!active || active.document.uri.toString() !== document.uri.toString()) return
+    if (!active.selection.active.isEqual(position)) return
+
+    void vscode.commands.executeCommand("editor.action.inlineSuggest.trigger").then(
+      () => this.logDebug(settings, `refresh-inline-suggest ${details}`),
+      (error: unknown) => this.logDebug(settings, `refresh-inline-suggest failed=${formatError(error)} ${details}`),
+    )
+  }
+
+  private inlineItem(edit: CompletionEdit, document: vscode.TextDocument) {
+    const range = edit.replaceRange
+      ? new vscode.Range(
+          edit.replaceRange.startLine,
+          edit.replaceRange.startCharacter,
+          edit.replaceRange.endLine,
+          edit.replaceRange.endCharacter,
+        )
+      : undefined
+    const command = edit.formatRange ? completionFormatCommand(document.uri, edit.formatRange) : undefined
+    const item = new vscode.InlineCompletionItem(edit.insertText, range, command)
+    if (edit.filterText) item.filterText = edit.filterText
+    return item
+  }
 }
 
-function cleanupCompletion(input: string) {
-  let text = input.trim()
-  text = text.replace(/^```[a-zA-Z0-9_-]*\s*/, "").replace(/\s*```$/, "")
-  text = text.replace(/^Here is.*?:\s*/i, "")
-  return text
+function completionRequestKey(document: vscode.TextDocument, position: vscode.Position, lineText: string) {
+  return [document.uri.toString(), document.languageId, position.line, position.character, lineText].join("\u0000")
 }
 
-function delay(ms: number) {
-  return new Promise((resolve) => setTimeout(resolve, ms))
+function waitForOutcome(
+  pending: Promise<CompletionRequestOutcome>,
+  token: vscode.CancellationToken,
+): Promise<CompletionRequestOutcome | undefined> {
+  if (token.isCancellationRequested) return Promise.resolve(undefined)
+
+  return new Promise((resolve) => {
+    const listener = token.onCancellationRequested(() => {
+      listener.dispose()
+      resolve(undefined)
+    })
+    pending.then(
+      (outcome) => {
+        listener.dispose()
+        resolve(outcome)
+      },
+      () => {
+        listener.dispose()
+        resolve({ reason: "provider-wait-error", source: "remote" })
+      },
+    )
+  })
 }
 
 function requestDetails(document: vscode.TextDocument, position: vscode.Position, settings: RemoteSettings) {
@@ -179,4 +310,64 @@ function formatError(error: unknown) {
 
 function quoteLogValue(value: string) {
   return value.replace(/\\/g, "\\\\").replace(/"/g, '\\"')
+}
+
+function fallbackIndentUnitForDocument(document: vscode.TextDocument) {
+  const editor = editorForDocument(document)
+  const config = vscode.workspace.getConfiguration("editor", document.uri)
+  const insertSpaces = editor?.options.insertSpaces ?? config.get<boolean | string>("insertSpaces", true)
+  if (insertSpaces === false || insertSpaces === "false") return "\t"
+
+  const tabSize = editor?.options.tabSize ?? config.get<number | string>("tabSize", 4)
+  const size = typeof tabSize === "number" ? tabSize : Number(tabSize)
+  if (!Number.isFinite(size) || size <= 0) return "    "
+  return " ".repeat(Math.floor(size))
+}
+
+function editorForDocument(document: vscode.TextDocument) {
+  const active = vscode.window.activeTextEditor
+  if (active?.document.uri.toString() === document.uri.toString()) return active
+  return vscode.window.visibleTextEditors.find((editor) => editor.document.uri.toString() === document.uri.toString())
+}
+
+function documentLines(document: vscode.TextDocument) {
+  const lines: string[] = []
+  for (let line = 0; line < document.lineCount; line++) {
+    lines.push(document.lineAt(line).text)
+  }
+  return lines
+}
+
+function currentWordBeforeCursor(linePrefix: string, line: number): { text: string; range: CompletionRange } | undefined {
+  const match = /[A-Za-z_][A-Za-z0-9_]*$/.exec(linePrefix)
+  if (!match) return
+  const text = match[0]
+  const startCharacter = linePrefix.length - text.length
+  return {
+    text,
+    range: {
+      startLine: line,
+      startCharacter,
+      endLine: line,
+      endCharacter: linePrefix.length,
+    },
+  }
+}
+
+function editDetails(edit: CompletionEdit) {
+  return [
+    `range=${edit.replaceRange ? rangeLogValue(edit.replaceRange) : "insert"}`,
+    `filterText="${quoteLogValue(truncateLine(edit.filterText ?? ""))}"`,
+    `firstLine="${quoteLogValue(truncateLine(edit.insertText.split(/\r?\n/)[0] ?? ""))}"`,
+    ...(edit.normalized ? [`normalized=${edit.normalized}`] : []),
+  ].join(" ")
+}
+
+function rangeLogValue(range: CompletionRange) {
+  return `${range.startLine + 1}:${range.startCharacter + 1}-${range.endLine + 1}:${range.endCharacter + 1}`
+}
+
+function truncateLine(input: string) {
+  if (input.length <= 80) return input
+  return `${input.slice(0, 77)}...`
 }

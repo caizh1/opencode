@@ -23,6 +23,29 @@ describe("chat history flow", () => {
     expect(chatViewSource).toContain("private async refreshSessionList")
     expect(chatViewSource).toContain("await this.refreshSessionList(client)")
     expect(chatViewSource).toContain("client.listSessions()")
+    expect(chatViewSource).toContain("this.isVisibleChatSession(session)")
+    expect(chatViewSource).toContain("isPluginChatSession(session)")
+  })
+
+  test("hides inline completion sessions from chat history", () => {
+    expect(chatViewSource).toContain("isInlineCompletionSession")
+    expect(chatViewSource).toContain("hiddenCompletionSessions")
+    expect(chatViewSource).toContain("if (isInlineCompletionSession(session)) return false")
+  })
+
+  test("hides persisted inline completion prompts when old sessions are selected", () => {
+    expect(chatViewSource).toContain("messages.some(isInlineCompletionMessage)")
+    expect(chatViewSource).toContain("private async hideCompletionSession")
+    expect(chatViewSource).toContain("this.sessions = this.sessions.filter((session) => session.id !== sessionID)")
+    expect(chatViewSource).toContain("this.reconcileSessionSelection()")
+  })
+
+  test("hides external OpenCode sessions from plugin chat history", () => {
+    expect(chatViewSource).toContain("CHAT_SESSION_TITLE")
+    expect(chatViewSource).toContain("hiddenExternalSessions")
+    expect(chatViewSource).toContain("messages.some(isExternalChatMessage)")
+    expect(chatViewSource).toContain("private async hideExternalSession")
+    expect(chatViewSource).toContain("Hidden external OpenCode session")
   })
 
   test("recovers when the remote server has lost the selected session", () => {

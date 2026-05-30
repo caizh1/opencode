@@ -1,5 +1,7 @@
 import * as vscode from "vscode"
 import { createChatViewHtml } from "./chat-html"
+import { CHAT_SESSION_TITLE, isPluginChatMessage, isPluginChatSession } from "./chat-session"
+import { isInlineCompletionMessage, isInlineCompletionSession } from "./completion-session"
 import {
   addPickedFilesToContext,
   buildChatPrompt,
@@ -116,6 +118,8 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
   private modelError = ""
   private lastContextSummary: ContextSummaryItem[] = []
   private readonly flaggedSessions = new Set<string>()
+  private readonly hiddenCompletionSessions = new Set<string>()
+  private readonly hiddenExternalSessions = new Set<string>()
   private mentionIndex?: MentionIndexState
   private mentionIndexBuild?: Promise<MentionIndexState>
 
@@ -180,7 +184,7 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
     this.loadingMessages = true
     this.postState()
     try {
-      const session = await client.createSession("VS Code chat")
+      const session = await client.createSession(CHAT_SESSION_TITLE)
       this.sessionID = session.id
       this.messages = []
       await this.refreshSessionList(client)
@@ -450,7 +454,7 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
 
   private async getOrCreateSession(client: RemoteOpenCodeClient) {
     if (this.sessionID) return this.sessionID
-    const session = await client.createSession("VS Code chat")
+    const session = await client.createSession(CHAT_SESSION_TITLE)
     this.sessionID = session.id
     await this.refreshSessionList(client)
     return session.id
@@ -473,7 +477,9 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
 
   private async refreshSessionList(client: RemoteOpenCodeClient) {
     const sessions = await client.listSessions()
-    this.sessions = sessions.map((session) => renderSession(session, this.flaggedSessions.has(session.id)))
+    this.sessions = sessions
+      .filter((session) => this.isVisibleChatSession(session))
+      .map((session) => renderSession(session, this.flaggedSessions.has(session.id)))
   }
 
   private reconcileSessionSelection() {
@@ -516,6 +522,17 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
 
   private async loadSessionMessages(client: RemoteOpenCodeClient, sessionID: string) {
     const messages = await client.getMessages(sessionID)
+    if (messages.some(isInlineCompletionMessage)) {
+      await this.hideCompletionSession(client, sessionID)
+      if (this.sessionID) await this.loadSessionMessages(client, this.sessionID)
+      return
+    }
+    if (messages.some(isExternalChatMessage)) {
+      await this.hideExternalSession(client, sessionID)
+      if (this.sessionID) await this.loadSessionMessages(client, this.sessionID)
+      return
+    }
+
     this.messages = messages.map(renderMessage).filter((message) => message.text || message.parts.length > 0)
     const serverToolWarnings = this.messages.flatMap((message) =>
       message.parts.filter((part) => part.type === "serverToolWarning").map((part) => part.title || "tool"),
@@ -527,6 +544,37 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
       )
       this.deps.output.appendLine(`[guard] remote server tools used in ${sessionID}: ${serverToolWarnings.join(", ")}`)
     }
+  }
+
+  private async hideCompletionSession(client: RemoteOpenCodeClient, sessionID: string) {
+    this.hiddenCompletionSessions.add(sessionID)
+    this.sessions = this.sessions.filter((session) => session.id !== sessionID)
+    if (this.sessionID === sessionID) {
+      this.sessionID = undefined
+      this.messages = []
+    }
+    this.deps.output.appendLine(`[history] Hidden inline completion session ${sessionID}.`)
+    await this.refreshSessionList(client)
+    this.reconcileSessionSelection()
+  }
+
+  private async hideExternalSession(client: RemoteOpenCodeClient, sessionID: string) {
+    this.hiddenExternalSessions.add(sessionID)
+    this.sessions = this.sessions.filter((session) => session.id !== sessionID)
+    if (this.sessionID === sessionID) {
+      this.sessionID = undefined
+      this.messages = []
+    }
+    this.deps.output.appendLine(`[history] Hidden external OpenCode session ${sessionID}.`)
+    await this.refreshSessionList(client)
+    this.reconcileSessionSelection()
+  }
+
+  private isVisibleChatSession(session: OpenCodeSession) {
+    if (this.hiddenCompletionSessions.has(session.id)) return false
+    if (this.hiddenExternalSessions.has(session.id)) return false
+    if (isInlineCompletionSession(session)) return false
+    return isPluginChatSession(session)
   }
 
   private async refreshModelList(client: RemoteOpenCodeClient) {
@@ -733,6 +781,10 @@ function renderMessage(message: OpenCodeMessage): RenderedMessage {
     parts,
     serverToolsUsed: serverToolWarnings.length > 0,
   }
+}
+
+function isExternalChatMessage(message: OpenCodeMessage) {
+  return message.info.role === "user" && !isPluginChatMessage(message)
 }
 
 function renderPart(part: OpenCodePart): RenderedPart {

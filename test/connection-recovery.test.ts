@@ -5,6 +5,7 @@ import { join } from "node:path"
 describe("connection and stale-session recovery wiring", () => {
   const extensionSource = readFileSync(join(import.meta.dir, "..", "src", "extension.ts"), "utf8")
   const completionSource = readFileSync(join(import.meta.dir, "..", "src", "completion.ts"), "utf8")
+  const coordinatorSource = readFileSync(join(import.meta.dir, "..", "src", "completion-request-coordinator.ts"), "utf8")
 
   test("separates connection probes from applying an active client", () => {
     expect(extensionSource).toContain("async function probeClient")
@@ -32,8 +33,19 @@ describe("connection and stale-session recovery wiring", () => {
   })
 
   test("completion logs request lifecycle and debug skip reasons", () => {
-    for (const marker of ["triggered", "sent", "empty", "done", "cancelled", "Completion failed"]) {
-      expect(completionSource).toContain(marker)
+    for (const marker of [
+      "triggered",
+      "scheduled",
+      "reuse-pending",
+      "sent",
+      "received",
+      "empty",
+      "edit-rejected",
+      "returned",
+      "cancelled",
+      "Completion failed",
+    ]) {
+      expect(`${completionSource}\n${coordinatorSource}`).toContain(marker)
     }
 
     for (const marker of [
@@ -41,8 +53,9 @@ describe("connection and stale-session recovery wiring", () => {
       "skip: non-file document",
       "skip: no active remote client",
       "skip: empty line at column 0",
-      "cancelled during debounce",
-      "cache hit",
+      "reason=vscode-token",
+      "returned source=${source}",
+      "triggerInlineSuggestRefresh",
     ]) {
       expect(completionSource).toContain(marker)
     }

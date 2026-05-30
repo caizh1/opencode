@@ -1,6 +1,7 @@
 import * as vscode from "vscode"
 import { RemoteChatViewProvider } from "./chat-view"
 import { RemoteCompletionProvider } from "./completion"
+import { registerCompletionFormatCommand } from "./completion-format-command"
 import { addPickedFilesToContext, LocalContextStore } from "./context"
 import { EditorContextTracker } from "./editor-context"
 import { registerLocalTerminalCommands } from "./local-terminal"
@@ -162,6 +163,8 @@ export async function activate(context: vscode.ExtensionContext) {
   } catch (error) {
     reportActivationError(output, "Failed to register local terminal commands", error)
   }
+
+  registerCompletionFormatCommand(context, output)
 
   updateStatus(status, "disconnected")
   status.show()

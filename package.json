@@ -2,7 +2,7 @@
   "name": "opencode-remote",
   "displayName": "OpenCode Remote",
   "description": "Remote opencode serve client for VS Code",
-  "version": "0.0.21",
+  "version": "0.0.25",
   "publisher": "local",
   "repository": {
     "type": "git",
