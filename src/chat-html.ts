@@ -445,6 +445,66 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       overflow-wrap: anywhere;
     }
     .guard:hover .guardDetail, .guard:focus .guardDetail, .guard:focus-within .guardDetail { display: block; }
+    .codeGraph {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 7px;
+      width: 100%;
+      min-width: 0;
+      border: 1px solid var(--vscode-panel-border);
+      border-radius: 6px;
+      padding: 5px 6px;
+      color: var(--vscode-descriptionForeground);
+      background: var(--vscode-editor-background);
+      font-size: 11px;
+      line-height: 1.25;
+    }
+    .codeGraph.ready { color: var(--vscode-testing-iconPassed); border-color: var(--vscode-testing-iconPassed); }
+    .codeGraph.indexing { color: var(--vscode-progressBar-background); border-color: var(--vscode-progressBar-background); }
+    .codeGraph.stale { color: var(--vscode-editorWarning-foreground); border-color: var(--vscode-inputValidation-warningBorder, var(--vscode-editorWarning-foreground)); }
+    .codeGraph.error { color: var(--vscode-errorForeground); border-color: var(--vscode-errorForeground); }
+    .codeGraphMain {
+      display: grid;
+      gap: 1px;
+      min-width: 0;
+    }
+    .codeGraphLabel {
+      min-width: 0;
+      color: var(--vscode-foreground);
+      font-weight: 650;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .codeGraph.ready .codeGraphLabel { color: var(--vscode-testing-iconPassed); }
+    .codeGraph.indexing .codeGraphLabel { color: var(--vscode-progressBar-background); }
+    .codeGraph.stale .codeGraphLabel { color: var(--vscode-editorWarning-foreground); }
+    .codeGraph.error .codeGraphLabel { color: var(--vscode-errorForeground); }
+    .codeGraphMeta {
+      min-width: 0;
+      color: var(--vscode-descriptionForeground);
+      font-size: 10px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .codeGraphActions {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      flex: 0 0 auto;
+    }
+    .codeGraphButton {
+      min-height: 22px;
+      border-radius: 5px;
+      padding: 2px 7px;
+      color: var(--vscode-button-secondaryForeground);
+      background: var(--vscode-button-secondaryBackground);
+      font-size: 10px;
+      line-height: 1.2;
+    }
+    .codeGraphButton:hover { background: var(--vscode-button-secondaryHoverBackground, var(--vscode-toolbar-hoverBackground)); }
     .modelSelectHidden { display: none; }
     .manualModel input {
       min-width: 0;
@@ -745,6 +805,7 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
         <footer class="composerWrap">
           <div class="composerPanel">
             <div id="guard" class="guard"></div>
+            <div id="codeGraph" class="codeGraph"></div>
             <div id="chips" class="chips"></div>
             <select id="modelSelect" class="modelSelectHidden" title="Model"></select>
             <div class="composer">
@@ -863,6 +924,7 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
         saveManualModel();
       }
     });
+    el("codeGraph").addEventListener("click", onCodeGraphAction);
     el("attach").addEventListener("click", () => vscode.postMessage({ type: "addFile" }));
     el("send").addEventListener("click", send);
     el("input").addEventListener("input", onComposerInput);
@@ -1075,6 +1137,7 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       renderSessions();
       renderMessages();
       renderGuard();
+      renderCodeGraph();
       renderModelSelector();
       renderMentionChips();
       renderConnectionButtons();
@@ -1442,6 +1505,138 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       detail.className = "guardDetail";
       detail.textContent = detailText;
       guard.append(summary, detail);
+    }
+
+    function renderCodeGraph() {
+      const node = el("codeGraph");
+      const graph = state.codeGraph || { state: "disabled", detail: "Local code graph is disabled.", indexedFiles: 0, indexedFunctions: 0, indexedMacros: 0, truncated: false };
+      const stateName = graph.state || "disabled";
+      const view = codeGraphView(graph, stateName);
+      node.className = "codeGraph " + stateName;
+      node.title = codeGraphTitle(graph, view.label);
+      node.innerHTML = "";
+
+      const main = document.createElement("div");
+      main.className = "codeGraphMain";
+      const label = document.createElement("div");
+      label.className = "codeGraphLabel";
+      label.textContent = view.label;
+      const meta = document.createElement("div");
+      meta.className = "codeGraphMeta";
+      meta.textContent = view.meta;
+      main.append(label, meta);
+
+      const actions = document.createElement("div");
+      actions.className = "codeGraphActions";
+      for (const action of view.actions) {
+        const button = document.createElement("button");
+        button.className = "codeGraphButton";
+        button.type = "button";
+        button.textContent = action.label;
+        button.title = action.title || action.label;
+        button.disabled = Boolean(action.disabled);
+        if (action.message) button.setAttribute("data-code-graph-action", action.message);
+        actions.appendChild(button);
+      }
+
+      node.append(main, actions);
+    }
+
+    function codeGraphView(graph, stateName) {
+      const files = formatCount(graph.indexedFiles || 0);
+      const functions = formatCount(graph.indexedFunctions || 0);
+      if (stateName === "ready") {
+        return {
+          label: "Indexed: " + files + " files, " + functions + " functions",
+          meta: codeGraphMeta(graph),
+          actions: [
+            { label: "Rebuild", message: "rebuildCodeGraph", title: "Rebuild local code graph" },
+            { label: "Status", message: "showCodeGraphStatus", title: "Show local code graph status" },
+          ],
+        };
+      }
+      if (stateName === "indexing") {
+        const progress = graph.progress && graph.progress.total
+          ? " " + formatCount(graph.progress.completed || 0) + "/" + formatCount(graph.progress.total) + " files"
+          : "";
+        return {
+          label: "Indexing..." + progress,
+          meta: graph.detail || "Indexing local C/C++ code graph.",
+          actions: [{ label: "Indexing", disabled: true, title: "Indexing is already running" }],
+        };
+      }
+      if (stateName === "stale") {
+        return {
+          label: "Code graph stale",
+          meta: graph.detail || "Workspace changed; refresh before relying on whole-repo context.",
+          actions: [{ label: "Refresh", message: "indexCodeGraph", title: "Refresh local code graph" }],
+        };
+      }
+      if (stateName === "error") {
+        return {
+          label: "Code graph error",
+          meta: graph.detail || "Indexing failed.",
+          actions: [
+            { label: "Retry", message: "indexCodeGraph", title: "Retry local code graph indexing" },
+            { label: "Status", message: "showCodeGraphStatus", title: "Show local code graph status" },
+          ],
+        };
+      }
+      return {
+        label: "Code graph disabled",
+        meta: graph.detail || "Index the workspace to enable whole-repo code understanding.",
+        actions: [{ label: "Index", message: "indexCodeGraph", title: "Index local code graph" }],
+      };
+    }
+
+    function onCodeGraphAction(event) {
+      const target = event.target;
+      if (!target || !target.closest) return;
+      const button = target.closest("[data-code-graph-action]");
+      if (!button || button.disabled) return;
+      vscode.postMessage({ type: button.dataset.codeGraphAction });
+    }
+
+    function codeGraphMeta(graph) {
+      const parts = [];
+      if (graph.largeRepoMode) parts.push("Large repo mode");
+      if (graph.updatedAt) parts.push("Updated " + formatDateTime(graph.updatedAt));
+      if (graph.shards) parts.push(formatCount(graph.shards) + " shards");
+      if (graph.truncated) parts.push("Index truncated by file limit");
+      if (parts.length > 0) return parts.join(" · ");
+      return graph.detail || "Ready for whole-repo code questions.";
+    }
+
+    function codeGraphTitle(graph, fallback) {
+      const parts = [graph.detail || fallback];
+      parts.push(formatCount(graph.indexedFiles || 0) + " file(s)");
+      parts.push(formatCount(graph.indexedFunctions || 0) + " function(s)");
+      if (graph.indexedMacros) parts.push(formatCount(graph.indexedMacros) + " macro(s)");
+      if (graph.shards) parts.push(formatCount(graph.shards) + " shard(s)");
+      if (graph.indexBytes) parts.push(formatBytes(graph.indexBytes) + " indexed source");
+      if (graph.skippedFiles) parts.push(formatCount(graph.skippedFiles) + " skipped file(s)");
+      if (graph.updatedAt) parts.push("Updated " + formatDateTime(graph.updatedAt));
+      if (graph.truncated) parts.push("Index truncated by file limit.");
+      return parts.filter(Boolean).join(" ");
+    }
+
+    function formatCount(value) {
+      return Number(value || 0).toLocaleString();
+    }
+
+    function formatBytes(value) {
+      const bytes = Number(value || 0);
+      if (bytes < 1024) return bytes + " B";
+      if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + " KB";
+      if (bytes < 1024 * 1024 * 1024) return (bytes / 1024 / 1024).toFixed(1) + " MB";
+      return (bytes / 1024 / 1024 / 1024).toFixed(1) + " GB";
+    }
+
+    function formatDateTime(value) {
+      const millis = value > 9999999999 ? value : value * 1000;
+      const date = new Date(millis);
+      if (Number.isNaN(date.getTime())) return "";
+      return date.toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
     }
 
     function renderModelSelector() {

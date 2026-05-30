@@ -1,5 +1,6 @@
 import * as vscode from "vscode"
 import { RemoteChatViewProvider } from "./chat-view"
+import { LocalCodeGraphService } from "./codegraph-service"
 import { RemoteCompletionProvider } from "./completion"
 import { registerCompletionFormatCommand } from "./completion-format-command"
 import { addPickedFilesToContext, LocalContextStore } from "./context"
@@ -97,9 +98,14 @@ export async function activate(context: vscode.ExtensionContext) {
     await testClientOnly(testClientInstance)
   }
 
-  const chatProvider = new RemoteChatViewProvider({
+  let chatProvider: RemoteChatViewProvider
+  const codeGraph = new LocalCodeGraphService(context, output, getSettings, () => chatProvider?.refreshCodeGraphStatus())
+  context.subscriptions.push(codeGraph)
+
+  chatProvider = new RemoteChatViewProvider({
     output,
     contextStore,
+    codeGraph,
     getClient,
     getSettings,
     getEditorContext: () => editorContextTracker.snapshot(),
@@ -156,6 +162,17 @@ export async function activate(context: vscode.ExtensionContext) {
       contextStore.clear()
       vscode.window.setStatusBarMessage("Cleared OpenCode context", 2000)
     }),
+    vscode.commands.registerCommand("opencode.remote.codeGraph.index", async () => {
+      await codeGraph.indexWorkspace(false)
+      await chatProvider.reveal()
+    }),
+    vscode.commands.registerCommand("opencode.remote.codeGraph.rebuild", async () => {
+      await codeGraph.indexWorkspace(true)
+      await chatProvider.reveal()
+    }),
+    vscode.commands.registerCommand("opencode.remote.codeGraph.status", async () => {
+      await codeGraph.showStatus()
+    }),
   )
 
   try {
@@ -188,6 +205,7 @@ export async function activate(context: vscode.ExtensionContext) {
 
   client = undefined
   setConnectionState("disconnected", "Ready. Enter a server URL and click Connect.")
+  void codeGraph.maybePromptAndIndex()
 }
 
 export function deactivate() {

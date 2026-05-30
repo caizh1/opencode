@@ -20,6 +20,13 @@ export type RemoteSettings = {
     debounceMs: number
     logLevel: CompletionLogLevel
   }
+  codeGraph: {
+    enabled: boolean
+    promptOnWorkspaceOpen: boolean
+    maxFiles: number
+    maxContextBytes: number
+    excludeGlobs: string[]
+  }
 }
 
 export type HealthResponse = {
@@ -110,4 +117,26 @@ export type OpenCodeModelInfo = {
   name: string
   providerName: string
   isDefault: boolean
+}
+
+export type CodeGraphState = "disabled" | "indexing" | "ready" | "stale" | "error"
+
+export type CodeGraphStatus = {
+  state: CodeGraphState
+  detail: string
+  enabled: boolean
+  indexedFiles: number
+  indexedFunctions: number
+  indexedMacros: number
+  truncated: boolean
+  updatedAt?: number
+  storageMode?: "legacy-json" | "sharded"
+  shards?: number
+  indexBytes?: number
+  skippedFiles?: number
+  largeRepoMode?: boolean
+  progress?: {
+    completed: number
+    total: number
+  }
 }

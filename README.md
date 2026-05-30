@@ -15,6 +15,7 @@ OpenCode Remote 是一个面向 VS Code 的远端 `opencode serve` 客户端扩�
 - 在 Activity Bar 中提供 OpenCode 聊天视图。
 - 支持远端 session、模型、agent 的选择和管理。
 - 自动收集本地 VS Code 上下文：当前文件、选区、诊断、可选 git diff、`@` 引用文件和手动附加文件。
+- 可选本地 C/C++ code graph：插件内置轻量索引，不需要用户手动安装 `cgc`、Python 或数据库。
 - 默认启用 local-only guard，提醒远端模型只使用 VS Code 提供的本地上下文。
 - 可选 strict local-only agent，把远端请求绑定到一个禁用文件系统工具的 OpenCode agent。
 - 支持远端 inline completion，包含 reasoning 清洗、当前词替换、语言感知缩进、接受后局部格式化和可诊断日志。
@@ -30,8 +31,22 @@ OpenCode Remote 不让远端 OpenCode 直接读取本地文件。扩展在 VS Co
 - `User question:` 用户输入的问题。
 - `Local Context Contract:` local-only 提示，要求远端只使用随请求提供的本地上下文。
 - `Local workspace context:` 当前文件、选区、`@` 文件、附加文件、诊断和可选 git diff。
+- `Local code graph context:` 可选本地 C/C++ 图检索结果，例如命中符号、调用者、被调用者、include 关系和少量证据片段。
 
 如果问题明显是在询问本地文件，但扩展没有捕获到可用文件内容，local-only guard 会阻止发送或给出警告，避免远端服务去读自己的服务器文件系统。
+
+## 本地 Code Graph
+
+本地 code graph 面向 C/C++ 固件仓库。第一次打开 workspace 时，扩展会询问是否启用索引；启用后会在 VS Code extension host 中扫描 `.c`、`.h`、`.cc`、`.cpp`、`.hpp` 等文件，提取 include、宏、函数定义和函数调用关系。索引保存在 VS Code 的扩展 storage 中，不写入代码仓库。
+
+聊天时不会把整仓符号表或整仓源码塞进 prompt。扩展会根据问题动态检索：
+
+- 问“谁调用了 X”时，注入 X 的定义、调用者和关键调用点片段。
+- 问“X 到 Y 的调用链”时，注入候选调用链和链路节点片段。
+- 问影响范围时，注入调用者、被调用者、相关 include 和模块线索。
+- 问架构概览时，注入目录/模块聚合摘要和热点符号。
+
+这个能力是轻量静态分析，不做完整宏展开或编译器级类型解析。如果仓库有复杂条件编译，回答会把 code graph 结果作为辅助证据，而不是替代真实编译。
 
 ## 安装与连接
 
@@ -124,10 +139,15 @@ inline completion 默认关闭。开启后，扩展会在编辑器中注册 VS C
 | `opencode.remote.completion.enabled` | `false` | 是否启用远端 inline completion。 |
 | `opencode.remote.completion.debounceMs` | `350` | 请求 inline completion 前的 debounce 时间，单位毫秒。 |
 | `opencode.remote.completion.logLevel` | `info` | 补全日志等级，可选 `off`、`info`、`debug`。 |
+| `opencode.remote.codeGraph.enabled` | `false` | 是否启用本地 C/C++ code graph。 |
+| `opencode.remote.codeGraph.promptOnWorkspaceOpen` | `true` | 打开 workspace 时是否询问启用本地 code graph。 |
+| `opencode.remote.codeGraph.maxFiles` | `50000` | 最多索引的 C/C++ 文件数量。 |
+| `opencode.remote.codeGraph.maxContextBytes` | `24000` | 单次请求最多注入的 code graph 上下文字节数。 |
+| `opencode.remote.codeGraph.excludeGlobs` | `[]` | 本地 code graph 额外排除规则。 |
 
 ### Strict Local-only Agent 示例
 
-默认 local-only guard 是 prompt-level 约束，兼容未配置自定义 agent 的远端 OpenCode。如果需要更硬的服务端边界，可以在远端 OpenCode 配置一个禁用文件系统和 shell 工具的 agent，再启用 `opencode.remote.context.strictLocalOnlyAgent`。
+默认 local-only guard 是 prompt-level 约束，兼容未配置自定义 agent 的远端 OpenCode，并且 does not force a remote agent。 如果需要更硬的服务端边界，可以在远端 OpenCode 配置一个禁用文件系统和 shell 工具的 agent，再启用 `opencode.remote.context.strictLocalOnlyAgent`。
 
 ```json
 {
@@ -151,7 +171,7 @@ inline completion 默认关闭。开启后，扩展会在编辑器中注册 VS C
 }
 ```
 
-不要在远端 agent 配好之前启用 strict 模式，否则 OpenCode 可能拒绝请求。
+不要在远端 agent 配好之前启用 strict 模式，否则 OpenCode 可能拒绝请求。Do not enable strict mode until the remote agent is configured.
 
 ## 命令与快捷键
 
@@ -166,6 +186,9 @@ inline completion 默认关闭。开启后，扩展会在编辑器中注册 VS C
 | `OpenCode Remote: Ask OpenCode About Current File` | 用当前文件作为上下文快速提问。 |
 | `OpenCode Remote: Add File to OpenCode Context` | 把当前文件或选择的文件附加到聊天上下文。 |
 | `OpenCode Remote: Clear OpenCode Context` | 清空已附加的上下文文件。 |
+| `OpenCode Remote: Index Local Code Graph` | 建立或增量刷新本地 C/C++ code graph。 |
+| `OpenCode Remote: Rebuild Local Code Graph` | 强制重建本地 C/C++ code graph。 |
+| `OpenCode Remote: Show Local Code Graph Status` | 查看本地 code graph 索引状态。 |
 | `OpenCode: Open opencode` | 在终端中打开 opencode。 |
 | `OpenCode: Open opencode in new tab` | 在新终端标签中打开 opencode。 |
 | `OpenCode: Add Filepath to Terminal` | 向终端插入当前文件路径。 |

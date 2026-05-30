@@ -1,5 +1,6 @@
 import * as cp from "node:child_process"
 import * as vscode from "vscode"
+import type { CodeGraphContextProvider } from "./codegraph-types"
 import type { TrackedEditorContext } from "./editor-context"
 import type { ChatContextOptions, RemoteSettings } from "./types"
 
@@ -61,6 +62,7 @@ export async function buildChatPrompt(input: {
   contextStore: LocalContextStore
   mentionedFiles?: vscode.Uri[]
   editorContext?: TrackedEditorContext
+  codeGraph?: CodeGraphContextProvider
   onContextSummary?: (items: ContextSummaryItem[]) => void
 }) {
   const chunks: string[] = [
@@ -74,17 +76,28 @@ export async function buildChatPrompt(input: {
     input.editorContext,
   )
   input.onContextSummary?.(context.summary)
+  const relatedPaths = context.summary.filter((item) => !item.skipped).map((item) => item.path)
+  const codeGraph = input.settings.codeGraph.enabled
+    ? await input.codeGraph?.buildContext({
+        question: input.question,
+        relatedPaths,
+        maxBytes: input.settings.codeGraph.maxContextBytes,
+      })
+    : undefined
 
   if (input.settings.context.localOnlyMode) chunks.push(localContextContract())
 
-  if (input.settings.context.localOnlyMode && looksLikeLocalFileQuestion(input.question) && !hasUsableFileContext(context.summary)) {
+  const hasLocalContext = hasUsableFileContext(context.summary) || Boolean(codeGraph?.text)
+
+  if (input.settings.context.localOnlyMode && looksLikeLocalFileQuestion(input.question) && !hasLocalContext) {
     throw new MissingLocalContextError()
   }
 
-  if (looksLikeLocalFilesystemPath(input.question) && !hasUsableFileContext(context.summary)) {
+  if (looksLikeLocalFilesystemPath(input.question) && !hasLocalContext) {
     chunks.push("Local file context warning:\nNo local file content was captured for the path in the question. Ask the user to open or @mention the file instead of reading the remote server filesystem.")
   }
   if (context.text) chunks.push(`Local workspace context:\n${context.text}`)
+  if (codeGraph?.text) chunks.push(`Local code graph context:\n${codeGraph.text}`)
   return chunks.join("\n\n")
 }
 
@@ -252,7 +265,7 @@ function localContextContract() {
   return [
     "Local Context Contract:",
     "The following files are local VS Code context supplied by the extension.",
-    "Use only the supplied <file>, <diagnostics>, and <git-diff> blocks when answering questions about local code.",
+    "Use only the supplied <file>, <diagnostics>, <git-diff>, and <local-code-graph> blocks when answering questions about local code.",
     "Do not read, glob, grep, list, edit, or run shell commands against the remote OpenCode server filesystem to answer local VS Code questions.",
     "If the needed local file content is missing, ask the user to open the file in VS Code or reference it with @file.",
   ].join("\n")

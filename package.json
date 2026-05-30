@@ -2,7 +2,7 @@
   "name": "opencode-remote",
   "displayName": "OpenCode Remote",
   "description": "Remote opencode serve client for VS Code",
-  "version": "0.0.25",
+  "version": "0.0.28",
   "publisher": "local",
   "repository": {
     "type": "git",
@@ -29,7 +29,10 @@
     "onCommand:opencode.remote.askSelection",
     "onCommand:opencode.remote.askCurrentFile",
     "onCommand:opencode.remote.addFileToContext",
-    "onCommand:opencode.remote.clearContext"
+    "onCommand:opencode.remote.clearContext",
+    "onCommand:opencode.remote.codeGraph.index",
+    "onCommand:opencode.remote.codeGraph.rebuild",
+    "onCommand:opencode.remote.codeGraph.status"
   ],
   "main": "./dist/extension.js",
   "contributes": {
@@ -92,6 +95,21 @@
       {
         "command": "opencode.remote.clearContext",
         "title": "Clear OpenCode Context",
+        "category": "OpenCode Remote"
+      },
+      {
+        "command": "opencode.remote.codeGraph.index",
+        "title": "Index Local Code Graph",
+        "category": "OpenCode Remote"
+      },
+      {
+        "command": "opencode.remote.codeGraph.rebuild",
+        "title": "Rebuild Local Code Graph",
+        "category": "OpenCode Remote"
+      },
+      {
+        "command": "opencode.remote.codeGraph.status",
+        "title": "Show Local Code Graph Status",
         "category": "OpenCode Remote"
       }
     ],
@@ -176,6 +194,38 @@
           ],
           "default": "info",
           "description": "Output logging level for remote OpenCode inline completions."
+        },
+        "opencode.remote.codeGraph.enabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enable local C/C++ code graph indexing. The index stays local and only query-relevant context is sent to remote OpenCode."
+        },
+        "opencode.remote.codeGraph.promptOnWorkspaceOpen": {
+          "type": "boolean",
+          "default": true,
+          "description": "Ask before enabling local code graph indexing for a workspace."
+        },
+        "opencode.remote.codeGraph.maxFiles": {
+          "type": "number",
+          "default": 50000,
+          "minimum": 100,
+          "maximum": 250000,
+          "description": "Maximum number of C/C++ files to index in the local code graph."
+        },
+        "opencode.remote.codeGraph.maxContextBytes": {
+          "type": "number",
+          "default": 24000,
+          "minimum": 2000,
+          "maximum": 100000,
+          "description": "Maximum bytes of local code graph context to include in one remote prompt."
+        },
+        "opencode.remote.codeGraph.excludeGlobs": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "description": "Additional VS Code glob patterns to exclude from local code graph indexing."
         }
       }
     },

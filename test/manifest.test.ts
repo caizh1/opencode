@@ -21,6 +21,9 @@ describe("extension manifest", () => {
     const commands = new Set((manifest.contributes?.commands ?? []).map((command: { command: string }) => command.command))
     expect(commands.has("opencode.remote.openChat")).toBe(true)
     expect(commands.has("opencode.remote.connect")).toBe(true)
+    expect(commands.has("opencode.remote.codeGraph.index")).toBe(true)
+    expect(commands.has("opencode.remote.codeGraph.rebuild")).toBe(true)
+    expect(commands.has("opencode.remote.codeGraph.status")).toBe(true)
   })
 
   test("contributes local-only guard settings", () => {
@@ -37,6 +40,15 @@ describe("extension manifest", () => {
       enum: ["off", "info", "debug"],
       default: "info",
     })
+  })
+
+  test("contributes local code graph settings", () => {
+    const properties = manifest.contributes?.configuration?.properties ?? {}
+    expect(properties["opencode.remote.codeGraph.enabled"]?.default).toBe(false)
+    expect(properties["opencode.remote.codeGraph.promptOnWorkspaceOpen"]?.default).toBe(true)
+    expect(properties["opencode.remote.codeGraph.maxFiles"]?.default).toBe(50000)
+    expect(properties["opencode.remote.codeGraph.maxContextBytes"]?.default).toBe(24000)
+    expect(properties["opencode.remote.codeGraph.excludeGlobs"]?.type).toBe("array")
   })
 
   test("contributes a dedicated OpenCode activity bar container", () => {

@@ -30,6 +30,13 @@ export function readRemoteSettings(): RemoteSettings {
       debounceMs: Math.max(0, config.get<number>("completion.debounceMs", 350)),
       logLevel: readCompletionLogLevel(config.get<string>("completion.logLevel", "info")),
     },
+    codeGraph: {
+      enabled: config.get<boolean>("codeGraph.enabled", false),
+      promptOnWorkspaceOpen: config.get<boolean>("codeGraph.promptOnWorkspaceOpen", true),
+      maxFiles: Math.max(100, Math.min(250000, config.get<number>("codeGraph.maxFiles", 50000))),
+      maxContextBytes: Math.max(2000, Math.min(100000, config.get<number>("codeGraph.maxContextBytes", 24000))),
+      excludeGlobs: readStringArray(config.get<unknown>("codeGraph.excludeGlobs", [])),
+    },
   }
 }
 
@@ -103,4 +110,9 @@ export function normalizeServerUrl(input: string) {
 function readCompletionLogLevel(input: string): CompletionLogLevel {
   if (input === "off" || input === "info" || input === "debug") return input
   return "info"
+}
+
+function readStringArray(input: unknown) {
+  if (!Array.isArray(input)) return []
+  return input.filter((item): item is string => typeof item === "string" && item.trim().length > 0)
 }

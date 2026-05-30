@@ -1,6 +1,7 @@
 import * as vscode from "vscode"
 import { createChatViewHtml } from "./chat-html"
 import { CHAT_SESSION_TITLE, isPluginChatMessage, isPluginChatSession } from "./chat-session"
+import type { CodeGraphContextProvider } from "./codegraph-types"
 import { isInlineCompletionMessage, isInlineCompletionSession } from "./completion-session"
 import {
   addPickedFilesToContext,
@@ -45,6 +46,9 @@ type ChatViewMessage =
   | { type: "refreshModels" }
   | { type: "selectModel"; model: string }
   | { type: "searchFilesForMention"; query?: string; requestId?: number }
+  | { type: "indexCodeGraph" }
+  | { type: "rebuildCodeGraph" }
+  | { type: "showCodeGraphStatus" }
   | {
       type: "connectWithSettings" | "testWithSettings"
       serverUrl: string
@@ -93,6 +97,7 @@ type MentionIndexState = {
 type RemoteChatViewProviderDeps = {
   output: vscode.OutputChannel
   contextStore: LocalContextStore
+  codeGraph?: CodeGraphContextProvider
   getClient: () => RemoteOpenCodeClient | undefined
   getSettings: () => RemoteSettings
   getEditorContext: () => TrackedEditorContext | undefined
@@ -177,6 +182,10 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
     }
   }
 
+  refreshCodeGraphStatus() {
+    this.postState()
+  }
+
   async newSession() {
     const client = this.connectedClient("Connect before creating a session.")
     if (!client) return
@@ -237,6 +246,15 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
         case "searchFilesForMention":
           await this.searchFilesForMention(message.query ?? "", message.requestId)
           break
+        case "indexCodeGraph":
+          await this.indexCodeGraph(false)
+          break
+        case "rebuildCodeGraph":
+          await this.indexCodeGraph(true)
+          break
+        case "showCodeGraphStatus":
+          await this.showCodeGraphStatus()
+          break
         case "connectWithSettings":
           await this.connectWithSettings({
             serverUrl: message.serverUrl,
@@ -262,6 +280,24 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
     } catch (error) {
       this.reportError(`OpenCode Remote action failed: ${message.type}`, error)
     }
+  }
+
+  private async indexCodeGraph(force: boolean) {
+    if (!this.deps.codeGraph) {
+      vscode.window.showWarningMessage("Local code graph is not available in this OpenCode Remote view.")
+      return
+    }
+    await this.deps.codeGraph.indexWorkspace(force)
+    this.postState()
+  }
+
+  private async showCodeGraphStatus() {
+    if (!this.deps.codeGraph) {
+      vscode.window.showWarningMessage("Local code graph is not available in this OpenCode Remote view.")
+      return
+    }
+    await this.deps.codeGraph.showStatus()
+    this.postState()
   }
 
   private async connectWithSettings(input: ConnectionSettingsInput) {
@@ -408,6 +444,7 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
         contextStore: this.deps.contextStore,
         mentionedFiles,
         editorContext: this.deps.getEditorContext(),
+        codeGraph: this.deps.codeGraph,
         onContextSummary: (items) => {
           contextSummary = items
           this.lastContextSummary = items
@@ -688,6 +725,7 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
             ? "Strict local-only agent mode is on, but no local-only agent name is configured."
             : "",
         contextFiles: this.deps.contextStore.labels(),
+        codeGraph: this.deps.codeGraph?.status(),
         lastContextSummary: this.lastContextSummary,
         autoContext: this.autoContextState(),
         sessions: this.sessions,
