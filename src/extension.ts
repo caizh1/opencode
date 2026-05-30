@@ -114,6 +114,7 @@ export async function activate(context: vscode.ExtensionContext) {
     setConnectionState,
     openOutput: () => output.show(true),
   })
+  context.subscriptions.push(chatProvider)
 
   context.subscriptions.push(
     vscode.commands.registerCommand("opencode.remote.connect", connect),

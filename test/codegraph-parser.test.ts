@@ -11,6 +11,11 @@ describe("C code graph parser", () => {
 #include "nand.h"
 #include <stdint.h>
 #define NAND_PAGE_SIZE 4096
+typedef unsigned int nand_page_t;
+struct nand_chip {
+  int ready;
+};
+static int nand_debug_level;
 
 static int nand_wait_ready(void)
 {
@@ -30,6 +35,11 @@ int nand_read_page(struct nand_chip *chip, uint32_t page)
 
     expect(parsed.includes.map((item) => item.target)).toEqual(["nand.h", "stdint.h"])
     expect(parsed.macros.map((item) => item.name)).toContain("NAND_PAGE_SIZE")
+    expect(parsed.types.map((item) => item.name)).toContain("nand_page_t")
+    expect(parsed.types.map((item) => item.name)).toContain("nand_chip")
+    expect(parsed.globals.map((item) => item.name)).toContain("nand_debug_level")
+    expect(parsed.tokens.some((item) => item.kind === "comment" && item.term === "fake")).toBe(true)
+    expect(parsed.tokens.some((item) => item.kind === "macro" && item.term === "nand")).toBe(true)
     expect(parsed.functions.map((item) => item.name)).toEqual(["nand_wait_ready", "nand_read_page"])
     expect(parsed.functions[0].isStatic).toBe(true)
     const readPage = parsed.functions.find((item) => item.name === "nand_read_page")

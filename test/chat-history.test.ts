@@ -5,6 +5,7 @@ import { join } from "node:path"
 describe("chat history flow", () => {
   const chatViewSource = readFileSync(join(import.meta.dir, "..", "src", "chat-view.ts"), "utf8")
   const chatHtmlSource = readFileSync(join(import.meta.dir, "..", "src", "chat-html.ts"), "utf8")
+  const chatStreamSource = readFileSync(join(import.meta.dir, "..", "src", "chat-stream.ts"), "utf8")
 
   test("posts sessions and loading state to the webview", () => {
     expect(chatViewSource).toContain("sessions: this.sessions")
@@ -63,11 +64,22 @@ describe("chat history flow", () => {
     expect(chatViewSource).toContain("this.clearMissingSession(this.sessionID)")
   })
 
+  test("streams chat replies through OpenCode events with blocking fallback", () => {
+    expect(chatViewSource).toContain("ensureEventSubscription")
+    expect(chatViewSource).toContain("subscribeEvents")
+    expect(chatViewSource).toContain("sendMessageAsync")
+    expect(chatViewSource).toContain("client.sendMessage({")
+    expect(chatViewSource).toContain("finishStreamingSession")
+    expect(chatStreamSource).toContain('case "message.part.updated"')
+    expect(chatStreamSource).toContain('case "session.status"')
+  })
+
   test("renders markdown, code copy, and thinking state in the webview", () => {
     expect(chatHtmlSource).toContain("function renderMarkdownInto")
     expect(chatHtmlSource).toContain("function codeBlock")
     expect(chatHtmlSource).toContain("async function copyCode")
     expect(chatHtmlSource).toContain("function thinkingNode")
+    expect(chatHtmlSource).toContain("hasAssistantContentAfterLastUser")
   })
 
   test("collapses reasoning content into a details card", () => {

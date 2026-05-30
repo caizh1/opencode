@@ -81,7 +81,9 @@ export async function buildChatPrompt(input: {
     ? await input.codeGraph?.buildContext({
         question: input.question,
         relatedPaths,
-        maxBytes: input.settings.codeGraph.maxContextBytes,
+        maxBytes: input.settings.codeGraph.maxEvidenceBytes,
+        maxDepth: input.settings.codeGraph.maxGraphDepth,
+        maxFanout: input.settings.codeGraph.maxFanout,
       })
     : undefined
 
@@ -97,7 +99,7 @@ export async function buildChatPrompt(input: {
     chunks.push("Local file context warning:\nNo local file content was captured for the path in the question. Ask the user to open or @mention the file instead of reading the remote server filesystem.")
   }
   if (context.text) chunks.push(`Local workspace context:\n${context.text}`)
-  if (codeGraph?.text) chunks.push(`Local code graph context:\n${codeGraph.text}`)
+  if (codeGraph?.text) chunks.push(`Local code graph evidence:\n${codeGraph.text}`)
   return chunks.join("\n\n")
 }
 
@@ -265,7 +267,8 @@ function localContextContract() {
   return [
     "Local Context Contract:",
     "The following files are local VS Code context supplied by the extension.",
-    "Use only the supplied <file>, <diagnostics>, <git-diff>, and <local-code-graph> blocks when answering questions about local code.",
+    "Use only the supplied <file>, <diagnostics>, <git-diff>, and <local-code-graph> evidence blocks when answering questions about local code.",
+    "When local code graph evidence is present, cite paths and line ranges from the evidence; if evidence is insufficient, say what is missing instead of guessing.",
     "Do not read, glob, grep, list, edit, or run shell commands against the remote OpenCode server filesystem to answer local VS Code questions.",
     "If the needed local file content is missing, ask the user to open the file in VS Code or reference it with @file.",
   ].join("\n")

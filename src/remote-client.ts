@@ -128,7 +128,7 @@ export class RemoteOpenCodeClient {
     })
   }
 
-  async subscribeEvents(onEvent: (event: unknown) => void, signal: AbortSignal) {
+  async subscribeEvents(onEvent: (event: unknown) => void, signal: AbortSignal, onOpen?: () => void) {
     const response = await this.safeFetch("/event", {
       method: "GET",
       headers: this.headers(),
@@ -140,6 +140,7 @@ export class RemoteOpenCodeClient {
     }
     if (!response.body) throw new RemoteOpenCodeRequestError(response.status, "SSE response has no body")
 
+    onOpen?.()
     const reader = response.body.getReader()
     const decoder = new TextDecoder()
     let buffer = ""

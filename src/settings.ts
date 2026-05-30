@@ -1,5 +1,5 @@
 import * as vscode from "vscode"
-import type { CompletionLogLevel, RemoteSettings } from "./types"
+import type { CodeGraphAnalysisMode, CompletionLogLevel, RemoteSettings } from "./types"
 
 export const PASSWORD_SECRET_KEY = "opencode.remote.password"
 
@@ -33,8 +33,17 @@ export function readRemoteSettings(): RemoteSettings {
     codeGraph: {
       enabled: config.get<boolean>("codeGraph.enabled", false),
       promptOnWorkspaceOpen: config.get<boolean>("codeGraph.promptOnWorkspaceOpen", true),
+      analysisMode: readCodeGraphAnalysisMode(config.get<string>("codeGraph.analysisMode", "auto")),
       maxFiles: Math.max(100, Math.min(250000, config.get<number>("codeGraph.maxFiles", 50000))),
       maxContextBytes: Math.max(2000, Math.min(100000, config.get<number>("codeGraph.maxContextBytes", 24000))),
+      maxEvidenceBytes: Math.max(4000, Math.min(200000, config.get<number>("codeGraph.maxEvidenceBytes", 60000))),
+      maxGraphDepth: Math.max(1, Math.min(5, config.get<number>("codeGraph.maxGraphDepth", 2))),
+      maxFanout: Math.max(5, Math.min(200, config.get<number>("codeGraph.maxFanout", 40))),
+      maxDeepFiles: Math.max(1, Math.min(200, config.get<number>("codeGraph.maxDeepFiles", 24))),
+      maxStateTransitions: Math.max(10, Math.min(1000, config.get<number>("codeGraph.maxStateTransitions", 120))),
+      compileCommandsPath: config.get<string>("codeGraph.compileCommandsPath", "").trim(),
+      clangdPath: config.get<string>("codeGraph.clangdPath", "").trim(),
+      scipClangPath: config.get<string>("codeGraph.scipClangPath", "").trim(),
       excludeGlobs: readStringArray(config.get<unknown>("codeGraph.excludeGlobs", [])),
     },
   }
@@ -110,6 +119,11 @@ export function normalizeServerUrl(input: string) {
 function readCompletionLogLevel(input: string): CompletionLogLevel {
   if (input === "off" || input === "info" || input === "debug") return input
   return "info"
+}
+
+function readCodeGraphAnalysisMode(input: string): CodeGraphAnalysisMode {
+  if (input === "auto" || input === "fast" || input === "ast" || input === "semantic") return input
+  return "auto"
 }
 
 function readStringArray(input: unknown) {

@@ -2,7 +2,7 @@
   "name": "opencode-remote",
   "displayName": "OpenCode Remote",
   "description": "Remote opencode serve client for VS Code",
-  "version": "0.0.28",
+  "version": "0.0.31",
   "publisher": "local",
   "repository": {
     "type": "git",
@@ -15,6 +15,9 @@
   "categories": [
     "AI",
     "Other"
+  ],
+  "extensionKind": [
+    "workspace"
   ],
   "activationEvents": [
     "onView:opencodeRemote.sidebar",
@@ -205,6 +208,17 @@
           "default": true,
           "description": "Ask before enabling local code graph indexing for a workspace."
         },
+        "opencode.remote.codeGraph.analysisMode": {
+          "type": "string",
+          "enum": [
+            "auto",
+            "fast",
+            "ast",
+            "semantic"
+          ],
+          "default": "auto",
+          "description": "Local code graph analysis mode. Auto uses the bundled Tree-sitter WASM analyzer when available; semantic is reserved for compile database backed analysis."
+        },
         "opencode.remote.codeGraph.maxFiles": {
           "type": "number",
           "default": 50000,
@@ -218,6 +232,56 @@
           "minimum": 2000,
           "maximum": 100000,
           "description": "Maximum bytes of local code graph context to include in one remote prompt."
+        },
+        "opencode.remote.codeGraph.maxEvidenceBytes": {
+          "type": "number",
+          "default": 60000,
+          "minimum": 4000,
+          "maximum": 200000,
+          "description": "Maximum bytes of retrieved local code evidence to include in one remote prompt."
+        },
+        "opencode.remote.codeGraph.maxGraphDepth": {
+          "type": "number",
+          "default": 2,
+          "minimum": 1,
+          "maximum": 5,
+          "description": "Maximum caller/callee graph depth for local code graph retrieval."
+        },
+        "opencode.remote.codeGraph.maxFanout": {
+          "type": "number",
+          "default": 40,
+          "minimum": 5,
+          "maximum": 200,
+          "description": "Maximum relation fanout per graph expansion step for local code graph retrieval."
+        },
+        "opencode.remote.codeGraph.maxDeepFiles": {
+          "type": "number",
+          "default": 24,
+          "minimum": 1,
+          "maximum": 200,
+          "description": "Maximum candidate files to inspect in a future deep local code graph analysis pass."
+        },
+        "opencode.remote.codeGraph.maxStateTransitions": {
+          "type": "number",
+          "default": 120,
+          "minimum": 10,
+          "maximum": 1000,
+          "description": "Maximum state transitions to include in a future local state-machine evidence pass."
+        },
+        "opencode.remote.codeGraph.compileCommandsPath": {
+          "type": "string",
+          "default": "",
+          "description": "Optional path to compile_commands.json for future semantic C/C++ code graph analysis. Relative paths are resolved from the workspace root."
+        },
+        "opencode.remote.codeGraph.clangdPath": {
+          "type": "string",
+          "default": "",
+          "description": "Optional path to clangd on the workspace host for future semantic C/C++ code graph analysis."
+        },
+        "opencode.remote.codeGraph.scipClangPath": {
+          "type": "string",
+          "default": "",
+          "description": "Optional path to scip-clang on the workspace host for future semantic C/C++ code graph analysis."
         },
         "opencode.remote.codeGraph.excludeGlobs": {
           "type": "array",

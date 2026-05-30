@@ -1241,11 +1241,28 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       } else {
         for (const item of messages) root.appendChild(messageNode(item));
       }
-      if (state.sending) root.appendChild(thinkingNode());
+      if (state.sending && !hasAssistantContentAfterLastUser(messages)) root.appendChild(thinkingNode());
       if (stick) requestAnimationFrame(() => {
         root.scrollTop = root.scrollHeight;
         userNearBottom = true;
       });
+    }
+
+    function hasAssistantContentAfterLastUser(messages) {
+      let hasAssistantContent = false;
+      for (let index = messages.length - 1; index >= 0; index -= 1) {
+        const item = messages[index];
+        if (item.role === "user") return hasAssistantContent;
+        if ((item.role === "assistant" || item.role === "tool") && messageHasContent(item)) {
+          hasAssistantContent = true;
+        }
+      }
+      return hasAssistantContent;
+    }
+
+    function messageHasContent(item) {
+      if (item.text) return true;
+      return (item.parts || []).some((part) => part.text || part.detail || part.status);
     }
 
     function emptyState() {
@@ -1603,6 +1620,8 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       if (graph.updatedAt) parts.push("Updated " + formatDateTime(graph.updatedAt));
       if (graph.shards) parts.push(formatCount(graph.shards) + " shards");
       if (graph.truncated) parts.push("Index truncated by file limit");
+      if (graph.analysisMode) parts.push("Analyzer: " + graph.analysisMode + (graph.analyzerHost ? " on " + graph.analyzerHost : ""));
+      if (graph.analyzerDegradedReason) parts.push(graph.analyzerDegradedReason);
       if (parts.length > 0) return parts.join(" · ");
       return graph.detail || "Ready for whole-repo code questions.";
     }
@@ -1617,6 +1636,7 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       if (graph.skippedFiles) parts.push(formatCount(graph.skippedFiles) + " skipped file(s)");
       if (graph.updatedAt) parts.push("Updated " + formatDateTime(graph.updatedAt));
       if (graph.truncated) parts.push("Index truncated by file limit.");
+      if (graph.analyzerDetail) parts.push(graph.analyzerDetail);
       return parts.filter(Boolean).join(" ");
     }
 

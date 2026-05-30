@@ -17,6 +17,10 @@ describe("extension manifest", () => {
     expect(commands.has("opencode.openNewTerminal")).toBe(true)
   })
 
+  test("runs as a workspace extension for local and remote workspace files", () => {
+    expect(manifest.extensionKind).toEqual(["workspace"])
+  })
+
   test("keeps remote chat commands available", () => {
     const commands = new Set((manifest.contributes?.commands ?? []).map((command: { command: string }) => command.command))
     expect(commands.has("opencode.remote.openChat")).toBe(true)
@@ -46,8 +50,21 @@ describe("extension manifest", () => {
     const properties = manifest.contributes?.configuration?.properties ?? {}
     expect(properties["opencode.remote.codeGraph.enabled"]?.default).toBe(false)
     expect(properties["opencode.remote.codeGraph.promptOnWorkspaceOpen"]?.default).toBe(true)
+    expect(properties["opencode.remote.codeGraph.analysisMode"]).toMatchObject({
+      type: "string",
+      enum: ["auto", "fast", "ast", "semantic"],
+      default: "auto",
+    })
     expect(properties["opencode.remote.codeGraph.maxFiles"]?.default).toBe(50000)
     expect(properties["opencode.remote.codeGraph.maxContextBytes"]?.default).toBe(24000)
+    expect(properties["opencode.remote.codeGraph.maxEvidenceBytes"]?.default).toBe(60000)
+    expect(properties["opencode.remote.codeGraph.maxGraphDepth"]?.default).toBe(2)
+    expect(properties["opencode.remote.codeGraph.maxFanout"]?.default).toBe(40)
+    expect(properties["opencode.remote.codeGraph.maxDeepFiles"]?.default).toBe(24)
+    expect(properties["opencode.remote.codeGraph.maxStateTransitions"]?.default).toBe(120)
+    expect(properties["opencode.remote.codeGraph.compileCommandsPath"]?.type).toBe("string")
+    expect(properties["opencode.remote.codeGraph.clangdPath"]?.type).toBe("string")
+    expect(properties["opencode.remote.codeGraph.scipClangPath"]?.type).toBe("string")
     expect(properties["opencode.remote.codeGraph.excludeGlobs"]?.type).toBe("array")
   })
 

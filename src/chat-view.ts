@@ -1,6 +1,7 @@
 import * as vscode from "vscode"
 import { createChatViewHtml } from "./chat-html"
 import { CHAT_SESSION_TITLE, isPluginChatMessage, isPluginChatSession } from "./chat-session"
+import { applyOpenCodeEventToMessages, normalizeOpenCodeEvent } from "./chat-stream"
 import type { CodeGraphContextProvider } from "./codegraph-types"
 import { isInlineCompletionMessage, isInlineCompletionSession } from "./completion-session"
 import {
@@ -114,6 +115,7 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
   private sessionID?: string
   private sessions: RenderedSession[] = []
   private messages: RenderedMessage[] = []
+  private remoteMessages: OpenCodeMessage[] = []
   private connectionState: ConnectionState = "disconnected"
   private connectionDetail = "Ready. Enter a server URL and click Connect."
   private sending = false
@@ -127,8 +129,22 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
   private readonly hiddenExternalSessions = new Set<string>()
   private mentionIndex?: MentionIndexState
   private mentionIndexBuild?: Promise<MentionIndexState>
+  private eventSubscription?: {
+    client: RemoteOpenCodeClient
+    controller: AbortController
+    ready: Promise<boolean>
+  }
+  private eventStreamReady = false
+  private eventStreamFailed = false
+  private readonly finalizingSessions = new Set<string>()
+  private readonly pendingLocalUserMessageIDs = new Set<string>()
+  private readonly pendingLocalUserTexts = new Set<string>()
 
   constructor(private readonly deps: RemoteChatViewProviderDeps) {}
+
+  dispose() {
+    this.stopEventSubscription()
+  }
 
   resolveWebviewView(webviewView: vscode.WebviewView) {
     this.view = webviewView
@@ -157,12 +173,14 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
   setConnectionState(state: ConnectionState, detail = "") {
     this.connectionState = state
     this.connectionDetail = detail
+    if (state !== "connected") this.stopEventSubscription()
     this.postState()
   }
 
   async refresh() {
     const client = this.deps.getClient()
     if (!client || this.connectionState !== "connected") {
+      this.stopEventSubscription()
       this.postState()
       return
     }
@@ -170,6 +188,7 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
     this.loadingMessages = true
     this.postState()
     try {
+      void this.ensureEventSubscription(client)
       await this.refreshModelList(client)
       await this.refreshSessionList(client)
       this.reconcileSessionSelection()
@@ -186,6 +205,163 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
     this.postState()
   }
 
+  private ensureEventSubscription(client: RemoteOpenCodeClient) {
+    const current = this.eventSubscription
+    if (current?.client === client && !current.controller.signal.aborted) {
+      if (this.eventStreamReady) return Promise.resolve(true)
+      if (this.eventStreamFailed) return Promise.resolve(false)
+      return current.ready
+    }
+
+    this.stopEventSubscription()
+    this.eventStreamReady = false
+    this.eventStreamFailed = false
+
+    const controller = new AbortController()
+    let settled = false
+    let timer: ReturnType<typeof setTimeout>
+    let resolveReady: (ready: boolean) => void = () => undefined
+    const ready = new Promise<boolean>((resolve) => {
+      resolveReady = resolve
+    })
+    const settle = (value: boolean) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      resolveReady(value)
+    }
+    timer = setTimeout(() => {
+      this.eventStreamFailed = true
+      if (this.eventSubscription?.controller === controller) this.eventSubscription = undefined
+      controller.abort()
+      settle(false)
+    }, 1500)
+
+    this.eventSubscription = { client, controller, ready }
+    void client
+      .subscribeEvents(
+        (event) => this.handleRemoteEvent(client, event),
+        controller.signal,
+        () => {
+          this.eventStreamReady = true
+          this.eventStreamFailed = false
+          this.deps.output.appendLine(`[event] connected ${client.baseUrl}`)
+          settle(true)
+        },
+      )
+      .then(() => {
+        if (controller.signal.aborted) return
+        this.eventStreamReady = false
+        this.eventStreamFailed = true
+        if (this.eventSubscription?.controller === controller) this.eventSubscription = undefined
+        settle(false)
+        this.deps.output.appendLine("[event] stream closed")
+        this.finishActiveStreamAfterEventLoss(client)
+      })
+      .catch((error) => {
+        if (controller.signal.aborted) return
+        this.eventStreamReady = false
+        this.eventStreamFailed = true
+        if (this.eventSubscription?.controller === controller) this.eventSubscription = undefined
+        settle(false)
+        const message = error instanceof Error ? error.message : String(error)
+        this.deps.output.appendLine(`[event] stream failed: ${message}`)
+        this.finishActiveStreamAfterEventLoss(client)
+      })
+
+    return ready
+  }
+
+  private stopEventSubscription() {
+    this.eventSubscription?.controller.abort()
+    this.eventSubscription = undefined
+    this.eventStreamReady = false
+    this.eventStreamFailed = false
+  }
+
+  private handleRemoteEvent(client: RemoteOpenCodeClient, rawEvent: unknown) {
+    if (this.deps.getClient() !== client) return
+    const event = normalizeOpenCodeEvent(rawEvent)
+    if (!event || event.type === "server.connected") return
+
+    const result = applyOpenCodeEventToMessages(this.remoteMessages, event, this.sessionID)
+    if (result.refreshSessions) {
+      void this.refreshSessionList(client)
+        .then(() => this.postState())
+        .catch((error) => this.logEventError("session refresh failed", error))
+    }
+    if (result.changed) {
+      this.remoteMessages = result.messages
+      this.syncRenderedMessages()
+      this.postState()
+    }
+    if (result.error) {
+      this.messages = [...this.messages, localMessage("error", `Remote session error: ${result.error}`)]
+      this.sending = false
+      this.postState()
+    }
+
+    const sessionID = this.sessionID
+    if (sessionID && (result.idle || result.completed)) {
+      void this.finishStreamingSession(client, sessionID)
+    }
+  }
+
+  private finishActiveStreamAfterEventLoss(client: RemoteOpenCodeClient) {
+    if (!this.sending || !this.sessionID) return
+    void this.finishStreamingSession(client, this.sessionID)
+  }
+
+  private async finishStreamingSession(client: RemoteOpenCodeClient, sessionID: string) {
+    if (this.finalizingSessions.has(sessionID)) return
+    this.finalizingSessions.add(sessionID)
+    try {
+      if (this.deps.getClient() !== client) return
+      await this.refreshSessionList(client)
+      if (this.sessionID === sessionID) await this.loadSessionMessages(client, sessionID)
+    } catch (error) {
+      this.logEventError("final message refresh failed", error)
+    } finally {
+      this.finalizingSessions.delete(sessionID)
+      if (this.sessionID === sessionID) {
+        this.sending = false
+        this.postState()
+      }
+    }
+  }
+
+  private syncRenderedMessages() {
+    const renderedRemote = this.remoteMessages.map(renderMessage).filter((message) => message.text || message.parts.length > 0)
+    if (renderedRemote.some((message) => message.role === "user" && this.pendingLocalUserTexts.has(message.text))) {
+      this.pendingLocalUserMessageIDs.clear()
+      this.pendingLocalUserTexts.clear()
+    }
+    const pendingLocal = this.messages.filter((message) => this.pendingLocalUserMessageIDs.has(message.id))
+    this.messages = [...renderedRemote, ...pendingLocal].sort((left, right) => (left.timeCreated ?? 0) - (right.timeCreated ?? 0))
+    if (this.sessionID) this.applyServerToolWarnings(this.sessionID)
+  }
+
+  private applyServerToolWarnings(sessionID: string) {
+    const serverToolWarnings = this.messages.flatMap((message) =>
+      message.parts.filter((part) => part.type === "serverToolWarning").map((part) => part.title || "tool"),
+    )
+    if (serverToolWarnings.length === 0) return
+
+    const alreadyFlagged = this.flaggedSessions.has(sessionID)
+    this.flaggedSessions.add(sessionID)
+    this.sessions = this.sessions.map((session) =>
+      session.id === sessionID ? { ...session, serverToolsUsed: true } : session,
+    )
+    if (!alreadyFlagged) {
+      this.deps.output.appendLine(`[guard] remote server tools used in ${sessionID}: ${serverToolWarnings.join(", ")}`)
+    }
+  }
+
+  private logEventError(action: string, error: unknown) {
+    const message = error instanceof Error ? error.message : String(error)
+    this.deps.output.appendLine(`[event] ${action}: ${message}`)
+  }
+
   async newSession() {
     const client = this.connectedClient("Connect before creating a session.")
     if (!client) return
@@ -195,6 +371,9 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
     try {
       const session = await client.createSession(CHAT_SESSION_TITLE)
       this.sessionID = session.id
+      this.remoteMessages = []
+      this.pendingLocalUserMessageIDs.clear()
+      this.pendingLocalUserTexts.clear()
       this.messages = []
       await this.refreshSessionList(client)
     } catch (error) {
@@ -425,10 +604,13 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
 
     const optimistic = localMessage("user", trimmed || "Please review the referenced files.")
     this.messages = [...this.messages, optimistic]
+    this.pendingLocalUserMessageIDs.add(optimistic.id)
+    this.pendingLocalUserTexts.add(optimistic.text)
     this.sending = true
     this.postState()
     let strictAgentHint = ""
     let preparedMessage: { text: string; model?: PromptModel; agent?: string } | undefined
+    let sentStreaming = false
     try {
       const settings = this.deps.getSettings()
       const agentSelection = this.agentForSettings(settings)
@@ -459,14 +641,14 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
         model: modelSelection.model,
         agent: agentSelection.agent,
       }
-      await this.sendPreparedMessage(client, preparedMessage)
+      sentStreaming = await this.sendPreparedMessage(client, preparedMessage)
     } catch (error) {
       let finalError = error
       if (preparedMessage && isSessionNotFoundError(error)) {
         try {
           this.clearMissingSession(this.sessionID)
           this.deps.output.appendLine("[session] Selected remote session was not found; retrying with a new session.")
-          await this.sendPreparedMessage(client, preparedMessage)
+          sentStreaming = await this.sendPreparedMessage(client, preparedMessage)
           return
         } catch (retryError) {
           finalError = retryError
@@ -477,14 +659,18 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
       const message = strictAgentHint && looksLikeServerAgentError(rawMessage) ? `${rawMessage}${strictAgentHint}` : rawMessage
       if (error instanceof MissingLocalContextError || finalError instanceof MissingLocalContextError) {
         this.messages = this.messages.filter((messageItem) => messageItem.id !== optimistic.id)
+        this.pendingLocalUserMessageIDs.delete(optimistic.id)
+        this.pendingLocalUserTexts.delete(optimistic.text)
         this.messages = [...this.messages, localMessage("error", message)]
         this.deps.output.appendLine(`[guard] blocked send: ${message}`)
         return
       }
+      this.pendingLocalUserMessageIDs.delete(optimistic.id)
+      this.pendingLocalUserTexts.delete(optimistic.text)
       this.messages = [...this.messages, localMessage("error", `Failed to send message: ${message}`)]
       this.reportError("Failed to send message to remote OpenCode", new Error(message))
     } finally {
-      this.sending = false
+      if (!sentStreaming) this.sending = false
       this.postState()
     }
   }
@@ -502,6 +688,19 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
     input: { text: string; model?: PromptModel; agent?: string },
   ) {
     const sessionID = await this.getOrCreateSession(client)
+    const canStream = await this.ensureEventSubscription(client)
+    if (canStream) {
+      await client.sendMessageAsync({
+        sessionID,
+        text: input.text,
+        model: input.model,
+        agent: input.agent,
+      })
+      await this.refreshSessionList(client)
+      return true
+    }
+
+    this.deps.output.appendLine("[event] live stream unavailable; falling back to blocking message request")
     await client.sendMessage({
       sessionID,
       text: input.text,
@@ -510,6 +709,7 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
     })
     await this.refreshSessionList(client)
     await this.loadSessionMessages(client, sessionID)
+    return false
   }
 
   private async refreshSessionList(client: RemoteOpenCodeClient) {
@@ -525,11 +725,19 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
       this.deps.output.appendLine(`[session] Remote session ${this.sessionID} is no longer available; clearing selection.`)
     }
     this.sessionID = this.sessions[0]?.id
-    if (!this.sessionID) this.messages = []
+    if (!this.sessionID) {
+      this.remoteMessages = []
+      this.pendingLocalUserMessageIDs.clear()
+      this.pendingLocalUserTexts.clear()
+      this.messages = []
+    }
   }
 
   private async loadSelectedSessionMessages(client: RemoteOpenCodeClient) {
     if (!this.sessionID) {
+      this.remoteMessages = []
+      this.pendingLocalUserMessageIDs.clear()
+      this.pendingLocalUserTexts.clear()
       this.messages = []
       return
     }
@@ -554,6 +762,9 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
   private clearMissingSession(sessionID: string | undefined) {
     if (sessionID && this.sessionID && this.sessionID !== sessionID) return
     this.sessionID = undefined
+    this.remoteMessages = []
+    this.pendingLocalUserMessageIDs.clear()
+    this.pendingLocalUserTexts.clear()
     this.messages = []
   }
 
@@ -570,17 +781,11 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
       return
     }
 
+    this.remoteMessages = messages
+    this.pendingLocalUserMessageIDs.clear()
+    this.pendingLocalUserTexts.clear()
     this.messages = messages.map(renderMessage).filter((message) => message.text || message.parts.length > 0)
-    const serverToolWarnings = this.messages.flatMap((message) =>
-      message.parts.filter((part) => part.type === "serverToolWarning").map((part) => part.title || "tool"),
-    )
-    if (serverToolWarnings.length > 0) {
-      this.flaggedSessions.add(sessionID)
-      this.sessions = this.sessions.map((session) =>
-        session.id === sessionID ? { ...session, serverToolsUsed: true } : session,
-      )
-      this.deps.output.appendLine(`[guard] remote server tools used in ${sessionID}: ${serverToolWarnings.join(", ")}`)
-    }
+    this.applyServerToolWarnings(sessionID)
   }
 
   private async hideCompletionSession(client: RemoteOpenCodeClient, sessionID: string) {
@@ -588,6 +793,9 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
     this.sessions = this.sessions.filter((session) => session.id !== sessionID)
     if (this.sessionID === sessionID) {
       this.sessionID = undefined
+      this.remoteMessages = []
+      this.pendingLocalUserMessageIDs.clear()
+      this.pendingLocalUserTexts.clear()
       this.messages = []
     }
     this.deps.output.appendLine(`[history] Hidden inline completion session ${sessionID}.`)
@@ -600,6 +808,9 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
     this.sessions = this.sessions.filter((session) => session.id !== sessionID)
     if (this.sessionID === sessionID) {
       this.sessionID = undefined
+      this.remoteMessages = []
+      this.pendingLocalUserMessageIDs.clear()
+      this.pendingLocalUserTexts.clear()
       this.messages = []
     }
     this.deps.output.appendLine(`[history] Hidden external OpenCode session ${sessionID}.`)

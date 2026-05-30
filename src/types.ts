@@ -1,5 +1,6 @@
 export type ConnectionState = "disconnected" | "connecting" | "connected" | "authFailed" | "error"
 export type CompletionLogLevel = "off" | "info" | "debug"
+export type CodeGraphAnalysisMode = "auto" | "fast" | "ast" | "semantic"
 
 export type RemoteSettings = {
   serverUrl: string
@@ -23,8 +24,17 @@ export type RemoteSettings = {
   codeGraph: {
     enabled: boolean
     promptOnWorkspaceOpen: boolean
+    analysisMode: CodeGraphAnalysisMode
     maxFiles: number
     maxContextBytes: number
+    maxEvidenceBytes: number
+    maxGraphDepth: number
+    maxFanout: number
+    maxDeepFiles: number
+    maxStateTransitions: number
+    compileCommandsPath: string
+    clangdPath: string
+    scipClangPath: string
     excludeGlobs: string[]
   }
 }
@@ -97,6 +107,34 @@ export type OpenCodeMessage = {
   parts: OpenCodePart[]
 }
 
+export type OpenCodeMessagePart = OpenCodePart & {
+  id?: string
+  sessionID?: string
+  messageID?: string
+}
+
+export type OpenCodeSessionStatus =
+  | { type: "idle" }
+  | { type: "busy" }
+  | { type: "retry"; attempt?: number; message?: string; next?: number }
+  | { type: string; [key: string]: unknown }
+
+export type OpenCodeEvent =
+  | { type: "server.connected"; properties?: Record<string, unknown> }
+  | { type: "message.updated"; properties: { info?: OpenCodeMessageInfo } }
+  | { type: "message.removed"; properties: { sessionID?: string; messageID?: string } }
+  | { type: "message.part.updated"; properties: { part?: OpenCodeMessagePart; delta?: string } }
+  | { type: "message.part.removed"; properties: { sessionID?: string; messageID?: string; partID?: string } }
+  | { type: "session.status"; properties: { sessionID?: string; status?: OpenCodeSessionStatus } }
+  | { type: "session.error"; properties: { sessionID?: string; error?: OpenCodeMessageInfo["error"] | { data?: { message?: string }; message?: string } } }
+  | { type: "session.created" | "session.updated" | "session.deleted"; properties: { info?: OpenCodeSession } }
+  | { type: string; properties?: Record<string, unknown> }
+
+export type OpenCodeGlobalEvent = {
+  directory?: string
+  payload?: OpenCodeEvent
+}
+
 export type ChatContextOptions = {
   includeSelection: boolean
   includeCurrentFile: boolean
@@ -125,6 +163,13 @@ export type CodeGraphStatus = {
   state: CodeGraphState
   detail: string
   enabled: boolean
+  analysisMode?: CodeGraphAnalysisMode | "ast-lite"
+  requestedAnalysisMode?: CodeGraphAnalysisMode
+  analyzerHost?: string
+  analyzerPlatform?: string
+  analyzerDetail?: string
+  analyzerDegradedReason?: string
+  compileCommandsPath?: string
   indexedFiles: number
   indexedFunctions: number
   indexedMacros: number

@@ -1,5 +1,7 @@
 import * as crypto from "node:crypto"
 import * as vscode from "vscode"
+import { detectCodeGraphAnalyzer, type CodeGraphAnalyzerStatus } from "./codegraph-analyzer"
+import { parseCFileWithAst } from "./codegraph-ast"
 import { parseCFile } from "./codegraph-c-parser"
 import {
   buildIndexStats,
@@ -13,6 +15,7 @@ import type {
   CodeGraphFile,
   CodeGraphIndex,
   CodeGraphPromptContext,
+  CodeGraphQueryMetrics,
   CodeGraphShardData,
   CodeGraphShardManifest,
 } from "./codegraph-types"
@@ -32,6 +35,7 @@ const DEFAULT_EXCLUDES = [
 
 export class LocalCodeGraphService implements vscode.Disposable {
   private index?: CodeGraphIndex
+  private analyzer?: CodeGraphAnalyzerStatus
   private statusValue: CodeGraphStatus = disabledStatus()
   private watcher?: vscode.FileSystemWatcher
   private indexing?: Promise<void>
@@ -117,8 +121,12 @@ export class LocalCodeGraphService implements vscode.Disposable {
     const storage = status.storageMode ? ` Storage: ${status.storageMode}${status.shards ? `, ${status.shards} shard(s)` : ""}.` : ""
     const size = status.indexBytes ? ` Indexed source size: ${formatBytes(status.indexBytes)}.` : ""
     const skipped = status.skippedFiles ? ` Skipped ${status.skippedFiles} file(s).` : ""
+    const analyzer = status.analysisMode
+      ? ` Analyzer: ${status.analysisMode} on ${status.analyzerHost ?? "unknown"}${status.analyzerPlatform ? ` (${status.analyzerPlatform})` : ""}.`
+      : ""
+    const degraded = status.analyzerDegradedReason ? ` ${status.analyzerDegradedReason}` : ""
     await vscode.window.showInformationMessage(
-      `Local code graph: ${status.state}. ${status.indexedFiles} file(s), ${status.indexedFunctions} function(s), ${status.indexedMacros} macro(s). ${status.detail}${updated}${truncated}${storage}${size}${skipped}`.trim(),
+      `Local code graph: ${status.state}. ${status.indexedFiles} file(s), ${status.indexedFunctions} function(s), ${status.indexedMacros} macro(s). ${status.detail}${updated}${truncated}${storage}${size}${skipped}${analyzer}${degraded}`.trim(),
     )
   }
 
@@ -126,17 +134,23 @@ export class LocalCodeGraphService implements vscode.Disposable {
     question: string
     relatedPaths: string[]
     maxBytes: number
+    maxDepth: number
+    maxFanout: number
   }): Promise<CodeGraphPromptContext | undefined> {
     const settings = this.getSettings()
     if (!settings.codeGraph.enabled) return undefined
     if (!this.index) await this.loadIndex()
     if (!this.index) return undefined
-    return buildCodeGraphContext({
+    const context = buildCodeGraphContext({
       index: this.index,
       question: input.question,
       relatedPaths: input.relatedPaths,
       maxBytes: input.maxBytes,
+      maxDepth: input.maxDepth,
+      maxFanout: input.maxFanout,
     })
+    if (context) this.output.appendLine(formatCodeGraphQueryMetrics(context.metrics))
+    return context
   }
 
   private async runIndex(force: boolean) {
@@ -149,11 +163,13 @@ export class LocalCodeGraphService implements vscode.Disposable {
     const settings = this.getSettings()
     this.startWatcher()
     this.index ??= emptyIndex(root)
+    this.analyzer = await detectCodeGraphAnalyzer(this.context, root, settings)
     this.setStatus({
       ...this.statusValue,
       state: "indexing",
       enabled: true,
       detail: force ? "Rebuilding local C/C++ code graph." : "Indexing local C/C++ code graph.",
+      ...this.analyzerStatusFields(),
     })
 
     try {
@@ -190,7 +206,7 @@ export class LocalCodeGraphService implements vscode.Disposable {
           nextFiles[relative] = existing
         } else {
           const text = new TextDecoder("utf-8", { fatal: false }).decode(bytes)
-          nextFiles[relative] = parseCFile({
+          nextFiles[relative] = await this.parseCodeGraphFile({
             path: relative,
             text,
             hash,
@@ -300,6 +316,7 @@ export class LocalCodeGraphService implements vscode.Disposable {
     if (!this.index) this.index = emptyIndex(root)
 
     const settings = this.getSettings()
+    this.analyzer ??= await detectCodeGraphAnalyzer(this.context, root, settings)
     let skippedFiles = this.index.stats?.skippedFiles ?? 0
     this.setStatus({
       ...this.statusValue,
@@ -307,6 +324,7 @@ export class LocalCodeGraphService implements vscode.Disposable {
       enabled: true,
       detail: `Updating ${changes.length} changed C/C++ file(s).`,
       progress: { completed: 0, total: changes.length },
+      ...this.analyzerStatusFields(),
     })
 
     for (let index = 0; index < changes.length; index++) {
@@ -328,7 +346,7 @@ export class LocalCodeGraphService implements vscode.Disposable {
             } else {
               const hash = hashBytes(bytes)
               if (this.index.files[relative]?.hash !== hash) {
-                this.index.files[relative] = parseCFile({
+                this.index.files[relative] = await this.parseCodeGraphFile({
                   path: relative,
                   text: new TextDecoder("utf-8", { fatal: false }).decode(bytes),
                   hash,
@@ -430,6 +448,10 @@ export class LocalCodeGraphService implements vscode.Disposable {
         includeTargetsByFile: {},
         filePathsByInclude: {},
         directoryStats: {},
+        symbolsByName: {},
+        symbolsByPath: {},
+        postingsByTerm: {},
+        moduleStats: {},
       },
       stats: this.index.stats ?? buildIndexStats(this.index.files),
       shards: manifestShards,
@@ -440,7 +462,7 @@ export class LocalCodeGraphService implements vscode.Disposable {
   private async loadShardedIndex(root: vscode.WorkspaceFolder): Promise<CodeGraphIndex> {
     const manifestBytes = await vscode.workspace.fs.readFile(this.manifestUri(root))
     const manifest = JSON.parse(new TextDecoder().decode(manifestBytes)) as CodeGraphShardManifest
-    if (manifest.version !== INDEX_VERSION || manifest.rootPath !== root.uri.fsPath) {
+    if (!isSupportedStoredIndexVersion(manifest.version) || manifest.rootPath !== root.uri.fsPath) {
       throw new Error("Code graph manifest does not match this workspace.")
     }
 
@@ -449,7 +471,7 @@ export class LocalCodeGraphService implements vscode.Disposable {
     for (const shard of manifest.shards) {
       const shardBytes = await vscode.workspace.fs.readFile(vscode.Uri.joinPath(dir, ...shard.path.split("/")))
       const payload = JSON.parse(new TextDecoder().decode(shardBytes)) as CodeGraphShardData
-      if (payload.version !== INDEX_VERSION || payload.key !== shard.key) continue
+      if (!isSupportedStoredIndexVersion(payload.version) || payload.key !== shard.key) continue
       Object.assign(files, payload.files)
     }
 
@@ -507,12 +529,42 @@ export class LocalCodeGraphService implements vscode.Disposable {
       indexBytes: stats?.bytes,
       skippedFiles: stats?.skippedFiles,
       largeRepoMode: Boolean(stats && (stats.files >= 10000 || stats.bytes >= 50 * 1024 * 1024)),
+      ...this.analyzerStatusFields(),
     })
   }
 
   private setStatus(status: CodeGraphStatus) {
     this.statusValue = status
     this.onStatusChanged()
+  }
+
+  private async parseCodeGraphFile(input: {
+    path: string
+    text: string
+    hash: string
+    size: number
+  }) {
+    if (this.analyzer?.effectiveMode === "ast") {
+      return parseCFileWithAst({
+        ...input,
+        extensionPath: this.context.extensionUri.fsPath,
+      })
+    }
+    return parseCFile(input)
+  }
+
+  private analyzerStatusFields(): Partial<CodeGraphStatus> {
+    const analyzer = this.analyzer
+    if (!analyzer) return {}
+    return {
+      analysisMode: analyzer.effectiveMode,
+      requestedAnalysisMode: analyzer.requestedMode,
+      analyzerHost: analyzer.host,
+      analyzerPlatform: analyzer.platform,
+      analyzerDetail: analyzer.detail,
+      analyzerDegradedReason: analyzer.degradedReason,
+      compileCommandsPath: analyzer.compileCommandsPath,
+    }
   }
 }
 
@@ -530,11 +582,17 @@ function emptyIndex(root: vscode.WorkspaceFolder): CodeGraphIndex {
       includeTargetsByFile: {},
       filePathsByInclude: {},
       directoryStats: {},
+      symbolsByName: {},
+      symbolsByPath: {},
+      postingsByTerm: {},
+      moduleStats: {},
     },
     stats: {
       files: 0,
       functions: 0,
       macros: 0,
+      types: 0,
+      globals: 0,
       bytes: 0,
       shards: 0,
       skippedFiles: 0,
@@ -602,6 +660,31 @@ function disabledStatus(detail = "Local code graph is disabled."): CodeGraphStat
     indexedMacros: 0,
     truncated: false,
   }
+}
+
+function formatCodeGraphQueryMetrics(metrics: CodeGraphQueryMetrics) {
+  return [
+    "[codegraph-query]",
+    `mode=${metrics.mode}`,
+    `tokens=${formatMetricList(metrics.tokens)}`,
+    `seeds=${formatMetricList(metrics.symbols)}`,
+    `candidates=${metrics.candidateCount}`,
+    `evidence=${metrics.evidenceCount}`,
+    `omitted=${metrics.omittedCandidates}`,
+    `bytes=${metrics.packedBytes}`,
+    `truncated=${metrics.truncated ? "true" : "false"}`,
+    `elapsed=${metrics.elapsedMs}ms`,
+  ].join(" ")
+}
+
+function formatMetricList(values: string[]) {
+  if (values.length === 0) return "-"
+  const visible = values.slice(0, 8).join(",")
+  return values.length > 8 ? `${visible},+${values.length - 8}` : visible
+}
+
+function isSupportedStoredIndexVersion(version: number) {
+  return version === 2 || version === INDEX_VERSION
 }
 
 function encodeJson(value: unknown) {

@@ -158,6 +158,83 @@ describe("RemoteOpenCodeClient", () => {
     expect(bodies[0]).not.toHaveProperty("model")
     expect(bodies[1]).toMatchObject({ model: { providerID: "openai", modelID: "gpt-5" } })
   })
+
+  test("sends async messages without waiting for a response body", async () => {
+    const bodies: unknown[] = []
+    const baseUrl = await listen((request, response) => {
+      if (request.url === "/session/abc/prompt_async") {
+        collectJson(request).then((body) => {
+          bodies.push(body)
+          response.writeHead(204).end()
+        })
+        return
+      }
+      response.writeHead(404).end()
+    })
+
+    await new RemoteOpenCodeClient(settings(baseUrl)).sendMessageAsync({
+      sessionID: "abc",
+      text: "hello",
+      model: { providerID: "openai", modelID: "gpt-5" },
+      agent: "vscode-local",
+    })
+
+    expect(bodies).toEqual([
+      {
+        model: { providerID: "openai", modelID: "gpt-5" },
+        agent: "vscode-local",
+        parts: [{ type: "text", text: "hello" }],
+      },
+    ])
+  })
+
+  test("subscribes to SSE events across chunk boundaries", async () => {
+    const baseUrl = await listen((request, response) => {
+      if (request.url === "/event") {
+        response.writeHead(200, {
+          "content-type": "text/event-stream",
+          "cache-control": "no-cache",
+        })
+        response.write('data: {"type":"server.connected","properties":{}}\n\n')
+        response.write('data: {"type":"message.updated","properties":{"info":{"id":"m1"')
+        setTimeout(() => {
+          response.write(',"sessionID":"s1","role":"assistant"}}}\n\n')
+        }, 5)
+        request.on("close", () => response.end())
+        return
+      }
+      response.writeHead(404).end()
+    })
+
+    const client = new RemoteOpenCodeClient(settings(baseUrl))
+    const controller = new AbortController()
+    const events: unknown[] = []
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error("Timed out waiting for SSE events")), 1000)
+      void client
+        .subscribeEvents(
+          (event) => {
+            events.push(event)
+            if (events.length === 2) {
+              clearTimeout(timer)
+              controller.abort()
+              resolve()
+            }
+          },
+          controller.signal,
+        )
+        .catch((error) => {
+          if (controller.signal.aborted) return
+          clearTimeout(timer)
+          reject(error)
+        })
+    })
+
+    expect(events).toEqual([
+      { type: "server.connected", properties: {} },
+      { type: "message.updated", properties: { info: { id: "m1", sessionID: "s1", role: "assistant" } } },
+    ])
+  })
 })
 
 describe("model normalization", () => {
@@ -205,6 +282,22 @@ function settings(serverUrl: string): RemoteSettings {
       enabled: false,
       debounceMs: 350,
       logLevel: "info",
+    },
+    codeGraph: {
+      enabled: false,
+      promptOnWorkspaceOpen: true,
+      analysisMode: "auto",
+      maxFiles: 50000,
+      maxContextBytes: 24000,
+      maxEvidenceBytes: 60000,
+      maxGraphDepth: 2,
+      maxFanout: 40,
+      maxDeepFiles: 24,
+      maxStateTransitions: 120,
+      compileCommandsPath: "",
+      clangdPath: "",
+      scipClangPath: "",
+      excludeGlobs: [],
     },
   }
 }

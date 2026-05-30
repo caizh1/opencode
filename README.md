@@ -141,8 +141,14 @@ inline completion 默认关闭。开启后，扩展会在编辑器中注册 VS C
 | `opencode.remote.completion.logLevel` | `info` | 补全日志等级，可选 `off`、`info`、`debug`。 |
 | `opencode.remote.codeGraph.enabled` | `false` | 是否启用本地 C/C++ code graph。 |
 | `opencode.remote.codeGraph.promptOnWorkspaceOpen` | `true` | 打开 workspace 时是否询问启用本地 code graph。 |
+| `opencode.remote.codeGraph.analysisMode` | `auto` | code graph 分析模式；`auto` 会优先使用随 VSIX 单包内置的 Tree-sitter WASM AST 分析，失败时降级为 fast。 |
 | `opencode.remote.codeGraph.maxFiles` | `50000` | 最多索引的 C/C++ 文件数量。 |
 | `opencode.remote.codeGraph.maxContextBytes` | `24000` | 单次请求最多注入的 code graph 上下文字节数。 |
+| `opencode.remote.codeGraph.maxDeepFiles` | `24` | 预留给深度机制/状态机分析的候选文件上限。 |
+| `opencode.remote.codeGraph.maxStateTransitions` | `120` | 预留给状态机证据的转移数量上限。 |
+| `opencode.remote.codeGraph.compileCommandsPath` | `""` | 可选 `compile_commands.json` 路径，后续 semantic 分析使用。 |
+| `opencode.remote.codeGraph.clangdPath` | `""` | 可选 workspace host 上的 `clangd` 路径，后续 semantic 分析使用。 |
+| `opencode.remote.codeGraph.scipClangPath` | `""` | 可选 workspace host 上的 `scip-clang` 路径，后续 semantic 分析使用。 |
 | `opencode.remote.codeGraph.excludeGlobs` | `[]` | 本地 code graph 额外排除规则。 |
 
 ### Strict Local-only Agent 示例

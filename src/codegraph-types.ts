@@ -9,10 +9,53 @@ export type CodeGraphInclude = {
 export type CodeGraphMacro = {
   name: string
   line: number
+  snippet?: string
 }
 
 export type CodeGraphCall = {
   name: string
+  line: number
+}
+
+export type CodeGraphTypeSymbol = {
+  name: string
+  kind: "struct" | "union" | "enum" | "typedef"
+  startLine: number
+  endLine: number
+  snippet: string
+}
+
+export type CodeGraphGlobalSymbol = {
+  name: string
+  line: number
+  snippet: string
+}
+
+export type CodeGraphAstControl = {
+  kind: "if" | "switch" | "case"
+  startLine: number
+  endLine: number
+  condition?: string
+}
+
+export type CodeGraphAstSummary = {
+  parser: "tree-sitter-wasm"
+  language: string
+  functions: number
+  calls: number
+  ifStatements: number
+  switchStatements: number
+  caseStatements: number
+  assignments: number
+  errors: number
+  controls: CodeGraphAstControl[]
+}
+
+export type CodeGraphFileTokenKind = "path" | "identifier" | "comment" | "macro" | "type" | "global"
+
+export type CodeGraphFileToken = {
+  term: string
+  kind: CodeGraphFileTokenKind
   line: number
 }
 
@@ -37,12 +80,18 @@ export type CodeGraphFile = {
   includes: CodeGraphInclude[]
   macros: CodeGraphMacro[]
   functions: CodeGraphFunction[]
+  types: CodeGraphTypeSymbol[]
+  globals: CodeGraphGlobalSymbol[]
+  tokens: CodeGraphFileToken[]
+  astSummary?: CodeGraphAstSummary
 }
 
 export type CodeGraphDirectoryStats = {
   files: number
   functions: number
   macros: number
+  types: number
+  globals: number
   bytes: number
 }
 
@@ -50,9 +99,40 @@ export type CodeGraphIndexStats = {
   files: number
   functions: number
   macros: number
+  types: number
+  globals: number
   bytes: number
   shards: number
   skippedFiles: number
+}
+
+export type CodeGraphSymbolKind = "function" | "macro" | "type" | "global" | "file"
+
+export type CodeGraphSymbol = {
+  id: string
+  kind: CodeGraphSymbolKind
+  name: string
+  path: string
+  startLine: number
+  endLine: number
+  signature?: string
+  snippet: string
+}
+
+export type CodeGraphPostingKind = CodeGraphFileTokenKind | "function" | "include"
+
+export type CodeGraphPosting = {
+  term: string
+  path: string
+  line: number
+  kind: CodeGraphPostingKind
+  weight: number
+  symbolId?: string
+}
+
+export type CodeGraphModuleStats = CodeGraphDirectoryStats & {
+  externalCallers: number
+  hotSymbols: string[]
 }
 
 export type CodeGraphDerivedIndex = {
@@ -61,10 +141,14 @@ export type CodeGraphDerivedIndex = {
   includeTargetsByFile: Record<string, string[]>
   filePathsByInclude: Record<string, string[]>
   directoryStats: Record<string, CodeGraphDirectoryStats>
+  symbolsByName: Record<string, CodeGraphSymbol[]>
+  symbolsByPath: Record<string, CodeGraphSymbol[]>
+  postingsByTerm: Record<string, CodeGraphPosting[]>
+  moduleStats: Record<string, CodeGraphModuleStats>
 }
 
 export type CodeGraphIndex = {
-  version: 1 | 2
+  version: 1 | 2 | 3
   rootPath: string
   rootName: string
   updatedAt: number
@@ -76,7 +160,7 @@ export type CodeGraphIndex = {
 }
 
 export type CodeGraphShardManifest = {
-  version: 2
+  version: 2 | 3
   rootPath: string
   rootName: string
   updatedAt: number
@@ -96,16 +180,53 @@ export type CodeGraphShardInfo = {
 }
 
 export type CodeGraphShardData = {
-  version: 2
+  version: 2 | 3
   key: string
   files: Record<string, CodeGraphFile>
 }
 
+export type CodeGraphQueryMode = "overview" | "callers" | "callees" | "call-chain" | "impact" | "explain"
+
+export type CodeGraphEvidence = {
+  path: string
+  startLine: number
+  endLine: number
+  kind: CodeGraphSymbolKind | "caller" | "callee" | "include" | "module" | "text"
+  score: number
+  reason: string
+  snippet: string
+}
+
+export type CodeGraphRetrievalResult = {
+  mode: CodeGraphQueryMode
+  tokens: string[]
+  symbols: string[]
+  evidence: CodeGraphEvidence[]
+  candidateCount: number
+  packedBytes: number
+  omittedCandidates: number
+  truncated: boolean
+  elapsedMs: number
+}
+
+export type CodeGraphQueryMetrics = {
+  mode: CodeGraphQueryMode
+  tokens: string[]
+  symbols: string[]
+  candidateCount: number
+  evidenceCount: number
+  omittedCandidates: number
+  packedBytes: number
+  truncated: boolean
+  elapsedMs: number
+}
+
 export type CodeGraphPromptContext = {
   text: string
-  mode: string
+  mode: CodeGraphQueryMode
   symbols: string[]
   truncated: boolean
+  metrics: CodeGraphQueryMetrics
 }
 
 export type CodeGraphContextProvider = {
@@ -116,5 +237,7 @@ export type CodeGraphContextProvider = {
     question: string
     relatedPaths: string[]
     maxBytes: number
+    maxDepth: number
+    maxFanout: number
   }): Promise<CodeGraphPromptContext | undefined>
 }
