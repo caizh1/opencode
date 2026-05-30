@@ -3,8 +3,21 @@
 Remote `opencode serve` client for VS Code.
 
 This extension keeps the original terminal commands from the official OpenCode
-VS Code extension, and adds a remote-first chat client that can send local VS
-Code context to a remote OpenCode server.
+VS Code extension, and adds a remote-first chat client that sends selected local
+VS Code context to a remote OpenCode server.
+
+## Features
+
+- Connect to a remote `opencode serve` endpoint with HTTP Basic Auth.
+- Use the OpenCode activity bar chat view for remote conversations.
+- Send local editor context, diagnostics, optional git diff, and explicitly
+  mentioned files to the remote server.
+- Add extra local files to chat context with `@` mentions.
+- Discover models from the remote server or manually enter a `provider/model`.
+- Keep local-only guardrails enabled by default, with an optional strict
+  server-side agent mode.
+- Enable remote inline completions with
+  `opencode.remote.completion.enabled`.
 
 ## Configure
 
@@ -63,19 +76,32 @@ Inline completion is available behind
 
 ## Development
 
+Install dependencies and run the standard verification build:
+
 ```bash
 bun install
-bun run compile
+bun run package
 ```
 
 Press `F5` in VS Code to launch an Extension Development Host.
+
+Before considering development work complete, run `bun run package`. This
+performs type checking, linting, and TypeScript compilation.
+
+Useful commands:
+
+```bash
+bun run compile
+bun test
+bun run vsix
+```
 
 ## Install Locally
 
 ```bash
 bun run vsix
 code --uninstall-extension local.opencode-remote
-code --install-extension opencode-remote-0.0.14.vsix
+code --install-extension opencode-remote-0.0.21.vsix
 ```
 
 After installing, run `Developer: Reload Window` in VS Code. This release uses a new view id to avoid VS Code keeping the old Explorer/OUTLINE placement cached.
