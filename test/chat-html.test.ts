@@ -27,6 +27,8 @@ describe("chat webview html", () => {
     expect(html).toContain('id="messages"')
     expect(html).toContain("timelineItem")
     expect(html).toContain('class="composer"')
+    expect(html).toContain('class="composerToolbar"')
+    expect(html).toContain('id="composerHint"')
     expect(html).toContain('id="suggestions"')
     expect(html).toContain('id="send"')
     expect(html).toContain('id="guard"')

@@ -7,6 +7,8 @@ test/**
 dist/test/**
 script/**
 .gitignore
+.opencode/**
+opencode.json
 bun.lock
 esbuild.js
 **/tsconfig.json

@@ -51,6 +51,7 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       align-items: center;
       gap: 8px;
       padding: 8px 9px;
+      min-width: 0;
       border-bottom: 1px solid var(--vscode-sideBarSectionHeader-border, var(--vscode-panel-border));
       background: var(--vscode-sideBar-background);
     }
@@ -91,9 +92,11 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
     .dot.connecting { background: var(--vscode-progressBar-background); }
     .dot.authFailed, .dot.error { background: var(--vscode-errorForeground); }
     .server { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .iconbar, .row { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
+    .iconbar, .row { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; min-width: 0; }
+    .iconbar { justify-content: flex-end; }
     .icon {
       min-width: 26px;
+      max-width: 72px;
       height: 26px;
       border-radius: 5px;
       color: var(--vscode-icon-foreground, var(--vscode-foreground));
@@ -101,6 +104,9 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       padding: 0 7px;
       font-size: 11px;
       line-height: 1;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
     }
     .icon:hover { background: var(--vscode-toolbar-hoverBackground); }
     .primary, .secondary {
@@ -125,9 +131,9 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       background: var(--vscode-sideBar-background);
     }
     .settings.open { display: grid; }
-    .settingsHeader { display: flex; justify-content: space-between; gap: 8px; align-items: baseline; }
-    .sectionTitle { font-size: 11px; font-weight: 650; text-transform: uppercase; color: var(--vscode-descriptionForeground); }
-    .sectionMeta { color: var(--vscode-descriptionForeground); font-size: 10px; white-space: nowrap; }
+    .settingsHeader { display: flex; justify-content: space-between; gap: 8px; align-items: baseline; flex-wrap: wrap; min-width: 0; }
+    .sectionTitle { min-width: 0; font-size: 11px; font-weight: 650; text-transform: uppercase; color: var(--vscode-descriptionForeground); }
+    .sectionMeta { min-width: 0; color: var(--vscode-descriptionForeground); font-size: 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .settingsGrid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 7px; }
     .field { display: grid; gap: 3px; color: var(--vscode-descriptionForeground); font-size: 10px; }
     .field input {
@@ -139,7 +145,7 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       border-radius: 5px;
       padding: 5px 7px;
     }
-    .settingsActions { justify-content: space-between; }
+    .settingsActions { justify-content: space-between; align-items: flex-start; min-width: 0; }
     .settingsActions .row { min-width: 0; }
     .detail {
       display: none;
@@ -192,10 +198,11 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       align-items: center;
       justify-content: space-between;
       gap: 8px;
+      min-width: 0;
       padding: 8px 9px;
       border-bottom: 1px solid var(--vscode-sideBarSectionHeader-border, var(--vscode-panel-border));
     }
-    .historyTitle { font-weight: 650; font-size: 12px; }
+    .historyTitle { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 650; font-size: 12px; }
     .sessionList { flex: 1; min-height: 0; overflow: auto; padding: 6px; }
     .sessionRow {
       width: 100%;
@@ -297,6 +304,8 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       align-items: center;
       justify-content: space-between;
       gap: 8px;
+      min-width: 0;
+      flex-wrap: wrap;
       padding: 6px 9px;
       border-bottom: 1px solid var(--vscode-panel-border);
       color: var(--vscode-descriptionForeground);
@@ -305,6 +314,7 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       letter-spacing: 0;
       background: var(--vscode-sideBar-background);
     }
+    .messageMeta > span:first-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .messageTime { text-transform: none; white-space: nowrap; }
     .messageBody {
       padding: 7px 8px;
@@ -386,7 +396,7 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       padding: 5px 6px 6px;
       background: var(--vscode-sideBar-background);
     }
-    .composerPanel { display: grid; gap: 4px; }
+    .composerPanel { display: grid; gap: 4px; min-width: 0; }
     .composerPanel .secondary {
       min-height: 24px;
       padding: 2px 6px;
@@ -399,6 +409,7 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       gap: 5px;
       width: fit-content;
       max-width: 100%;
+      min-width: 0;
       border: 1px solid var(--vscode-panel-border);
       border-radius: 999px;
       padding: 1px 7px;
@@ -421,6 +432,7 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       bottom: calc(100% + 5px);
       z-index: 45;
       width: min(360px, calc(100vw - 18px));
+      max-width: calc(100vw - 18px);
       max-height: 120px;
       overflow: auto;
       border: 1px solid var(--vscode-widget-border, var(--vscode-panel-border));
@@ -445,14 +457,15 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       font-size: 10px;
       height: 24px;
     }
-    .manualModel { display: none; grid-template-columns: minmax(0, 1fr) auto; gap: 4px; }
+    .manualModel { display: none; grid-template-columns: minmax(0, 1fr) auto; gap: 4px; min-width: 0; }
     .manualModel.open { display: grid; }
-    .chips { display: flex; flex-wrap: wrap; gap: 4px; min-height: 0; max-height: 42px; overflow: auto; }
+    .chips { display: flex; flex-wrap: wrap; align-content: flex-start; gap: 4px; min-width: 0; min-height: 0; max-height: 42px; overflow: auto; }
     .chip {
       display: inline-flex;
       align-items: center;
       gap: 5px;
       max-width: 100%;
+      min-width: 0;
       border: 1px solid var(--vscode-panel-border);
       border-radius: 999px;
       padding: 1px 6px;
@@ -462,11 +475,14 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
     }
     .chip.autoContext.captured { color: var(--vscode-foreground); border-color: var(--vscode-focusBorder); }
     .chip.autoContext.missing { color: var(--vscode-errorForeground); border-color: var(--vscode-inputValidation-warningBorder, var(--vscode-editorWarning-foreground)); }
-    .chip span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .chip span { min-width: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .chip button { color: var(--vscode-descriptionForeground); background: transparent; padding: 0; width: 14px; height: 14px; border-radius: 999px; }
     .chip button:hover { background: var(--vscode-toolbar-hoverBackground); }
     .composer {
       position: relative;
+      display: grid;
+      grid-template-rows: auto auto;
+      gap: 4px;
       border: 1px solid var(--vscode-input-border, var(--vscode-panel-border));
       background: var(--vscode-input-background);
       border-radius: 8px;
@@ -474,11 +490,13 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
     }
     .composer:focus-within { border-color: var(--vscode-focusBorder); }
     .composer textarea {
+      display: block;
       width: 100%;
+      min-width: 0;
       min-height: 48px;
       max-height: 120px;
       resize: vertical;
-      padding: 6px 38px 23px 7px;
+      padding: 7px;
       border: 0;
       outline: none;
       color: var(--vscode-input-foreground);
@@ -486,41 +504,47 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       font-size: var(--chat-content-font-size);
       line-height: 1.3;
     }
+    .composerToolbar {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(0, max-content) auto;
+      align-items: center;
+      gap: 6px;
+      min-width: 0;
+      padding: 0 5px 5px;
+    }
     .send {
-      position: absolute;
-      right: 5px;
-      bottom: 5px;
-      min-width: 28px;
-      height: 21px;
+      min-width: 30px;
+      height: 24px;
       border-radius: 5px;
+      padding: 0 8px;
       color: var(--vscode-button-foreground);
       background: var(--vscode-button-background);
       font-weight: 700;
       font-size: 10px;
     }
     .send:hover { background: var(--vscode-button-hoverBackground); }
-    .hint {
-      position: absolute;
-      left: 126px;
-      bottom: 6px;
+    .composerHint {
+      min-width: 0;
       color: var(--vscode-descriptionForeground);
       font-size: 9px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
       pointer-events: none;
     }
     .modelTrigger {
-      position: absolute;
-      left: 5px;
-      bottom: 5px;
+      position: relative;
       z-index: 2;
-      width: min(116px, calc(100% - 48px));
-      height: 22px;
+      width: 100%;
+      min-width: 0;
+      height: 24px;
       border-radius: 5px;
       border: 1px solid var(--vscode-button-border, var(--vscode-widget-border, var(--vscode-panel-border)));
       padding: 0 18px 0 7px;
       color: var(--vscode-foreground);
       background: var(--vscode-dropdown-background, var(--vscode-editor-background));
       font-size: 9px;
-      line-height: 20px;
+      line-height: 22px;
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
@@ -583,7 +607,7 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       left: 7px;
       right: 7px;
       bottom: calc(100% + 6px);
-      max-height: 210px;
+      max-height: max(48px, min(210px, calc(100vh - 132px)));
       overflow: auto;
       border: 1px solid var(--vscode-widget-border, var(--vscode-panel-border));
       border-radius: 7px;
@@ -611,8 +635,9 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       justify-content: space-between;
       gap: 4px;
       flex-wrap: wrap;
+      min-width: 0;
     }
-    .toggles { display: flex; flex-wrap: wrap; gap: 4px; color: var(--vscode-descriptionForeground); font-size: 10px; }
+    .toggles { display: flex; flex-wrap: wrap; gap: 4px; min-width: 0; color: var(--vscode-descriptionForeground); font-size: 10px; }
     .toggles label {
       display: inline-flex;
       align-items: center;
@@ -624,6 +649,30 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
     }
     .toggles input { margin: 0; }
     .notice { min-height: 12px; color: var(--vscode-descriptionForeground); font-size: 10px; overflow-wrap: anywhere; }
+    @media (max-width: 479px) {
+      .topbar { gap: 6px; padding: 7px; }
+      .icon { max-width: 52px; padding: 0 6px; }
+      .primary, .secondary { padding-inline: 7px; }
+      .composerToolbar {
+        grid-template-columns: minmax(0, 1fr) auto;
+        gap: 4px;
+      }
+      .composerHint {
+        grid-column: 1 / -1;
+        grid-row: 2;
+      }
+      .settingsActions { justify-content: flex-start; }
+    }
+    @media (max-width: 300px) {
+      .topbar { gap: 5px; padding: 6px; }
+      .mark { width: 22px; height: 22px; }
+      .icon { min-width: 24px; max-width: 34px; height: 24px; padding: 0 5px; }
+      .primary, .secondary { min-height: 24px; padding-inline: 6px; }
+      .composerWrap { padding: 4px; }
+      .composerHint { display: none; }
+      .send { min-width: 26px; padding: 0 6px; }
+      .modelTrigger { height: 24px; }
+    }
     @media (min-width: 760px) {
       .app.history-open.history-wide .body { grid-template-columns: 230px minmax(0, 1fr); }
       .app.history-open.history-wide .historyPane { position: relative; inset: auto; width: auto; z-index: auto; transform: none; box-shadow: none; }
@@ -702,9 +751,11 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
               <div id="suggestions" class="suggestions"></div>
               <div id="modelMenu" class="modelMenu" role="listbox" aria-label="Model" aria-hidden="true"></div>
               <textarea id="input" placeholder="Ask OpenCode... Use @ to reference files."></textarea>
-              <button id="modelTrigger" class="modelTrigger" type="button" title="Model" aria-haspopup="listbox" aria-expanded="false" aria-controls="modelMenu">Model</button>
-              <div class="hint">@ files, Ctrl+Enter send</div>
-              <button id="send" class="send" title="Send">></button>
+              <div class="composerToolbar">
+                <button id="modelTrigger" class="modelTrigger" type="button" title="Model" aria-haspopup="listbox" aria-expanded="false" aria-controls="modelMenu">Model</button>
+                <div id="composerHint" class="composerHint">@ files, Ctrl+Enter send</div>
+                <button id="send" class="send" title="Send">></button>
+              </div>
             </div>
             <div class="composerActions">
               <div class="toggles">
@@ -1478,15 +1529,14 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       const margin = 8;
       const gap = 6;
       const maxAvailableWidth = Math.max(120, viewportWidth - margin * 2);
-      const preferredLeft = composerRect.left + 5;
-      const preferredRight = Math.min(viewportWidth - margin, composerRect.right - 36);
-      let width = Math.min(maxAvailableWidth, Math.max(180, preferredRight - preferredLeft));
-      let left = Math.max(margin, Math.min(preferredLeft, viewportWidth - margin - width));
+      const preferredWidth = Math.max(180, Math.min(320, composerRect.width), triggerRect.width);
+      let width = Math.min(maxAvailableWidth, preferredWidth);
+      let left = Math.max(margin, Math.min(triggerRect.left, viewportWidth - margin - width));
       if (left + width > viewportWidth - margin) {
         left = Math.max(margin, viewportWidth - margin - width);
       }
 
-      const menuBottomY = Math.min(triggerRect.top, composerRect.top) - gap;
+      const menuBottomY = Math.max(margin + 48, Math.min(triggerRect.top, composerRect.top) - gap);
       const bottom = Math.max(margin, viewportHeight - menuBottomY);
       const maxHeight = Math.max(48, menuBottomY - margin);
 

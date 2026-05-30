@@ -46,17 +46,29 @@ describe("model selection flow", () => {
       chatHtmlSource.indexOf("    .modelTrigger {"),
       chatHtmlSource.indexOf("    .modelTrigger::after"),
     )
+    const sendRule = chatHtmlSource.slice(
+      chatHtmlSource.indexOf("    .send {"),
+      chatHtmlSource.indexOf("    .send:hover"),
+    )
     const menuRule = chatHtmlSource.slice(
       chatHtmlSource.indexOf("    .modelMenu {"),
       chatHtmlSource.indexOf("    .modelMenu.open"),
     )
 
     expect(composerRule).toContain("overflow: visible;")
+    expect(composerRule).toContain("display: grid;")
+    expect(composerRule).toContain("grid-template-rows: auto auto;")
     expect(composerRule).not.toContain("overflow: hidden;")
+    expect(chatHtmlSource).toContain("composerToolbar")
+    expect(chatHtmlSource).toContain("composerHint")
     expect(triggerRule).toContain("z-index: 2;")
-    expect(triggerRule).toContain("width: min(116px, calc(100% - 48px));")
+    expect(triggerRule).toContain("position: relative;")
+    expect(triggerRule).toContain("width: 100%;")
+    expect(triggerRule).toContain("min-width: 0;")
+    expect(triggerRule).not.toContain("position: absolute;")
     expect(triggerRule).toContain("border: 1px solid")
     expect(triggerRule).toContain("background: var(--vscode-dropdown-background")
+    expect(sendRule).not.toContain("position: absolute;")
     expect(chatHtmlSource).toContain(".modelTrigger::after")
     expect(chatHtmlSource).toContain('aria-haspopup="listbox"')
     expect(chatHtmlSource).toContain('aria-expanded="false"')
