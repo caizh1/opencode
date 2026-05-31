@@ -19,7 +19,9 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
   <style>
     :root {
       color-scheme: light dark;
-      --chat-content-font-size: max(9px, calc(var(--vscode-font-size, 13px) - 3px));
+      --chat-content-font-size: max(12px, var(--vscode-font-size, 13px));
+      --chat-user-font-size: max(11px, calc(var(--vscode-font-size, 13px) - 1px));
+      --chat-code-font-size: max(11px, calc(var(--vscode-font-size, 13px) - 1px));
     }
     * { box-sizing: border-box; }
     html, body { height: 100%; }
@@ -229,10 +231,10 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       flex: 1;
       min-height: 0;
       overflow: auto;
-      padding: 10px 8px;
+      padding: 12px 10px;
       display: flex;
       flex-direction: column;
-      gap: 9px;
+      gap: 11px;
       scroll-behavior: smooth;
     }
     .empty {
@@ -274,7 +276,7 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
     .timelineItem {
       display: grid;
       grid-template-columns: 24px minmax(0, 1fr);
-      gap: 6px;
+      gap: 7px;
       align-items: start;
     }
     .avatar {
@@ -325,25 +327,66 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
     }
     .messageTime { text-transform: none; white-space: nowrap; }
     .messageBody {
-      padding: 7px 8px;
+      padding: 10px 11px;
       font-size: var(--chat-content-font-size);
-      line-height: 1.3;
+      line-height: 1.55;
       overflow-wrap: anywhere;
     }
-    .messageBody p { margin: 0 0 8px; }
-    .messageBody p:last-child { margin-bottom: 0; }
-    .messageBody ul { margin: 0 0 8px 18px; padding: 0; }
-    .messageBody li { margin: 2px 0; }
-    .mdHeading { font-weight: 700; margin: 8px 0 5px; }
+    .timelineItem.user .messageBody {
+      padding: 7px 8px;
+      font-size: var(--chat-user-font-size);
+      line-height: 1.42;
+    }
+    .timelineItem.assistant .messageBody,
+    .timelineItem.tool .messageBody {
+      font-size: var(--chat-content-font-size);
+      line-height: 1.55;
+    }
+    .messageBody > :first-child { margin-top: 0; }
+    .messageBody > :last-child { margin-bottom: 0; }
+    .messageBody p { margin: 0 0 10px; }
+    .timelineItem.user .messageBody p { margin-bottom: 7px; }
+    .timelineItem.user .messageBody > :last-child { margin-bottom: 0; }
+    .messageBody ul,
+    .messageBody ol {
+      margin: 0 0 10px 20px;
+      padding: 0;
+    }
+    .messageBody li { margin: 3px 0; padding-left: 1px; }
+    .mdHeading {
+      color: var(--vscode-foreground);
+      font-weight: 700;
+      line-height: 1.35;
+      margin: 13px 0 7px;
+    }
+    .mdHeading1 { font-size: 1.12em; }
+    .mdHeading2 { font-size: 1.06em; }
+    .mdHeading3 { font-size: 1em; color: var(--vscode-descriptionForeground); }
+    .mdQuote {
+      margin: 0 0 10px;
+      padding: 1px 0 1px 10px;
+      border-left: 3px solid var(--vscode-panel-border);
+      color: var(--vscode-descriptionForeground);
+    }
+    .mdQuote p { margin-bottom: 0; }
+    .mdDivider {
+      height: 1px;
+      margin: 12px 0;
+      border: 0;
+      background: var(--vscode-panel-border);
+    }
+    .mdStrong { color: var(--vscode-foreground); font-weight: 700; }
+    .mdEm { font-style: italic; }
     .inlineCode {
       font-family: var(--vscode-editor-font-family);
       font-size: 0.95em;
       background: var(--vscode-textCodeBlock-background);
+      border: 1px solid var(--vscode-panel-border);
       border-radius: 3px;
       padding: 1px 3px;
     }
     .codeBlock {
-      margin: 8px 0;
+      margin: 11px 0;
       border: 1px solid var(--vscode-panel-border);
       border-radius: 7px;
       background: var(--vscode-textCodeBlock-background);
@@ -354,16 +397,23 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       align-items: center;
       justify-content: space-between;
       gap: 8px;
-      padding: 5px 7px;
+      padding: 6px 8px;
       border-bottom: 1px solid var(--vscode-panel-border);
       color: var(--vscode-descriptionForeground);
       font-size: 10px;
       background: var(--vscode-sideBar-background);
     }
-    .copyCode { color: var(--vscode-textLink-foreground); background: transparent; padding: 2px 4px; border-radius: 3px; }
+    .codeLanguage {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      font-weight: 650;
+    }
+    .copyCode { color: var(--vscode-textLink-foreground); background: transparent; padding: 2px 5px; border-radius: 3px; }
     .copyCode:hover { background: var(--vscode-toolbar-hoverBackground); }
-    .codeBlock pre { margin: 0; padding: 7px; overflow: auto; white-space: pre; line-height: 1.3; }
-    .codeBlock code { font-family: var(--vscode-editor-font-family); font-size: var(--chat-content-font-size); }
+    .codeBlock pre { margin: 0; padding: 10px; overflow: auto; white-space: pre; line-height: 1.45; }
+    .codeBlock code { font-family: var(--vscode-editor-font-family); font-size: var(--chat-code-font-size); }
     .toolCard {
       margin-top: 8px;
       border: 1px solid var(--vscode-panel-border);
@@ -400,10 +450,55 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
     .dots span { width: 5px; height: 5px; border-radius: 999px; background: var(--vscode-descriptionForeground); opacity: 0.45; }
     .composerWrap {
       flex: 0 0 auto;
+      display: grid;
+      gap: 5px;
       border-top: 1px solid var(--vscode-sideBarSectionHeader-border, var(--vscode-panel-border));
       padding: 5px 6px 6px;
       background: var(--vscode-sideBar-background);
     }
+    .composerCollapseToggle {
+      width: 100%;
+      min-width: 0;
+      min-height: 28px;
+      display: grid;
+      grid-template-columns: 18px auto minmax(0, 1fr);
+      align-items: center;
+      gap: 7px;
+      border: 1px solid var(--vscode-panel-border);
+      border-radius: 7px;
+      padding: 3px 8px;
+      color: var(--vscode-foreground);
+      background: var(--vscode-editor-background);
+      text-align: left;
+      font-size: 10px;
+      line-height: 1.25;
+    }
+    .composerCollapseToggle:hover {
+      border-color: var(--vscode-focusBorder);
+      background: var(--vscode-toolbar-hoverBackground);
+    }
+    .composerChevron {
+      width: 0;
+      height: 0;
+      border-left: 7px solid transparent;
+      border-right: 7px solid transparent;
+      border-top: 9px solid currentColor;
+      justify-self: center;
+      transition: transform 120ms ease;
+    }
+    .composerWrap.collapsed .composerChevron { transform: rotate(-90deg); }
+    .composerCollapseLabel {
+      font-weight: 650;
+      white-space: nowrap;
+    }
+    .composerCollapseSummary {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      color: var(--vscode-descriptionForeground);
+    }
+    .composerWrap.collapsed .composerPanel { display: none; }
     .composerPanel { display: grid; gap: 4px; min-width: 0; }
     .composerPanel .secondary {
       min-height: 24px;
@@ -969,7 +1064,12 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
           <div class="empty">Ask about your code. Type @ to attach workspace files as context.</div>
         </main>
         <footer class="composerWrap">
-          <div class="composerPanel">
+          <button id="composerCollapseToggle" class="composerCollapseToggle" type="button" aria-expanded="true" aria-controls="composerPanel" title="Collapse input and context panel">
+            <span class="composerChevron" aria-hidden="true"></span>
+            <span id="composerCollapseLabel" class="composerCollapseLabel">Hide panel</span>
+            <span id="composerCollapseSummary" class="composerCollapseSummary">Context 0 | Off | Guard ok</span>
+          </button>
+          <div id="composerPanel" class="composerPanel">
             <div id="guard" class="guard"></div>
             <div id="usageMeter" class="usageMeter"></div>
             <div id="codeGraph" class="codeGraph"></div>
@@ -996,6 +1096,7 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
                 <label><input id="diff" type="checkbox"> Git diff</label>
               </div>
               <div class="row">
+                <button id="exportMarkdown" class="secondary" title="Export current chat to Markdown">Export</button>
                 <button id="attach" class="secondary" title="Attach file as persistent context">Attach</button>
                 <button id="refreshModels" class="secondary" title="Refresh models">Refresh</button>
               </div>
@@ -1032,6 +1133,7 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
     let mentionSearched = false;
     let modelMenuOpen = false;
     let agentMenuOpen = false;
+    let composerCollapsed = false;
     let codeIntelligenceVisible = false;
     let selectedStateMachineId = "";
 
@@ -1078,6 +1180,7 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
     el("refresh").addEventListener("click", () => vscode.postMessage({ type: "refresh" }));
     el("openOutput").addEventListener("click", () => vscode.postMessage({ type: "openOutput" }));
     el("newSession").addEventListener("click", () => vscode.postMessage({ type: "newSession" }));
+    el("composerCollapseToggle").addEventListener("click", toggleComposerPanel);
     el("refreshModels").addEventListener("click", () => vscode.postMessage({ type: "refreshModels" }));
     el("modelSelect").addEventListener("change", onModelSelect);
     el("modelTrigger").addEventListener("click", (event) => {
@@ -1113,6 +1216,7 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
     });
     el("codeGraph").addEventListener("click", onCodeGraphAction);
     el("codeIntelligence").addEventListener("click", onCodeIntelligenceAction);
+    el("exportMarkdown").addEventListener("click", () => vscode.postMessage({ type: "exportMarkdown", scope: "session" }));
     el("attach").addEventListener("click", () => vscode.postMessage({ type: "addFile" }));
     el("send").addEventListener("click", send);
     el("input").addEventListener("input", onComposerInput);
@@ -1144,6 +1248,10 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
         mentionStatus = event.data.status || "";
         mentionError = "";
         renderSuggestions();
+        return;
+      }
+      if (event.data.type === "exportStatus") {
+        setNotice(event.data.message || "");
       }
     });
 
@@ -1156,6 +1264,31 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
         username: el("username").value,
         password: el("password").value
       });
+    }
+
+    function toggleComposerPanel() {
+      composerCollapsed = !composerCollapsed;
+      if (composerCollapsed) {
+        closeComposerPopups();
+      } else {
+        requestAnimationFrame(() => el("input").focus());
+      }
+      renderComposerCollapse();
+    }
+
+    function closeComposerPopups() {
+      modelMenuOpen = false;
+      agentMenuOpen = false;
+      mentionResults = [];
+      mentionStatus = "";
+      mentionError = "";
+      mentionTruncated = false;
+      mentionSearched = false;
+      renderModelMenu();
+      renderModelTrigger();
+      renderAgentMenu();
+      renderAgentTrigger();
+      renderSuggestions();
     }
 
     function onModelSelect() {
@@ -1198,7 +1331,7 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
         el("input").focus();
         return;
       }
-      if (localOnlyAgentBlocked()) {
+      if (localOnlyAgentBlocked() && !looksLikeExportRequest(text)) {
         setNotice(state.localOnlyWarning || "Required VS Code local agent is unavailable.");
         return;
       }
@@ -1219,7 +1352,12 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       mentionResults = [];
       renderMentionChips();
       renderSuggestions();
+      renderSendButton();
       setNotice("");
+    }
+
+    function looksLikeExportRequest(text) {
+      return /(^\\/export\\b|导出|保存|另存|存成|下载|markdown|\\.md\\b|\\bmd\\b|\\bexport\\b|\\bsave\\b|\\bdownload\\b)/i.test(text.trim());
     }
 
     function onComposerKeydown(event) {
@@ -1252,6 +1390,7 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
     }
 
     function onComposerInput() {
+      renderSendButton();
       const mention = currentMention();
       if (!mention) {
         mentionResults = [];
@@ -1338,7 +1477,13 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       renderConnectionButtons();
       el("diag").checked = Boolean(state.defaults && state.defaults.includeDiagnostics);
       el("diff").checked = Boolean(state.defaults && state.defaults.includeGitDiff);
-      el("send").disabled = Boolean(state.sending || localOnlyAgentBlocked());
+      renderSendButton();
+      renderComposerCollapse();
+    }
+
+    function renderSendButton() {
+      const blockedByGuard = localOnlyAgentBlocked() && !looksLikeExportRequest(el("input").value);
+      el("send").disabled = Boolean(state.sending || blockedByGuard);
       el("send").textContent = state.sending ? "..." : ">";
     }
 
@@ -1379,6 +1524,50 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       el("test").disabled = pending;
       el("connect").textContent = connectPending ? "Connecting..." : "Connect";
       el("test").textContent = testPending ? "Testing..." : "Test";
+    }
+
+    function renderComposerCollapse() {
+      const wrap = document.querySelector(".composerWrap");
+      const panel = el("composerPanel");
+      const button = el("composerCollapseToggle");
+      const label = el("composerCollapseLabel");
+      const summary = composerCollapseSummaryText();
+      wrap.className = "composerWrap" + (composerCollapsed ? " collapsed" : "");
+      panel.hidden = composerCollapsed;
+      button.setAttribute("aria-expanded", composerCollapsed ? "false" : "true");
+      button.setAttribute("aria-label", composerCollapsed ? "Expand input and context panel" : "Collapse input and context panel");
+      button.title = composerCollapsed ? "Expand input and context panel" : "Collapse input and context panel";
+      label.textContent = composerCollapsed ? "Show panel" : "Hide panel";
+      el("composerCollapseSummary").textContent = summary;
+    }
+
+    function composerCollapseSummaryText() {
+      return "Context " + composerContextCount() + " | " + composerIndexSummary() + " | " + composerGuardSummary();
+    }
+
+    function composerContextCount() {
+      let count = mentionedFiles.length + (state.contextFiles || []).length;
+      if (el("file").checked && state.autoContext && state.autoContext.currentFile) count += 1;
+      return count;
+    }
+
+    function composerIndexSummary() {
+      const graph = state.codeGraph || {};
+      const stateName = graph.state || "disabled";
+      if (state.codeGraphWaitDetail) return "Indexing";
+      if (stateName === "ready") return "Indexed";
+      if (stateName === "indexing" || stateName === "indexingFull" || stateName === "indexingIncremental" || stateName === "recovering" || stateName === "rescanScheduled") {
+        return "Indexing";
+      }
+      if (stateName === "paused") return "Paused";
+      if (stateName === "stale" || stateName === "degraded") return "Index stale";
+      if (stateName === "error") return "Index error";
+      return "Off";
+    }
+
+    function composerGuardSummary() {
+      if (state.localOnlyWarning || localOnlyAgentBlocked()) return "Guard warning";
+      return state.localOnlyMode === false ? "Guard off" : "Guard ok";
     }
 
     function renderSessions() {
@@ -1620,6 +1809,8 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       const lines = String(text || "").split(/\\r?\\n/);
       let paragraph = [];
       let list;
+      let listTag = "";
+      let quoteLines = [];
       const flushParagraph = () => {
         if (paragraph.length === 0) return;
         const p = document.createElement("p");
@@ -1631,50 +1822,147 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
         if (!list) return;
         root.appendChild(list);
         list = undefined;
+        listTag = "";
+      };
+      const flushQuote = () => {
+        if (quoteLines.length === 0) return;
+        const quote = document.createElement("blockquote");
+        quote.className = "mdQuote";
+        const p = document.createElement("p");
+        appendInlineMarkdown(p, quoteLines.join(" "));
+        quote.appendChild(p);
+        root.appendChild(quote);
+        quoteLines = [];
+      };
+      const flushBlocks = () => {
+        flushParagraph();
+        flushList();
+        flushQuote();
       };
       for (const rawLine of lines) {
         const line = rawLine.trim();
         if (!line) {
-          flushParagraph();
-          flushList();
+          flushBlocks();
           continue;
         }
-        if (/^#{1,3}\\s+/.test(line)) {
+        if (/^(?:-{3,}|\\*{3,}|_{3,})$/.test(line)) {
+          flushBlocks();
+          const divider = document.createElement("hr");
+          divider.className = "mdDivider";
+          root.appendChild(divider);
+          continue;
+        }
+        const quote = line.match(/^>\\s?(.*)$/);
+        if (quote) {
           flushParagraph();
           flushList();
+          quoteLines.push(quote[1]);
+          continue;
+        }
+        const headingMatch = line.match(/^(#{1,3})\\s+(.+)$/);
+        if (headingMatch) {
+          flushBlocks();
           const heading = document.createElement("div");
-          heading.className = "mdHeading";
-          appendInlineMarkdown(heading, line.replace(/^#{1,3}\\s+/, ""));
+          heading.className = "mdHeading mdHeading" + headingMatch[1].length;
+          appendInlineMarkdown(heading, headingMatch[2]);
           root.appendChild(heading);
           continue;
         }
-        if (/^[-*]\\s+/.test(line)) {
+        const unordered = line.match(/^[-*]\\s+(.+)$/);
+        const ordered = line.match(/^\\d+[.)]\\s+(.+)$/);
+        if (unordered || ordered) {
           flushParagraph();
-          if (!list) list = document.createElement("ul");
+          flushQuote();
+          const tag = ordered ? "ol" : "ul";
+          if (!list || listTag !== tag) {
+            flushList();
+            list = document.createElement(tag);
+            list.className = "mdList";
+            listTag = tag;
+          }
           const item = document.createElement("li");
-          appendInlineMarkdown(item, line.replace(/^[-*]\\s+/, ""));
+          appendInlineMarkdown(item, (unordered || ordered)[1]);
           list.appendChild(item);
           continue;
         }
         flushList();
+        flushQuote();
         paragraph.push(line);
       }
-      flushParagraph();
-      flushList();
+      flushBlocks();
     }
 
     function appendInlineMarkdown(root, text) {
-      const chunks = String(text || "").split("\`");
-      chunks.forEach((chunk, index) => {
-        if (index % 2 === 1) {
+      const value = String(text || "");
+      let index = 0;
+      while (index < value.length) {
+        const marker = nextInlineMarker(value, index);
+        if (!marker) {
+          appendText(root, value.slice(index));
+          break;
+        }
+        if (marker.index > index) appendText(root, value.slice(index, marker.index));
+        if (marker.type === "code") {
+          const end = value.indexOf("\`", marker.index + 1);
+          if (end === -1) {
+            appendText(root, value.slice(marker.index));
+            break;
+          }
           const code = document.createElement("code");
           code.className = "inlineCode";
-          code.textContent = chunk;
+          code.textContent = value.slice(marker.index + 1, end);
           root.appendChild(code);
-        } else if (chunk) {
-          root.appendChild(document.createTextNode(chunk));
+          index = end + 1;
+          continue;
         }
-      });
+        if (marker.type === "strong") {
+          const end = value.indexOf("**", marker.index + 2);
+          if (end === -1) {
+            appendText(root, value.slice(marker.index));
+            break;
+          }
+          const strong = document.createElement("strong");
+          strong.className = "mdStrong";
+          appendInlineMarkdown(strong, value.slice(marker.index + 2, end));
+          root.appendChild(strong);
+          index = end + 2;
+          continue;
+        }
+        const end = findSingleStar(value, marker.index + 1);
+        if (end === -1) {
+          appendText(root, value.slice(marker.index));
+          break;
+        }
+        const em = document.createElement("em");
+        em.className = "mdEm";
+        appendInlineMarkdown(em, value.slice(marker.index + 1, end));
+        root.appendChild(em);
+        index = end + 1;
+      }
+    }
+
+    function appendText(root, text) {
+      if (text) root.appendChild(document.createTextNode(text));
+    }
+
+    function nextInlineMarker(value, start) {
+      for (let index = start; index < value.length; index += 1) {
+        if (value[index] === "\`") return { type: "code", index };
+        if (value.slice(index, index + 2) === "**" && value.indexOf("**", index + 2) !== -1) {
+          return { type: "strong", index };
+        }
+        if (value[index] === "*" && value[index - 1] !== "*" && value[index + 1] !== "*" && findSingleStar(value, index + 1) !== -1) {
+          return { type: "em", index };
+        }
+      }
+      return undefined;
+    }
+
+    function findSingleStar(value, start) {
+      for (let index = start; index < value.length; index += 1) {
+        if (value[index] === "*" && value[index - 1] !== "*" && value[index + 1] !== "*") return index;
+      }
+      return -1;
     }
 
     function codeBlock(language, codeText) {
@@ -1683,11 +1971,14 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       const head = document.createElement("div");
       head.className = "codeHead";
       const label = document.createElement("span");
-      label.textContent = language || "text";
+      label.className = "codeLanguage";
+      label.textContent = language || "plain text";
       const copy = document.createElement("button");
       copy.className = "copyCode";
+      copy.type = "button";
+      copy.title = "Copy code block";
       copy.textContent = "Copy";
-      copy.addEventListener("click", () => copyCode(codeText));
+      copy.addEventListener("click", () => copyCode(codeText, copy));
       head.append(label, copy);
       const pre = document.createElement("pre");
       const code = document.createElement("code");
@@ -1697,11 +1988,24 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       return block;
     }
 
-    async function copyCode(text) {
+    async function copyCode(text, button) {
+      const previousLabel = button ? button.textContent : "";
       try {
         await navigator.clipboard.writeText(text);
+        if (button) {
+          button.textContent = "Copied";
+          window.setTimeout(() => {
+            button.textContent = previousLabel || "Copy";
+          }, 1200);
+        }
         setNotice("Copied code.");
       } catch {
+        if (button) {
+          button.textContent = "Failed";
+          window.setTimeout(() => {
+            button.textContent = previousLabel || "Copy";
+          }, 1200);
+        }
         setNotice("Copy failed.");
       }
     }

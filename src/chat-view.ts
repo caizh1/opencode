@@ -1,5 +1,16 @@
+import * as os from "node:os"
+import * as path from "node:path"
 import * as vscode from "vscode"
 import { agentListSummary } from "./agent-name"
+import {
+  buildExportIntentPrompt,
+  formatChatExportMarkdown,
+  isExportIntentCandidate,
+  parseExplicitExportCommand,
+  parseExportIntentResponse,
+  suggestExportFilename,
+  type ExportScope,
+} from "./chat-export"
 import { createChatViewHtml } from "./chat-html"
 import { CHAT_SESSION_TITLE, isPluginChatMessage, isPluginChatSession } from "./chat-session"
 import { applyOpenCodeEventToMessages, normalizeOpenCodeEvent } from "./chat-stream"
@@ -19,6 +30,7 @@ import { MissingLocalOnlyAgentError, selectRequestAgent } from "./local-agent"
 import { buildMentionIndex, searchMentionIndex, type MentionIndexEntry } from "./mention-index"
 import {
   isSessionNotFoundError,
+  messageText,
   parseModel,
   RemoteOpenCodeAuthError,
   RemoteOpenCodeClient,
@@ -46,6 +58,8 @@ const MODEL_REFRESH_TIMEOUT_MS = 8000
 const AGENT_REFRESH_TIMEOUT_MS = 8000
 const SESSION_REFRESH_TIMEOUT_MS = 8000
 const MESSAGE_REFRESH_TIMEOUT_MS = 5000
+const EXPORT_INTENT_TIMEOUT_MS = 15000
+const EXPORT_INTENT_SESSION_TITLE = "VS Code export intent"
 
 type MentionedFileRef = {
   uri: string
@@ -62,6 +76,7 @@ type ChatViewMessage =
   | { type: "newSession" }
   | { type: "addFile" }
   | { type: "clearContext" }
+  | { type: "exportMarkdown"; scope?: ExportScope; filenameHint?: string }
   | { type: "selectSession"; sessionID: string }
   | { type: "refreshModels" }
   | { type: "selectModel"; model: string }
@@ -161,6 +176,7 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
   private readonly flaggedSessions = new Set<string>()
   private readonly hiddenCompletionSessions = new Set<string>()
   private readonly hiddenExternalSessions = new Set<string>()
+  private readonly hiddenExportIntentSessions = new Set<string>()
   private mentionIndex?: MentionIndexState
   private mentionIndexBuild?: Promise<MentionIndexState>
   private eventSubscription?: {
@@ -463,6 +479,9 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
           this.deps.contextStore.clear()
           this.postState()
           break
+        case "exportMarkdown":
+          await this.exportMarkdown(message.scope ?? "session", message.filenameHint)
+          break
         case "selectSession":
           await this.selectSession(message.sessionID)
           break
@@ -517,7 +536,7 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
           })
           break
         case "sendMessage":
-          await this.sendMessage(
+          await this.handleSendMessage(
             message.text,
             this.contextOptions(message.options),
             this.mentionedFileUris(message.mentionedFiles ?? []),
@@ -988,6 +1007,7 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
   private isVisibleChatSession(session: OpenCodeSession) {
     if (this.hiddenCompletionSessions.has(session.id)) return false
     if (this.hiddenExternalSessions.has(session.id)) return false
+    if (this.hiddenExportIntentSessions.has(session.id)) return false
     if (isInlineCompletionSession(session)) return false
     return isPluginChatSession(session)
   }
@@ -1089,6 +1109,115 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
       }
     }
     return result
+  }
+
+  private async handleSendMessage(text: string, options: ChatContextOptions, mentionedFiles: vscode.Uri[]) {
+    const explicitExport = parseExplicitExportCommand(text)
+    if (explicitExport) {
+      await this.exportMarkdown(explicitExport.scope, explicitExport.filenameHint)
+      return
+    }
+
+    if (isExportIntentCandidate(text)) {
+      const client = this.deps.getClient()
+      if (client && this.connectionState === "connected") {
+        const decision = await this.classifyExportIntent(client, text)
+        if (decision.intent === "export") {
+          await this.exportMarkdown(decision.scope, decision.filenameHint)
+          return
+        }
+      }
+      this.postExportStatus("")
+    }
+
+    await this.sendMessage(text, options, mentionedFiles)
+  }
+
+  private async classifyExportIntent(client: RemoteOpenCodeClient, text: string) {
+    this.postExportStatus("Checking whether this is an export request...")
+    const settings = this.deps.getSettings()
+    const prompt = buildExportIntentPrompt({
+      userRequest: text,
+      sessionTitle: this.currentSessionTitle(),
+      messages: this.messages,
+    })
+
+    try {
+      const response = await withRequestTimeout("export intent classification", EXPORT_INTENT_TIMEOUT_MS, async (signal) => {
+        const session = await client.createSession(EXPORT_INTENT_SESSION_TITLE, signal)
+        this.hiddenExportIntentSessions.add(session.id)
+        return client.sendMessage({
+          sessionID: session.id,
+          text: prompt,
+          model: this.modelForSettings(settings).model,
+          signal,
+        })
+      })
+      const decision = parseExportIntentResponse(messageText(response))
+      if (!decision) {
+        this.deps.output.appendLine("[export] Model returned an invalid export intent response; continuing as chat.")
+        return { intent: "chat" } as const
+      }
+      this.deps.output.appendLine(`[export] Model classified intent as ${decision.intent}.`)
+      return decision
+    } catch (error) {
+      this.deps.output.appendLine(`[export] Failed to classify export intent: ${formatErrorMessage(error)}`)
+      return { intent: "chat" } as const
+    }
+  }
+
+  private async exportMarkdown(scope: ExportScope, filenameHint?: string) {
+    const markdown = formatChatExportMarkdown({
+      messages: this.messages,
+      scope,
+      sessionTitle: this.currentSessionTitle(),
+    })
+    if (!markdown) {
+      const message = scope === "lastAssistant" ? "No assistant response is available to export." : "No chat messages are available to export."
+      this.postExportStatus(message)
+      vscode.window.showWarningMessage(message)
+      return
+    }
+
+    const suggestedFilename = suggestExportFilename({
+      filenameHint,
+      sessionTitle: this.currentSessionTitle(),
+    })
+    const uri = await vscode.window.showSaveDialog({
+      title: "Export OpenCode chat as Markdown",
+      saveLabel: "Export",
+      defaultUri: this.defaultExportUri(suggestedFilename),
+      filters: {
+        Markdown: ["md"],
+      },
+    })
+    if (!uri) {
+      this.postExportStatus("Export canceled.")
+      return
+    }
+
+    await vscode.workspace.fs.writeFile(uri, new TextEncoder().encode(markdown))
+    const message = `Exported Markdown to ${uri.fsPath}.`
+    this.deps.output.appendLine(`[export] ${message}`)
+    this.postExportStatus(message)
+    vscode.window.showInformationMessage(message)
+  }
+
+  private defaultExportUri(filename: string) {
+    const workspaceFolder = vscode.workspace.workspaceFolders?.[0]
+    if (workspaceFolder) return vscode.Uri.joinPath(workspaceFolder.uri, filename)
+    return vscode.Uri.file(path.join(os.homedir(), filename))
+  }
+
+  private currentSessionTitle() {
+    return this.sessions.find((session) => session.id === this.sessionID)?.title || CHAT_SESSION_TITLE
+  }
+
+  private postExportStatus(message: string) {
+    this.view?.webview.postMessage({
+      type: "exportStatus",
+      message,
+    })
   }
 
   private postState() {
