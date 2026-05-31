@@ -13,6 +13,14 @@ describe("code graph query observability", () => {
     expect(serviceSource).toContain("elapsed=")
   })
 
+  test("auto-starts background indexing and exposes a send readiness gate", () => {
+    expect(serviceSource).toContain("async maybePromptAndIndex()")
+    expect(serviceSource).toContain("void this.indexWorkspace(false)")
+    expect(serviceSource).toContain("async waitForReady()")
+    expect(serviceSource).toContain("private async runIndexTask")
+    expect(serviceSource).toContain("class WorkBudget")
+  })
+
   test("returns retrieval metrics with prompt context", () => {
     expect(querySource).toContain("metricsForResult(result")
     expect(querySource).toContain("candidateCount")

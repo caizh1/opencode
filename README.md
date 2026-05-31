@@ -37,7 +37,7 @@ OpenCode Remote 不让远端 OpenCode 直接读取本地文件。扩展在 VS Co
 
 ## 本地 Code Graph
 
-本地 code graph 面向 C/C++ 固件仓库。第一次打开 workspace 时，扩展会询问是否启用索引；启用后会在 VS Code extension host 中扫描 `.c`、`.h`、`.cc`、`.cpp`、`.hpp` 等文件，提取 include、宏、函数定义和函数调用关系。索引保存在 VS Code 的扩展 storage 中，不写入代码仓库。
+本地 code graph 面向 C/C++ 固件仓库。默认打开 workspace 后会自动在后台建立索引；如果关闭 `opencode.remote.codeGraph.enabled`，则不会自动索引。索引会在 VS Code extension host 中扫描 `.c`、`.h`、`.cc`、`.cpp`、`.hpp` 等文件，提取 include、宏、函数定义和函数调用关系。索引保存在 VS Code 的扩展 storage 中，不写入代码仓库。
 
 聊天时不会把整仓符号表或整仓源码塞进 prompt。扩展会根据问题动态检索：
 
@@ -128,19 +128,19 @@ inline completion 默认关闭。开启后，扩展会在编辑器中注册 VS C
 | `opencode.remote.serverUrl` | `http://localhost:4096` | 远端 `opencode serve` base URL。 |
 | `opencode.remote.username` | `opencode` | HTTP Basic Auth 用户名。 |
 | `opencode.remote.defaultModel` | `""` | 可选默认模型，格式为 `provider/model`；为空时使用服务器默认。 |
-| `opencode.remote.defaultAgent` | `""` | 可选默认 agent 名称，用于聊天和补全请求。 |
-| `opencode.remote.localOnlyAgent` | `vscode-local` | strict local-only agent 模式下发送给 OpenCode 的 agent 名称。 |
+| `opencode.remote.defaultAgent` | `""` | local-only 模式关闭时可选的默认 agent 名称。 |
+| `opencode.remote.localOnlyAgent` | `vscode-local` | VS Code 本地代码理解必须使用的远端 agent 名称；聊天和补全都会发送该 agent。 |
 | `opencode.remote.context.maxFileBytes` | `16000` | 每个本地文件最多加入的文本字节数。 |
 | `opencode.remote.context.maxFiles` | `8` | 单次请求最多加入的本地文件数量。 |
 | `opencode.remote.context.includeDiagnostics` | `true` | 默认是否加入 VS Code diagnostics。 |
 | `opencode.remote.context.includeGitDiff` | `false` | 默认是否加入 git diff。 |
 | `opencode.remote.context.localOnlyMode` | `true` | 是否启用 local-only guard。 |
-| `opencode.remote.context.strictLocalOnlyAgent` | `false` | 是否强制使用 `opencode.remote.localOnlyAgent`。启用前必须先在远端配置该 agent。 |
+| `opencode.remote.context.strictLocalOnlyAgent` | `true` | 兼容旧配置项；local-only 模式现在总是强制使用 `opencode.remote.localOnlyAgent`，找不到时会阻止请求。 |
 | `opencode.remote.completion.enabled` | `false` | 是否启用远端 inline completion。 |
 | `opencode.remote.completion.debounceMs` | `350` | 请求 inline completion 前的 debounce 时间，单位毫秒。 |
 | `opencode.remote.completion.logLevel` | `info` | 补全日志等级，可选 `off`、`info`、`debug`。 |
-| `opencode.remote.codeGraph.enabled` | `false` | 是否启用本地 C/C++ code graph。 |
-| `opencode.remote.codeGraph.promptOnWorkspaceOpen` | `true` | 打开 workspace 时是否询问启用本地 code graph。 |
+| `opencode.remote.codeGraph.enabled` | `true` | 是否自动启用本地 C/C++ code graph。关闭后不会自动索引。 |
+| `opencode.remote.codeGraph.promptOnWorkspaceOpen` | `true` | 旧版询问开关；当前默认自动索引，保留用于兼容已有配置。 |
 | `opencode.remote.codeGraph.analysisMode` | `auto` | code graph 分析模式；`auto` 会优先使用随 VSIX 单包内置的 Tree-sitter WASM AST 分析，失败时降级为 fast。 |
 | `opencode.remote.codeGraph.maxFiles` | `50000` | 最多索引的 C/C++ 文件数量。 |
 | `opencode.remote.codeGraph.maxContextBytes` | `24000` | 单次请求最多注入的 code graph 上下文字节数。 |
@@ -151,9 +151,9 @@ inline completion 默认关闭。开启后，扩展会在编辑器中注册 VS C
 | `opencode.remote.codeGraph.scipClangPath` | `""` | 可选 workspace host 上的 `scip-clang` 路径，后续 semantic 分析使用。 |
 | `opencode.remote.codeGraph.excludeGlobs` | `[]` | 本地 code graph 额外排除规则。 |
 
-### Strict Local-only Agent 示例
+### VS Code Local Agent 示例
 
-默认 local-only guard 是 prompt-level 约束，兼容未配置自定义 agent 的远端 OpenCode，并且 does not force a remote agent。 如果需要更硬的服务端边界，可以在远端 OpenCode 配置一个禁用文件系统和 shell 工具的 agent，再启用 `opencode.remote.context.strictLocalOnlyAgent`。
+VS Code 本地代码理解必须在远端 OpenCode 配置一个名为 `vscode-local` 的 agent。插件连接后会通过 `/agent` 拉取远端 agent 列表，只高亮并使用 `vscode-local`；其他 agent 只展示为不可选。若远端没有 `vscode-local`，或 agent 列表加载失败，聊天和 inline completion 都会 fail closed，不会回落到远端默认 agent。
 
 ```json
 {
@@ -169,15 +169,19 @@ inline completion 默认关闭。开启后，扩展会在编辑器中注册 VS C
         "list": "deny",
         "bash": "deny",
         "edit": "deny",
+        "task": "deny",
         "external_directory": "deny",
-        "lsp": "deny"
+        "lsp": "deny",
+        "skill": "deny",
+        "webfetch": "deny",
+        "websearch": "deny"
       }
     }
   }
 }
 ```
 
-不要在远端 agent 配好之前启用 strict 模式，否则 OpenCode 可能拒绝请求。Do not enable strict mode until the remote agent is configured.
+这个 agent 应只根据插件注入的 VS Code 本地上下文、diagnostics、git diff 和本地 code graph evidence 回答；不要允许它读取或修改远端 OpenCode server 文件系统。
 
 ## 命令与快捷键
 

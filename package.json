@@ -2,7 +2,7 @@
   "name": "opencode-remote",
   "displayName": "OpenCode Remote",
   "description": "Remote opencode serve client for VS Code",
-  "version": "0.0.31",
+  "version": "0.0.38",
   "publisher": "local",
   "repository": {
     "type": "git",
@@ -137,12 +137,12 @@
         "opencode.remote.defaultAgent": {
           "type": "string",
           "default": "",
-          "description": "Optional default agent name for chat requests."
+          "description": "Optional default agent name for chat requests when local-only mode is disabled."
         },
         "opencode.remote.localOnlyAgent": {
           "type": "string",
           "default": "vscode-local",
-          "description": "Agent name to use only when strict local-only agent mode is enabled. Configure this agent on the remote OpenCode server with file-system tools denied."
+          "description": "Required VS Code local agent name for chat and inline completion. Configure this agent on the remote OpenCode server with server filesystem tools denied."
         },
         "opencode.remote.context.maxFileBytes": {
           "type": "number",
@@ -174,8 +174,8 @@
         },
         "opencode.remote.context.strictLocalOnlyAgent": {
           "type": "boolean",
-          "default": false,
-          "description": "Send opencode.remote.localOnlyAgent as the request agent. Enable only after configuring that agent on the remote OpenCode server."
+          "default": true,
+          "description": "Legacy compatibility setting. Local-only mode now always sends opencode.remote.localOnlyAgent and fails closed if that agent is unavailable."
         },
         "opencode.remote.completion.enabled": {
           "type": "boolean",
@@ -200,13 +200,13 @@
         },
         "opencode.remote.codeGraph.enabled": {
           "type": "boolean",
-          "default": false,
-          "description": "Enable local C/C++ code graph indexing. The index stays local and only query-relevant context is sent to remote OpenCode."
+          "default": true,
+          "description": "Automatically enable local C/C++ code graph indexing. The index stays local and only query-relevant context is sent to remote OpenCode."
         },
         "opencode.remote.codeGraph.promptOnWorkspaceOpen": {
           "type": "boolean",
           "default": true,
-          "description": "Ask before enabling local code graph indexing for a workspace."
+          "description": "Legacy prompt setting retained for existing profiles; code graph now auto-indexes when enabled."
         },
         "opencode.remote.codeGraph.analysisMode": {
           "type": "string",

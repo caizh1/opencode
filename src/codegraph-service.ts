@@ -7,7 +7,7 @@ import {
   buildIndexStats,
   CURRENT_CODE_GRAPH_INDEX_VERSION,
   groupFilesByShard,
-  hydrateCodeGraphIndex,
+  hydrateCodeGraphIndexAsync,
   shardInfo,
 } from "./codegraph-index"
 import { buildCodeGraphContext } from "./codegraph-query"
@@ -22,6 +22,7 @@ import type {
 import type { CodeGraphStatus, RemoteSettings } from "./types"
 
 const INDEX_VERSION = CURRENT_CODE_GRAPH_INDEX_VERSION
+const INDEX_TIME_SLICE_MS = 35
 const SOURCE_GLOB = "**/*.{c,h,cc,cpp,cxx,hpp,hxx}"
 const DEFAULT_EXCLUDES = [
   "**/.git/**",
@@ -39,6 +40,7 @@ export class LocalCodeGraphService implements vscode.Disposable {
   private statusValue: CodeGraphStatus = disabledStatus()
   private watcher?: vscode.FileSystemWatcher
   private indexing?: Promise<void>
+  private loadingIndex?: Promise<void>
   private pendingChanges = new Map<string, { uri: vscode.Uri; deleted: boolean }>()
   private changeTimer?: ReturnType<typeof setTimeout>
   private disposed = false
@@ -68,38 +70,24 @@ export class LocalCodeGraphService implements vscode.Disposable {
       this.setStatus(disabledStatus("No workspace folder is open."))
       return
     }
-    if (settings.codeGraph.enabled) {
-      await this.loadIndex()
-      this.startWatcher()
-      void this.indexWorkspace(false)
-      return
-    }
-    if (!settings.codeGraph.promptOnWorkspaceOpen) {
+    if (!settings.codeGraph.enabled) {
       this.setStatus(disabledStatus())
       return
     }
 
-    const key = `codeGraph.prompted.${workspaceRootKey()}`
-    if (this.context.globalState.get<boolean>(key)) {
-      this.setStatus(disabledStatus())
-      return
-    }
-    await this.context.globalState.update(key, true)
-    const selected = await vscode.window.showInformationMessage(
-      "Enable local C/C++ code graph indexing for this workspace? It runs locally and sends only query-relevant context to remote OpenCode.",
-      "Enable",
-      "Not now",
-      "Never ask",
-    )
-    if (selected === "Enable") {
-      await this.setEnabled(true)
-      await this.indexWorkspace(false)
-    } else if (selected === "Never ask") {
-      await vscode.workspace
-        .getConfiguration("opencode.remote")
-        .update("codeGraph.promptOnWorkspaceOpen", false, vscode.ConfigurationTarget.Global)
-      this.setStatus(disabledStatus())
-    }
+    this.startWatcher()
+    this.setStatus({
+      state: "indexing",
+      enabled: true,
+      detail: "Queued local C/C++ code graph indexing.",
+      indexedFiles: this.statusValue.indexedFiles,
+      indexedFunctions: this.statusValue.indexedFunctions,
+      indexedMacros: this.statusValue.indexedMacros,
+      truncated: this.statusValue.truncated,
+      updatedAt: this.statusValue.updatedAt,
+      progress: this.statusValue.progress,
+    })
+    void this.indexWorkspace(false).catch((error) => this.reportIndexingFailure(error))
   }
 
   async indexWorkspace(force: boolean) {
@@ -108,10 +96,32 @@ export class LocalCodeGraphService implements vscode.Disposable {
       await this.setEnabled(true)
     }
     if (this.indexing) return this.indexing
-    this.indexing = this.runIndex(force).finally(() => {
+    this.indexing = this.runIndexTask(force).finally(() => {
       this.indexing = undefined
     })
     return this.indexing
+  }
+
+  async waitForReady() {
+    const settings = this.getSettings()
+    if (!settings.codeGraph.enabled) return
+    if (!vscode.workspace.workspaceFolders?.length) {
+      throw new Error("No workspace folder is open for local code graph indexing.")
+    }
+
+    let status = this.status()
+    if (this.indexing && status.state !== "error") {
+      await this.indexing
+      status = this.status()
+    }
+    if (status.state === "ready") return
+    if (status.state === "error") throw new Error(status.detail || "Local code graph indexing failed.")
+
+    await this.indexWorkspace(false)
+    const next = this.status()
+    if (next.state === "ready") return
+    if (next.state === "error") throw new Error(next.detail || "Local code graph indexing failed.")
+    throw new Error(next.detail || `Local code graph is ${next.state}.`)
   }
 
   async showStatus() {
@@ -139,7 +149,7 @@ export class LocalCodeGraphService implements vscode.Disposable {
   }): Promise<CodeGraphPromptContext | undefined> {
     const settings = this.getSettings()
     if (!settings.codeGraph.enabled) return undefined
-    if (!this.index) await this.loadIndex()
+    if (!this.index) await this.ensureIndexLoaded()
     if (!this.index) return undefined
     const context = buildCodeGraphContext({
       index: this.index,
@@ -153,6 +163,12 @@ export class LocalCodeGraphService implements vscode.Disposable {
     return context
   }
 
+  private async runIndexTask(force: boolean) {
+    await delay(0)
+    await this.ensureIndexLoaded()
+    await this.runIndex(force)
+  }
+
   private async runIndex(force: boolean) {
     const root = workspaceRoot()
     if (!root) {
@@ -161,6 +177,8 @@ export class LocalCodeGraphService implements vscode.Disposable {
     }
 
     const settings = this.getSettings()
+    const budget = new WorkBudget()
+    const started = Date.now()
     this.startWatcher()
     this.index ??= emptyIndex(root)
     this.analyzer = await detectCodeGraphAnalyzer(this.context, root, settings)
@@ -174,11 +192,20 @@ export class LocalCodeGraphService implements vscode.Disposable {
 
     try {
       const ignoreGlobs = await workspaceIgnoreGlobs(root.uri)
+      this.setStatus({
+        ...this.statusValue,
+        state: "indexing",
+        enabled: true,
+        detail: "Scanning local C/C++ files.",
+        progress: { completed: 0, total: 0 },
+      })
       const files = await vscode.workspace.findFiles(
         SOURCE_GLOB,
         excludeGlob([...settings.codeGraph.excludeGlobs, ...ignoreGlobs]),
         settings.codeGraph.maxFiles + 1,
       )
+      await budget.yieldNow()
+      this.output.appendLine(`[codegraph] scan ${Date.now() - started}ms, found ${Math.min(files.length, settings.codeGraph.maxFiles)} file(s)`)
       const truncated = files.length > settings.codeGraph.maxFiles
       const selected = files.slice(0, settings.codeGraph.maxFiles)
       const nextFiles: Record<string, CodeGraphFile> = {}
@@ -214,7 +241,7 @@ export class LocalCodeGraphService implements vscode.Disposable {
           })
         }
 
-        if (index % 50 === 0) {
+        if (budget.shouldYield()) {
           this.setStatus({
             ...this.statusValue,
             state: "indexing",
@@ -222,37 +249,33 @@ export class LocalCodeGraphService implements vscode.Disposable {
             detail: `Indexed ${index + 1}/${selected.length} C/C++ file(s).`,
             progress: { completed: index + 1, total: selected.length },
           })
-          await delay(0)
+          await budget.yieldNow()
         }
       }
 
-      this.index = hydrateCodeGraphIndex({
+      this.setStatus({
+        ...this.statusValue,
+        state: "indexing",
+        enabled: true,
+        detail: `Building local code graph derived index for ${selected.length} C/C++ file(s).`,
+        progress: { completed: selected.length, total: selected.length },
+      })
+      this.index = await hydrateCodeGraphIndexAsync({
         ...emptyIndex(root),
         files: nextFiles,
         truncated,
         updatedAt: Date.now(),
         storageMode: "sharded",
-      }, skippedFiles)
-      await this.saveIndex()
+      }, skippedFiles, () => budget.yieldIfNeeded())
+      await this.saveIndex(budget)
       this.output.appendLine(
         `[codegraph] indexed ${Object.keys(nextFiles).length} file(s), ${countFunctions(this.index)} function(s)${
           truncated ? " (truncated)" : ""
-        } into ${this.index.stats?.shards ?? 0} shard(s)`,
+        } into ${this.index.stats?.shards ?? 0} shard(s) in ${Date.now() - started}ms`,
       )
       this.setReadyStatus("Local C/C++ code graph is ready.")
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error)
-      this.output.appendLine(`[codegraph] indexing failed: ${message}`)
-      this.setStatus({
-        state: "error",
-        enabled: true,
-        detail: message,
-        indexedFiles: this.index ? Object.keys(this.index.files).length : 0,
-        indexedFunctions: this.index ? countFunctions(this.index) : 0,
-        indexedMacros: this.index ? countMacros(this.index) : 0,
-        truncated: this.index?.truncated ?? false,
-        updatedAt: this.index?.updatedAt,
-      })
+      this.reportIndexingFailure(error)
     }
   }
 
@@ -312,10 +335,11 @@ export class LocalCodeGraphService implements vscode.Disposable {
       this.setStatus(disabledStatus("No workspace folder is open."))
       return
     }
-    if (!this.index) await this.loadIndex()
+    if (!this.index) await this.ensureIndexLoaded()
     if (!this.index) this.index = emptyIndex(root)
 
     const settings = this.getSettings()
+    const budget = new WorkBudget()
     this.analyzer ??= await detectCodeGraphAnalyzer(this.context, root, settings)
     let skippedFiles = this.index.stats?.skippedFiles ?? 0
     this.setStatus({
@@ -367,16 +391,16 @@ export class LocalCodeGraphService implements vscode.Disposable {
         detail: `Updated ${index + 1}/${changes.length} changed C/C++ file(s).`,
         progress: { completed: index + 1, total: changes.length },
       })
-      await delay(0)
+      if (budget.shouldYield()) await budget.yieldNow()
     }
 
-    this.index = hydrateCodeGraphIndex({
+    this.index = await hydrateCodeGraphIndexAsync({
       ...this.index,
       version: INDEX_VERSION,
       updatedAt: Date.now(),
       storageMode: "sharded",
-    }, skippedFiles)
-    await this.saveIndex()
+    }, skippedFiles, () => budget.yieldIfNeeded())
+    await this.saveIndex(budget)
     this.output.appendLine(`[codegraph] incrementally updated ${changes.length} file change(s)`)
     this.setReadyStatus("Local C/C++ code graph is ready after incremental update.")
   }
@@ -391,16 +415,28 @@ export class LocalCodeGraphService implements vscode.Disposable {
   private async loadIndex() {
     const root = workspaceRoot()
     if (!root) return
+    const budget = new WorkBudget()
+    const started = Date.now()
+    this.setStatus({
+      ...this.statusValue,
+      state: "indexing",
+      enabled: this.getSettings().codeGraph.enabled,
+      detail: "Loading stored local C/C++ code graph index.",
+    })
     try {
-      this.index = await this.loadShardedIndex(root)
+      this.index = await this.loadShardedIndex(root, budget)
+      this.output.appendLine(`[codegraph] loaded sharded index in ${Date.now() - started}ms`)
       this.setReadyStatus("Loaded local C/C++ code graph.")
     } catch {
       try {
         const bytes = await vscode.workspace.fs.readFile(this.legacyIndexUri(root))
         const parsed = JSON.parse(new TextDecoder().decode(bytes)) as CodeGraphIndex
         if (parsed.rootPath !== root.uri.fsPath) return
-        this.index = hydrateCodeGraphIndex({ ...parsed, storageMode: "sharded" })
-        await this.saveIndex()
+        this.index = await hydrateCodeGraphIndexAsync({ ...parsed, storageMode: "sharded" }, parsed.stats?.skippedFiles ?? 0, () =>
+          budget.yieldIfNeeded(),
+        )
+        await this.saveIndex(budget)
+        this.output.appendLine(`[codegraph] migrated legacy index in ${Date.now() - started}ms`)
         this.setReadyStatus("Migrated local C/C++ code graph to sharded storage.")
       } catch {
         this.index = emptyIndex(root)
@@ -417,10 +453,29 @@ export class LocalCodeGraphService implements vscode.Disposable {
     }
   }
 
-  private async saveIndex() {
+  private async ensureIndexLoaded() {
+    if (this.index) return
+    this.loadingIndex ??= this.loadIndex().finally(() => {
+      this.loadingIndex = undefined
+    })
+    await this.loadingIndex
+  }
+
+  private async saveIndex(budget = new WorkBudget()) {
     const root = workspaceRoot()
     if (!root || !this.index) return
-    this.index = hydrateCodeGraphIndex({ ...this.index, storageMode: "sharded" }, this.index.stats?.skippedFiles ?? 0)
+    this.setStatus({
+      ...this.statusValue,
+      state: "indexing",
+      enabled: true,
+      detail: "Saving local C/C++ code graph index.",
+    })
+    this.index =
+      this.index.derived && this.index.stats
+        ? { ...this.index, storageMode: "sharded" }
+        : await hydrateCodeGraphIndexAsync({ ...this.index, storageMode: "sharded" }, this.index.stats?.skippedFiles ?? 0, () =>
+            budget.yieldIfNeeded(),
+          )
     const dir = this.indexDir(root)
     const shardsDir = vscode.Uri.joinPath(dir, "shards")
     await vscode.workspace.fs.createDirectory(shardsDir)
@@ -434,6 +489,7 @@ export class LocalCodeGraphService implements vscode.Disposable {
       const files = groups.get(shard.key) ?? {}
       const payload: CodeGraphShardData = { version: INDEX_VERSION, key: shard.key, files }
       await vscode.workspace.fs.writeFile(vscode.Uri.joinPath(dir, ...shard.path.split("/")), encodeJson(payload))
+      await budget.yieldIfNeeded()
     }
 
     const manifest: CodeGraphShardManifest = {
@@ -459,7 +515,7 @@ export class LocalCodeGraphService implements vscode.Disposable {
     await vscode.workspace.fs.writeFile(this.manifestUri(root), encodeJson(manifest))
   }
 
-  private async loadShardedIndex(root: vscode.WorkspaceFolder): Promise<CodeGraphIndex> {
+  private async loadShardedIndex(root: vscode.WorkspaceFolder, budget = new WorkBudget()): Promise<CodeGraphIndex> {
     const manifestBytes = await vscode.workspace.fs.readFile(this.manifestUri(root))
     const manifest = JSON.parse(new TextDecoder().decode(manifestBytes)) as CodeGraphShardManifest
     if (!isSupportedStoredIndexVersion(manifest.version) || manifest.rootPath !== root.uri.fsPath) {
@@ -468,14 +524,25 @@ export class LocalCodeGraphService implements vscode.Disposable {
 
     const files: Record<string, CodeGraphFile> = {}
     const dir = this.indexDir(root)
-    for (const shard of manifest.shards) {
+    for (let index = 0; index < manifest.shards.length; index++) {
+      const shard = manifest.shards[index]
       const shardBytes = await vscode.workspace.fs.readFile(vscode.Uri.joinPath(dir, ...shard.path.split("/")))
       const payload = JSON.parse(new TextDecoder().decode(shardBytes)) as CodeGraphShardData
       if (!isSupportedStoredIndexVersion(payload.version) || payload.key !== shard.key) continue
       Object.assign(files, payload.files)
+      if (budget.shouldYield()) {
+        this.setStatus({
+          ...this.statusValue,
+          state: "indexing",
+          enabled: true,
+          detail: `Loaded ${index + 1}/${manifest.shards.length} code graph shard(s).`,
+          progress: { completed: index + 1, total: manifest.shards.length },
+        })
+        await budget.yieldNow()
+      }
     }
 
-    return hydrateCodeGraphIndex({
+    return {
       version: INDEX_VERSION,
       rootPath: manifest.rootPath,
       rootName: manifest.rootName,
@@ -485,7 +552,7 @@ export class LocalCodeGraphService implements vscode.Disposable {
       derived: manifest.derived,
       stats: manifest.stats,
       storageMode: "sharded",
-    }, manifest.stats.skippedFiles)
+    }
   }
 
   private async cleanupOldShards(shardsDir: vscode.Uri, nextShardNames: Set<string>) {
@@ -514,14 +581,14 @@ export class LocalCodeGraphService implements vscode.Disposable {
   }
 
   private setReadyStatus(detail: string) {
-    const stats = this.index ? buildIndexStats(this.index.files, this.index.stats?.skippedFiles ?? 0) : undefined
+    const stats = this.index?.stats ?? (this.index ? buildIndexStats(this.index.files, this.index.stats?.skippedFiles ?? 0) : undefined)
     this.setStatus({
       state: "ready",
       enabled: true,
       detail,
-      indexedFiles: this.index ? Object.keys(this.index.files).length : 0,
-      indexedFunctions: this.index ? countFunctions(this.index) : 0,
-      indexedMacros: this.index ? countMacros(this.index) : 0,
+      indexedFiles: stats?.files ?? (this.index ? Object.keys(this.index.files).length : 0),
+      indexedFunctions: stats?.functions ?? (this.index ? countFunctions(this.index) : 0),
+      indexedMacros: stats?.macros ?? (this.index ? countMacros(this.index) : 0),
       truncated: this.index?.truncated ?? false,
       updatedAt: this.index?.updatedAt,
       storageMode: this.index?.storageMode,
@@ -530,6 +597,26 @@ export class LocalCodeGraphService implements vscode.Disposable {
       skippedFiles: stats?.skippedFiles,
       largeRepoMode: Boolean(stats && (stats.files >= 10000 || stats.bytes >= 50 * 1024 * 1024)),
       ...this.analyzerStatusFields(),
+    })
+  }
+
+  private reportIndexingFailure(error: unknown) {
+    const message = error instanceof Error ? error.message : String(error)
+    const stats = this.index?.stats
+    this.output.appendLine(`[codegraph] indexing failed: ${message}`)
+    this.setStatus({
+      state: "error",
+      enabled: true,
+      detail: message,
+      indexedFiles: stats?.files ?? (this.index ? Object.keys(this.index.files).length : 0),
+      indexedFunctions: stats?.functions ?? (this.index ? countFunctions(this.index) : 0),
+      indexedMacros: stats?.macros ?? (this.index ? countMacros(this.index) : 0),
+      truncated: this.index?.truncated ?? false,
+      updatedAt: this.index?.updatedAt,
+      storageMode: this.index?.storageMode,
+      shards: stats?.shards,
+      indexBytes: stats?.bytes,
+      skippedFiles: stats?.skippedFiles,
     })
   }
 
@@ -711,4 +798,21 @@ function looksBinary(bytes: Uint8Array) {
 
 function delay(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+class WorkBudget {
+  private lastYield = Date.now()
+
+  shouldYield() {
+    return Date.now() - this.lastYield >= INDEX_TIME_SLICE_MS
+  }
+
+  async yieldIfNeeded() {
+    if (this.shouldYield()) await this.yieldNow()
+  }
+
+  async yieldNow() {
+    await delay(0)
+    this.lastYield = Date.now()
+  }
 }

@@ -11,6 +11,7 @@ import type {
 } from "./codegraph-types"
 
 export const CURRENT_CODE_GRAPH_INDEX_VERSION = 3 as const
+export type CodeGraphYield = () => Promise<void>
 
 function emptyRecord<T>(): Record<string, T> {
   return Object.create(null) as Record<string, T>
@@ -48,6 +49,23 @@ export function hydrateCodeGraphIndex(input: CodeGraphIndex, skippedFiles = inpu
     version: CURRENT_CODE_GRAPH_INDEX_VERSION,
     files,
     derived: buildDerivedIndex(files),
+    stats,
+  }
+}
+
+export async function hydrateCodeGraphIndexAsync(
+  input: CodeGraphIndex,
+  skippedFiles = input.stats?.skippedFiles ?? 0,
+  yieldIfNeeded: CodeGraphYield = async () => undefined,
+): Promise<CodeGraphIndex> {
+  const files = await normalizeFilesAsync(input.files, yieldIfNeeded)
+  const stats = await buildIndexStatsAsync(files, skippedFiles, yieldIfNeeded)
+  const derived = await buildDerivedIndexAsync(files, yieldIfNeeded)
+  return {
+    ...input,
+    version: CURRENT_CODE_GRAPH_INDEX_VERSION,
+    files,
+    derived,
     stats,
   }
 }
@@ -141,8 +159,98 @@ export function buildDerivedIndex(files: Record<string, CodeGraphFile>): CodeGra
   }
 }
 
+export async function buildDerivedIndexAsync(
+  files: Record<string, CodeGraphFile>,
+  yieldIfNeeded: CodeGraphYield = async () => undefined,
+): Promise<CodeGraphDerivedIndex> {
+  const functionIdsByName = emptyRecord<string[]>()
+  const callerIdsByCallee = emptyRecord<string[]>()
+  const includeTargetsByFile = emptyRecord<string[]>()
+  const filePathsByInclude = emptyRecord<string[]>()
+  const directoryStats = emptyRecord<CodeGraphDirectoryStats>()
+  const symbolsByName = emptyRecord<CodeGraphSymbol[]>()
+  const symbolsByPath = emptyRecord<CodeGraphSymbol[]>()
+  const postingsByTerm = emptyRecord<CodeGraphPosting[]>()
+  const moduleCalleeNames = new Map<string, Set<string>>()
+  const functionModuleByName = new Map<string, Set<string>>()
+  const normalizedFiles = Object.values(files)
+
+  for (let index = 0; index < normalizedFiles.length; index++) {
+    const file = normalizeFile(normalizedFiles[index])
+    const directory = moduleKey(file.path)
+    const stats = getOrCreate(directoryStats, directory, () => ({ files: 0, functions: 0, macros: 0, types: 0, globals: 0, bytes: 0 }))
+    stats.files++
+    stats.functions += file.functions.length
+    stats.macros += file.macros.length
+    stats.types += file.types.length
+    stats.globals += file.globals.length
+    stats.bytes += file.size
+
+    addSymbol(symbolsByName, symbolsByPath, fileSymbol(file))
+    includeTargetsByFile[file.path] = file.includes.map((include) => include.target)
+    for (const include of file.includes) {
+      pushUnique(filePathsByInclude, include.target, file.path)
+      addPosting(postingsByTerm, include.target, {
+        term: include.target.toLowerCase(),
+        path: file.path,
+        line: include.line,
+        kind: "include",
+        weight: 2.2,
+      })
+    }
+
+    for (const fn of file.functions) {
+      pushUnique(functionIdsByName, fn.name, fn.id)
+      addSymbol(symbolsByName, symbolsByPath, functionSymbol(fn))
+      addPosting(postingsByTerm, fn.name, {
+        term: fn.name.toLowerCase(),
+        path: file.path,
+        line: fn.startLine,
+        kind: "function",
+        weight: 6,
+        symbolId: fn.id,
+      })
+      addFunctionModule(functionModuleByName, fn.name, directory)
+      for (const call of fn.calls) pushUnique(callerIdsByCallee, call.name, fn.id)
+      const calleeNames = moduleCalleeNames.get(directory) ?? new Set<string>()
+      for (const call of fn.calls) calleeNames.add(call.name)
+      moduleCalleeNames.set(directory, calleeNames)
+    }
+
+    for (const macro of file.macros) addSymbol(symbolsByName, symbolsByPath, macroSymbol(file.path, macro.name, macro.line, macro.snippet ?? ""))
+    for (const type of file.types) addSymbol(symbolsByName, symbolsByPath, typeSymbol(file.path, type))
+    for (const global of file.globals) addSymbol(symbolsByName, symbolsByPath, globalSymbol(file.path, global.name, global.line, global.snippet))
+    for (const token of file.tokens) {
+      addPosting(postingsByTerm, token.term, {
+        term: token.term,
+        path: file.path,
+        line: token.line,
+        kind: token.kind,
+        weight: postingWeight(token.kind),
+      })
+    }
+
+    if (index % 25 === 0) await yieldIfNeeded()
+  }
+
+  await yieldIfNeeded()
+  return {
+    functionIdsByName: sortedRecord(functionIdsByName),
+    callerIdsByCallee: sortedRecord(callerIdsByCallee),
+    includeTargetsByFile: sortedRecord(includeTargetsByFile),
+    filePathsByInclude: sortedRecord(filePathsByInclude),
+    directoryStats: Object.fromEntries(Object.entries(directoryStats).sort(([left], [right]) => left.localeCompare(right))),
+    symbolsByName: sortedSymbolRecord(symbolsByName),
+    symbolsByPath: sortedSymbolRecord(symbolsByPath),
+    postingsByTerm: sortedPostingRecord(postingsByTerm),
+    moduleStats: buildModuleStats(directoryStats, moduleCalleeNames, functionModuleByName),
+  }
+}
+
 export function ensureDerivedIndex(index: CodeGraphIndex) {
-  index.files = normalizeFiles(index.files)
+  if (index.version !== CURRENT_CODE_GRAPH_INDEX_VERSION || !index.stats || index.stats.types === undefined || index.stats.globals === undefined) {
+    index.files = normalizeFiles(index.files)
+  }
   if (!index.derived || !index.derived.symbolsByName || !index.derived.postingsByTerm || !index.derived.moduleStats) {
     index.derived = buildDerivedIndex(index.files)
   }
@@ -177,11 +285,48 @@ export function buildIndexStats(files: Record<string, CodeGraphFile>, skippedFil
   return stats
 }
 
+export async function buildIndexStatsAsync(
+  files: Record<string, CodeGraphFile>,
+  skippedFiles = 0,
+  yieldIfNeeded: CodeGraphYield = async () => undefined,
+): Promise<CodeGraphIndexStats> {
+  const stats: CodeGraphIndexStats = {
+    files: 0,
+    functions: 0,
+    macros: 0,
+    types: 0,
+    globals: 0,
+    bytes: 0,
+    shards: 0,
+    skippedFiles,
+  }
+  const shards = new Set<string>()
+  let index = 0
+  for (const file of Object.values(files)) {
+    const normalized = normalizeFile(file)
+    stats.files++
+    stats.functions += normalized.functions.length
+    stats.macros += normalized.macros.length
+    stats.types += normalized.types.length
+    stats.globals += normalized.globals.length
+    stats.bytes += normalized.size
+    shards.add(shardKeyForPath(normalized.path))
+    if (++index % 100 === 0) await yieldIfNeeded()
+  }
+  stats.shards = shards.size
+  return stats
+}
+
 export function groupFilesByShard(files: Record<string, CodeGraphFile>) {
   const groups = new Map<string, Record<string, CodeGraphFile>>()
   for (const [path, file] of Object.entries(files)) {
     const key = shardKeyForPath(path)
-    groups.set(key, { ...(groups.get(key) ?? {}), [path]: file })
+    let group = groups.get(key)
+    if (!group) {
+      group = Object.create(null) as Record<string, CodeGraphFile>
+      groups.set(key, group)
+    }
+    group[path] = file
   }
   return groups
 }
@@ -220,6 +365,16 @@ export function moduleKey(path: string) {
 
 function normalizeFiles(files: Record<string, CodeGraphFile>) {
   return Object.fromEntries(Object.entries(files).map(([path, file]) => [path, normalizeFile(file)]))
+}
+
+async function normalizeFilesAsync(files: Record<string, CodeGraphFile>, yieldIfNeeded: CodeGraphYield) {
+  const normalized: Record<string, CodeGraphFile> = Object.create(null) as Record<string, CodeGraphFile>
+  let index = 0
+  for (const [path, file] of Object.entries(files)) {
+    normalized[path] = normalizeFile(file)
+    if (++index % 100 === 0) await yieldIfNeeded()
+  }
+  return normalized
 }
 
 function normalizeFile(file: CodeGraphFile): CodeGraphFile {

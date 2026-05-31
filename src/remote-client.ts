@@ -1,11 +1,14 @@
 import type {
   HealthResponse,
+  OpenCodeAgentInfo,
   OpenCodeMessage,
   OpenCodeModelInfo,
   OpenCodeSession,
   PromptModel,
   RemoteSettings,
 } from "./types"
+import { agentMatchesName } from "./agent-name"
+import { normalizeModelLimit } from "./usage"
 
 export class RemoteOpenCodeAuthError extends Error {
   constructor(message = "Remote OpenCode authentication failed") {
@@ -70,6 +73,10 @@ export class RemoteOpenCodeClient {
       if (error instanceof RemoteOpenCodeAuthError || error instanceof RemoteOpenCodeConnectionError) throw error
       return normalizeModels(await this.listProviders(signal))
     }
+  }
+
+  async listAgents(signal?: AbortSignal) {
+    return normalizeAgents(await this.request<unknown>("/agent", { method: "GET", signal }))
   }
 
   async listSessions(signal?: AbortSignal) {
@@ -275,14 +282,17 @@ export function normalizeModels(input: unknown): OpenCodeModelInfo[] {
       const id = `${providerID}/${modelID}`
       if (seen.has(id)) continue
       seen.add(id)
-      result.push({
+      const normalized: OpenCodeModelInfo = {
         id,
         providerID,
         modelID,
         name: model.name || modelID,
         providerName,
         isDefault: isDefaultModel(defaults, providerID, modelID, id),
-      })
+      }
+      if (model.contextLimit !== undefined) normalized.contextLimit = model.contextLimit
+      if (model.outputLimit !== undefined) normalized.outputLimit = model.outputLimit
+      result.push(normalized)
     }
   }
 
@@ -290,6 +300,55 @@ export function normalizeModels(input: unknown): OpenCodeModelInfo[] {
     if (left.isDefault !== right.isDefault) return left.isDefault ? -1 : 1
     const provider = left.providerName.localeCompare(right.providerName)
     if (provider !== 0) return provider
+    return left.name.localeCompare(right.name)
+  })
+}
+
+export function normalizeAgents(input: unknown, localOnlyAgent = "vscode-local"): OpenCodeAgentInfo[] {
+  const root = objectRecord(input)
+  const agentMap = objectRecord(root.agents ?? root.agent ?? root.all)
+  const agentsValue = Array.isArray(input)
+    ? input
+    : Array.isArray(root.agents)
+      ? root.agents
+      : Array.isArray(root.agent)
+        ? root.agent
+        : Array.isArray(root.all)
+          ? root.all
+          : Object.keys(agentMap).length > 0
+            ? agentMap
+            : root
+  const rows = Array.isArray(agentsValue)
+    ? agentsValue.map((value) => ({ key: "", value }))
+    : Object.entries(agentsValue).map(([key, value]) => ({ key, value }))
+  const localAgent = localOnlyAgent.trim() || "vscode-local"
+  const seen = new Set<string>()
+  const result: OpenCodeAgentInfo[] = []
+
+  for (const { key, value } of rows) {
+    const row = objectRecord(value)
+    const id = key.trim() || stringValue(row.id) || stringValue(row.name)
+    if (!id || seen.has(id)) continue
+    seen.add(id)
+    const name = stringValue(row.name) || id
+    const description = stringValue(row.description)
+    const mode = stringValue(row.mode)
+    const color = stringValue(row.color)
+    const disabled = row.disable === true || row.disabled === true
+    const agent: OpenCodeAgentInfo = {
+      id,
+      name,
+      isLocalOnly: agentMatchesName({ id, name }, localAgent),
+    }
+    if (description) agent.description = description
+    if (mode) agent.mode = mode
+    if (color) agent.color = color
+    if (disabled) agent.disabled = true
+    result.push(agent)
+  }
+
+  return result.sort((left, right) => {
+    if (left.isLocalOnly !== right.isLocalOnly) return left.isLocalOnly ? -1 : 1
     return left.name.localeCompare(right.name)
   })
 }
@@ -302,7 +361,8 @@ function modelsFromProvider(provider: Record<string, unknown>) {
         const row = objectRecord(model)
         const id = stringValue(row.id) || stringValue(row.modelID) || stringValue(row.name)
         const name = stringValue(row.name) || stringValue(row.label) || id
-        return { id, name }
+        const limit = normalizeModelLimit(row.limit)
+        return { id, name, contextLimit: limit.context, outputLimit: limit.output }
       })
       .filter((model) => model.id)
   }
@@ -310,9 +370,12 @@ function modelsFromProvider(provider: Record<string, unknown>) {
   const modelMap = objectRecord(models)
   return Object.entries(modelMap).map(([id, value]) => {
     const row = objectRecord(value)
+    const limit = normalizeModelLimit(row.limit)
     return {
       id,
       name: stringValue(row.name) || stringValue(row.label) || id,
+      contextLimit: limit.context,
+      outputLimit: limit.output,
     }
   })
 }

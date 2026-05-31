@@ -54,10 +54,65 @@ export type OpenCodeSession = {
   }
 }
 
+export type OpenCodeTokenUsage = {
+  total?: number
+  input?: number
+  output?: number
+  reasoning?: number
+  cache?: {
+    read?: number
+    write?: number
+  }
+}
+
+export type OpenCodeModelLimit = {
+  context?: number
+  output?: number
+}
+
+export type UsageLevel = "normal" | "warning" | "error"
+
+export type RenderedUsage = {
+  input: number
+  output: number
+  reasoning: number
+  cacheRead: number
+  cacheWrite: number
+  total: number
+  cost?: number
+  summary: string
+  detail: string
+}
+
+export type RenderedSessionUsage = {
+  status: "pending" | "unavailable" | "available"
+  summary: string
+  detail: string
+  level: UsageLevel
+  latest?: RenderedUsage
+  total?: RenderedUsage
+  context?: {
+    used: number
+    limit?: number
+    remaining?: number
+    ratio?: number
+    summary: string
+    detail: string
+  }
+}
+
 export type OpenCodeMessageInfo = {
   id: string
   sessionID?: string
   role?: "user" | "assistant"
+  providerID?: string
+  modelID?: string
+  agent?: string
+  mode?: string
+  cost?: number
+  tokens?: OpenCodeTokenUsage
+  finish?: string
+  summary?: unknown
   time?: {
     created?: number
     completed?: number
@@ -155,6 +210,18 @@ export type OpenCodeModelInfo = {
   name: string
   providerName: string
   isDefault: boolean
+  contextLimit?: number
+  outputLimit?: number
+}
+
+export type OpenCodeAgentInfo = {
+  id: string
+  name: string
+  description?: string
+  mode?: string
+  color?: string
+  disabled?: boolean
+  isLocalOnly?: boolean
 }
 
 export type CodeGraphState = "disabled" | "indexing" | "ready" | "stale" | "error"

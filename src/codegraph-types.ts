@@ -232,6 +232,7 @@ export type CodeGraphPromptContext = {
 export type CodeGraphContextProvider = {
   status(): CodeGraphStatus
   indexWorkspace(force: boolean): Promise<void>
+  waitForReady(): Promise<void>
   showStatus(): Promise<void>
   buildContext(input: {
     question: string

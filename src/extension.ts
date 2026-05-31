@@ -41,6 +41,9 @@ export async function activate(context: vscode.ExtensionContext) {
 
   const getSettings = () => readRemoteSettings()
   const getClient = () => client
+  const clearClient = (target: RemoteOpenCodeClient) => {
+    if (client === target) client = undefined
+  }
   const createClient = async () => {
     const settings = readRemoteSettings()
     const password = await readRemotePassword(context)
@@ -49,7 +52,9 @@ export async function activate(context: vscode.ExtensionContext) {
   const connectClient = async (next: RemoteOpenCodeClient, beforeRefresh?: () => Promise<void>) => {
     output.appendLine(`[connect] Connecting to ${next.baseUrl}`)
     setConnectionState("connecting", `Connecting to ${next.baseUrl}`)
+    const started = Date.now()
     const result = await probeClient(next, CONNECTION_TEST_TIMEOUT_MS)
+    output.appendLine(`[connect] health ${Date.now() - started}ms`)
     if (!result.ok) {
       output.appendLine(result.message)
       setConnectionState(result.state, result.message)
@@ -61,7 +66,10 @@ export async function activate(context: vscode.ExtensionContext) {
     setConnectionState("connected", result.detail)
     output.appendLine(`[connection] Connected to ${next.baseUrl}`)
     vscode.window.setStatusBarMessage("Connected to remote OpenCode", 2000)
-    await chatProvider.refresh()
+    void chatProvider.refresh().catch((error) => {
+      const message = error instanceof Error ? error.message : String(error)
+      output.appendLine(`[refresh] background refresh failed: ${message}`)
+    })
     return true
   }
   const testClientOnly = async (target: RemoteOpenCodeClient) => {
@@ -112,6 +120,7 @@ export async function activate(context: vscode.ExtensionContext) {
     connectWithSettings,
     testWithSettings,
     setConnectionState,
+    clearClient,
     openOutput: () => output.show(true),
   })
   context.subscriptions.push(chatProvider)

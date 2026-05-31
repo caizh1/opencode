@@ -23,7 +23,7 @@ export function readRemoteSettings(): RemoteSettings {
       includeDiagnostics: config.get<boolean>("context.includeDiagnostics", true),
       includeGitDiff: config.get<boolean>("context.includeGitDiff", false),
       localOnlyMode: config.get<boolean>("context.localOnlyMode", true),
-      strictLocalOnlyAgent: config.get<boolean>("context.strictLocalOnlyAgent", false),
+      strictLocalOnlyAgent: config.get<boolean>("context.strictLocalOnlyAgent", true),
     },
     completion: {
       enabled: config.get<boolean>("completion.enabled", false),
@@ -31,7 +31,7 @@ export function readRemoteSettings(): RemoteSettings {
       logLevel: readCompletionLogLevel(config.get<string>("completion.logLevel", "info")),
     },
     codeGraph: {
-      enabled: config.get<boolean>("codeGraph.enabled", false),
+      enabled: config.get<boolean>("codeGraph.enabled", true),
       promptOnWorkspaceOpen: config.get<boolean>("codeGraph.promptOnWorkspaceOpen", true),
       analysisMode: readCodeGraphAnalysisMode(config.get<string>("codeGraph.analysisMode", "auto")),
       maxFiles: Math.max(100, Math.min(250000, config.get<number>("codeGraph.maxFiles", 50000))),

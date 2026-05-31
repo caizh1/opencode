@@ -315,6 +315,14 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       background: var(--vscode-sideBar-background);
     }
     .messageMeta > span:first-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .messageStats { display: inline-flex; align-items: center; gap: 6px; min-width: 0; }
+    .messageUsage {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      text-transform: none;
+    }
     .messageTime { text-transform: none; white-space: nowrap; }
     .messageBody {
       padding: 7px 8px;
@@ -445,6 +453,33 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       overflow-wrap: anywhere;
     }
     .guard:hover .guardDetail, .guard:focus .guardDetail, .guard:focus-within .guardDetail { display: block; }
+    .usageMeter {
+      display: none;
+      width: fit-content;
+      max-width: 100%;
+      min-width: 0;
+      border: 1px solid var(--vscode-panel-border);
+      border-radius: 999px;
+      padding: 1px 7px;
+      color: var(--vscode-descriptionForeground);
+      background: var(--vscode-editor-background);
+      font-size: 10px;
+      line-height: 1.25;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .usageMeter.visible { display: inline-flex; }
+    .usageMeter.warning {
+      color: var(--vscode-editorWarning-foreground);
+      border-color: var(--vscode-inputValidation-warningBorder, var(--vscode-editorWarning-foreground));
+      background: var(--vscode-inputValidation-warningBackground, var(--vscode-editor-background));
+    }
+    .usageMeter.error {
+      color: var(--vscode-errorForeground);
+      border-color: var(--vscode-inputValidation-errorBorder, var(--vscode-errorForeground));
+      background: var(--vscode-inputValidation-errorBackground, var(--vscode-editor-background));
+    }
     .codeGraph {
       display: flex;
       align-items: center;
@@ -566,7 +601,7 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
     }
     .composerToolbar {
       display: grid;
-      grid-template-columns: minmax(0, 1fr) minmax(0, max-content) auto;
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, max-content) auto;
       align-items: center;
       gap: 6px;
       min-width: 0;
@@ -630,6 +665,11 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       background: var(--vscode-toolbar-hoverBackground);
     }
     .modelTrigger:active { background: var(--vscode-list-activeSelectionBackground, var(--vscode-toolbar-hoverBackground)); }
+    .agentTrigger.ready { border-color: var(--vscode-testing-iconPassed); }
+    .agentTrigger.warning {
+      color: var(--vscode-editorWarning-foreground);
+      border-color: var(--vscode-inputValidation-warningBorder, var(--vscode-editorWarning-foreground));
+    }
     .modelMenu {
       display: none;
       position: fixed;
@@ -659,6 +699,12 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       font-size: 10px;
     }
     .modelMenuItem:hover, .modelMenuItem.active { background: var(--vscode-list-hoverBackground); }
+    .modelMenuItem.disabled {
+      cursor: default;
+      opacity: 0.58;
+    }
+    .modelMenuItem.disabled:hover { background: transparent; }
+    .modelMenuItem.localAgent .modelMenuName { color: var(--vscode-testing-iconPassed); }
     .modelMenuName { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .modelMenuMeta { color: var(--vscode-descriptionForeground); font-size: 9px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .suggestions {
@@ -714,7 +760,7 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       .icon { max-width: 52px; padding: 0 6px; }
       .primary, .secondary { padding-inline: 7px; }
       .composerToolbar {
-        grid-template-columns: minmax(0, 1fr) auto;
+        grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
         gap: 4px;
       }
       .composerHint {
@@ -805,15 +851,18 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
         <footer class="composerWrap">
           <div class="composerPanel">
             <div id="guard" class="guard"></div>
+            <div id="usageMeter" class="usageMeter"></div>
             <div id="codeGraph" class="codeGraph"></div>
             <div id="chips" class="chips"></div>
             <select id="modelSelect" class="modelSelectHidden" title="Model"></select>
             <div class="composer">
               <div id="suggestions" class="suggestions"></div>
               <div id="modelMenu" class="modelMenu" role="listbox" aria-label="Model" aria-hidden="true"></div>
+              <div id="agentMenu" class="modelMenu agentMenu" role="listbox" aria-label="Agent" aria-hidden="true"></div>
               <textarea id="input" placeholder="Ask OpenCode... Use @ to reference files."></textarea>
               <div class="composerToolbar">
                 <button id="modelTrigger" class="modelTrigger" type="button" title="Model" aria-haspopup="listbox" aria-expanded="false" aria-controls="modelMenu">Model</button>
+                <button id="agentTrigger" class="modelTrigger agentTrigger" type="button" title="Agent" aria-haspopup="listbox" aria-expanded="false" aria-controls="agentMenu">Agent</button>
                 <div id="composerHint" class="composerHint">@ files, Ctrl+Enter send</div>
                 <button id="send" class="send" title="Send">></button>
               </div>
@@ -861,6 +910,7 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
     let mentionError = "";
     let mentionSearched = false;
     let modelMenuOpen = false;
+    let agentMenuOpen = false;
 
     el("server").textContent = "UI ready";
     el("connectionDetail").className = "detail";
@@ -878,6 +928,7 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
     window.addEventListener("resize", () => {
       renderShell();
       positionModelMenu();
+      positionAgentMenu();
     });
     el("historyToggle").addEventListener("click", () => {
       historyTouched = true;
@@ -910,12 +961,25 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       event.stopPropagation();
       toggleModelMenu();
     });
+    el("agentTrigger").addEventListener("click", (event) => {
+      event.stopPropagation();
+      toggleAgentMenu();
+    });
     el("modelMenu").addEventListener("click", (event) => event.stopPropagation());
+    el("agentMenu").addEventListener("click", (event) => event.stopPropagation());
     window.addEventListener("click", () => {
-      if (!modelMenuOpen) return;
+      const hadModelMenu = modelMenuOpen;
+      const hadAgentMenu = agentMenuOpen;
       modelMenuOpen = false;
-      renderModelMenu();
-      renderModelTrigger();
+      agentMenuOpen = false;
+      if (hadModelMenu) {
+        renderModelMenu();
+        renderModelTrigger();
+      }
+      if (hadAgentMenu) {
+        renderAgentMenu();
+        renderAgentTrigger();
+      }
     });
     el("saveManualModel").addEventListener("click", saveManualModel);
     el("manualModel").addEventListener("keydown", (event) => {
@@ -1008,6 +1072,10 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       if (!text) {
         setNotice("Type a message or attach a file with @.");
         el("input").focus();
+        return;
+      }
+      if (localOnlyAgentBlocked()) {
+        setNotice(state.localOnlyWarning || "Required VS Code local agent is unavailable.");
         return;
       }
       vscode.postMessage({
@@ -1137,13 +1205,15 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       renderSessions();
       renderMessages();
       renderGuard();
+      renderUsageMeter();
       renderCodeGraph();
       renderModelSelector();
+      renderAgentSelector();
       renderMentionChips();
       renderConnectionButtons();
       el("diag").checked = Boolean(state.defaults && state.defaults.includeDiagnostics);
       el("diff").checked = Boolean(state.defaults && state.defaults.includeGitDiff);
-      el("send").disabled = Boolean(state.sending);
+      el("send").disabled = Boolean(state.sending || localOnlyAgentBlocked());
       el("send").textContent = state.sending ? "..." : ">";
     }
 
@@ -1190,7 +1260,14 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       const root = el("sessionList");
       root.innerHTML = "";
       const sessions = state.sessions || [];
+      if (state.historyError) {
+        const error = document.createElement("div");
+        error.className = "sessionEmpty";
+        error.textContent = state.historyError;
+        root.appendChild(error);
+      }
       if (sessions.length === 0) {
+        if (state.historyError) return;
         const empty = document.createElement("div");
         empty.className = "sessionEmpty";
         empty.textContent = state.connectionState === "connected" ? "No remote sessions yet." : "Connect to load chat history.";
@@ -1313,7 +1390,17 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       const time = document.createElement("span");
       time.className = "messageTime";
       time.textContent = formatTime(item.timeCreated);
-      meta.append(role, time);
+      const stats = document.createElement("span");
+      stats.className = "messageStats";
+      if (item.usage && item.usage.summary) {
+        const usage = document.createElement("span");
+        usage.className = "messageUsage";
+        usage.textContent = item.usage.summary;
+        usage.title = item.usage.detail || item.usage.summary;
+        stats.appendChild(usage);
+      }
+      stats.appendChild(time);
+      meta.append(role, stats);
       const body = document.createElement("div");
       body.className = "messageBody";
       if (item.text) renderMarkdownInto(body, item.text);
@@ -1501,16 +1588,16 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
         guard.innerHTML = "";
         return;
       }
-      const agent = state.strictLocalOnlyAgent && state.localOnlyAgent
-        ? " Strict agent: " + state.localOnlyAgent + "."
-        : " Server agent not forced.";
+      const agent = state.selectedAgent
+        ? " VS Code agent: " + state.selectedAgent + "."
+        : " VS Code agent unavailable.";
       const model = state.selectedModel ? " Model: " + state.selectedModel + "." : " Model: server default.";
       const sent = (state.lastContextSummary || []).filter((item) => !item.skipped).map((item) => item.path).slice(0, 4);
       const sentText = sent.length > 0 ? " Last sent: " + sent.join(", ") + "." : " Shown chips are sent as local context.";
       const detailText = state.localOnlyWarning || "Local-only guard active." + agent + model + sentText;
       const summaryText = state.localOnlyWarning
-        ? "Guard warning"
-        : "Local guard - " + shortModelName(state.selectedModel || "") + " - " + (sent.length > 0 ? sent.length + " file" + (sent.length === 1 ? "" : "s") : "context");
+        ? "Agent guard warning"
+        : "Local guard - " + currentAgentLabel() + " - " + (sent.length > 0 ? sent.length + " file" + (sent.length === 1 ? "" : "s") : "context");
       guard.className = "guard visible" + (state.localOnlyWarning ? " warning" : "");
       guard.tabIndex = 0;
       guard.title = detailText;
@@ -1524,11 +1611,34 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       guard.append(summary, detail);
     }
 
+    function renderUsageMeter() {
+      const node = el("usageMeter");
+      if (state.connectionState !== "connected") {
+        node.className = "usageMeter";
+        node.textContent = "";
+        node.title = "";
+        return;
+      }
+      const usage = state.usage || {};
+      const summary = usage.summary || "Usage pending";
+      const detail = usage.detail || summary;
+      node.className = "usageMeter visible " + (usage.level || "normal") + " " + (usage.status || "pending");
+      node.textContent = summary;
+      node.title = detail;
+    }
+
     function renderCodeGraph() {
       const node = el("codeGraph");
       const graph = state.codeGraph || { state: "disabled", detail: "Local code graph is disabled.", indexedFiles: 0, indexedFunctions: 0, indexedMacros: 0, truncated: false };
       const stateName = graph.state || "disabled";
-      const view = codeGraphView(graph, stateName);
+      let view = codeGraphView(graph, stateName);
+      if (state.codeGraphWaitDetail) {
+        view = {
+          ...view,
+          label: "Waiting for code graph indexing",
+          meta: state.codeGraphWaitDetail
+        };
+      }
       node.className = "codeGraph " + stateName;
       node.title = codeGraphTitle(graph, view.label);
       node.innerHTML = "";
@@ -1703,6 +1813,9 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
 
     function toggleModelMenu() {
       modelMenuOpen = !modelMenuOpen;
+      if (modelMenuOpen) agentMenuOpen = false;
+      renderAgentMenu();
+      renderAgentTrigger();
       renderModelMenu();
       renderModelTrigger();
     }
@@ -1731,14 +1844,70 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
     }
 
     function positionModelMenu() {
-      if (!modelMenuOpen) return;
+      positionPopupMenu("modelMenu", "modelTrigger", modelMenuOpen);
+    }
 
-      const root = el("modelMenu");
+    function renderAgentSelector() {
+      renderAgentTrigger();
+      renderAgentMenu();
+    }
+
+    function renderAgentTrigger() {
+      const trigger = el("agentTrigger");
+      const label = state.loadingAgents ? "Loading agents" : currentAgentLabel();
+      trigger.textContent = label;
+      trigger.title = agentTitle();
+      trigger.setAttribute("aria-expanded", agentMenuOpen ? "true" : "false");
+      trigger.className = "modelTrigger agentTrigger"
+        + (agentMenuOpen ? " open" : "")
+        + (localOnlyAgentBlocked() ? " warning" : " ready");
+    }
+
+    function toggleAgentMenu() {
+      agentMenuOpen = !agentMenuOpen;
+      if (agentMenuOpen) modelMenuOpen = false;
+      renderModelMenu();
+      renderModelTrigger();
+      renderAgentMenu();
+      renderAgentTrigger();
+    }
+
+    function renderAgentMenu() {
+      const root = el("agentMenu");
+      root.innerHTML = "";
+      root.className = "modelMenu agentMenu" + (agentMenuOpen ? " open" : "");
+      root.setAttribute("aria-hidden", agentMenuOpen ? "false" : "true");
+      if (!agentMenuOpen) return;
+
+      const agents = state.agents || [];
+      const required = state.localOnlyAgent || state.selectedAgent || "vscode-local";
+      const hasRequired = agents.some((agent) => agentMatchesRequired(agent, required));
+      if (!hasRequired) {
+        root.appendChild(agentMenuItem({ id: required, name: required, description: "Required VS Code local agent is missing" }, true, false, true));
+      }
+      for (const agent of agents) {
+        const isRequired = agentMatchesRequired(agent, required);
+        root.appendChild(agentMenuItem(agent, !isRequired, isRequired, isRequired));
+      }
+      if (state.agentError) {
+        root.appendChild(agentMenuItem({ id: "agent-error", name: "Agent discovery failed", description: state.agentError }, true, false, false));
+      }
+      positionAgentMenu();
+    }
+
+    function positionAgentMenu() {
+      positionPopupMenu("agentMenu", "agentTrigger", agentMenuOpen);
+    }
+
+    function positionPopupMenu(menuId, triggerId, isOpen) {
+      if (!isOpen) return;
+
+      const root = el(menuId);
       const composer = document.querySelector(".composer");
       if (!composer) return;
 
       const composerRect = composer.getBoundingClientRect();
-      const triggerRect = el("modelTrigger").getBoundingClientRect();
+      const triggerRect = el(triggerId).getBoundingClientRect();
       const viewportWidth = window.innerWidth || document.documentElement.clientWidth || 320;
       const viewportHeight = window.innerHeight || document.documentElement.clientHeight || 320;
       const margin = 8;
@@ -1780,11 +1949,62 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       return button;
     }
 
+    function agentMenuItem(agent, disabled, active, localAgent) {
+      const button = document.createElement("button");
+      button.className = "modelMenuItem"
+        + (active ? " active" : "")
+        + (disabled ? " disabled" : "")
+        + (localAgent ? " localAgent" : "");
+      button.type = "button";
+      button.disabled = Boolean(disabled);
+      button.title = agent.description || agent.id || agent.name;
+      button.setAttribute("role", "option");
+      button.setAttribute("aria-selected", active ? "true" : "false");
+      const label = document.createElement("span");
+      label.className = "modelMenuName";
+      label.textContent = (localAgent ? "* " : "") + (agent.name || agent.id);
+      const detail = document.createElement("span");
+      detail.className = "modelMenuMeta";
+      detail.textContent = localAgent
+        ? (agent.description || "Required for VS Code local context")
+        : "Unavailable for VS Code local mode";
+      button.append(label, detail);
+      return button;
+    }
+
     function currentModelLabel() {
       const current = state.selectedModel || "";
       if (!current) return "Use server default";
       const match = (state.models || []).find((model) => model.id === current);
       return match ? (match.name || match.modelID || match.id) : current;
+    }
+
+    function currentAgentLabel() {
+      if (!state.localOnlyMode && !state.selectedAgent) return "No agent";
+      const current = state.selectedAgent || state.localOnlyAgent || "vscode-local";
+      if (state.loadingAgents) return "Loading agent";
+      if (localOnlyAgentBlocked()) return "Missing " + current;
+      return current;
+    }
+
+    function agentTitle() {
+      if (state.localOnlyWarning) return state.localOnlyWarning;
+      if (!state.localOnlyMode && !state.selectedAgent) return "Remote server chooses the agent";
+      return "Using required VS Code local agent: " + (state.selectedAgent || state.localOnlyAgent || "vscode-local");
+    }
+
+    function localOnlyAgentBlocked() {
+      return Boolean(state.localOnlyMode && !state.agentReady);
+    }
+
+    function agentMatchesRequired(agent, required) {
+      if (agent.id === required) return true;
+      const target = canonicalAgentName(required);
+      return canonicalAgentName(agent.id) === target || canonicalAgentName(agent.name) === target;
+    }
+
+    function canonicalAgentName(value) {
+      return String(value || "").trim().toLowerCase().replace(/[^a-z0-9]/g, "");
     }
 
     function shortModelName(value) {

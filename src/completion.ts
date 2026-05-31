@@ -6,6 +6,7 @@ import { CompletionRequestCoordinator, type CompletionRequestOutcome } from "./c
 import { INLINE_COMPLETION_SESSION_TITLE } from "./completion-session"
 import { completionInsertText } from "./completion-text"
 import { buildCompletionPrompt, relativePath } from "./context"
+import { resolveRequestAgent } from "./local-agent"
 import { isSessionNotFoundError, parseModel, RemoteOpenCodeClient } from "./remote-client"
 import type { RemoteSettings } from "./types"
 
@@ -198,12 +199,13 @@ export class RemoteCompletionProvider implements vscode.InlineCompletionItemProv
     settings: RemoteSettings,
     signal: AbortSignal,
   ) {
+    const agentSelection = await resolveRequestAgent(client, settings, signal)
     const sessionID = await this.getSession(client, signal)
     return client.sendMessage({
       sessionID,
       text: prompt,
       model: parseModel(settings.defaultModel),
-      agent: settings.defaultAgent || undefined,
+      agent: agentSelection.agent,
       signal,
     })
   }

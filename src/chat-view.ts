@@ -1,4 +1,5 @@
 import * as vscode from "vscode"
+import { agentListSummary } from "./agent-name"
 import { createChatViewHtml } from "./chat-html"
 import { CHAT_SESSION_TITLE, isPluginChatMessage, isPluginChatSession } from "./chat-session"
 import { applyOpenCodeEventToMessages, normalizeOpenCodeEvent } from "./chat-stream"
@@ -13,20 +14,37 @@ import {
   relativePath,
 } from "./context"
 import type { TrackedEditorContext } from "./editor-context"
+import { MissingLocalOnlyAgentError, selectRequestAgent } from "./local-agent"
 import { buildMentionIndex, searchMentionIndex, type MentionIndexEntry } from "./mention-index"
-import { isSessionNotFoundError, parseModel, RemoteOpenCodeClient } from "./remote-client"
+import {
+  isSessionNotFoundError,
+  parseModel,
+  RemoteOpenCodeAuthError,
+  RemoteOpenCodeClient,
+  RemoteOpenCodeConnectionError,
+} from "./remote-client"
 import { splitThinkingFromParts } from "./thinking"
+import { summarizeSessionUsage, usageFromMessageInfo } from "./usage"
 import type {
   ChatContextOptions,
   ConnectionState,
+  OpenCodeAgentInfo,
   OpenCodeMessage,
   OpenCodeModelInfo,
   OpenCodePart,
   OpenCodeSession,
   PromptModel,
+  CodeGraphStatus,
+  RenderedUsage,
   RemoteSettings,
 } from "./types"
 import type { ConnectionSettingsInput } from "./settings"
+
+const SESSION_MESSAGE_LIMIT = 100
+const MODEL_REFRESH_TIMEOUT_MS = 8000
+const AGENT_REFRESH_TIMEOUT_MS = 8000
+const SESSION_REFRESH_TIMEOUT_MS = 8000
+const MESSAGE_REFRESH_TIMEOUT_MS = 5000
 
 type MentionedFileRef = {
   uri: string
@@ -86,6 +104,7 @@ type RenderedMessage = {
   timeCreated?: number
   timeCompleted?: number
   parts: RenderedPart[]
+  usage?: RenderedUsage
   error?: string
   serverToolsUsed?: boolean
 }
@@ -105,6 +124,7 @@ type RemoteChatViewProviderDeps = {
   connectWithSettings: (input: ConnectionSettingsInput) => Promise<void>
   testWithSettings: (input: ConnectionSettingsInput) => Promise<void>
   setConnectionState: (state: ConnectionState, detail?: string) => void
+  clearClient: (client: RemoteOpenCodeClient) => void
   openOutput: () => void
 }
 
@@ -121,8 +141,13 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
   private sending = false
   private loadingMessages = false
   private loadingModels = false
+  private loadingAgents = false
   private models: OpenCodeModelInfo[] = []
+  private agents: OpenCodeAgentInfo[] = []
   private modelError = ""
+  private agentError = ""
+  private historyError = ""
+  private codeGraphWaitDetail = ""
   private lastContextSummary: ContextSummaryItem[] = []
   private readonly flaggedSessions = new Set<string>()
   private readonly hiddenCompletionSessions = new Set<string>()
@@ -186,15 +211,27 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
     }
 
     this.loadingMessages = true
+    this.historyError = ""
     this.postState()
     try {
       void this.ensureEventSubscription(client)
-      await this.refreshModelList(client)
-      await this.refreshSessionList(client)
+      const [, , sessionResult] = await Promise.allSettled([
+        this.refreshModelList(client),
+        this.refreshAgentList(client),
+        this.refreshSessionList(client),
+      ])
+      if (sessionResult.status === "rejected") {
+        this.reportRemoteConnectionFailure(client, "Failed to load sessions", sessionResult.reason)
+        return
+      }
       this.reconcileSessionSelection()
-      await this.loadSelectedSessionMessages(client)
+      try {
+        await this.loadSelectedSessionMessages(client)
+      } catch (error) {
+        this.reportRemoteConnectionFailure(client, "Failed to load selected session", error)
+      }
     } catch (error) {
-      this.reportError("Failed to refresh remote chat", error)
+      this.reportRemoteConnectionFailure(client, "Failed to refresh remote chat", error)
     } finally {
       this.loadingMessages = false
       this.postState()
@@ -202,6 +239,10 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   refreshCodeGraphStatus() {
+    if (this.codeGraphWaitDetail) {
+      const status = this.deps.codeGraph?.status()
+      if (status) this.codeGraphWaitDetail = codeGraphWaitDetail(status)
+    }
     this.postState()
   }
 
@@ -377,7 +418,7 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
       this.messages = []
       await this.refreshSessionList(client)
     } catch (error) {
-      this.reportError("Failed to create remote session", error)
+      this.reportRemoteConnectionFailure(client, "Failed to create remote session", error)
     } finally {
       this.loadingMessages = false
       this.postState()
@@ -514,10 +555,14 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
       await this.loadSessionMessages(client, sessionID)
     } catch (error) {
       if (isSessionNotFoundError(error)) {
-        await this.recoverMissingSession(client, sessionID)
+        try {
+          await this.recoverMissingSession(client, sessionID)
+        } catch (recoverError) {
+          this.reportRemoteConnectionFailure(client, "Failed to recover remote session", recoverError)
+        }
         return
       }
-      this.reportError("Failed to load remote session", error)
+      this.reportRemoteConnectionFailure(client, "Failed to load remote session", error)
     } finally {
       this.loadingMessages = false
       this.postState()
@@ -527,7 +572,7 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
   private async refreshModels() {
     const client = this.connectedClient("Connect before refreshing models.")
     if (!client) return
-    await this.refreshModelList(client)
+    await Promise.allSettled([this.refreshModelList(client), this.refreshAgentList(client)])
     this.postState()
   }
 
@@ -613,11 +658,16 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
     let sentStreaming = false
     try {
       const settings = this.deps.getSettings()
+      await this.ensureAgentList(client, settings)
       const agentSelection = this.agentForSettings(settings)
+      if (!agentSelection.ready) {
+        throw new MissingLocalOnlyAgentError(agentSelection.warning ?? "Required VS Code local agent is not available.")
+      }
       const modelSelection = this.modelForSettings(settings)
       strictAgentHint = agentSelection.strict
-        ? " If strict local-only agent is enabled, confirm the remote OpenCode server has that agent configured."
+        ? " Confirm the remote OpenCode server has the required VS Code local agent configured."
         : ""
+      await this.waitForCodeGraphReady(settings)
       let contextSummary: ContextSummaryItem[] = []
       const prompt = await buildChatPrompt({
         question: trimmed || "Please review the referenced files.",
@@ -657,7 +707,12 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
 
       const rawMessage = finalError instanceof Error ? finalError.message : String(finalError)
       const message = strictAgentHint && looksLikeServerAgentError(rawMessage) ? `${rawMessage}${strictAgentHint}` : rawMessage
-      if (error instanceof MissingLocalContextError || finalError instanceof MissingLocalContextError) {
+      if (
+        error instanceof MissingLocalContextError ||
+        finalError instanceof MissingLocalContextError ||
+        error instanceof MissingLocalOnlyAgentError ||
+        finalError instanceof MissingLocalOnlyAgentError
+      ) {
         this.messages = this.messages.filter((messageItem) => messageItem.id !== optimistic.id)
         this.pendingLocalUserMessageIDs.delete(optimistic.id)
         this.pendingLocalUserTexts.delete(optimistic.text)
@@ -665,14 +720,45 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
         this.deps.output.appendLine(`[guard] blocked send: ${message}`)
         return
       }
+      if (error instanceof CodeGraphReadinessError || finalError instanceof CodeGraphReadinessError) {
+        this.messages = this.messages.filter((messageItem) => messageItem.id !== optimistic.id)
+        this.pendingLocalUserMessageIDs.delete(optimistic.id)
+        this.pendingLocalUserTexts.delete(optimistic.text)
+        this.messages = [...this.messages, localMessage("error", message)]
+        this.deps.output.appendLine(`[codegraph] blocked send: ${message}`)
+        return
+      }
       this.pendingLocalUserMessageIDs.delete(optimistic.id)
       this.pendingLocalUserTexts.delete(optimistic.text)
       this.messages = [...this.messages, localMessage("error", `Failed to send message: ${message}`)]
-      this.reportError("Failed to send message to remote OpenCode", new Error(message))
+      this.reportRemoteConnectionFailure(client, "Failed to send message to remote OpenCode", finalError, message)
     } finally {
+      this.codeGraphWaitDetail = ""
       if (!sentStreaming) this.sending = false
       this.postState()
     }
+  }
+
+  private async waitForCodeGraphReady(settings: RemoteSettings) {
+    if (!settings.codeGraph.enabled || !this.deps.codeGraph) return
+
+    const status = this.deps.codeGraph.status()
+    if (status.state === "ready") return
+    if (status.state === "error") throw new CodeGraphReadinessError(codeGraphErrorMessage(status))
+    if (status.state !== "indexing" && status.state !== "stale" && status.state !== "disabled") return
+
+    this.codeGraphWaitDetail = codeGraphWaitDetail(status)
+    this.deps.output.appendLine(`[codegraph] ${this.codeGraphWaitDetail}`)
+    this.postState()
+    try {
+      await this.deps.codeGraph.waitForReady()
+    } catch (error) {
+      throw new CodeGraphReadinessError(codeGraphErrorMessage(this.deps.codeGraph.status(), error))
+    }
+
+    const next = this.deps.codeGraph.status()
+    if (next.state === "ready") return
+    throw new CodeGraphReadinessError(codeGraphErrorMessage(next))
   }
 
   private async getOrCreateSession(client: RemoteOpenCodeClient) {
@@ -713,10 +799,13 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   private async refreshSessionList(client: RemoteOpenCodeClient) {
-    const sessions = await client.listSessions()
+    const started = Date.now()
+    const sessions = await withRequestTimeout("session list", SESSION_REFRESH_TIMEOUT_MS, (signal) => client.listSessions(signal))
     this.sessions = sessions
       .filter((session) => this.isVisibleChatSession(session))
       .map((session) => renderSession(session, this.flaggedSessions.has(session.id)))
+    this.historyError = ""
+    this.deps.output.appendLine(`[refresh] sessions ${Date.now() - started}ms`)
   }
 
   private reconcileSessionSelection() {
@@ -769,7 +858,11 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   private async loadSessionMessages(client: RemoteOpenCodeClient, sessionID: string) {
-    const messages = await client.getMessages(sessionID)
+    const started = Date.now()
+    const messages = await withRequestTimeout("session messages", MESSAGE_REFRESH_TIMEOUT_MS, (signal) =>
+      client.getMessages(sessionID, SESSION_MESSAGE_LIMIT, signal),
+    )
+    this.deps.output.appendLine(`[refresh] messages ${Date.now() - started}ms`)
     if (messages.some(isInlineCompletionMessage)) {
       await this.hideCompletionSession(client, sessionID)
       if (this.sessionID) await this.loadSessionMessages(client, this.sessionID)
@@ -829,8 +922,9 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
     this.loadingModels = true
     this.modelError = ""
     this.postState()
+    const started = Date.now()
     try {
-      this.models = await client.listModels()
+      this.models = await withRequestTimeout("model list", MODEL_REFRESH_TIMEOUT_MS, (signal) => client.listModels(signal))
       this.deps.output.appendLine(`[model] loaded ${this.models.length} model(s)`)
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
@@ -838,7 +932,35 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
       this.deps.output.appendLine(`[model] ${this.modelError}`)
     } finally {
       this.loadingModels = false
+      this.deps.output.appendLine(`[refresh] models ${Date.now() - started}ms`)
     }
+  }
+
+  private async refreshAgentList(client: RemoteOpenCodeClient) {
+    this.loadingAgents = true
+    this.agentError = ""
+    this.postState()
+    const started = Date.now()
+    try {
+      this.agents = await withRequestTimeout("agent list", AGENT_REFRESH_TIMEOUT_MS, (signal) => client.listAgents(signal))
+      this.deps.output.appendLine(`[agent] loaded: ${agentListSummary(this.agents)}`)
+      const selection = this.agentForSettings(this.deps.getSettings())
+      if (!selection.ready && selection.warning) this.deps.output.appendLine(`[agent] ${selection.warning}`)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      this.agents = []
+      this.agentError = `Failed to load agents: ${message}`
+      this.deps.output.appendLine(`[agent] ${this.agentError}`)
+    } finally {
+      this.loadingAgents = false
+      this.deps.output.appendLine(`[refresh] agents ${Date.now() - started}ms`)
+    }
+  }
+
+  private async ensureAgentList(client: RemoteOpenCodeClient, settings: RemoteSettings) {
+    if (!settings.context.localOnlyMode) return
+    if (this.agents.length > 0 && !this.agentError) return
+    await this.refreshAgentList(client)
   }
 
   private connectedClient(message: string) {
@@ -860,27 +982,11 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   private agentForSettings(settings: RemoteSettings) {
-    const defaultAgent = settings.defaultAgent.trim()
-    const localOnlyAgent = settings.localOnlyAgent.trim()
-    if (settings.context.localOnlyMode && settings.context.strictLocalOnlyAgent && localOnlyAgent) {
-      return {
-        agent: localOnlyAgent,
-        strict: true,
-        label: `strict local-only agent: ${localOnlyAgent}`,
-      }
-    }
-    if (defaultAgent) {
-      return {
-        agent: defaultAgent,
-        strict: false,
-        label: `default agent: ${defaultAgent}`,
-      }
-    }
-    return {
-      agent: undefined,
-      strict: false,
-      label: "no agent override",
-    }
+    return selectRequestAgent({
+      settings,
+      agents: this.agents,
+      agentError: this.agentError,
+    })
   }
 
   private modelForSettings(settings: RemoteSettings) {
@@ -913,6 +1019,7 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
 
   private postState() {
     const settings = this.deps.getSettings()
+    const agentSelection = this.agentForSettings(settings)
     this.view?.webview.postMessage({
       type: "state",
       state: {
@@ -927,18 +1034,28 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
         localOnlyMode: settings.context.localOnlyMode,
         localOnlyAgent: settings.localOnlyAgent,
         strictLocalOnlyAgent: settings.context.strictLocalOnlyAgent,
+        selectedAgent: agentSelection.agent,
+        agentReady: agentSelection.ready,
+        agents: this.agents,
+        loadingAgents: this.loadingAgents,
+        agentError: this.agentError,
         selectedModel: settings.defaultModel,
         models: this.models,
         loadingModels: this.loadingModels,
         modelError: this.modelError,
-        localOnlyWarning:
-          settings.context.localOnlyMode && settings.context.strictLocalOnlyAgent && !settings.localOnlyAgent.trim()
-            ? "Strict local-only agent mode is on, but no local-only agent name is configured."
-            : "",
+        historyError: this.historyError,
+        localOnlyWarning: settings.context.localOnlyMode ? agentSelection.warning ?? "" : "",
         contextFiles: this.deps.contextStore.labels(),
         codeGraph: this.deps.codeGraph?.status(),
+        codeGraphWaitDetail: this.codeGraphWaitDetail,
         lastContextSummary: this.lastContextSummary,
         autoContext: this.autoContextState(),
+        usage: summarizeSessionUsage({
+          messages: this.remoteMessages,
+          models: this.models,
+          selectedModel: settings.defaultModel,
+          loadedMessageLimit: SESSION_MESSAGE_LIMIT,
+        }),
         sessions: this.sessions,
         currentSessionID: this.sessionID,
         messages: this.messages,
@@ -952,6 +1069,20 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
     const message = error instanceof Error ? error.message : String(error)
     this.deps.output.appendLine(`${prefix}: ${message}`)
     this.deps.setConnectionState("error", `${prefix}: ${message}`)
+  }
+
+  private reportRemoteConnectionFailure(
+    client: RemoteOpenCodeClient,
+    prefix: string,
+    error: unknown,
+    detailMessage = formatErrorMessage(error),
+  ) {
+    const detail = `${prefix}: ${detailMessage}`
+    const state = connectionFailureState(error)
+    this.historyError = detail
+    this.deps.output.appendLine(`[history] ${detail}`)
+    this.deps.clearClient(client)
+    this.deps.setConnectionState(state, detail)
   }
 
   private autoContextState() {
@@ -982,6 +1113,60 @@ function renderSession(session: OpenCodeSession, serverToolsUsed = false): Rende
     updated: session.time?.updated ?? session.time?.created,
     serverToolsUsed,
   }
+}
+
+async function withRequestTimeout<T>(
+  label: string,
+  timeoutMs: number,
+  task: (signal: AbortSignal) => Promise<T>,
+) {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), timeoutMs)
+  try {
+    return await task(controller.signal)
+  } catch (error) {
+    if (controller.signal.aborted) {
+      throw new Error(`${label} timed out after ${timeoutMs}ms`)
+    }
+    throw error
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+function formatErrorMessage(error: unknown) {
+  return error instanceof Error ? error.message : String(error)
+}
+
+function connectionFailureState(error: unknown): ConnectionState {
+  if (error instanceof RemoteOpenCodeAuthError) return "authFailed"
+  if (error instanceof RemoteOpenCodeConnectionError || isRequestTimeoutError(error)) return "error"
+  return "error"
+}
+
+function isRequestTimeoutError(error: unknown) {
+  return error instanceof Error && /\btimed out after \d+ms\b/i.test(error.message)
+}
+
+class CodeGraphReadinessError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = "CodeGraphReadinessError"
+  }
+}
+
+function codeGraphWaitDetail(status: CodeGraphStatus) {
+  const progress = status.progress?.total
+    ? ` ${status.progress.completed}/${status.progress.total} file(s)`
+    : ""
+  const detail = status.detail ? ` ${status.detail}` : ""
+  return `Waiting for code graph indexing${progress}.${detail}`.trim()
+}
+
+function codeGraphErrorMessage(status: CodeGraphStatus, cause?: unknown) {
+  const causeMessage = cause ? formatErrorMessage(cause) : ""
+  const detail = status.detail || causeMessage || "Local code graph indexing failed."
+  return `Local code graph is not ready: ${detail} Rebuild the local code graph or disable opencode.remote.codeGraph.enabled before sending.`
 }
 
 function renderMessage(message: OpenCodeMessage): RenderedMessage {
@@ -1021,6 +1206,7 @@ function renderMessage(message: OpenCodeMessage): RenderedMessage {
   const rawText = split.text
   const hasTool = parts.some((part) => part.type === "tool")
   const role = rawText ? (message.info.role ?? "message") : hasTool ? "tool" : (message.info.role ?? "message")
+  const usage = usageFromMessageInfo(message.info)
   return {
     id: message.info.id,
     role,
@@ -1028,6 +1214,7 @@ function renderMessage(message: OpenCodeMessage): RenderedMessage {
     timeCreated: message.info.time?.created,
     timeCompleted: message.info.time?.completed,
     parts,
+    usage,
     serverToolsUsed: serverToolWarnings.length > 0,
   }
 }

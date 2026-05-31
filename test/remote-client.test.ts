@@ -6,6 +6,7 @@ import {
   RemoteOpenCodeConnectionError,
   RemoteOpenCodeRequestError,
   isSessionNotFoundError,
+  normalizeAgents,
   normalizeModels,
 } from "../src/remote-client"
 import type { RemoteSettings } from "../src/types"
@@ -134,6 +135,50 @@ describe("RemoteOpenCodeClient", () => {
     })
   })
 
+  test("lists and normalizes remote agents", async () => {
+    const baseUrl = await listen((request, response) => {
+      if (request.url === "/agent") {
+        json(response, 200, [
+          { id: "build", name: "Build", description: "Full tools" },
+          { id: "vscode-local", description: "VS Code local context", mode: "primary" },
+        ])
+        return
+      }
+      response.writeHead(404).end()
+    })
+
+    await expect(new RemoteOpenCodeClient(settings(baseUrl)).listAgents()).resolves.toEqual([
+      {
+        id: "vscode-local",
+        name: "vscode-local",
+        description: "VS Code local context",
+        mode: "primary",
+        isLocalOnly: true,
+      },
+      {
+        id: "build",
+        name: "Build",
+        description: "Full tools",
+        isLocalOnly: false,
+      },
+    ])
+  })
+
+  test("does not hide agent discovery failures", async () => {
+    const baseUrl = await listen((request, response) => {
+      if (request.url === "/agent") {
+        response.writeHead(500, { "content-type": "text/plain" }).end("agent broken")
+        return
+      }
+      response.writeHead(404).end()
+    })
+
+    await expect(new RemoteOpenCodeClient(settings(baseUrl)).listAgents()).rejects.toMatchObject({
+      name: "RemoteOpenCodeRequestError",
+      status: 500,
+    } satisfies Partial<RemoteOpenCodeRequestError>)
+  })
+
   test("sends model only when one is provided", async () => {
     const bodies: unknown[] = []
     const baseUrl = await listen((request, response) => {
@@ -253,6 +298,116 @@ describe("model normalization", () => {
       isDefault: true,
     })
   })
+
+  test("preserves limits from provider model maps", () => {
+    expect(
+      normalizeModels({
+        providers: [
+          {
+            id: "anthropic",
+            name: "Anthropic",
+            models: {
+              "claude-sonnet-4": {
+                name: "Claude Sonnet 4",
+                limit: { context: 200_000, output: 64_000 },
+              },
+            },
+          },
+        ],
+      }),
+    ).toContainEqual({
+      id: "anthropic/claude-sonnet-4",
+      providerID: "anthropic",
+      modelID: "claude-sonnet-4",
+      name: "Claude Sonnet 4",
+      providerName: "Anthropic",
+      isDefault: false,
+      contextLimit: 200_000,
+      outputLimit: 64_000,
+    })
+  })
+
+  test("preserves limits from provider model arrays", () => {
+    expect(
+      normalizeModels({
+        all: [
+          {
+            id: "openai",
+            name: "OpenAI",
+            models: [{ id: "gpt-5", name: "GPT-5", limit: { context: 128_000, output: 16_000 } }],
+          },
+        ],
+      }),
+    ).toContainEqual({
+      id: "openai/gpt-5",
+      providerID: "openai",
+      modelID: "gpt-5",
+      name: "GPT-5",
+      providerName: "OpenAI",
+      isDefault: false,
+      contextLimit: 128_000,
+      outputLimit: 16_000,
+    })
+  })
+})
+
+describe("agent normalization", () => {
+  test("normalizes agent maps and marks the required VS Code local agent", () => {
+    expect(
+      normalizeAgents({
+        agent: {
+          build: { description: "Full tools" },
+          "vscode-local": { name: "VS Code Local", disable: false },
+          disabled: { disable: true },
+        },
+      }),
+    ).toEqual([
+      {
+        id: "vscode-local",
+        name: "VS Code Local",
+        isLocalOnly: true,
+      },
+      {
+        id: "build",
+        name: "build",
+        description: "Full tools",
+        isLocalOnly: false,
+      },
+      {
+        id: "disabled",
+        name: "disabled",
+        disabled: true,
+        isLocalOnly: false,
+      },
+    ])
+  })
+
+  test("normalizes direct agent map responses", () => {
+    expect(
+      normalizeAgents({
+        "vscode-local": { description: "Required" },
+        build: { description: "Other" },
+      }),
+    ).toContainEqual({
+      id: "vscode-local",
+      name: "vscode-local",
+      description: "Required",
+      isLocalOnly: true,
+    })
+  })
+
+  test("marks OpenCode title-cased VS Code local agents as local-only", () => {
+    expect(normalizeAgents([{ name: "Vscode-Local" }])).toContainEqual({
+      id: "Vscode-Local",
+      name: "Vscode-Local",
+      isLocalOnly: true,
+    })
+    expect(normalizeAgents([{ id: "display", name: "VS Code Local" }])).toContainEqual({
+      id: "display",
+      name: "VS Code Local",
+      isLocalOnly: true,
+    })
+  })
 })
 
 describe("request error helpers", () => {
@@ -276,7 +431,7 @@ function settings(serverUrl: string): RemoteSettings {
       includeDiagnostics: true,
       includeGitDiff: false,
       localOnlyMode: true,
-      strictLocalOnlyAgent: false,
+      strictLocalOnlyAgent: true,
     },
     completion: {
       enabled: false,

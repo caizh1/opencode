@@ -68,6 +68,44 @@ describe("chat stream events", () => {
     ])
   })
 
+  test("preserves assistant usage fields from message updates", () => {
+    const result = applyOpenCodeEventToMessages(
+      [],
+      {
+        type: "message.updated",
+        properties: {
+          info: {
+            id: "m1",
+            sessionID: "s1",
+            role: "assistant",
+            providerID: "deepseek",
+            modelID: "deepseek-v4-pro",
+            cost: 0.002,
+            tokens: {
+              input: 12_400,
+              output: 1100,
+              reasoning: 300,
+              cache: { read: 2000, write: 100 },
+            },
+          },
+        },
+      },
+      "s1",
+    )
+
+    expect(result.messages[0]?.info).toMatchObject({
+      providerID: "deepseek",
+      modelID: "deepseek-v4-pro",
+      cost: 0.002,
+      tokens: {
+        input: 12_400,
+        output: 1100,
+        reasoning: 300,
+        cache: { read: 2000, write: 100 },
+      },
+    })
+  })
+
   test("removes message parts and ignores other sessions", () => {
     const started = applyOpenCodeEventToMessages([], messageUpdated("s1", "m1"), "s1")
     const withPart = applyOpenCodeEventToMessages(

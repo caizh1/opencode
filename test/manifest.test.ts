@@ -33,7 +33,7 @@ describe("extension manifest", () => {
   test("contributes local-only guard settings", () => {
     const properties = manifest.contributes?.configuration?.properties ?? {}
     expect(properties["opencode.remote.context.localOnlyMode"]?.default).toBe(true)
-    expect(properties["opencode.remote.context.strictLocalOnlyAgent"]?.default).toBe(false)
+    expect(properties["opencode.remote.context.strictLocalOnlyAgent"]?.default).toBe(true)
     expect(properties["opencode.remote.localOnlyAgent"]?.default).toBe("vscode-local")
   })
 
@@ -48,7 +48,7 @@ describe("extension manifest", () => {
 
   test("contributes local code graph settings", () => {
     const properties = manifest.contributes?.configuration?.properties ?? {}
-    expect(properties["opencode.remote.codeGraph.enabled"]?.default).toBe(false)
+    expect(properties["opencode.remote.codeGraph.enabled"]?.default).toBe(true)
     expect(properties["opencode.remote.codeGraph.promptOnWorkspaceOpen"]?.default).toBe(true)
     expect(properties["opencode.remote.codeGraph.analysisMode"]).toMatchObject({
       type: "string",

@@ -26,3 +26,9 @@ artifact already exists in the repository root. If a packaged `.vsix` already
 exists locally, increment the patch version in `package.json` by 1 before
 running `bun run vsix`, so the newly generated package has a fresh version
 number.
+
+After completing any bug fix or behavior change that should be tested in VS
+Code, create a fresh local extension package before handing off the work. Follow
+the same versioning rule above: if an `opencode-remote-*.vsix` already exists,
+increment the patch version first, then run `bun run vsix` and report the new
+`.vsix` filename.

@@ -17,13 +17,13 @@ describe("chat history flow", () => {
     expect(chatViewSource).toContain('{ type: "selectSession"; sessionID: string }')
     expect(chatViewSource).toContain("private async selectSession")
     expect(chatViewSource).toContain("await this.loadSessionMessages(client, sessionID)")
-    expect(chatViewSource).toContain("client.getMessages(sessionID)")
+    expect(chatViewSource).toContain("client.getMessages(sessionID, SESSION_MESSAGE_LIMIT, signal)")
   })
 
   test("refreshes session history after session-changing actions", () => {
     expect(chatViewSource).toContain("private async refreshSessionList")
     expect(chatViewSource).toContain("await this.refreshSessionList(client)")
-    expect(chatViewSource).toContain("client.listSessions()")
+    expect(chatViewSource).toContain("client.listSessions(signal)")
     expect(chatViewSource).toContain("this.isVisibleChatSession(session)")
     expect(chatViewSource).toContain("isPluginChatSession(session)")
   })
@@ -62,6 +62,16 @@ describe("chat history flow", () => {
     expect(chatViewSource).toContain("private async sendPreparedMessage")
     expect(chatViewSource).toContain("Selected remote session was not found; retrying with a new session.")
     expect(chatViewSource).toContain("this.clearMissingSession(this.sessionID)")
+  })
+
+  test("waits for local code graph readiness before sending", () => {
+    expect(chatViewSource).toContain("codeGraph: this.deps.codeGraph")
+    expect(chatViewSource).toContain("private async waitForCodeGraphReady")
+    expect(chatViewSource).toContain("await this.waitForCodeGraphReady(settings)")
+    expect(chatViewSource).toContain("this.deps.codeGraph.waitForReady()")
+    expect(chatViewSource).toContain("CodeGraphReadinessError")
+    expect(chatViewSource).toContain("codeGraphWaitDetail")
+    expect(chatViewSource).toContain("[codegraph] blocked send")
   })
 
   test("streams chat replies through OpenCode events with blocking fallback", () => {

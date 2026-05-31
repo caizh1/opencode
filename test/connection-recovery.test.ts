@@ -4,6 +4,7 @@ import { join } from "node:path"
 
 describe("connection and stale-session recovery wiring", () => {
   const extensionSource = readFileSync(join(import.meta.dir, "..", "src", "extension.ts"), "utf8")
+  const chatViewSource = readFileSync(join(import.meta.dir, "..", "src", "chat-view.ts"), "utf8")
   const completionSource = readFileSync(join(import.meta.dir, "..", "src", "completion.ts"), "utf8")
   const coordinatorSource = readFileSync(join(import.meta.dir, "..", "src", "completion-request-coordinator.ts"), "utf8")
 
@@ -11,7 +12,7 @@ describe("connection and stale-session recovery wiring", () => {
     expect(extensionSource).toContain("async function probeClient")
     expect(extensionSource).toContain("const connectClient = async")
     expect(extensionSource).toContain("client = next")
-    expect(extensionSource).toContain("await chatProvider.refresh()")
+    expect(extensionSource).toContain("void chatProvider.refresh()")
   })
 
   test("test connection does not replace the active client or refresh sessions", () => {
@@ -23,6 +24,26 @@ describe("connection and stale-session recovery wiring", () => {
     expect(body).toContain("Click Connect to use this server")
     expect(body).not.toContain("client =")
     expect(body).not.toContain("chatProvider.refresh")
+  })
+
+  test("remote refresh failures leave connected state and clear the active client", () => {
+    expect(extensionSource).toContain("const clearClient = (target: RemoteOpenCodeClient)")
+    expect(extensionSource).toContain("if (client === target) client = undefined")
+    expect(extensionSource).toContain("clearClient,")
+
+    expect(chatViewSource).toContain("clearClient: (client: RemoteOpenCodeClient) => void")
+    expect(chatViewSource).toContain('this.reportRemoteConnectionFailure(client, "Failed to load sessions", sessionResult.reason)')
+    expect(chatViewSource).toContain('this.reportRemoteConnectionFailure(client, "Failed to load selected session", error)')
+    expect(chatViewSource).toContain("this.deps.clearClient(client)")
+    expect(chatViewSource).toContain("this.deps.setConnectionState(state, detail)")
+  })
+
+  test("remote failure state distinguishes auth failures from connection errors", () => {
+    expect(chatViewSource).toContain("RemoteOpenCodeAuthError")
+    expect(chatViewSource).toContain("RemoteOpenCodeConnectionError")
+    expect(chatViewSource).toContain('return "authFailed"')
+    expect(chatViewSource).toContain('return "error"')
+    expect(chatViewSource).toContain("isRequestTimeoutError")
   })
 
   test("completion retries once when its remote session vanished", () => {
