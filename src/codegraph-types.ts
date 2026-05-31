@@ -1,4 +1,6 @@
 import type { CodeGraphStatus } from "./types"
+import type { AnalysisToolName, AnalysisToolResult, CodeIntelligenceSnapshot, QueryEvidenceResult } from "./analysis-types"
+import type { CodeGraphStorageSchemaManifest } from "./codegraph-storage-schema"
 
 export type CodeGraphInclude = {
   target: string
@@ -75,6 +77,10 @@ export type CodeGraphFile = {
   path: string
   language: string
   hash: string
+  sha256?: string
+  mtime?: number
+  module?: string
+  shard?: string
   size: number
   indexedAt: number
   includes: CodeGraphInclude[]
@@ -157,6 +163,7 @@ export type CodeGraphIndex = {
   derived?: CodeGraphDerivedIndex
   stats?: CodeGraphIndexStats
   storageMode?: "legacy-json" | "sharded"
+  schema?: CodeGraphStorageSchemaManifest
 }
 
 export type CodeGraphShardManifest = {
@@ -167,6 +174,7 @@ export type CodeGraphShardManifest = {
   truncated: boolean
   derived: CodeGraphDerivedIndex
   stats: CodeGraphIndexStats
+  schema?: CodeGraphStorageSchemaManifest
   shards: CodeGraphShardInfo[]
 }
 
@@ -232,6 +240,10 @@ export type CodeGraphPromptContext = {
 export type CodeGraphContextProvider = {
   status(): CodeGraphStatus
   indexWorkspace(force: boolean): Promise<void>
+  cancelIndexing(reason?: string): void
+  pauseIndexing(reason?: string): void
+  resumeIndexing(): void
+  metrics(): NonNullable<CodeGraphStatus["metrics"]>
   waitForReady(): Promise<void>
   showStatus(): Promise<void>
   buildContext(input: {
@@ -241,4 +253,10 @@ export type CodeGraphContextProvider = {
     maxDepth: number
     maxFanout: number
   }): Promise<CodeGraphPromptContext | undefined>
+  intelligenceSnapshot(): Promise<CodeIntelligenceSnapshot | undefined>
+  runAnalysisTool(input: {
+    tool: AnalysisToolName
+    args?: Record<string, unknown>
+  }): Promise<AnalysisToolResult>
+  queryEvidence(question: string): Promise<QueryEvidenceResult | undefined>
 }

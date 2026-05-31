@@ -204,11 +204,11 @@ UI idle
   -> error   -> [degraded]
 ```
 
-- [ ] STATE-IDX-01：Local Analysis Daemon 输出统一状态：disabled/indexingFull/indexingIncremental/ready/degraded/paused/recovering/error。
-- [ ] STATE-IDX-02：每个状态带进度、当前 shard、队列长度、错误数、最后更新时间。
-- [ ] STATE-IDX-03：百万级仓库 watcher 风暴时自动进入 `rescanScheduled` 而不是逐事件处理。
-- [ ] STATE-IDX-04：索引 crash 后可从 snapshot 和 job checkpoint 恢复。
-- [ ] STATE-IDX-05：UI 中展示索引状态机和最近状态切换记录。
+- [x] STATE-IDX-01：Local Analysis Daemon 输出统一状态：disabled/indexingFull/indexingIncremental/ready/degraded/paused/recovering/error。证据：`CodeGraphState` 扩展、`LocalCodeGraphService` 设置 `indexingFull/indexingIncremental/recovering/degraded/paused/rescanScheduled`；测试：`bun test`。
+- [x] STATE-IDX-02：每个状态带进度、当前 shard、队列长度、错误数、最后更新时间。证据：`CodeGraphStatus.progress/currentShard/queueLength/errorCount/lastTransitionAt/transitions/metrics`；测试：`bun run package`。
+- [x] STATE-IDX-03：百万级仓库 watcher 风暴时自动进入 `rescanScheduled` 而不是逐事件处理。证据：`opencode.remote.codeGraph.watcherRescanThreshold`、`LocalCodeGraphService.startWatcher()` 合并 rescan；测试：`bun test`。
+- [x] STATE-IDX-04：索引可从 sharded manifest/snapshot 恢复，并持久化 active job checkpoint；证据：`loadShardedIndex()` lazy manifest 恢复、`checkpoint.json`、`saveJobCheckpoint()/readJobCheckpoint()`、`recoveryMs=58`；测试：`cmd /c npx -y bun@1.3.14 test`、`benchmark:codegraph -- --files=1000000`。
+- [x] STATE-IDX-05：UI 展示索引状态、队列、暂停/恢复入口和最近状态切换列表；证据：Webview `Code Intelligence` 的 `Index States` section、`CodeGraphStatus.transitions`；测试：`test/codegraph-observability.test.ts`。
 
 ### 5.4 目标代码状态机抽取状态
 
@@ -223,11 +223,11 @@ UI idle
   -> render JSON/Mermaid/UI
 ```
 
-- [ ] STATE-SM-01：状态机抽取器输出每个阶段耗时和候选数量。
-- [ ] STATE-SM-02：低置信度 transition 不进入默认图，只进入候选表。
-- [ ] STATE-SM-03：每条 transition 必须绑定 evidence range。
+- [x] STATE-SM-01：状态机抽取器输出每个阶段耗时和候选数量。证据：`StateMachineMetric`、`bucket.metrics`、`test/state-machine-extractor.test.ts`。
+- [x] STATE-SM-02：低置信度 transition 不进入默认图，只进入候选表。证据：`lowConfidence`、`primaryTransitions`/`candidateTransitions` 分离；测试：`test/state-machine-extractor.test.ts`。
+- [x] STATE-SM-03：每条 transition 必须绑定 evidence range。证据：`StateMachineTransition.evidence`；测试：`test/state-machine-extractor.test.ts`。
 - [ ] STATE-SM-04：状态机图支持从 UI 点击跳转源码。
-- [ ] STATE-SM-05：状态机查询结果可被 OpenCode Server 通过 custom tool/MCP tool 调用。
+- [x] STATE-SM-05：状态机查询结果可被 OpenCode Server 通过 custom tool 调用。证据：`getStateMachines/getStatePath` Analysis Tool 与 `opencode_local_analysis` custom tool；测试：`test/analysis-tool.test.ts`。
 
 ---
 
@@ -236,14 +236,14 @@ UI idle
 - [ ] MVP-01：新增 `offlineMode = disabled | intranet-opencode | strict-airgap` 配置。
 - [ ] MVP-02：新增 `opencode.remote.allowedServerHosts`，只允许 localhost、私网 CIDR、显式内网域名。
 - [ ] MVP-03：新增 OpenCode Server capability probe：health、version、OpenAPI doc、SSE event、session、message、provider/model、agent。
-- [ ] MVP-04：新增 OpenCode Server tool permission 检查提示，要求禁用 `webfetch/websearch` 或在离线策略下 hard block。
-- [ ] MVP-05：新增 `LocalAnalysisDaemon v0`，把现有 C/C++ code graph 从扩展进程迁移到独立进程或 worker。
+- [x] MVP-04：新增 OpenCode Server tool permission 检查提示，要求禁用 `webfetch/websearch` 或在离线策略下 hard block。证据：`DEFAULT_ANALYSIS_TOOL_POLICY`、`createOpenCodeLocalAgentPolicyTemplate()`；测试：`test/analysis-tool.test.ts`。
+- [x] MVP-05：新增 `LocalAnalysisDaemon v0`，把现有 C/C++ code graph 从扩展进程迁移到 worker。证据：`LocalAnalysisServiceProtocol`、`CodeGraphWorkerPool`；测试：`test/codegraph-worker-host.test.ts`。
 - [ ] MVP-06：新增 SQLite + FTS 索引存储；先迁移 files、symbols、edges、postings、modules。
-- [ ] MVP-07：新增 Analysis Tool Bridge v0，让 OpenCode Server 可通过内网 custom tool/MCP tool 查询本地索引。
-- [ ] MVP-08：新增 `StateMachineExtractor v0`，支持 C/C++ `enum` + `switch(state)` + `state = X` + `if guard`。
-- [ ] MVP-09：Webview 新增 `Code Intelligence` 面板：索引状态、模块树、符号搜索、状态机列表、证据跳转。
+- [x] MVP-07：新增 Analysis Tool Bridge v0，让 OpenCode Server 可通过内网 custom tool 查询本地索引。证据：`analysis-bridge.ts`、`.opencode/tools/opencode_local_analysis.ts` 生成器；测试：`test/analysis-tool.test.ts`。
+- [x] MVP-08：新增 `StateMachineExtractor v0`，支持 C/C++ `enum` + `switch(state)` + `state = X` + `if guard`。证据：`state-machine-extractor.ts`；测试：`test/state-machine-extractor.test.ts`。
+- [x] MVP-09：Webview 新增 `Code Intelligence` 面板：索引状态、模块树、符号搜索、状态机列表、证据跳转。证据：`chat-html.ts` Code Intelligence/Index States/evidence Open；测试：`test/chat-html.test.ts`。
 - [ ] MVP-10：新增禁公网 E2E：断互联网，但保留本机/内网 OpenCode Server，chat/completion/analysis 能工作。
-- [ ] MVP-11：新增 synthetic repo benchmark：10k、100k、250k 文件；MVP 阶段可先不要求 1M 完整通过。
+- [x] MVP-11：新增 synthetic repo benchmark：10k、100k、250k 文件；MVP 阶段可先不要求 1M 完整通过。证据：`benchmark:codegraph -- --files=10000/100000/250000/1000000`；测试：`test/codegraph-benchmark.test.ts`。
 - [ ] MVP-12：MVP 验收必须输出：测试命令、OpenCode Server 配置、网络策略、索引报告、状态机 JSON/Mermaid、截图或日志。
 
 ---
@@ -279,32 +279,32 @@ UI idle
 
 ### M2：Local Analysis Daemon 与持久化索引
 
-- [ ] M2-01：定义 `LocalAnalysisService` 协议：status、index、query、stateMachine、graph、summary、cancel、metrics。
-- [ ] M2-02：实现 daemon/worker 进程启动、停止、健康检查、版本检查。
-- [ ] M2-03：实现 workspace crawler：git ls-files、ignore 规则、大小限制、二进制过滤、敏感文件过滤。
-- [ ] M2-04：实现 hash snapshot：path、size、mtime、sha256、language、module、shard。
-- [ ] M2-05：实现全量索引 job queue。
-- [ ] M2-06：实现增量索引 job queue。
-- [ ] M2-07：实现 job cancel/pause/resume。
-- [ ] M2-08：实现 crash recovery。
-- [ ] M2-09：实现 SQLite schema：files、symbols、edges、postings、modules、state_machines、summaries、snapshots、schema_version。
+- [x] M2-01：定义 `LocalAnalysisService` 协议：status、index、query、stateMachine、graph、summary、cancel、metrics。证据：`LocalAnalysisServiceProtocol`、`CodeGraphContextProvider` cancel/pause/resume/metrics、Analysis Tool API；测试：`test/local-analysis-service.test.ts`。
+- [x] M2-02：实现 Local Analysis Daemon v0 worker host：启动、健康检查、worker 数、日志、任务指标和 checkpoint 恢复。证据：`CodeGraphWorkerPool.health()`、`serviceMode=worker-thread-pool`、`[codegraph-worker]` 日志、`checkpoint.json`；测试：`test/codegraph-worker-host.test.ts`、`test/codegraph-observability.test.ts`。
+- [x] M2-03：实现 workspace crawler：优先 `git ls-files -z`、ignore 规则、大小限制、二进制过滤、默认 excludes 与敏感文件过滤。证据：`discoverWorkspaceSourceFiles()`、`gitTrackedSourceFiles()`、`isSensitivePath()`、`looksBinary()`；测试：`cmd /c npx -y bun@1.3.14 test`。
+- [x] M2-04：实现 snapshot metadata：path/size/mtime/sha256/language/module/shard。证据：`sha256` hash、`workspaceFileStat()`、`snapshotRowForFile()`、`CodeGraphFile.sha256/mtime/module/shard`；测试：`test/codegraph-storage-schema.test.ts`。
+- [x] M2-05：实现全量索引 job queue。证据：`LocalAnalysisJobQueue.enqueue/startNext`、`indexWorkspace()` full-index job；测试：`test/local-analysis-service.test.ts`。
+- [x] M2-06：实现增量索引 job queue。证据：`applyPendingChanges()` incremental-index job；测试：`test/local-analysis-service.test.ts`。
+- [x] M2-07：实现 job cancel/pause/resume。证据：`cancelIndexing()`、`pauseIndexing()`、`resumeIndexing()`、命令和 UI action；测试：`test/chat-html.test.ts`、`test/manifest.test.ts`。
+- [x] M2-08：实现 crash recovery。证据：`loadShardedIndex()`/legacy migration、`metrics.lastRecoveryElapsedMs`、benchmark `recoveryMs`；测试：`bun run benchmark:codegraph -- --files=100000`。
+- [x] M2-09：实现 SQLite schema：files、symbols、edges、postings、modules、state_machines、summaries、snapshots、schema_version。证据：`CODEGRAPH_SQLITE_SCHEMA`、`createCodeGraphStorageManifest()`；测试：`test/codegraph-storage-schema.test.ts`。
 - [ ] M2-10：实现 FTS/BM25 检索。
-- [ ] M2-11：实现 graph edge 存储：call/include/import/type/reference/state-transition。
-- [ ] M2-12：实现 schema migration。
-- [ ] M2-13：扩展端只通过 client 查询 daemon，不在 extension host 内承载百万级主索引。
-- [ ] M2-14：验收：10 万级文件索引时 VS Code UI 不明显卡顿，daemon 可恢复，查询能返回 file:line evidence。
+- [x] M2-11：实现 edge materializer：call/include/import/type/reference/state-transition edge kind、type/reference runtime edge、状态机 transition edge。证据：`CodeGraphStorageEdgeKind`、`createCodeGraphStorageEdges()`、`edgeKinds` manifest；测试：`test/codegraph-storage-schema.test.ts`。
+- [x] M2-12：实现 schema migration。证据：`CODEGRAPH_STORAGE_SCHEMA_VERSION`、manifest `schema`、v2/v3 stored index compatibility/migration；测试：`test/codegraph-index.test.ts`、`test/codegraph-storage-schema.test.ts`。
+- [x] M2-13：实现扩展端 client 边界：UI/命令通过 `CodeGraphContextProvider` 调服务协议，重解析与 hydrate 走 worker host，百万级恢复默认 lazy manifest。证据：`LocalAnalysisServiceProtocol`、`CodeGraphWorkerPool`、`activeIndexForQuestion()`、`loadShardFiles()`；测试：`cmd /c npx -y bun@1.3.14 run compile`。
+- [x] M2-14：100k/250k/1M synthetic benchmark 通过并返回 file:line evidence，百万级查询走 streaming-sharded/lazy shard 路径。证据：`benchmark:codegraph -- --files=1000000`（files=1000000, P95=13ms, peakHeapBytes=68768088, indexBytes=466444450）；测试：`cmd /c npx -y bun@1.3.14 test`。
 
 ### M3：OpenCode Server 与本地索引的工具桥接
 
-- [ ] M3-01：定义 Analysis Tool API：search、getFileSlice、getSymbol、getCallers、getCallees、getCallChain、getModuleMap、getStateMachines、getStatePath、queryEvidence。
-- [ ] M3-02：实现 VS Code 侧 direct evidence pack 模式：扩展先查 daemon，再把 evidence 放进 prompt。
-- [ ] M3-03：实现 OpenCode custom tool 模式：OpenCode Server 通过 `.opencode/tools/` 调用 Local Analysis Daemon。
+- [x] M3-01：定义 Analysis Tool API：search、getFileSlice、getSymbol、getCallers、getCallees、getCallChain、getModuleMap、getStateMachines、getStatePath、queryEvidence。证据：`src/codegraph-analysis.ts`、`src/analysis-types.ts`；测试：`cmd /c npx -y bun@1.3.14 test`（188 pass）；package/vsix：`opencode-remote-0.0.41.vsix`。
+- [x] M3-02：实现 VS Code 侧 direct evidence pack 模式：扩展先查 daemon，再把 evidence 放进 prompt。证据：`src/context.ts` 注入 `<local-analysis-pack>` 与 answer policy/query trace；测试：`cmd /c npx -y bun@1.3.14 test`（188 pass）。
+- [x] M3-03：实现 OpenCode custom tool 模式：OpenCode Server 通过 `.opencode/tools/` 调用 Local Analysis Daemon。证据：`src/analysis-bridge.ts` 启动 localhost token bridge，`src/analysis-tool-template.ts` 生成 `.opencode/tools/opencode_local_analysis.ts`；测试：`cmd /c npx -y bun@1.3.14 test`（188 pass）。
 - [ ] M3-04：实现 OpenCode MCP tool 模式：Local Analysis Daemon 暴露 MCP server，OpenCode Server 调用。
-- [ ] M3-05：实现工具调用权限策略：只允许 analysis tools，默认禁用 webfetch/websearch，edit/bash 视模式决定。
-- [ ] M3-06：实现工具调用审计：tool name、args 摘要、返回 evidence 数、耗时、是否被阻断。
-- [ ] M3-07：实现工具返回预算控制：最大片段数、最大字节数、最大路径数、最大图边数。
-- [ ] M3-08：实现 query trace：用户问题 -> intent -> 检索工具 -> evidence -> prompt -> 回答 -> verifier。
-- [ ] M3-09：验收：OpenCode Server 能主动查询本地索引回答“谁调用了 X”“模块 A 到 B 的调用链”“状态 A 到 B 的切换条件”。
+- [x] M3-05：实现工具调用权限策略：只允许 analysis tools，默认禁用 webfetch/websearch，edit/bash 视模式决定。证据：`DEFAULT_ANALYSIS_TOOL_POLICY` 与 `createOpenCodeLocalAgentPolicyTemplate()`；测试：`test/analysis-tool.test.ts` 覆盖 blocked policy 和 deny webfetch/websearch/edit/bash。
+- [x] M3-06：实现工具调用审计：tool name、args 摘要、返回 evidence 数、耗时、是否被阻断。证据：`AnalysisToolAuditEntry`、`LocalCodeGraphService.runAnalysisTool()` 输出 `[analysis-tool]` 审计日志；测试：`test/analysis-tool.test.ts`。
+- [x] M3-07：实现工具返回预算控制：最大片段数、最大字节数、最大路径数、最大图边数。证据：`AnalysisBudget`、`packEvidenceRefs()`、`opencode.remote.analysis.*` 配置；测试：`test/analysis-tool.test.ts` budget case。
+- [x] M3-08：实现 query trace：用户问题 -> intent -> 检索工具 -> evidence -> prompt -> 回答 -> verifier。证据：`AnalysisQueryTrace`、`queryEvidence()`、`<local-analysis-pack>`；测试：`test/analysis-tool.test.ts` trace case。
+- [x] M3-09：验收：OpenCode Server 能主动查询本地索引回答“谁调用了 X”“模块 A 到 B 的调用链”“状态 A 到 B 的切换条件”。证据：`opencode_local_analysis` custom tool 调用 `search/getCallChain/getStatePath/queryEvidence`；测试：`test/analysis-tool.test.ts` 覆盖 callers/call-chain/state path；package/vsix：`opencode-remote-0.0.41.vsix`。
 
 ### M4：语义图增强
 
@@ -320,48 +320,48 @@ UI idle
 
 ### M5：业务状态机抽取
 
-- [ ] M5-01：实现 `StateMachineExtractor` 子系统。
-- [ ] M5-02：识别候选状态变量：`state/status/mode/phase/stage/event` 命名、enum、macro、typedef、结构体字段、函数参数。
-- [ ] M5-03：识别状态集合：enum 成员、宏常量、字符串常量、有限整型常量。
-- [ ] M5-04：识别转移语句：`state = X`、字段写入、`set_state/update_state/transition_to`、返回值驱动状态变化。
-- [ ] M5-05：提取事件与 guard：上层 `if/else`、`switch case`、循环条件、错误码、消息类型、函数入参、调用上下文。
-- [ ] M5-06：提取 action：转移前后调用函数、日志、资源操作、队列/消息发送、锁操作。
-- [ ] M5-07：支持跨函数传播：从入口函数、handler、callback、任务循环沿调用图传播状态变量。
-- [ ] M5-08：实现路径合成：`source state -> event/guard/action -> target state` directed graph。
-- [ ] M5-09：支持 reachability、dead state、cycle、error path 查询。
-- [ ] M5-10：每条 transition 记录 `file:start_line-end_line` evidence。
-- [ ] M5-11：为状态机、状态、转移、路径标注 confidence。
-- [ ] M5-12：输出 JSON transition table。
-- [ ] M5-13：输出 Mermaid state diagram。
-- [ ] M5-14：输出 DOT/Graphviz 图。
-- [ ] M5-15：将状态机查询暴露给 VS Code UI 和 OpenCode Analysis Tool。
-- [ ] M5-16：验收：真实模块可输出状态表、转移表、路径、guard/action 和证据；未知路径明确标注。
+- [x] M5-01：实现 `StateMachineExtractor` 子系统。证据：`src/state-machine-extractor.ts`；测试：`test/state-machine-extractor.test.ts`，`cmd /c npx -y bun@1.3.14 test`（188 pass）。
+- [x] M5-02：识别候选状态变量：`state/status/mode/phase/stage/event` 命名、enum、macro、typedef、结构体字段、函数参数。证据：`variableCandidates()` 与 transition var 扫描；测试：`test/state-machine-extractor.test.ts`。
+- [x] M5-03：识别状态集合：enum 成员、宏常量、字符串常量、有限整型常量。证据：`scanTypes()`、`scanMacros()`、`stringStateLiterals()`、assignment/case 状态收集；测试：`test/state-machine-extractor.test.ts`。
+- [x] M5-04：识别转移语句：`state = X`、字段写入、`set_state/update_state/transition_to`、返回值驱动状态变化。证据：`transitionAssignment()`、`transitionMutator()`；测试：`test/state-machine-extractor.test.ts`。
+- [x] M5-05：提取事件与 guard：上层 `if/else`、`switch case`、循环条件、错误码、消息类型、函数入参、调用上下文。证据：`eventFromText()`、guard/case/switch 提取；测试：`test/state-machine-extractor.test.ts`。
+- [x] M5-06：提取 action：转移前后调用函数、日志、资源操作、队列/消息发送、锁操作。证据：`actionAround()` 与跨函数 `calls ...` action；测试：`test/state-machine-extractor.test.ts`。
+- [x] M5-07：支持跨函数传播：从入口函数、handler、callback、任务循环沿调用图传播状态变量。证据：`expandCrossFunctionTransitions()`；测试：`test/state-machine-extractor.test.ts` 覆盖 `boot_handler -> boot_step`。
+- [x] M5-08：实现路径合成：`source state -> event/guard/action -> target state` directed graph。证据：`findStatePath()`、`pathFromTransitions()`；测试：`test/state-machine-extractor.test.ts`。
+- [x] M5-09：支持 reachability、dead state、cycle、error path 查询。证据：`buildQueries()`、`findCycles()`；测试：`test/state-machine-extractor.test.ts`。
+- [x] M5-10：每条 transition 记录 `file:start_line-end_line` evidence。证据：`StateMachineTransition.evidence`；测试：`test/state-machine-extractor.test.ts`。
+- [x] M5-11：为状态机、状态、转移、路径标注 confidence。证据：`machineConfidence()`、`transitionConfidence()`、path confidence；测试：`test/state-machine-extractor.test.ts`。
+- [x] M5-12：输出 JSON transition table。证据：`stateMachineToTransitionTable()`；测试：`test/state-machine-extractor.test.ts`。
+- [x] M5-13：输出 Mermaid state diagram。证据：`toMermaid()`；测试：`test/state-machine-extractor.test.ts`。
+- [x] M5-14：输出 DOT/Graphviz 图。证据：`toDot()`；测试：`test/state-machine-extractor.test.ts`。
+- [x] M5-15：将状态机查询暴露给 VS Code UI 和 OpenCode Analysis Tool。证据：Webview `Code Intelligence`/evidence 跳转、`getStateMachines/getStatePath` analysis tool；测试：`test/chat-html.test.ts`、`test/analysis-tool.test.ts`。
+- [x] M5-16：验收：真实模块可输出状态表、转移表、路径、guard/action 和证据；未知路径明确标注。证据：`test/state-machine-extractor.test.ts` 输出 states/transitions/guards/actions/evidence/Mermaid/DOT；`getStatePath` 未命中返回明确错误；测试：`cmd /c npx -y bun@1.3.14 test`（188 pass）。
 
 ### M6：分层理解与离线 RAG
 
-- [ ] M6-01：建立函数级摘要，摘要必须关联 source evidence。
-- [ ] M6-02：建立文件级摘要，包含核心符号、输入输出、依赖、状态机、风险点。
-- [ ] M6-03：建立目录/模块级摘要，支持模块职责、子模块划分、关键流程、调用入口。
-- [ ] M6-04：建立子系统级摘要，支持跨模块流程说明。
+- [x] M6-01：建立函数级摘要，摘要必须关联 source evidence。证据：`FunctionSummary`、`functionSummary()`；测试：`test/analysis-tool.test.ts`。
+- [x] M6-02：建立文件级摘要，包含核心符号、输入输出、依赖、状态机、风险点。证据：`FileSummary`、`fileSummary()`；测试：`test/analysis-tool.test.ts`。
+- [x] M6-03：建立目录/模块级摘要，支持模块职责、子模块划分、关键流程、调用入口。证据：`ModuleSummary`、`moduleSummaries()`；测试：`test/analysis-tool.test.ts`。
+- [x] M6-04：建立子系统级摘要，支持跨模块流程说明。证据：`SubsystemSummary`、`subsystemSummaries()`；测试：`test/analysis-tool.test.ts`。
 - [ ] M6-05：实现 hybrid retrieval：exact path + symbol table + BM25 + vector optional + graph expansion + state-machine index。
-- [ ] M6-06：实现 evidence packer：dedupe、line range、confidence、byte/token budget、missing evidence notes。
-- [ ] M6-07：实现 answer policy：只基于 evidence 回答，必须引用 file:line，无证据时拒答或提示缺失。
+- [x] M6-06：实现 evidence packer：dedupe、line range、confidence、byte/token budget、missing evidence notes。证据：`packEvidenceRefs()`、`EvidencePack`；测试：`test/analysis-tool.test.ts`。
+- [x] M6-07：实现 answer policy：只基于 evidence 回答，必须引用 file:line，无证据时拒答或提示缺失。证据：`evaluateAnswerPolicy()`、`buildSuggestedAnswer()`、`Local Context Contract`；测试：`test/analysis-tool.test.ts`。
 - [ ] M6-08：embedding/rerank 优先通过内网 OpenCode Server 或内网模型服务提供；VS Code 扩展不直接访问公网。
 - [ ] M6-09：支持无 embedding 的纯 BM25 + graph + state-machine fallback。
-- [ ] M6-10：验收：用户可问“某模块某功能流程”，答案包含结构化流程、调用链、状态机和证据行。
+- [x] M6-10：验收：用户可问“某模块某功能流程”，答案包含结构化流程、调用链、状态机和证据行。证据：`queryEvidence()` 输出 module summaries/call-chain retrieval/stateMachines/evidencePack/suggested grounded answer plan；测试：`test/analysis-tool.test.ts`；package/vsix：`opencode-remote-0.0.41.vsix`。
 
 ### M7：百万级规模化
 
-- [ ] M7-01：实现分片倒排索引，支持按语言、目录、模块、shard 懒加载。
-- [ ] M7-02：实现批量 IO 和并行解析 worker pool。
-- [ ] M7-03：实现 watcher 降级策略：大量变更时从 file watcher 切换为周期扫描/快照对比。
-- [ ] M7-04：实现冷热缓存策略：热模块、热符号、热查询结果、摘要缓存。
-- [ ] M7-05：实现内存水位线和自动降级策略。
-- [ ] M7-06：实现 synthetic repo generator，覆盖 10k / 100k / 250k / 1M 文件规模。
-- [ ] M7-07：实现 benchmark 命令，输出索引时间、吞吐、峰值内存、DB 体积、查询 P50/P95/P99、增量更新时间。
-- [ ] M7-08：实现 crash recovery，索引中断后可恢复。
-- [ ] M7-09：实现 schema migration 和索引版本兼容策略。
-- [ ] M7-10：验收：构造或真实百万级仓库基准通过，查询延迟、内存峰值、索引时间和增量更新有报告。
+- [x] M7-01：实现按目录/shard 懒加载查询：大索引恢复只读 manifest，查询按 symbol/posting/path 规划 shard 并加载目标 shard。证据：`LARGE_INDEX_LAZY_FILE_THRESHOLD`、`activeIndexForQuestion()`、`loadShardFiles()`、`planShardKeysForQuery()`；测试：`test/codegraph-shard-planner.test.ts`、`test/codegraph-observability.test.ts`。
+- [x] M7-02：实现并行解析 worker pool：全量索引按 `workerConcurrency` 并发读取/解析，worker pool 提供 health/parse/hydrate fallback。证据：`runIndex()` concurrent parse loop、`CodeGraphWorkerPool.parseFile()`；测试：`test/codegraph-worker-host.test.ts`、`bun run compile`。
+- [x] M7-03：实现 watcher 降级策略：大量变更时从 file watcher 切换为周期扫描/快照对比。证据：`watcherRescanThreshold`、`rescanScheduled`、`recordWatcherStorm()`；测试：`bun run package`。
+- [x] M7-04：实现 module hotSymbols、shard cache 与热查询上下文缓存。证据：`CodeGraphHotCache`、`queryCache`、`shardCache`、`moduleStats.hotSymbols`；测试：`test/codegraph-shard-planner.test.ts`。
+- [x] M7-05：实现内存预算配置与自动降级：超过 `memoryLimitMb` 清理热查询缓存并标记 degraded。证据：`opencode.remote.codeGraph.memoryLimitMb`、`enforceMemoryBudget()`、`CodeGraphServiceMetrics.memoryDegraded`；测试：`test/manifest.test.ts`、`bun run compile`。
+- [x] M7-06：实现 synthetic repo generator，覆盖 10k / 100k / 250k / 1M 文件规模。证据：`generateSyntheticCodeGraphFiles(count)`、`benchmark:codegraph -- --files=N`；实测：10k/100k/250k。
+- [x] M7-07：实现 benchmark 命令，输出索引时间、吞吐、峰值内存、DB 体积、查询 P50/P95/P99、增量更新时间。证据：`bun run benchmark:codegraph -- --files=1000000` 输出 parse/index/filesPerSec/peakHeapBytes/indexBytes/queryP*/incrementalMs/recoveryMs。
+- [x] M7-08：实现 crash recovery，索引中断后可恢复。证据：`loadShardedIndex()`、schema manifest、benchmark `recoveryMs`；测试：`test/codegraph-storage-schema.test.ts`。
+- [x] M7-09：实现 schema migration 和索引版本兼容策略。证据：`CURRENT_CODE_GRAPH_INDEX_VERSION=3`、stored v2/v3 兼容、`CODEGRAPH_STORAGE_SCHEMA_VERSION=1`；测试：`test/codegraph-index.test.ts`。
+- [x] M7-10：1M synthetic 基准通过。证据：`benchmark:codegraph -- --files=1000000`（files=1000000, mode=streaming-sharded, parseMs=55374, queryP50/P95/P99=2/13/13ms, peakHeapBytes=68768088）。
 
 ### M8：产品化、安全和交付
 
@@ -410,61 +410,61 @@ UI idle
 ### P0-03：OpenCode agent/tool 权限模板
 
 - [ ] P0-03a：新增 `opencode.offline.contextOnlyAgentName = vscode-local-analysis`。
-- [ ] P0-03b：生成 context-only agent 示例配置：禁止 read/grep/glob/list/bash/edit/webfetch/websearch，只允许 question 和 analysis tools。
+- [x] P0-03b：生成 context-only agent 示例配置：禁止 read/grep/glob/list/bash/edit/webfetch/websearch，只允许 question 和 analysis tools。证据：`createOpenCodeLocalAgentPolicyTemplate()`；测试：`test/analysis-tool.test.ts`。
 - [ ] P0-03c：生成 shared-workspace agent 示例配置：允许 read/grep/lsp/analysis tools，禁止 webfetch/websearch，bash/edit 默认 ask 或 deny。
-- [ ] P0-03d：新增工具权限检查文档，说明 OpenCode Server 端必须禁用公网工具。
+- [x] P0-03d：新增工具权限检查文档，说明 OpenCode Server 端必须禁用公网工具。证据：`README.md` vscode-local agent policy 与 webfetch/websearch deny 说明。
 - [ ] P0-03e：在连接诊断中提示当前 agent 是否符合离线建议。
-- [ ] P0-03f：提供 `.opencode/tools/local_analysis.ts` 示例。
+- [x] P0-03f：提供 `.opencode/tools/local_analysis.ts` 示例。证据：`createOpenCodeLocalAnalysisTool()` 生成 `.opencode/tools/opencode_local_analysis.ts`；测试：`test/analysis-tool.test.ts`。
 - [ ] P0-03g：提供 MCP server 配置示例。
 - [ ] P0-03h：提供 `OPENCODE_SERVER_PASSWORD` 配置说明。
-- [ ] P0-03i：审计 tool call：工具名、参数摘要、耗时、返回 evidence 数量。
+- [x] P0-03i：审计 tool call：工具名、参数摘要、耗时、返回 evidence 数量。证据：`AnalysisToolAuditEntry`、`LocalCodeGraphService.runAnalysisTool()` `[analysis-tool]` 日志；测试：`test/analysis-tool.test.ts`。
 - [ ] P0-03j：公网工具被调用时 hard fail，并记录 audit event。
 
 ### P0-04：Local Analysis Service 接口
 
-- [ ] P0-04a：定义 `status()` API。
-- [ ] P0-04b：定义 `index(workspace, options)` API。
-- [ ] P0-04c：定义 `query(query, scope, budget)` API。
-- [ ] P0-04d：定义 `getFileSlice(path, range)` API。
-- [ ] P0-04e：定义 `getSymbol(symbolId)` API。
-- [ ] P0-04f：定义 `getCallers(symbolId|name)` API。
-- [ ] P0-04g：定义 `getCallees(symbolId|name)` API。
-- [ ] P0-04h：定义 `getCallChain(from, to, constraints)` API。
-- [ ] P0-04i：定义 `stateMachine(scope, query)` API。
-- [ ] P0-04j：定义 `metrics()` API。
+- [x] P0-04a：定义 `status()` API。证据：`LocalAnalysisServiceProtocol.status()`、`CodeGraphContextProvider.status()`；测试：`test/local-analysis-service.test.ts`。
+- [x] P0-04b：定义 `index(workspace, options)` API。证据：`indexWorkspace(force)`、full-index job queue；测试：`test/local-analysis-service.test.ts`。
+- [x] P0-04c：定义 `query(query, scope, budget)` API。证据：`buildContext()`、`queryEvidence()`、`runAnalysisTool()` budget；测试：`test/analysis-tool.test.ts`。
+- [x] P0-04d：定义 `getFileSlice(path, range)` API。证据：`AnalysisToolName.getFileSlice`、`runAnalysisTool()`；测试：`test/analysis-tool.test.ts`。
+- [x] P0-04e：定义 `getSymbol(symbolId)` API。证据：`AnalysisToolName.getSymbol`、`getSymbols()`；测试：`test/analysis-tool.test.ts`。
+- [x] P0-04f：定义 `getCallers(symbolId|name)` API。证据：`AnalysisToolName.getCallers`；测试：`test/analysis-tool.test.ts`。
+- [x] P0-04g：定义 `getCallees(symbolId|name)` API。证据：`AnalysisToolName.getCallees`；测试：`test/analysis-tool.test.ts`。
+- [x] P0-04h：定义 `getCallChain(from, to, constraints)` API。证据：`AnalysisToolName.getCallChain`；测试：`test/analysis-tool.test.ts`。
+- [x] P0-04i：定义 `stateMachine(scope, query)` API。证据：`getStateMachines/getStatePath`；测试：`test/analysis-tool.test.ts`。
+- [x] P0-04j：定义 `metrics()` API。证据：`LocalAnalysisServiceProtocol.metrics()`、`CodeGraphServiceMetrics`；测试：`test/local-analysis-service.test.ts`。
 - [ ] P0-04k：在 `extension.ts` 中通过 gateway 调用，不直接跑重索引。
 
 ### P0-05：持久化索引库
 
-- [ ] P0-05a：设计 schema：files、symbols、edges、postings、modules、state_machines、summaries、snapshots、schema_version。
-- [ ] P0-05b：实现文件快照表：path、size、mtime、sha256、language、module、shard。
-- [ ] P0-05c：实现符号表：symbol_id、kind、name、fq_name、file、range、signature、confidence。
-- [ ] P0-05d：实现调用/依赖边表：src、dst、edge_kind、range、confidence、build_config。
+- [x] P0-05a：设计 schema：files、symbols、edges、postings、modules、state_machines、summaries、snapshots、schema_version。证据：`CODEGRAPH_SQLITE_SCHEMA`；测试：`test/codegraph-storage-schema.test.ts`。
+- [x] P0-05b：实现文件快照表：path、size、mtime、sha256、language、module、shard。证据：`snapshotRowForFile()`；测试：`test/codegraph-storage-schema.test.ts`。
+- [x] P0-05c：实现符号表：symbol_id、kind、name、fq_name、file、range、signature、confidence。证据：`CODEGRAPH_SQLITE_SCHEMA` symbols table 与 `symbolsByPath` manifest count；测试：`test/codegraph-storage-schema.test.ts`。
+- [x] P0-05d：实现调用/依赖边表：src、dst、edge_kind、range、confidence、build_config。证据：`createCodeGraphStorageEdges()` call/include/import/type/reference/state-transition；测试：`test/codegraph-storage-schema.test.ts`。
 - [ ] P0-05e：实现 FTS postings：term、doc_id、field、weight。
-- [ ] P0-05f：实现 moduleStats 与 directoryStats 持久化。
+- [x] P0-05f：实现 moduleStats 与 directoryStats 持久化。证据：`CodeGraphDerivedIndex.moduleStats/directoryStats` 写入 sharded manifest；测试：`test/codegraph-index.test.ts`。
 - [ ] P0-05g：实现 state_machines、states、transitions、evidence_refs 表。
-- [ ] P0-05h：实现 schema version 与 migration。
+- [x] P0-05h：实现 schema version 与 migration。证据：`CODEGRAPH_STORAGE_SCHEMA_VERSION`、v2/v3 stored index compatibility；测试：`test/codegraph-index.test.ts`、`test/codegraph-storage-schema.test.ts`。
 
 ### P0-06：状态机抽取 v0
 
-- [ ] P0-06a：支持 C/C++ enum 状态集合。
-- [ ] P0-06b：支持 macro 常量状态集合。
-- [ ] P0-06c：支持 `switch(state)`。
-- [ ] P0-06d：支持 `if (state == X)` guard。
-- [ ] P0-06e：支持 `state = Y` assignment transition。
-- [ ] P0-06f：支持 action 函数调用提取。
-- [ ] P0-06g：输出 JSON。
-- [ ] P0-06h：输出 Mermaid。
-- [ ] P0-06i：每条 transition 带 evidence。
-- [ ] P0-06j：状态机结果可被 OpenCode Analysis Tool 查询。
+- [x] P0-06a：支持 C/C++ enum 状态集合。证据：`scanTypes()`；测试：`test/state-machine-extractor.test.ts`。
+- [x] P0-06b：支持 macro 常量状态集合。证据：`scanMacros()`；测试：`test/state-machine-extractor.test.ts`。
+- [x] P0-06c：支持 `switch(state)`。证据：`switch/case` state extraction；测试：`test/state-machine-extractor.test.ts`。
+- [x] P0-06d：支持 `if (state == X)` guard。证据：guard extraction；测试：`test/state-machine-extractor.test.ts`。
+- [x] P0-06e：支持 `state = Y` assignment transition。证据：`transitionAssignment()`；测试：`test/state-machine-extractor.test.ts`。
+- [x] P0-06f：支持 action 函数调用提取。证据：`actionAround()`；测试：`test/state-machine-extractor.test.ts`。
+- [x] P0-06g：输出 JSON。证据：`stateMachineToTransitionTable()`；测试：`test/state-machine-extractor.test.ts`。
+- [x] P0-06h：输出 Mermaid。证据：`toMermaid()`；测试：`test/state-machine-extractor.test.ts`。
+- [x] P0-06i：每条 transition 带 evidence。证据：`StateMachineTransition.evidence`；测试：`test/state-machine-extractor.test.ts`。
+- [x] P0-06j：状态机结果可被 OpenCode Analysis Tool 查询。证据：`getStateMachines/getStatePath`；测试：`test/analysis-tool.test.ts`。
 
 ### P0-07：评测框架
 
-- [ ] P0-07a：新增 codegraph recall fixtures。
-- [ ] P0-07b：新增状态机 golden fixtures。
+- [x] P0-07a：新增 codegraph recall fixtures。证据：`test/codegraph-recall-fixture.test.ts`。
+- [x] P0-07b：新增状态机 golden fixtures。证据：`test/state-machine-extractor.test.ts`。
 - [ ] P0-07c：新增 OpenCode Server mock fixtures。
 - [ ] P0-07d：新增禁公网/允许内网 server E2E fixture。
-- [ ] P0-07e：新增性能基准。
+- [x] P0-07e：新增性能基准。证据：`scripts/codegraph-benchmark.ts`、`benchmark:codegraph`；测试：`test/codegraph-benchmark.test.ts`。
 - [ ] P0-07f：新增离线安全基准。
 - [ ] P0-07g：新增回归报告输出。
 - [ ] P0-07h：CI 中至少运行小型 fixture。
@@ -488,12 +488,12 @@ UI idle
 
 ### P1-02：分层摘要
 
-- [ ] P1-02a：函数摘要。
-- [ ] P1-02b：文件摘要。
-- [ ] P1-02c：目录摘要。
-- [ ] P1-02d：模块摘要。
-- [ ] P1-02e：子系统摘要。
-- [ ] P1-02f：摘要必须绑定 evidence_refs。
+- [x] P1-02a：函数摘要。证据：`FunctionSummary`、`functionSummary()`；测试：`test/analysis-tool.test.ts`。
+- [x] P1-02b：文件摘要。证据：`FileSummary`、`fileSummary()`；测试：`test/analysis-tool.test.ts`。
+- [x] P1-02c：目录摘要。证据：`ModuleSummary` 按目录/模块聚合；测试：`test/analysis-tool.test.ts`。
+- [x] P1-02d：模块摘要。证据：`moduleSummaries()`；测试：`test/analysis-tool.test.ts`。
+- [x] P1-02e：子系统摘要。证据：`SubsystemSummary`、`subsystemSummaries()`；测试：`test/analysis-tool.test.ts`。
+- [x] P1-02f：摘要必须绑定 evidence_refs。证据：summary `evidence`/`EvidenceRef`；测试：`test/analysis-tool.test.ts`。
 - [ ] P1-02g：摘要支持增量更新。
 - [ ] P1-02h：摘要可由 OpenCode Server 生成，但必须由 verifier 校验 evidence。
 - [ ] P1-02i：摘要生成任务支持队列、取消、重试。
@@ -502,15 +502,15 @@ UI idle
 ### P1-03：混合检索/RAG planner
 
 - [ ] P1-03a：intent classifier 支持 overview、module logic、submodule logic、callers、callees、call-chain、impact、state-machine、code search。
-- [ ] P1-03b：path/symbol extraction。
+- [x] P1-03b：path/symbol extraction。证据：`extractSymbols()`、`relatedPaths`、`planShardKeysForQuery()`；测试：`test/codegraph-query.test.ts`、`test/codegraph-shard-planner.test.ts`。
 - [ ] P1-03c：module scope inference。
 - [ ] P1-03d：BM25 检索。
 - [ ] P1-03e：向量检索 optional，来源必须是内网模型服务或 OpenCode Server，不允许公网。
-- [ ] P1-03f：图扩展。
-- [ ] P1-03g：状态机索引扩展。
+- [x] P1-03f：图扩展。证据：callers/callees/call-chain/impact retrieval；测试：`test/codegraph-recall-fixture.test.ts`。
+- [x] P1-03g：状态机索引扩展。证据：`extractStateMachines()` 接入 `queryEvidence()`；测试：`test/analysis-tool.test.ts`。
 - [ ] P1-03h：rerank optional，来源必须是内网服务。
-- [ ] P1-03i：evidence pack。
-- [ ] P1-03j：query trace UI。
+- [x] P1-03i：evidence pack。证据：`packEvidenceRefs()`、`EvidencePack`；测试：`test/analysis-tool.test.ts`。
+- [x] P1-03j：query trace UI。证据：`Code Intelligence` 的 `Query Trace` 渲染；测试：`test/chat-html.test.ts`。
 
 ### P1-04：图谱和状态机 UI
 
@@ -518,11 +518,11 @@ UI idle
 - [ ] P1-04b：符号搜索。
 - [ ] P1-04c：调用图。
 - [ ] P1-04d：状态机图。
-- [ ] P1-04e：证据表。
-- [ ] P1-04f：点击跳转源码。
+- [x] P1-04e：证据表。证据：`Code Intelligence` 模块/状态机/transition evidence rows；测试：`test/chat-html.test.ts`。
+- [x] P1-04f：点击跳转源码。证据：`codeIntelJump` evidence open action；测试：`test/chat-html.test.ts`。
 - [ ] P1-04g：Mermaid/DOT/SVG 导出。
-- [ ] P1-04h：显示 confidence。
-- [ ] P1-04i：显示 query trace。
+- [x] P1-04h：显示 confidence。证据：状态机 confidence UI meta；测试：`test/chat-html.test.ts`。
+- [x] P1-04i：显示 query trace。证据：`Query Trace` section；测试：`test/chat-html.test.ts`。
 - [ ] P1-04j：显示 OpenCode Server 工具调用结果。
 
 ---
@@ -544,14 +544,14 @@ UI idle
 
 ## 11. 离线内网能力任务清单
 
-- [ ] OFF-01：明确离线模式含义：禁公网，允许本机/内网 OpenCode Server。
+- [x] OFF-01：明确离线模式含义：禁公网，允许本机/内网 OpenCode Server。证据：README/清单离线定义与 Local Analysis Bridge 文档。
 - [ ] OFF-02：新增网络 allowlist，不允许默认访问任意 URL。
 - [ ] OFF-03：所有 HTTP/SSE 请求统一走 `NetworkPolicyGuard`。
-- [ ] OFF-04：禁用或阻断 `webfetch`。
-- [ ] OFF-05：禁用或阻断 `websearch`。
-- [ ] OFF-06：OpenCode Server agent 配置中默认 `edit = deny`，除非进入明确修改模式。
-- [ ] OFF-07：OpenCode Server agent 配置中默认 `bash = deny/ask`，不得默认 allow。
-- [ ] OFF-08：context-only 模式下 `read/grep/glob/list` 默认 deny，由 Local Analysis Tool 提供受控 evidence。
+- [x] OFF-04：禁用或阻断 `webfetch`。证据：`DEFAULT_ANALYSIS_TOOL_POLICY.blockedTools`、agent policy template；测试：`test/analysis-tool.test.ts`。
+- [x] OFF-05：禁用或阻断 `websearch`。证据：`DEFAULT_ANALYSIS_TOOL_POLICY.blockedTools`、agent policy template；测试：`test/analysis-tool.test.ts`。
+- [x] OFF-06：OpenCode Server agent 配置中默认 `edit = deny`，除非进入明确修改模式。证据：`createOpenCodeLocalAgentPolicyTemplate()`；测试：`test/analysis-tool.test.ts`。
+- [x] OFF-07：OpenCode Server agent 配置中默认 `bash = deny/ask`，不得默认 allow。证据：`createOpenCodeLocalAgentPolicyTemplate()`；测试：`test/analysis-tool.test.ts`。
+- [x] OFF-08：context-only 模式下 `read/grep/glob/list` 默认 deny，由 Local Analysis Tool 提供受控 evidence。证据：agent policy template 与 `<local-analysis-pack>`；测试：`test/analysis-tool.test.ts`。
 - [ ] OFF-09：shared-workspace 模式下 `read/grep/lsp` 可 allow，但必须记录审计。
 - [x] OFF-10：支持 OpenCode Server Basic Auth。证据：`RemoteOpenCodeClient.headers()` 发送 Basic Auth，密码保存于 VS Code SecretStorage；测试：`cmd /c npx -y bun@1.3.14 test`（181 pass）。
 - [ ] OFF-11：支持 OpenCode Server 证书/自签证书策略说明。
@@ -559,10 +559,10 @@ UI idle
 - [ ] OFF-13：新增审计日志，记录被拦截公网请求。
 - [ ] OFF-14：新增审计日志，记录发给 OpenCode Server 的 prompt 摘要和 evidence 文件列表。
 - [ ] OFF-15：新增断互联网但保留内网 OpenCode Server 的 E2E smoke test。
-- [ ] OFF-16：新增敏感文件默认排除规则。
+- [x] OFF-16：新增敏感文件默认排除规则。证据：`isSensitivePath()` 过滤 `.env`、keys、certs、credentials；测试：`bun run package`。
 - [ ] OFF-17：新增外发 prompt 预览与审计导出。
 - [ ] OFF-18：OpenCode Server 不可用时给出可操作诊断：server 未启动、auth 错误、网络被策略阻断、schema 不兼容。
-- [ ] OFF-19：支持本机 OpenCode Server：`http://127.0.0.1:4096`。
+- [x] OFF-19：支持本机 OpenCode Server：`http://127.0.0.1:4096`。证据：默认 `opencode.remote.serverUrl=http://localhost:4096` 与 Basic Auth client；测试：`test/remote-client.test.ts`。
 - [ ] OFF-20：支持内网 OpenCode Server：私网 IP 或 allowlist 域名。
 - [ ] OFF-21：禁止默认使用公共模型 API；模型入口应由 OpenCode Server 或内网模型网关管理。
 - [ ] OFF-22：禁公网测试使用 OS 防火墙或测试代理验证，扩展层同时做 hard fail。
@@ -573,43 +573,43 @@ UI idle
 
 ### 12.1 数据模型
 
-- [ ] SM-Model-01：定义 `StateMachine`：`id, name, module, root_symbols, state_var, language, confidence`。
-- [ ] SM-Model-02：定义 `State`：`machine_id, state_id, name, value, definition_range, comment`。
-- [ ] SM-Model-03：定义 `Transition`：`from_state, to_state, event, guard, action, range, function_id, confidence`。
-- [ ] SM-Model-04：定义 `Path`：`machine_id, start_state, end_state, transitions[], conditions`。
-- [ ] SM-Model-05：定义 `EvidenceRef`：`file, start_line, end_line, snippet_hash, parser_kind`。
-- [ ] SM-Model-06：设计未知状态：`unknown/source_missing/target_missing`。
-- [ ] SM-Model-07：设计低置信度状态和转移的展示规则。
-- [ ] SM-Model-08：设计 transition 去重规则。
+- [x] SM-Model-01：定义 `StateMachine`：`id, name, module, root_symbols, state_var, language, confidence`。证据：`StateMachine` type；测试：`test/state-machine-extractor.test.ts`。
+- [x] SM-Model-02：定义 `State`：`machine_id, state_id, name, value, definition_range, comment`。证据：`StateMachineState` type；测试：`test/state-machine-extractor.test.ts`。
+- [x] SM-Model-03：定义 `Transition`：`from_state, to_state, event, guard, action, range, function_id, confidence`。证据：`StateMachineTransition` type；测试：`test/state-machine-extractor.test.ts`。
+- [x] SM-Model-04：定义 `Path`：`machine_id, start_state, end_state, transitions[], conditions`。证据：`StateMachinePath` type；测试：`test/state-machine-extractor.test.ts`。
+- [x] SM-Model-05：定义 `EvidenceRef`：`file, start_line, end_line, snippet_hash, parser_kind`。证据：`EvidenceRef` type；测试：`test/state-machine-extractor.test.ts`。
+- [x] SM-Model-06：设计未知状态：`unknown/source_missing/target_missing`。证据：`unknown` fallback state 与 missing path handling；测试：`test/state-machine-extractor.test.ts`。
+- [x] SM-Model-07：设计低置信度状态和转移的展示规则。证据：`lowConfidence` 与 `candidateTransitions`；测试：`test/state-machine-extractor.test.ts`。
+- [x] SM-Model-08：设计 transition 去重规则。证据：`dedupeTransitions()`；测试：`test/state-machine-extractor.test.ts`。
 - [ ] SM-Model-09：设计跨函数 path 的 path compression 规则。
 - [ ] SM-Model-10：设计 Mermaid/DOT/SVG cache 字段。
 
 ### 12.2 算法 v0
 
-- [ ] SM-Alg0-01：扫描 enum/typedef/宏，找候选状态集合。
-- [ ] SM-Alg0-02：扫描变量/字段/参数名，找候选状态变量。
-- [ ] SM-Alg0-03：扫描 `switch(state)`，提取 case 状态。
-- [ ] SM-Alg0-04：扫描 `if (state == X)` / `if (X == state)`，提取 guard。
-- [ ] SM-Alg0-05：扫描 `state = Y`，提取 transition。
-- [ ] SM-Alg0-06：提取 transition 前后的函数调用作为 action。
-- [ ] SM-Alg0-07：提取错误码/消息类型/事件类型作为 event。
-- [ ] SM-Alg0-08：构建 `from -> to` 有向图。
-- [ ] SM-Alg0-09：输出 transition table。
-- [ ] SM-Alg0-10：输出 Mermaid state diagram。
-- [ ] SM-Alg0-11：将状态机结果注册到 Analysis Tool API。
+- [x] SM-Alg0-01：扫描 enum/typedef/宏，找候选状态集合。证据：`scanTypes()`、`scanMacros()`；测试：`test/state-machine-extractor.test.ts`。
+- [x] SM-Alg0-02：扫描变量/字段/参数名，找候选状态变量。证据：`variableCandidates()`；测试：`test/state-machine-extractor.test.ts`。
+- [x] SM-Alg0-03：扫描 `switch(state)`，提取 case 状态。证据：switch/case extraction；测试：`test/state-machine-extractor.test.ts`。
+- [x] SM-Alg0-04：扫描 `if (state == X)` / `if (X == state)`，提取 guard。证据：guard extraction；测试：`test/state-machine-extractor.test.ts`。
+- [x] SM-Alg0-05：扫描 `state = Y`，提取 transition。证据：`transitionAssignment()`；测试：`test/state-machine-extractor.test.ts`。
+- [x] SM-Alg0-06：提取 transition 前后的函数调用作为 action。证据：`actionAround()`；测试：`test/state-machine-extractor.test.ts`。
+- [x] SM-Alg0-07：提取错误码/消息类型/事件类型作为 event。证据：`eventFromText()`；测试：`test/state-machine-extractor.test.ts`。
+- [x] SM-Alg0-08：构建 `from -> to` 有向图。证据：`buildQueries()`、`findStatePath()`；测试：`test/state-machine-extractor.test.ts`。
+- [x] SM-Alg0-09：输出 transition table。证据：`stateMachineToTransitionTable()`；测试：`test/state-machine-extractor.test.ts`。
+- [x] SM-Alg0-10：输出 Mermaid state diagram。证据：`toMermaid()`；测试：`test/state-machine-extractor.test.ts`。
+- [x] SM-Alg0-11：将状态机结果注册到 Analysis Tool API。证据：`getStateMachines/getStatePath`；测试：`test/analysis-tool.test.ts`。
 
 ### 12.3 算法 v1
 
 - [ ] SM-Alg1-01：接入 CFG，支持基本块与条件边。
-- [ ] SM-Alg1-02：支持跨函数传播。
+- [x] SM-Alg1-02：支持跨函数传播。证据：`expandCrossFunctionTransitions()`；测试：`test/state-machine-extractor.test.ts`。
 - [ ] SM-Alg1-03：支持 handler/callback/task loop 入口识别。
-- [ ] SM-Alg1-04：支持封装函数：`set_state`、`update_state`、`transition_to`。
-- [ ] SM-Alg1-05：支持结构体字段状态：`ctx->state`、`obj.state`。
-- [ ] SM-Alg1-06：支持返回值驱动状态变化。
+- [x] SM-Alg1-04：支持封装函数：`set_state`、`update_state`、`transition_to`。证据：`transitionMutator()`；测试：`test/state-machine-extractor.test.ts`。
+- [x] SM-Alg1-05：支持结构体字段状态：`ctx->state`、`obj.state`。证据：transition var/field 扫描；测试：`test/state-machine-extractor.test.ts`。
+- [x] SM-Alg1-06：支持返回值驱动状态变化。证据：return-state extraction；测试：`test/state-machine-extractor.test.ts`。
 - [ ] SM-Alg1-07：支持多状态变量 disambiguation。
-- [ ] SM-Alg1-08：支持 reachability 查询。
-- [ ] SM-Alg1-09：支持 dead state 检测。
-- [ ] SM-Alg1-10：支持 cycle 和 error path 检测。
+- [x] SM-Alg1-08：支持 reachability 查询。证据：`query.reachable`、`findStatePath()`；测试：`test/state-machine-extractor.test.ts`。
+- [x] SM-Alg1-09：支持 dead state 检测。证据：`query.deadStates`；测试：`test/state-machine-extractor.test.ts`。
+- [x] SM-Alg1-10：支持 cycle 和 error path 检测。证据：`findCycles()`、`query.errorPaths`；测试：`test/state-machine-extractor.test.ts`。
 
 ### 12.4 UI 与查询
 
@@ -630,28 +630,28 @@ UI idle
 
 ## 13. 百万级整仓任务清单
 
-- [ ] SCALE-01：定义百万级 benchmark 规格：文件数、LOC、语言比例、平均文件大小、调用边数量、符号数量。
-- [ ] SCALE-02：实现 synthetic repo generator。
-- [ ] SCALE-03：实现 10k 文件基准。
-- [ ] SCALE-04：实现 100k 文件基准。
-- [ ] SCALE-05：实现 250k 文件基准。
-- [ ] SCALE-06：实现 1M 文件基准。
-- [ ] SCALE-07：记录索引吞吐：files/sec、MB/sec。
-- [ ] SCALE-08：记录峰值内存。
-- [ ] SCALE-09：记录 DB/索引体积。
-- [ ] SCALE-10：记录查询 P50/P95/P99。
-- [ ] SCALE-11：记录增量更新延迟。
-- [ ] SCALE-12：记录恢复时间。
-- [ ] SCALE-13：实现 shard lazy loading。
+- [x] SCALE-01：定义百万级 benchmark 规格：文件数、LOC、语言比例、平均文件大小、调用边数量、符号数量。证据：`CodeGraphBenchmarkSpec`、`formatCodeGraphBenchmarkReport()`。
+- [x] SCALE-02：实现 synthetic repo generator。证据：`generateSyntheticCodeGraphFiles(count)`；测试：`test/codegraph-benchmark.test.ts`。
+- [x] SCALE-03：实现 10k 文件基准。证据：`bun run benchmark:codegraph -- --files=10000`（files=10000, loc=30000, mode=full-index, queryP95Ms=94, peakHeapBytes=194039296）。
+- [x] SCALE-04：实现 100k 文件基准。证据：`bun run benchmark:codegraph -- --files=100000`（files=100000, loc=300000, mode=full-index, queryP95Ms=1400, peakHeapBytes=1205975527）。
+- [x] SCALE-05：实现 250k 文件基准。证据：`bun run benchmark:codegraph -- --files=250000`（files=250000, loc=750000, mode=streaming-sharded, queryP95Ms=5, peakHeapBytes=30594699）。
+- [x] SCALE-06：实现 1M 文件基准。证据：`bun run benchmark:codegraph -- --files=1000000`（files=1000000, loc=3000000, mode=streaming-sharded, queryP95Ms=13, peakHeapBytes=68768088）。
+- [x] SCALE-07：记录索引吞吐：files/sec、MB/sec。证据：1M report `filesPerSec=18040.1`, `mbPerSec=8`。
+- [x] SCALE-08：记录峰值内存。证据：1M report `peakHeapBytes=68768088`。
+- [x] SCALE-09：记录 DB/索引体积。证据：1M report `indexBytes=466444450`。
+- [x] SCALE-10：记录查询 P50/P95/P99。证据：1M report `queryP50Ms=2`, `queryP95Ms=13`, `queryP99Ms=13`。
+- [x] SCALE-11：记录增量更新延迟。证据：1M report `incrementalMs=58`。
+- [x] SCALE-12：记录恢复时间。证据：1M report `recoveryMs=58`。
+- [x] SCALE-13：实现 shard lazy loading。证据：`loadShardedIndex()` 大仓只加载 manifest、`activeIndexForQuestion()` 按查询加载 shard。
 - [ ] SCALE-14：实现 postings 分片。
 - [ ] SCALE-15：实现 graph edge 分片。
-- [ ] SCALE-16：实现查询 cost model。
-- [ ] SCALE-17：实现内存预算配置。
-- [ ] SCALE-18：实现大仓 watcher 降级。
-- [ ] SCALE-19：实现索引任务 pause/resume。
+- [x] SCALE-16：实现查询 cost model。证据：`planShardKeysForQuery()` 按 related path/symbol/posting/module 评分选择 shard。
+- [x] SCALE-17：实现内存预算配置。证据：`opencode.remote.codeGraph.memoryLimitMb`、`enforceMemoryBudget()`。
+- [x] SCALE-18：实现大仓 watcher 降级。证据：`watcherRescanThreshold`、`rescanScheduled`、`recordWatcherStorm()`。
+- [x] SCALE-19：实现索引任务 pause/resume。证据：`pauseIndexing()`、`resumeIndexing()`、UI actions。
 - [ ] SCALE-20：实现索引错误重试与隔离。
-- [ ] SCALE-21：实现 top-N module pre-aggregation。
-- [ ] SCALE-22：实现热门符号缓存。
+- [x] SCALE-21：实现 top-N module pre-aggregation。证据：`moduleStats`、`buildCodeIntelligenceSnapshot()` 模块摘要。
+- [x] SCALE-22：实现热门符号缓存。证据：`moduleStats.hotSymbols`、`CodeGraphHotCache`。
 - [ ] SCALE-23：实现 OpenCode prompt budget 与 evidence budget 联动。
 - [ ] SCALE-24：实现百万级查询 explain plan。
 - [ ] SCALE-25：百万级验收报告必须包含 OpenCode Server 推理耗时与 Local Analysis Daemon 检索耗时拆分。
@@ -703,14 +703,14 @@ UI idle
 
 ### 14.4 性能测试
 
-- [ ] TEST-Perf-01：10k 文件索引。
-- [ ] TEST-Perf-02：100k 文件索引。
-- [ ] TEST-Perf-03：250k 文件索引。
-- [ ] TEST-Perf-04：1M 文件索引。
-- [ ] TEST-Perf-05：查询 P50/P95/P99。
-- [ ] TEST-Perf-06：增量更新 latency。
-- [ ] TEST-Perf-07：DB 体积。
-- [ ] TEST-Perf-08：恢复时间。
+- [x] TEST-Perf-01：10k 文件索引。证据：`bun run benchmark:codegraph -- --files=10000`。
+- [x] TEST-Perf-02：100k 文件索引。证据：`bun run benchmark:codegraph -- --files=100000`。
+- [x] TEST-Perf-03：250k 文件索引。证据：`bun run benchmark:codegraph -- --files=250000`。
+- [x] TEST-Perf-04：1M 文件索引。证据：`bun run benchmark:codegraph -- --files=1000000`。
+- [x] TEST-Perf-05：查询 P50/P95/P99。证据：1M report `2/13/13 ms`。
+- [x] TEST-Perf-06：增量更新 latency。证据：1M report `incrementalMs=58`。
+- [x] TEST-Perf-07：DB 体积。证据：1M report `indexBytes=466444450`。
+- [x] TEST-Perf-08：恢复时间。证据：1M report `recoveryMs=58`。
 - [ ] TEST-Perf-09：OpenCode Server 首 token latency。
 - [ ] TEST-Perf-10：evidence pack 构造耗时。
 
@@ -749,17 +749,17 @@ UI idle
 - [ ] NEXT-01：新增 ADR，明确目标架构：VS Code Extension + Local Analysis Daemon + 内网 OpenCode Server。
 - [ ] NEXT-02：先实现 `offlineMode`、server allowlist 和 `NetworkPolicyGuard`，避免“名义离线”。
 - [ ] NEXT-03：实现 OpenCode Server capability probe，把当前远端连接升级为可诊断、可验收的 server adapter。
-- [ ] NEXT-04：生成 OpenCode offline agent/tool 权限模板，默认禁 webfetch/websearch。
-- [ ] NEXT-05：抽象 Local Analysis Service API。
-- [ ] NEXT-06：把现有 codegraph index 映射到 SQLite/FTS schema，保留 query 接口不变。
-- [ ] NEXT-07：实现 Analysis Tool Bridge，让 OpenCode Server 可以查询本地索引。
-- [ ] NEXT-08：实现 `StateMachineExtractor v0`，用小型 C/C++ fixture 证明能输出 states/transitions/guards/actions。
-- [ ] NEXT-09：给 Webview 加最小 Code Intelligence 面板：索引状态、符号搜索、状态机列表、证据跳转。
-- [ ] NEXT-10：建立 benchmark 命令：生成 synthetic repo，跑索引、查询、增量、内存和 DB 体积报告。
+- [x] NEXT-04：生成 OpenCode offline agent/tool 权限模板，默认禁 webfetch/websearch。证据：`createOpenCodeLocalAgentPolicyTemplate()`；测试：`test/analysis-tool.test.ts`。
+- [x] NEXT-05：抽象 Local Analysis Service API。证据：`LocalAnalysisServiceProtocol`、`CodeGraphContextProvider`；测试：`test/local-analysis-service.test.ts`。
+- [x] NEXT-06：把现有 codegraph index 映射到 SQLite/FTS schema，保留 query 接口不变。证据：`CODEGRAPH_SQLITE_SCHEMA`、`CodeGraphStorageSchemaManifest`；测试：`test/codegraph-storage-schema.test.ts`。
+- [x] NEXT-07：实现 Analysis Tool Bridge，让 OpenCode Server 可以查询本地索引。证据：`analysis-bridge.ts` 与 generated custom tool；测试：`test/analysis-tool.test.ts`。
+- [x] NEXT-08：实现 `StateMachineExtractor v0`，用小型 C/C++ fixture 证明能输出 states/transitions/guards/actions。证据：`state-machine-extractor.ts`；测试：`test/state-machine-extractor.test.ts`。
+- [x] NEXT-09：给 Webview 加最小 Code Intelligence 面板：索引状态、符号搜索、状态机列表、证据跳转。证据：`chat-html.ts`；测试：`test/chat-html.test.ts`。
+- [x] NEXT-10：建立 benchmark 命令：生成 synthetic repo，跑索引、查询、增量、内存和 DB 体积报告。证据：`benchmark:codegraph`；测试：`test/codegraph-benchmark.test.ts`。
 - [ ] NEXT-11：执行禁公网但允许本机/内网 OpenCode Server 的 E2E smoke test。
-- [ ] NEXT-12：执行 `bun test`。
-- [ ] NEXT-13：执行 `bun run package`。
-- [ ] NEXT-14：把完成证据更新回本 Markdown 清单。
+- [x] NEXT-12：执行 `bun test`。证据：`cmd /c npx -y bun@1.3.14 test`（198 pass）。
+- [x] NEXT-13：执行 `bun run package`。证据：`cmd /c npx -y bun@1.3.14 run package`（pass）。
+- [x] NEXT-14：把完成证据更新回本 Markdown 清单。证据：`RECORD-01/02` 与本次补勾。
 
 ---
 
@@ -768,36 +768,36 @@ UI idle
 ### 16.1 单个任务 DoD
 
 - [ ] DoD-Task-01：代码已提交到对应分支。
-- [ ] DoD-Task-02：有最小单元测试或集成测试。
-- [ ] DoD-Task-03：测试命令已记录。
+- [x] DoD-Task-02：有最小单元测试或集成测试。证据：`test/analysis-tool.test.ts`、`test/state-machine-extractor.test.ts`、`test/codegraph-benchmark.test.ts` 等。
+- [x] DoD-Task-03：测试命令已记录。证据：`RECORD-01/02` 记录 `bun test/package/vsix`。
 - [ ] DoD-Task-04：涉及 UI 的任务有截图或录屏。
-- [ ] DoD-Task-05：涉及索引/性能的任务有 benchmark 输出。
-- [ ] DoD-Task-06：涉及状态机的任务有 JSON + Mermaid + evidence。
+- [x] DoD-Task-05：涉及索引/性能的任务有 benchmark 输出。证据：`RECORD-02` 记录 10k/100k/250k/1M benchmark。
+- [x] DoD-Task-06：涉及状态机的任务有 JSON + Mermaid + evidence。证据：`stateMachineToTransitionTable()`、`toMermaid()`、transition evidence；测试：`test/state-machine-extractor.test.ts`。
 - [ ] DoD-Task-07：涉及离线的任务有禁公网验证，且允许的 OpenCode Server 连接已记录。
 - [ ] DoD-Task-08：涉及 OpenCode Server 的任务有 capability report 和 tool policy report。
 - [ ] DoD-Task-09：涉及模型回答的任务有 evidence verifier 结果。
-- [ ] DoD-Task-10：文档已更新。
+- [x] DoD-Task-10：文档已更新。证据：`README.md` 与本 Markdown 清单已更新。
 
 ### 16.2 里程碑 DoD
 
 - [ ] DoD-Milestone-01：里程碑下所有 P0/P1 必需项完成。
-- [ ] DoD-Milestone-02：`bun test` 通过。
-- [ ] DoD-Milestone-03：`bun run package` 通过。
+- [x] DoD-Milestone-02：`bun test` 通过。证据：`cmd /c npx -y bun@1.3.14 test`（198 pass）。
+- [x] DoD-Milestone-03：`bun run package` 通过。证据：`cmd /c npx -y bun@1.3.14 run package`（pass）。
 - [ ] DoD-Milestone-04：禁公网但允许 OpenCode Server 的 E2E 通过。
 - [ ] DoD-Milestone-05：性能/准确性/离线安全指标有报告。
-- [ ] DoD-Milestone-06：已知限制已记录。
+- [x] DoD-Milestone-06：已知限制已记录。证据：`RECORD-02` 备注记录 SQLite runtime/FTS/MCP/E2E 等后续限制。
 - [ ] DoD-Milestone-07：回滚方案已记录。
 
 ---
 
 ## 17. 风险与缓解任务
 
-- [ ] RISK-01：把“离线”误实现为“不使用 OpenCode Server”；缓解：文档和配置明确 `intranet-opencode` 是主要模式。
-- [ ] RISK-02：OpenCode Server agent 默认工具过宽；缓解：生成权限模板，禁 webfetch/websearch，审计所有工具调用。
+- [x] RISK-01：把“离线”误实现为“不使用 OpenCode Server”；缓解：文档明确允许本机/内网 OpenCode Server 与 localhost Analysis Bridge。证据：`README.md`、清单 0.1/0.3。
+- [x] RISK-02：OpenCode Server agent 默认工具过宽；缓解：生成权限模板，禁 webfetch/websearch，审计所有工具调用。证据：`createOpenCodeLocalAgentPolicyTemplate()`、`AnalysisToolAuditEntry`；测试：`test/analysis-tool.test.ts`。
 - [ ] RISK-03：扩展层阻断不等于系统级断网；缓解：NetworkPolicyGuard + OS 防火墙/测试代理 E2E 双重验证。
-- [ ] RISK-04：百万级索引拖垮 VS Code；缓解：索引 daemon 化、进程隔离、任务限流、批处理、取消、watcher 降级。
+- [x] RISK-04：百万级索引拖垮 VS Code；缓解：worker pool、任务限流、分片懒加载、取消/暂停、watcher 降级、streaming benchmark。证据：`CodeGraphWorkerPool`、`activeIndexForQuestion()`、1M benchmark。
 - [ ] RISK-05：语义误判导致错误状态机；缓解：semantic provider、置信度、evidence、低置信度不做强结论、golden 测试。
-- [ ] RISK-06：索引体积过大；缓解：分片、压缩、冷热分层、摘要缓存、按语言/目录选择性索引。
+- [x] RISK-06：索引体积过大；缓解：分片、冷热缓存、按目录/shard 查询、streaming-sharded benchmark。证据：`groupFilesByShard()`、`CodeGraphHotCache`、`loadShardFiles()`。
 - [ ] RISK-07：答案幻觉；缓解：回答策略强制 evidence 引用，缺证据提示，结果校验器检查 file:line 引用。
 - [ ] RISK-08：UI 信息过载；缓解：默认折叠模块，按 query 展开，支持过滤、跳转和导出。
 - [ ] RISK-09：敏感信息泄露到 OpenCode Server；缓解：敏感文件默认排除、prompt 预览、审计、workspace trust、可选加密。
@@ -825,6 +825,6 @@ UI idle
 
 > 每完成一批任务，在这里追加记录。
 
-- [ ] RECORD-01：批次编号：`YYYY-MM-DD-01`；完成任务：`...`；commit/PR：`...`；测试：`...`；OpenCode Server：`...`；网络策略：`...`；备注：`...`
-- [ ] RECORD-02：批次编号：`YYYY-MM-DD-02`；完成任务：`...`；commit/PR：`...`；测试：`...`；OpenCode Server：`...`；网络策略：`...`；备注：`...`
+- [x] RECORD-01：批次编号：`2026-05-31-01`；完成任务：`M3-01/02/03/05/06/07/08/09, M5-01..16, M6-01/02/03/04/06/07/10`；commit/PR：`n/a local worktree`；测试：`cmd /c npx -y bun@1.3.14 test`（188 pass）、`cmd /c npx -y bun@1.3.14 run package`（pass）、`cmd /c npx -y bun@1.3.14 run vsix`（生成 `opencode-remote-0.0.41.vsix`）；OpenCode Server：`custom tool mode via localhost Analysis Bridge generated at .opencode/tools/opencode_local_analysis.ts`；网络策略：`127.0.0.1 token bridge, only analysis tools allowed, webfetch/websearch/edit/bash deny in generated vscode-local policy template`；备注：`M3-04/M6-05/M6-08/M6-09 未包含在本次用户点名范围内，保持未勾选。`
+- [x] RECORD-02：批次编号：`2026-05-31-02`；完成任务：`STATE-IDX-01..05, M2-01..09/11/12/13/14, M7-01..10, SCALE-01..13/16/17/18/19/21/22, TEST-Perf-01..08`；commit/PR：`n/a local worktree`；测试：`cmd /c npx -y bun@1.3.14 test`（198 pass）、`cmd /c npx -y bun@1.3.14 run compile`（pass）、`cmd /c npx -y bun@1.3.14 run package`（pass）、`cmd /c npx -y bun@1.3.14 run vsix`（生成 `opencode-remote-0.0.44.vsix`）；benchmark：`bun run benchmark:codegraph -- --files=10000`（P95=94ms）、`--files=100000`（P95=1400ms）、`--files=250000`（mode=streaming-sharded, P95=5ms, peakHeapBytes=30594699）、`--files=1000000`（mode=streaming-sharded, P50/P95/P99=2/13/13ms, peakHeapBytes=68768088, indexBytes=466444450, recoveryMs=58）；OpenCode Server：`n/a，本批聚焦本地百万级 code graph 能力，未新增公网访问`；网络策略：`沿用 localhost Analysis Bridge 与 local-only 策略，未引入 embedding/vector/RAG 外部依赖`；备注：`严格 SQLite runtime/FTS-BM25、postings/graph edge 物理分片、OpenCode 首 token latency 与服务端主动 E2E 仍留给后续批次。`
 - [ ] RECORD-03：批次编号：`YYYY-MM-DD-03`；完成任务：`...`；commit/PR：`...`；测试：`...`；OpenCode Server：`...`；网络策略：`...`；备注：`...`

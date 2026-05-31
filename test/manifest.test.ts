@@ -27,6 +27,10 @@ describe("extension manifest", () => {
     expect(commands.has("opencode.remote.connect")).toBe(true)
     expect(commands.has("opencode.remote.codeGraph.index")).toBe(true)
     expect(commands.has("opencode.remote.codeGraph.rebuild")).toBe(true)
+    expect(commands.has("opencode.remote.codeGraph.pause")).toBe(true)
+    expect(commands.has("opencode.remote.codeGraph.resume")).toBe(true)
+    expect(commands.has("opencode.remote.codeGraph.cancel")).toBe(true)
+    expect(commands.has("opencode.remote.codeGraph.benchmark")).toBe(true)
     expect(commands.has("opencode.remote.codeGraph.status")).toBe(true)
   })
 
@@ -62,10 +66,25 @@ describe("extension manifest", () => {
     expect(properties["opencode.remote.codeGraph.maxFanout"]?.default).toBe(40)
     expect(properties["opencode.remote.codeGraph.maxDeepFiles"]?.default).toBe(24)
     expect(properties["opencode.remote.codeGraph.maxStateTransitions"]?.default).toBe(120)
+    expect(properties["opencode.remote.codeGraph.maxFiles"]?.maximum).toBe(1000000)
+    expect(properties["opencode.remote.codeGraph.watcherRescanThreshold"]?.default).toBe(750)
+    expect(properties["opencode.remote.codeGraph.workerConcurrency"]?.default).toBe(4)
+    expect(properties["opencode.remote.codeGraph.queryCacheSize"]?.default).toBe(80)
+    expect(properties["opencode.remote.codeGraph.memoryLimitMb"]?.default).toBe(4096)
     expect(properties["opencode.remote.codeGraph.compileCommandsPath"]?.type).toBe("string")
     expect(properties["opencode.remote.codeGraph.clangdPath"]?.type).toBe("string")
     expect(properties["opencode.remote.codeGraph.scipClangPath"]?.type).toBe("string")
     expect(properties["opencode.remote.codeGraph.excludeGlobs"]?.type).toBe("array")
+  })
+
+  test("contributes local analysis bridge and evidence budget settings", () => {
+    const properties = manifest.contributes?.configuration?.properties ?? {}
+    expect(properties["opencode.remote.analysis.bridge.enabled"]?.default).toBe(true)
+    expect(properties["opencode.remote.analysis.maxEvidenceItems"]?.default).toBe(40)
+    expect(properties["opencode.remote.analysis.maxEvidenceBytes"]?.default).toBe(60000)
+    expect(properties["opencode.remote.analysis.maxFileSliceBytes"]?.default).toBe(16000)
+    expect(properties["opencode.remote.analysis.maxGraphEdges"]?.default).toBe(120)
+    expect(properties["opencode.remote.analysis.maxPaths"]?.default).toBe(10)
   })
 
   test("contributes a dedicated OpenCode activity bar container", () => {

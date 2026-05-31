@@ -1,13 +1,12 @@
 import { describe, expect, test } from "bun:test"
-import { parseCFile } from "../src/codegraph-c-parser"
+import { formatCodeGraphBenchmarkReport, generateSyntheticCodeGraphFiles, runCodeGraphSyntheticBenchmark } from "../src/codegraph-benchmark"
 import { hydrateCodeGraphIndex } from "../src/codegraph-index"
 import { retrieveEvidence } from "../src/codegraph-query"
-import type { CodeGraphFile, CodeGraphIndex } from "../src/codegraph-types"
 
 describe("code graph synthetic benchmark", () => {
   test("indexes and queries a 1k-file synthetic C repository", () => {
     const startedParse = Date.now()
-    const files = syntheticFiles(1000)
+    const files = generateSyntheticCodeGraphFiles(1000)
     const parseMs = Date.now() - startedParse
 
     const startedIndex = Date.now()
@@ -38,34 +37,31 @@ describe("code graph synthetic benchmark", () => {
     expect(result?.elapsedMs).toBeLessThan(1000)
     expect(parseMs + indexMs).toBeLessThan(5000)
   })
+
+  test("emits a scale report with throughput, memory, query, incremental, and recovery metrics", () => {
+    const report = runCodeGraphSyntheticBenchmark({ files: 250, queryTargets: [1, 125, 249] })
+    const text = formatCodeGraphBenchmarkReport(report)
+
+    expect(report.spec.files).toBe(250)
+    expect(report.spec.mode).toBe("full-index")
+    expect(report.metrics.filesPerSecond).toBeGreaterThan(0)
+    expect(report.spec.loc).toBeGreaterThan(0)
+    expect(report.spec.callEdges).toBeGreaterThan(0)
+    expect(report.spec.symbols).toBeGreaterThan(0)
+    expect(report.metrics.indexBytes).toBeGreaterThan(0)
+    expect(report.metrics.queryP95Ms).toBeGreaterThanOrEqual(report.metrics.queryP50Ms)
+    expect(report.metrics.recoveryMs).toBeGreaterThanOrEqual(0)
+    expect(text).toContain("queryP99Ms=")
+    expect(text).toContain("callEdges=")
+    expect(text).toContain("incrementalMs=")
+  })
+
+  test("uses streaming sharded benchmark mode above the full-index threshold", () => {
+    const report = runCodeGraphSyntheticBenchmark({ files: 1000, queryTargets: [1, 500, 999], streamingThreshold: 1 })
+
+    expect(report.spec.mode).toBe("streaming-sharded")
+    expect(report.spec.files).toBe(1000)
+    expect(report.metrics.shards).toBeGreaterThan(1)
+    expect(report.metrics.queryP95Ms).toBeGreaterThanOrEqual(report.metrics.queryP50Ms)
+  })
 })
-
-function syntheticFiles(count: number): Record<string, CodeGraphFile> {
-  const files: CodeGraphFile[] = []
-  for (let index = 0; index < count; index++) {
-    const module = index % 2 === 0 ? "drivers/nand" : "kernel/io"
-    files.push(
-      parseCFile({
-        path: `${module}/synthetic_${index}.c`,
-        hash: String(index),
-        size: 1,
-        text: syntheticFileText(index),
-      }),
-    )
-  }
-  return Object.fromEntries(files.map((file) => [file.path, file]))
-}
-
-function syntheticFileText(index: number) {
-  const next = Math.max(0, index - 1)
-  return `
-#include "synthetic_${next}.h"
-#define SYNTHETIC_FEATURE_${index} ${index}
-typedef unsigned int synthetic_type_${index};
-struct synthetic_state_${index} { int ready; };
-// synthetic benchmark module ${index} carries retrieval keyword synthetic_target_${index}
-int synthetic_leaf_${index}(void) { return ${index}; }
-int synthetic_target_${index}(void) { return synthetic_leaf_${index}(); }
-int synthetic_entry_${index}(void) { return synthetic_target_${index}() + synthetic_target_${next}(); }
-`
-}

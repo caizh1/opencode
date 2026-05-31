@@ -32,10 +32,22 @@ export type RemoteSettings = {
     maxFanout: number
     maxDeepFiles: number
     maxStateTransitions: number
+    watcherRescanThreshold: number
+    workerConcurrency: number
+    queryCacheSize: number
+    memoryLimitMb: number
     compileCommandsPath: string
     clangdPath: string
     scipClangPath: string
     excludeGlobs: string[]
+  }
+  analysis: {
+    bridgeEnabled: boolean
+    maxEvidenceItems: number
+    maxEvidenceBytes: number
+    maxFileSliceBytes: number
+    maxGraphEdges: number
+    maxPaths: number
   }
 }
 
@@ -224,7 +236,52 @@ export type OpenCodeAgentInfo = {
   isLocalOnly?: boolean
 }
 
-export type CodeGraphState = "disabled" | "indexing" | "ready" | "stale" | "error"
+export type CodeGraphState =
+  | "disabled"
+  | "indexing"
+  | "indexingFull"
+  | "indexingIncremental"
+  | "ready"
+  | "stale"
+  | "rescanScheduled"
+  | "degraded"
+  | "paused"
+  | "recovering"
+  | "error"
+
+export type CodeGraphStateTransition = {
+  state: CodeGraphState
+  detail: string
+  at: number
+}
+
+export type CodeGraphQueueStatus = {
+  activeJobId?: string
+  activeJobKind?: "full-index" | "incremental-index" | "recovery" | "query" | "benchmark"
+  pendingJobs: number
+  paused: boolean
+  cancelRequested: boolean
+}
+
+export type CodeGraphServiceMetrics = {
+  serviceMode: "extension-host-worker" | "worker-thread-pool"
+  schemaVersion: number
+  storageBackend: "json-sharded-sqlite-compatible"
+  workerThreads: number
+  workerHealthy: boolean
+  jobsStarted: number
+  jobsCompleted: number
+  jobsCancelled: number
+  jobsFailed: number
+  watcherStorms: number
+  queryCacheHits: number
+  queryCacheMisses: number
+  memoryDegraded: boolean
+  memoryLimitBytes?: number
+  heapUsedBytes?: number
+  lastJobElapsedMs?: number
+  lastRecoveryElapsedMs?: number
+}
 
 export type CodeGraphStatus = {
   state: CodeGraphState
@@ -243,10 +300,19 @@ export type CodeGraphStatus = {
   truncated: boolean
   updatedAt?: number
   storageMode?: "legacy-json" | "sharded"
+  storageBackend?: "json-sharded-sqlite-compatible"
+  schemaVersion?: number
   shards?: number
   indexBytes?: number
   skippedFiles?: number
   largeRepoMode?: boolean
+  currentShard?: string
+  queue?: CodeGraphQueueStatus
+  queueLength?: number
+  errorCount?: number
+  lastTransitionAt?: number
+  transitions?: CodeGraphStateTransition[]
+  metrics?: CodeGraphServiceMetrics
   progress?: {
     completed: number
     total: number

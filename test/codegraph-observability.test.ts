@@ -17,8 +17,16 @@ describe("code graph query observability", () => {
     expect(serviceSource).toContain("async maybePromptAndIndex()")
     expect(serviceSource).toContain("void this.indexWorkspace(false)")
     expect(serviceSource).toContain("async waitForReady()")
-    expect(serviceSource).toContain("private async runIndexTask")
+    expect(serviceSource).toContain("private async runQueuedIndexJobs")
     expect(serviceSource).toContain("class WorkBudget")
+  })
+
+  test("keeps large indexes lazy-loadable and durable across job recovery", () => {
+    expect(serviceSource).toContain("LARGE_INDEX_LAZY_FILE_THRESHOLD")
+    expect(serviceSource).toContain("private async activeIndexForQuestion")
+    expect(serviceSource).toContain("private async loadShardFiles")
+    expect(serviceSource).toContain("private async saveJobCheckpoint")
+    expect(serviceSource).toContain("checkpoint.json")
   })
 
   test("returns retrieval metrics with prompt context", () => {

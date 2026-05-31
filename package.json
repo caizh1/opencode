@@ -2,7 +2,7 @@
   "name": "opencode-remote",
   "displayName": "OpenCode Remote",
   "description": "Remote opencode serve client for VS Code",
-  "version": "0.0.38",
+  "version": "0.0.46",
   "publisher": "local",
   "repository": {
     "type": "git",
@@ -35,6 +35,10 @@
     "onCommand:opencode.remote.clearContext",
     "onCommand:opencode.remote.codeGraph.index",
     "onCommand:opencode.remote.codeGraph.rebuild",
+    "onCommand:opencode.remote.codeGraph.pause",
+    "onCommand:opencode.remote.codeGraph.resume",
+    "onCommand:opencode.remote.codeGraph.cancel",
+    "onCommand:opencode.remote.codeGraph.benchmark",
     "onCommand:opencode.remote.codeGraph.status"
   ],
   "main": "./dist/extension.js",
@@ -108,6 +112,26 @@
       {
         "command": "opencode.remote.codeGraph.rebuild",
         "title": "Rebuild Local Code Graph",
+        "category": "OpenCode Remote"
+      },
+      {
+        "command": "opencode.remote.codeGraph.pause",
+        "title": "Pause Local Code Graph Indexing",
+        "category": "OpenCode Remote"
+      },
+      {
+        "command": "opencode.remote.codeGraph.resume",
+        "title": "Resume Local Code Graph Indexing",
+        "category": "OpenCode Remote"
+      },
+      {
+        "command": "opencode.remote.codeGraph.cancel",
+        "title": "Cancel Local Code Graph Indexing",
+        "category": "OpenCode Remote"
+      },
+      {
+        "command": "opencode.remote.codeGraph.benchmark",
+        "title": "Run Local Code Graph Benchmark",
         "category": "OpenCode Remote"
       },
       {
@@ -223,7 +247,7 @@
           "type": "number",
           "default": 50000,
           "minimum": 100,
-          "maximum": 250000,
+          "maximum": 1000000,
           "description": "Maximum number of C/C++ files to index in the local code graph."
         },
         "opencode.remote.codeGraph.maxContextBytes": {
@@ -268,6 +292,34 @@
           "maximum": 1000,
           "description": "Maximum state transitions to include in a future local state-machine evidence pass."
         },
+        "opencode.remote.codeGraph.watcherRescanThreshold": {
+          "type": "number",
+          "default": 750,
+          "minimum": 25,
+          "maximum": 10000,
+          "description": "Number of queued file watcher events that switches incremental indexing to one scheduled full rescan."
+        },
+        "opencode.remote.codeGraph.workerConcurrency": {
+          "type": "number",
+          "default": 4,
+          "minimum": 1,
+          "maximum": 16,
+          "description": "Target concurrency for local analysis worker batches and benchmark planning."
+        },
+        "opencode.remote.codeGraph.queryCacheSize": {
+          "type": "number",
+          "default": 80,
+          "minimum": 0,
+          "maximum": 500,
+          "description": "Maximum number of hot local code graph query contexts to keep in memory."
+        },
+        "opencode.remote.codeGraph.memoryLimitMb": {
+          "type": "number",
+          "default": 4096,
+          "minimum": 128,
+          "maximum": 32768,
+          "description": "Soft heap limit for local code graph indexing. When exceeded, the service reports degraded mode and trims hot caches."
+        },
         "opencode.remote.codeGraph.compileCommandsPath": {
           "type": "string",
           "default": "",
@@ -290,6 +342,46 @@
             "type": "string"
           },
           "description": "Additional VS Code glob patterns to exclude from local code graph indexing."
+        },
+        "opencode.remote.analysis.bridge.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Start a localhost-only Analysis Tool Bridge and generate a .opencode custom tool that lets OpenCode query the local index."
+        },
+        "opencode.remote.analysis.maxEvidenceItems": {
+          "type": "number",
+          "default": 40,
+          "minimum": 1,
+          "maximum": 200,
+          "description": "Maximum evidence item count returned by local analysis tools."
+        },
+        "opencode.remote.analysis.maxEvidenceBytes": {
+          "type": "number",
+          "default": 60000,
+          "minimum": 4000,
+          "maximum": 200000,
+          "description": "Maximum evidence bytes returned by local analysis tools and evidence packs."
+        },
+        "opencode.remote.analysis.maxFileSliceBytes": {
+          "type": "number",
+          "default": 16000,
+          "minimum": 1000,
+          "maximum": 100000,
+          "description": "Maximum bytes returned from one local file slice analysis call."
+        },
+        "opencode.remote.analysis.maxGraphEdges": {
+          "type": "number",
+          "default": 120,
+          "minimum": 10,
+          "maximum": 1000,
+          "description": "Maximum graph edges returned by local callers, callees, call-chain, and state-machine analysis."
+        },
+        "opencode.remote.analysis.maxPaths": {
+          "type": "number",
+          "default": 10,
+          "minimum": 1,
+          "maximum": 50,
+          "description": "Maximum state-machine or call-chain paths returned by local analysis tools."
         }
       }
     },
@@ -375,6 +467,7 @@
     "check-types": "tsc --noEmit",
     "lint": "eslint src",
     "test": "bun test",
+    "benchmark:codegraph": "bun scripts/codegraph-benchmark.ts",
     "test:vscode": "bun run package && node ./dist/test/runTest.js",
     "vsix": "bun run package && vsce package --no-dependencies"
   },

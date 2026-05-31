@@ -86,10 +86,11 @@ export async function buildChatPrompt(input: {
         maxFanout: input.settings.codeGraph.maxFanout,
       })
     : undefined
+  const analysisEvidence = input.settings.codeGraph.enabled ? await input.codeGraph?.queryEvidence(input.question) : undefined
 
   if (input.settings.context.localOnlyMode) chunks.push(localContextContract())
 
-  const hasLocalContext = hasUsableFileContext(context.summary) || Boolean(codeGraph?.text)
+  const hasLocalContext = hasUsableFileContext(context.summary) || Boolean(codeGraph?.text) || Boolean(analysisEvidence?.evidencePack.evidence.length)
 
   if (input.settings.context.localOnlyMode && looksLikeLocalFileQuestion(input.question) && !hasLocalContext) {
     throw new MissingLocalContextError()
@@ -100,6 +101,7 @@ export async function buildChatPrompt(input: {
   }
   if (context.text) chunks.push(`Local workspace context:\n${context.text}`)
   if (codeGraph?.text) chunks.push(`Local code graph evidence:\n${codeGraph.text}`)
+  if (analysisEvidence) chunks.push(`Local analysis evidence pack:\n${formatAnalysisEvidence(analysisEvidence)}`)
   return chunks.join("\n\n")
 }
 
@@ -268,10 +270,36 @@ function localContextContract() {
     "Local Context Contract:",
     "The following files are local VS Code context supplied by the extension.",
     "Use only the supplied <file>, <diagnostics>, <git-diff>, and <local-code-graph> evidence blocks when answering questions about local code.",
+    "Use the <local-analysis-pack> answer policy, query trace, summaries, state machines, and evidence refs when present.",
     "When local code graph evidence is present, cite paths and line ranges from the evidence; if evidence is insufficient, say what is missing instead of guessing.",
     "Do not read, glob, grep, list, edit, or run shell commands against the remote OpenCode server filesystem to answer local VS Code questions.",
     "If the needed local file content is missing, ask the user to open the file in VS Code or reference it with @file.",
   ].join("\n")
+}
+
+function formatAnalysisEvidence(input: Awaited<ReturnType<NonNullable<CodeGraphContextProvider["queryEvidence"]>>>) {
+  if (!input) return ""
+  const modules = input.summaries.modules
+    .slice(0, 8)
+    .map((module) => `- ${module.module}: ${module.summary}; flows: ${module.keyFlows.slice(0, 3).join(" | ") || "none"}`)
+    .join("\n")
+  const stateMachines = input.stateMachines
+    .slice(0, 5)
+    .map((machine) => `- ${machine.id}: ${machine.transitions.length} transition(s), confidence ${machine.confidence.toFixed(2)}`)
+    .join("\n")
+  return [
+    `<local-analysis-pack traceId="${xmlAttr(input.trace.traceId)}" confidence="${input.answerPolicy.confidence}" allowed="${input.answerPolicy.allowed ? "true" : "false"}">`,
+    `<answer-policy>${xmlText(input.answerPolicy.reason)} ${xmlText(input.answerPolicy.requiredCitation)}</answer-policy>`,
+    "<query-trace>",
+    ...input.trace.steps.map((step) => `- ${step.label}: ${step.detail} (${step.elapsedMs}ms)`),
+    "</query-trace>",
+    modules ? `<module-summaries>\n${xmlText(modules)}\n</module-summaries>` : "",
+    stateMachines ? `<state-machines>\n${xmlText(stateMachines)}\n</state-machines>` : "",
+    input.evidencePack.text,
+    input.evidencePack.missingEvidence.length ? `<missing-evidence>${xmlText(input.evidencePack.missingEvidence.join("; "))}</missing-evidence>` : "",
+    `<suggested-grounded-answer-plan>\n${xmlText(input.suggestedAnswer)}\n</suggested-grounded-answer-plan>`,
+    "</local-analysis-pack>",
+  ].filter(Boolean).join("\n")
 }
 
 function selectionContext(
@@ -585,6 +613,10 @@ function isInWorkspace(uri: vscode.Uri) {
 
 function xmlAttr(value: string) {
   return value.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+}
+
+function xmlText(value: string) {
+  return value.replace(/&/g, "&amp;").replace(/</g, "&lt;")
 }
 
 function looksLikeLocalFilesystemPath(input: string) {

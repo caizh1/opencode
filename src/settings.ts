@@ -41,10 +41,22 @@ export function readRemoteSettings(): RemoteSettings {
       maxFanout: Math.max(5, Math.min(200, config.get<number>("codeGraph.maxFanout", 40))),
       maxDeepFiles: Math.max(1, Math.min(200, config.get<number>("codeGraph.maxDeepFiles", 24))),
       maxStateTransitions: Math.max(10, Math.min(1000, config.get<number>("codeGraph.maxStateTransitions", 120))),
+      watcherRescanThreshold: Math.max(25, Math.min(10000, config.get<number>("codeGraph.watcherRescanThreshold", 750))),
+      workerConcurrency: Math.max(1, Math.min(16, config.get<number>("codeGraph.workerConcurrency", 4))),
+      queryCacheSize: Math.max(0, Math.min(500, config.get<number>("codeGraph.queryCacheSize", 80))),
+      memoryLimitMb: Math.max(128, Math.min(32768, config.get<number>("codeGraph.memoryLimitMb", 4096))),
       compileCommandsPath: config.get<string>("codeGraph.compileCommandsPath", "").trim(),
       clangdPath: config.get<string>("codeGraph.clangdPath", "").trim(),
       scipClangPath: config.get<string>("codeGraph.scipClangPath", "").trim(),
       excludeGlobs: readStringArray(config.get<unknown>("codeGraph.excludeGlobs", [])),
+    },
+    analysis: {
+      bridgeEnabled: config.get<boolean>("analysis.bridge.enabled", true),
+      maxEvidenceItems: Math.max(1, Math.min(200, config.get<number>("analysis.maxEvidenceItems", 40))),
+      maxEvidenceBytes: Math.max(4000, Math.min(200000, config.get<number>("analysis.maxEvidenceBytes", 60000))),
+      maxFileSliceBytes: Math.max(1000, Math.min(100000, config.get<number>("analysis.maxFileSliceBytes", 16000))),
+      maxGraphEdges: Math.max(10, Math.min(1000, config.get<number>("analysis.maxGraphEdges", 120))),
+      maxPaths: Math.max(1, Math.min(50, config.get<number>("analysis.maxPaths", 10))),
     },
   }
 }

@@ -496,8 +496,14 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       line-height: 1.25;
     }
     .codeGraph.ready { color: var(--vscode-testing-iconPassed); border-color: var(--vscode-testing-iconPassed); }
-    .codeGraph.indexing { color: var(--vscode-progressBar-background); border-color: var(--vscode-progressBar-background); }
-    .codeGraph.stale { color: var(--vscode-editorWarning-foreground); border-color: var(--vscode-inputValidation-warningBorder, var(--vscode-editorWarning-foreground)); }
+    .codeGraph.indexing,
+    .codeGraph.indexingFull,
+    .codeGraph.indexingIncremental,
+    .codeGraph.recovering { color: var(--vscode-progressBar-background); border-color: var(--vscode-progressBar-background); }
+    .codeGraph.stale,
+    .codeGraph.degraded,
+    .codeGraph.paused,
+    .codeGraph.rescanScheduled { color: var(--vscode-editorWarning-foreground); border-color: var(--vscode-inputValidation-warningBorder, var(--vscode-editorWarning-foreground)); }
     .codeGraph.error { color: var(--vscode-errorForeground); border-color: var(--vscode-errorForeground); }
     .codeGraphMain {
       display: grid;
@@ -513,8 +519,14 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       white-space: nowrap;
     }
     .codeGraph.ready .codeGraphLabel { color: var(--vscode-testing-iconPassed); }
-    .codeGraph.indexing .codeGraphLabel { color: var(--vscode-progressBar-background); }
-    .codeGraph.stale .codeGraphLabel { color: var(--vscode-editorWarning-foreground); }
+    .codeGraph.indexing .codeGraphLabel,
+    .codeGraph.indexingFull .codeGraphLabel,
+    .codeGraph.indexingIncremental .codeGraphLabel,
+    .codeGraph.recovering .codeGraphLabel { color: var(--vscode-progressBar-background); }
+    .codeGraph.stale .codeGraphLabel,
+    .codeGraph.degraded .codeGraphLabel,
+    .codeGraph.paused .codeGraphLabel,
+    .codeGraph.rescanScheduled .codeGraphLabel { color: var(--vscode-editorWarning-foreground); }
     .codeGraph.error .codeGraphLabel { color: var(--vscode-errorForeground); }
     .codeGraphMeta {
       min-width: 0;
@@ -540,6 +552,114 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       line-height: 1.2;
     }
     .codeGraphButton:hover { background: var(--vscode-button-secondaryHoverBackground, var(--vscode-toolbar-hoverBackground)); }
+    .codeIntel {
+      display: none;
+      border: 1px solid var(--vscode-panel-border);
+      border-radius: 6px;
+      padding: 6px;
+      color: var(--vscode-descriptionForeground);
+      background: var(--vscode-editor-background);
+      font-size: 10px;
+      line-height: 1.3;
+      max-height: 190px;
+      overflow: auto;
+    }
+    .codeIntel.visible { display: grid; gap: 6px; }
+    .codeIntelHeader {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      min-width: 0;
+    }
+    .codeIntelHeaderActions {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      flex: 0 0 auto;
+    }
+    .codeIntelAction {
+      color: var(--vscode-button-secondaryForeground);
+      background: var(--vscode-button-secondaryBackground);
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-size: 10px;
+      line-height: 1.2;
+    }
+    .codeIntelAction:hover { background: var(--vscode-button-secondaryHoverBackground, var(--vscode-toolbar-hoverBackground)); }
+    .codeIntelStatus {
+      border: 1px solid var(--vscode-panel-border);
+      border-radius: 5px;
+      padding: 5px 6px;
+      color: var(--vscode-descriptionForeground);
+      background: var(--vscode-sideBar-background);
+      overflow-wrap: anywhere;
+    }
+    .codeIntelStatus.error {
+      color: var(--vscode-errorForeground);
+      border-color: var(--vscode-inputValidation-errorBorder, var(--vscode-errorForeground));
+      background: var(--vscode-inputValidation-errorBackground, var(--vscode-editor-background));
+    }
+    .codeIntelSection { display: grid; gap: 3px; min-width: 0; }
+    .codeIntelTitle { color: var(--vscode-foreground); font-weight: 650; }
+    .codeIntelRow {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 5px;
+      align-items: start;
+      min-width: 0;
+      border-top: 1px solid var(--vscode-panel-border);
+      padding-top: 4px;
+    }
+    .codeIntelMain { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .codeIntelMeta { min-width: 0; color: var(--vscode-descriptionForeground); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .codeIntelRowActions { display: flex; align-items: start; gap: 4px; }
+    .codeIntelJump {
+      color: var(--vscode-textLink-foreground);
+      background: transparent;
+      padding: 1px 3px;
+      border-radius: 3px;
+      font-size: 10px;
+    }
+    .codeIntelJump:hover { background: var(--vscode-toolbar-hoverBackground); }
+    .codeIntelMachineMeta { display: flex; flex-wrap: wrap; gap: 4px; }
+    .codeIntelBadge {
+      border: 1px solid var(--vscode-panel-border);
+      border-radius: 999px;
+      padding: 1px 5px;
+      color: var(--vscode-descriptionForeground);
+      background: var(--vscode-sideBar-background);
+      font-size: 9px;
+      line-height: 1.2;
+    }
+    .codeIntelBadge.warning {
+      color: var(--vscode-editorWarning-foreground);
+      border-color: var(--vscode-inputValidation-warningBorder, var(--vscode-editorWarning-foreground));
+      background: var(--vscode-inputValidation-warningBackground, var(--vscode-editor-background));
+    }
+    .codeIntelTransitionTable { display: grid; gap: 4px; min-width: 0; }
+    .codeIntelTransitionRow {
+      display: grid;
+      grid-template-columns: minmax(84px, 1.2fr) minmax(0, 1fr) auto;
+      gap: 5px;
+      align-items: start;
+      min-width: 0;
+      border-top: 1px solid var(--vscode-panel-border);
+      padding-top: 4px;
+    }
+    .codeIntelTransitionEdge,
+    .codeIntelTransitionDetail,
+    .codeIntelEvidence {
+      min-width: 0;
+      overflow-wrap: anywhere;
+    }
+    .codeIntelSnippet {
+      margin-top: 2px;
+      color: var(--vscode-descriptionForeground);
+      font-family: var(--vscode-editor-font-family, monospace);
+      font-size: 9px;
+      white-space: pre-wrap;
+    }
     .modelSelectHidden { display: none; }
     .manualModel input {
       min-width: 0;
@@ -853,6 +973,7 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
             <div id="guard" class="guard"></div>
             <div id="usageMeter" class="usageMeter"></div>
             <div id="codeGraph" class="codeGraph"></div>
+            <div id="codeIntelligence" class="codeIntel"></div>
             <div id="chips" class="chips"></div>
             <select id="modelSelect" class="modelSelectHidden" title="Model"></select>
             <div class="composer">
@@ -911,6 +1032,8 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
     let mentionSearched = false;
     let modelMenuOpen = false;
     let agentMenuOpen = false;
+    let codeIntelligenceVisible = false;
+    let selectedStateMachineId = "";
 
     el("server").textContent = "UI ready";
     el("connectionDetail").className = "detail";
@@ -989,6 +1112,7 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       }
     });
     el("codeGraph").addEventListener("click", onCodeGraphAction);
+    el("codeIntelligence").addEventListener("click", onCodeIntelligenceAction);
     el("attach").addEventListener("click", () => vscode.postMessage({ type: "addFile" }));
     el("send").addEventListener("click", send);
     el("input").addEventListener("input", onComposerInput);
@@ -1207,6 +1331,7 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       renderGuard();
       renderUsageMeter();
       renderCodeGraph();
+      renderCodeIntelligence();
       renderModelSelector();
       renderAgentSelector();
       renderMentionChips();
@@ -1673,28 +1798,49 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       const files = formatCount(graph.indexedFiles || 0);
       const functions = formatCount(graph.indexedFunctions || 0);
       if (stateName === "ready") {
+        const intelLoading = Boolean(state.loadingCodeIntelligence);
+        const intelLabel = intelLoading ? "Loading..." : codeIntelligenceVisible ? "Refresh" : "Intel";
         return {
           label: "Indexed: " + files + " files, " + functions + " functions",
           meta: codeGraphMeta(graph),
           actions: [
+            { label: intelLabel, message: "refreshCodeIntelligence", title: codeIntelligenceVisible ? "Refresh local code intelligence panel" : "Show local code intelligence panel", disabled: intelLoading },
             { label: "Rebuild", message: "rebuildCodeGraph", title: "Rebuild local code graph" },
             { label: "Status", message: "showCodeGraphStatus", title: "Show local code graph status" },
           ],
         };
       }
-      if (stateName === "indexing") {
+      if (stateName === "indexing" || stateName === "indexingFull" || stateName === "indexingIncremental" || stateName === "recovering") {
         const progress = graph.progress && graph.progress.total
           ? " " + formatCount(graph.progress.completed || 0) + "/" + formatCount(graph.progress.total) + " files"
           : "";
+        const label = stateName === "recovering"
+          ? "Recovering index..."
+          : stateName === "indexingIncremental"
+            ? "Updating index..."
+            : "Indexing...";
         return {
-          label: "Indexing..." + progress,
+          label: label + progress,
           meta: graph.detail || "Indexing local C/C++ code graph.",
-          actions: [{ label: "Indexing", disabled: true, title: "Indexing is already running" }],
+          actions: [
+            { label: "Pause", message: "pauseCodeGraph", title: "Pause local code graph indexing" },
+            { label: "Cancel", message: "cancelCodeGraph", title: "Cancel local code graph indexing" },
+          ],
         };
       }
-      if (stateName === "stale") {
+      if (stateName === "paused") {
         return {
-          label: "Code graph stale",
+          label: "Code graph paused",
+          meta: graph.detail || "Indexing is paused.",
+          actions: [
+            { label: "Resume", message: "resumeCodeGraph", title: "Resume local code graph indexing" },
+            { label: "Cancel", message: "cancelCodeGraph", title: "Cancel local code graph indexing" },
+          ],
+        };
+      }
+      if (stateName === "stale" || stateName === "degraded" || stateName === "rescanScheduled") {
+        return {
+          label: stateName === "rescanScheduled" ? "Code graph rescan scheduled" : "Code graph degraded",
           meta: graph.detail || "Workspace changed; refresh before relying on whole-repo context.",
           actions: [{ label: "Refresh", message: "indexCodeGraph", title: "Refresh local code graph" }],
         };
@@ -1721,7 +1867,310 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       if (!target || !target.closest) return;
       const button = target.closest("[data-code-graph-action]");
       if (!button || button.disabled) return;
+      if (button.dataset.codeGraphAction === "refreshCodeIntelligence") {
+        openOrRefreshCodeIntelligence();
+        return;
+      }
       vscode.postMessage({ type: button.dataset.codeGraphAction });
+    }
+
+    function openOrRefreshCodeIntelligence() {
+      if (state.loadingCodeIntelligence) return;
+      const hadSnapshot = Boolean(state.codeIntelligence);
+      const wasVisible = codeIntelligenceVisible;
+      codeIntelligenceVisible = true;
+      if (!hadSnapshot) selectedStateMachineId = "";
+      if (wasVisible || !hadSnapshot) {
+        requestCodeIntelligenceRefresh();
+        return;
+      }
+      renderCodeGraph();
+      renderCodeIntelligence();
+    }
+
+    function requestCodeIntelligenceRefresh() {
+      if (state.loadingCodeIntelligence) return;
+      state.loadingCodeIntelligence = true;
+      state.codeIntelligenceError = "";
+      renderCodeGraph();
+      renderCodeIntelligence();
+      vscode.postMessage({ type: "refreshCodeIntelligence" });
+    }
+
+    function renderCodeIntelligence() {
+      const node = el("codeIntelligence");
+      if (!codeIntelligenceVisible) {
+        node.className = "codeIntel";
+        node.innerHTML = "";
+        return;
+      }
+      const intel = state.codeIntelligence;
+      node.className = "codeIntel visible";
+      node.innerHTML = "";
+      node.appendChild(codeIntelHeader());
+
+      if (state.loadingCodeIntelligence) {
+        node.appendChild(codeIntelStatus("Loading local code intelligence...", false));
+      }
+      if (state.codeIntelligenceError) {
+        node.appendChild(codeIntelStatus(state.codeIntelligenceError, true));
+      }
+      if (!intel) {
+        if (!state.loadingCodeIntelligence && !state.codeIntelligenceError) {
+          node.appendChild(codeIntelStatus("No code intelligence snapshot is loaded yet. Click Refresh to load local analysis.", false));
+        }
+        return;
+      }
+
+      const machines = intel.stateMachines || [];
+      if (selectedStateMachineId && !machines.some((machine) => machine.id === selectedStateMachineId)) {
+        selectedStateMachineId = "";
+      }
+      node.appendChild(codeIntelSection("Modules", (intel.modules || []).slice(0, 5).map((item) => ({
+        title: item.module,
+        meta: item.summary + " " + (item.keyFlows || []).slice(0, 2).join(" | "),
+        evidence: (item.evidence || [])[0],
+      }))));
+      node.appendChild(codeIntelSection("State Machines", machines.slice(0, 5).map((item) => ({
+        title: item.name,
+        meta: (item.states || []).length + " state(s), " + (item.transitions || []).length + " transition(s), " + (item.candidateTransitions || []).length + " candidate(s), confidence " + Number(item.confidence || 0).toFixed(2),
+        evidence: (item.evidence || [])[0],
+        inspectId: item.id,
+      }))));
+      const selectedMachine = selectedStateMachineId ? machines.find((machine) => machine.id === selectedStateMachineId) : undefined;
+      if (selectedMachine) node.appendChild(codeIntelMachineDetails(selectedMachine));
+      node.appendChild(codeIntelSection("Transitions", machines.flatMap((machine) =>
+        (machine.transitions || []).slice(0, 4).map((transition) => ({
+          title: transition.fromState + " -> " + transition.toState,
+          meta: [transition.event, transition.guard, transition.action].filter(Boolean).join(" / ") || "transition",
+          evidence: transition.evidence,
+        }))
+      ).slice(0, 8)));
+      if (intel.lastTrace) {
+        const trace = document.createElement("div");
+        trace.className = "codeIntelSection";
+        const title = document.createElement("div");
+        title.className = "codeIntelTitle";
+        title.textContent = "Query Trace";
+        const meta = document.createElement("div");
+        meta.className = "codeIntelMeta";
+        meta.textContent = (intel.lastTrace.steps || []).map((step) => step.label).join(" > ");
+        trace.append(title, meta);
+        node.appendChild(trace);
+      }
+      const transitions = ((state.codeGraph && state.codeGraph.transitions) || []).slice(-6).reverse();
+      if (transitions.length) {
+        node.appendChild(codeIntelSection("Index States", transitions.map((item) => ({
+          title: item.state,
+          meta: formatDateTime(item.at) + " " + (item.detail || ""),
+        }))));
+      }
+    }
+
+    function codeIntelHeader() {
+      const header = document.createElement("div");
+      header.className = "codeIntelHeader";
+      const title = document.createElement("div");
+      title.className = "codeIntelTitle";
+      title.textContent = "Code Intelligence";
+      const actions = document.createElement("div");
+      actions.className = "codeIntelHeaderActions";
+      const refresh = document.createElement("button");
+      refresh.className = "codeIntelAction";
+      refresh.type = "button";
+      refresh.textContent = state.loadingCodeIntelligence ? "Loading..." : "Refresh";
+      refresh.title = "Refresh local code intelligence";
+      refresh.disabled = Boolean(state.loadingCodeIntelligence);
+      refresh.setAttribute("data-code-intel-refresh", "true");
+      const hide = document.createElement("button");
+      hide.className = "codeIntelAction";
+      hide.type = "button";
+      hide.textContent = "Hide";
+      hide.title = "Hide code intelligence panel";
+      hide.setAttribute("data-code-intel-hide", "true");
+      actions.append(refresh, hide);
+      header.append(title, actions);
+      return header;
+    }
+
+    function codeIntelStatus(text, isError) {
+      const status = document.createElement("div");
+      status.className = "codeIntelStatus" + (isError ? " error" : "");
+      status.textContent = text;
+      return status;
+    }
+
+    function codeIntelSection(titleText, rows) {
+      const section = document.createElement("div");
+      section.className = "codeIntelSection";
+      const title = document.createElement("div");
+      title.className = "codeIntelTitle";
+      title.textContent = titleText;
+      section.appendChild(title);
+      if (!rows.length) {
+        const empty = document.createElement("div");
+        empty.className = "codeIntelMeta";
+        empty.textContent = "No indexed data.";
+        section.appendChild(empty);
+        return section;
+      }
+      for (const row of rows) {
+        const item = document.createElement("div");
+        item.className = "codeIntelRow";
+        const main = document.createElement("div");
+        main.className = "codeIntelMain";
+        main.textContent = row.title;
+        main.title = row.meta || row.title;
+        const meta = document.createElement("div");
+        meta.className = "codeIntelMeta";
+        meta.textContent = row.meta || "";
+        const left = document.createElement("div");
+        left.append(main, meta);
+        item.appendChild(left);
+        const actions = document.createElement("div");
+        actions.className = "codeIntelRowActions";
+        if (row.inspectId) {
+          const inspect = document.createElement("button");
+          inspect.className = "codeIntelJump";
+          inspect.type = "button";
+          inspect.textContent = "Inspect";
+          inspect.title = "Inspect state machine evidence";
+          inspect.dataset.codeIntelMachineId = row.inspectId;
+          actions.appendChild(inspect);
+        }
+        const source = codeIntelEvidenceButton(row.evidence);
+        if (source) actions.appendChild(source);
+        if (actions.childElementCount) item.appendChild(actions);
+        section.appendChild(item);
+      }
+      return section;
+    }
+
+    function codeIntelMachineDetails(machine) {
+      const section = document.createElement("div");
+      section.className = "codeIntelSection";
+      const title = document.createElement("div");
+      title.className = "codeIntelTitle";
+      title.textContent = "State Machine Audit";
+      const meta = document.createElement("div");
+      meta.className = "codeIntelMachineMeta";
+      meta.append(
+        codeIntelBadge("stateVar " + (machine.stateVar || "state"), false),
+        codeIntelBadge("confidence " + Number(machine.confidence || 0).toFixed(2), false),
+        codeIntelBadge((machine.states || []).length + " states", false),
+        codeIntelBadge((machine.transitions || []).length + " transitions", false),
+        codeIntelBadge((machine.candidateTransitions || []).length + " candidates", Boolean((machine.candidateTransitions || []).length)),
+      );
+      const tableTitle = document.createElement("div");
+      tableTitle.className = "codeIntelMeta";
+      tableTitle.textContent = "Transition Table";
+      const table = document.createElement("div");
+      table.className = "codeIntelTransitionTable";
+      const transitions = [
+        ...(machine.transitions || []).map((transition) => ({ transition, candidate: false })),
+        ...(machine.candidateTransitions || []).map((transition) => ({ transition, candidate: true })),
+      ];
+      if (!transitions.length) {
+        table.appendChild(codeIntelStatus("No transitions were inferred for this state machine.", false));
+      }
+      for (const entry of transitions) {
+        const transition = entry.transition;
+        const row = document.createElement("div");
+        row.className = "codeIntelTransitionRow";
+        const edge = document.createElement("div");
+        edge.className = "codeIntelTransitionEdge";
+        const edgeMain = document.createElement("div");
+        edgeMain.className = "codeIntelMain";
+        edgeMain.textContent = (transition.fromState || "unknown") + " -> " + (transition.toState || "unknown");
+        const badges = document.createElement("div");
+        badges.className = "codeIntelMachineMeta";
+        if ((transition.fromState || "").toLowerCase() === "unknown") badges.appendChild(codeIntelBadge("unknown from-state", true));
+        if (entry.candidate) badges.appendChild(codeIntelBadge("candidate", true));
+        if (transition.lowConfidence) badges.appendChild(codeIntelBadge("low confidence", true));
+        badges.appendChild(codeIntelBadge("confidence " + Number(transition.confidence || 0).toFixed(2), false));
+        edge.append(edgeMain, badges);
+
+        const detail = document.createElement("div");
+        detail.className = "codeIntelTransitionDetail";
+        const lines = [
+          transition.event ? "event: " + transition.event : "",
+          transition.guard ? "guard: " + transition.guard : "",
+          transition.action ? "action: " + transition.action : "",
+          transition.evidence && transition.evidence.parserKind ? "evidence kind: " + transition.evidence.parserKind : "",
+        ].filter(Boolean);
+        detail.textContent = lines.join(" | ") || "No event, guard, or action inferred.";
+        if (transition.evidence && transition.evidence.snippet) {
+          const snippet = document.createElement("div");
+          snippet.className = "codeIntelSnippet";
+          snippet.textContent = shortSnippet(transition.evidence.snippet);
+          detail.appendChild(snippet);
+        }
+
+        const evidence = document.createElement("div");
+        evidence.className = "codeIntelEvidence";
+        if (transition.evidence && transition.evidence.file) {
+          const ref = document.createElement("div");
+          ref.className = "codeIntelMeta";
+          ref.textContent = transition.evidence.file + ":" + (transition.evidence.startLine || 1);
+          evidence.appendChild(ref);
+        }
+        const source = codeIntelEvidenceButton(transition.evidence);
+        if (source) evidence.appendChild(source);
+        row.append(edge, detail, evidence);
+        table.appendChild(row);
+      }
+      section.append(title, meta, tableTitle, table);
+      return section;
+    }
+
+    function codeIntelBadge(text, warning) {
+      const badge = document.createElement("span");
+      badge.className = "codeIntelBadge" + (warning ? " warning" : "");
+      badge.textContent = text;
+      return badge;
+    }
+
+    function codeIntelEvidenceButton(evidence) {
+      if (!evidence || !evidence.file) return undefined;
+      const jump = document.createElement("button");
+      jump.className = "codeIntelJump";
+      jump.type = "button";
+      jump.textContent = "Source";
+      jump.title = "Open source evidence: " + evidence.file + ":" + (evidence.startLine || 1);
+      jump.dataset.path = evidence.file;
+      jump.dataset.line = String(evidence.startLine || 1);
+      return jump;
+    }
+
+    function shortSnippet(text) {
+      const cleaned = String(text || "").replace(/\\s+/g, " ").trim();
+      return cleaned.length > 180 ? cleaned.slice(0, 177) + "..." : cleaned;
+    }
+
+    function onCodeIntelligenceAction(event) {
+      const target = event.target;
+      if (!target || !target.closest) return;
+      const hide = target.closest("[data-code-intel-hide]");
+      if (hide) {
+        codeIntelligenceVisible = false;
+        renderCodeGraph();
+        renderCodeIntelligence();
+        return;
+      }
+      const refresh = target.closest("[data-code-intel-refresh]");
+      if (refresh && !refresh.disabled) {
+        requestCodeIntelligenceRefresh();
+        return;
+      }
+      const inspect = target.closest("[data-code-intel-machine-id]");
+      if (inspect) {
+        selectedStateMachineId = inspect.dataset.codeIntelMachineId || "";
+        renderCodeIntelligence();
+        return;
+      }
+      const button = target.closest(".codeIntelJump");
+      if (!button) return;
+      vscode.postMessage({ type: "openEvidence", path: button.dataset.path, line: Number(button.dataset.line || 1) });
     }
 
     function codeGraphMeta(graph) {
@@ -1729,6 +2178,10 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       if (graph.largeRepoMode) parts.push("Large repo mode");
       if (graph.updatedAt) parts.push("Updated " + formatDateTime(graph.updatedAt));
       if (graph.shards) parts.push(formatCount(graph.shards) + " shards");
+      if (graph.currentShard) parts.push("Shard " + graph.currentShard);
+      if (graph.queue && graph.queue.pendingJobs) parts.push(formatCount(graph.queue.pendingJobs) + " queued");
+      if (graph.errorCount) parts.push(formatCount(graph.errorCount) + " errors");
+      if (graph.schemaVersion) parts.push("Schema v" + graph.schemaVersion);
       if (graph.truncated) parts.push("Index truncated by file limit");
       if (graph.analysisMode) parts.push("Analyzer: " + graph.analysisMode + (graph.analyzerHost ? " on " + graph.analyzerHost : ""));
       if (graph.analyzerDegradedReason) parts.push(graph.analyzerDegradedReason);
@@ -1744,6 +2197,9 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       if (graph.shards) parts.push(formatCount(graph.shards) + " shard(s)");
       if (graph.indexBytes) parts.push(formatBytes(graph.indexBytes) + " indexed source");
       if (graph.skippedFiles) parts.push(formatCount(graph.skippedFiles) + " skipped file(s)");
+      if (graph.queue && graph.queue.pendingJobs) parts.push(formatCount(graph.queue.pendingJobs) + " queued job(s)");
+      if (graph.errorCount) parts.push(formatCount(graph.errorCount) + " error(s)");
+      if (graph.schemaVersion) parts.push("Schema v" + graph.schemaVersion);
       if (graph.updatedAt) parts.push("Updated " + formatDateTime(graph.updatedAt));
       if (graph.truncated) parts.push("Index truncated by file limit.");
       if (graph.analyzerDetail) parts.push(graph.analyzerDetail);

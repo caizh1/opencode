@@ -1,5 +1,6 @@
 import * as vscode from "vscode"
 import { RemoteChatViewProvider } from "./chat-view"
+import { LocalAnalysisBridge } from "./analysis-bridge"
 import { LocalCodeGraphService } from "./codegraph-service"
 import { RemoteCompletionProvider } from "./completion"
 import { registerCompletionFormatCommand } from "./completion-format-command"
@@ -109,6 +110,12 @@ export async function activate(context: vscode.ExtensionContext) {
   let chatProvider: RemoteChatViewProvider
   const codeGraph = new LocalCodeGraphService(context, output, getSettings, () => chatProvider?.refreshCodeGraphStatus())
   context.subscriptions.push(codeGraph)
+  const analysisBridge = new LocalAnalysisBridge(
+    output,
+    (input) => codeGraph.runAnalysisTool(input),
+    () => getSettings().analysis.bridgeEnabled,
+  )
+  context.subscriptions.push(analysisBridge)
 
   chatProvider = new RemoteChatViewProvider({
     output,
@@ -180,6 +187,19 @@ export async function activate(context: vscode.ExtensionContext) {
       await codeGraph.indexWorkspace(true)
       await chatProvider.reveal()
     }),
+    vscode.commands.registerCommand("opencode.remote.codeGraph.pause", async () => {
+      codeGraph.pauseIndexing("requested from command palette")
+    }),
+    vscode.commands.registerCommand("opencode.remote.codeGraph.resume", async () => {
+      codeGraph.resumeIndexing()
+    }),
+    vscode.commands.registerCommand("opencode.remote.codeGraph.cancel", async () => {
+      codeGraph.cancelIndexing("requested from command palette")
+    }),
+    vscode.commands.registerCommand("opencode.remote.codeGraph.benchmark", async () => {
+      await codeGraph.benchmarkSyntheticRepository(1000)
+      await codeGraph.showStatus()
+    }),
     vscode.commands.registerCommand("opencode.remote.codeGraph.status", async () => {
       await codeGraph.showStatus()
     }),
@@ -215,6 +235,10 @@ export async function activate(context: vscode.ExtensionContext) {
 
   client = undefined
   setConnectionState("disconnected", "Ready. Enter a server URL and click Connect.")
+  void analysisBridge.ensureStarted().catch((error) => {
+    const message = error instanceof Error ? error.message : String(error)
+    output.appendLine(`[analysis-bridge] failed to start: ${message}`)
+  })
   void codeGraph.maybePromptAndIndex()
 }
 

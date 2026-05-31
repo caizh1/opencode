@@ -380,6 +380,9 @@ async function normalizeFilesAsync(files: Record<string, CodeGraphFile>, yieldIf
 function normalizeFile(file: CodeGraphFile): CodeGraphFile {
   return {
     ...file,
+    sha256: file.sha256 ?? file.hash,
+    module: file.module ?? moduleKey(file.path),
+    shard: file.shard ?? shardKeyForPath(file.path),
     types: file.types ?? [],
     globals: file.globals ?? [],
     tokens: file.tokens ?? legacyTokensForFile(file),
@@ -478,9 +481,6 @@ function addPosting(record: Record<string, CodeGraphPosting[]>, term: string, po
   const normalized = term.toLowerCase()
   if (!normalized || normalized.length < 2) return
   const values = arrayBucket(record, normalized)
-  if (values.some((item) => item.path === posting.path && item.line === posting.line && item.kind === posting.kind && item.symbolId === posting.symbolId)) {
-    return
-  }
   values.push({ ...posting, term: normalized })
 }
 

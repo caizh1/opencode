@@ -45,8 +45,59 @@ OpenCode Remote 不让远端 OpenCode 直接读取本地文件。扩展在 VS Co
 - 问“X 到 Y 的调用链”时，注入候选调用链和链路节点片段。
 - 问影响范围时，注入调用者、被调用者、相关 include 和模块线索。
 - 问架构概览时，注入目录/模块聚合摘要和热点符号。
+- 问状态机时，注入 `state -> transition -> guard/action -> evidence` 表、Mermaid/DOT 图和状态路径候选。
+- 问模块/子模块功能流程时，注入函数级、文件级、目录/模块级、子系统级摘要，以及经过预算控制的 evidence pack。
 
 这个能力是轻量静态分析，不做完整宏展开或编译器级类型解析。如果仓库有复杂条件编译，回答会把 code graph 结果作为辅助证据，而不是替代真实编译。
+
+### Local Analysis Bridge 与 Code Intelligence
+
+扩展启动后会在 `127.0.0.1` 随机端口启动一个 token 保护的 Local Analysis Bridge，并在当前 workspace 的 `.opencode/tools/opencode_local_analysis.ts` 生成 OpenCode custom tool。这个工具只调用本机分析 API，不访问公网，也不允许任意文件系统工具绕过 VS Code 提供的 evidence。
+
+Bridge 暴露这些受控分析操作：`search`、`getFileSlice`、`getSymbol`、`getCallers`、`getCallees`、`getCallChain`、`getModuleMap`、`getStateMachines`、`getStatePath`、`queryEvidence`。每次工具调用都会记录审计信息：tool name、参数摘要、evidence 数、耗时、是否被策略阻断。
+
+聊天面板中本地 code graph ready 后可点击 `Intel` 打开 Code Intelligence 面板，查看模块摘要、状态机、transition table、confidence，并从 evidence 跳转到源码行。
+
+### Large Repository Analysis v0
+
+The local code graph now exposes a `LocalAnalysisService`-style protocol for
+large repositories. Full indexing, incremental indexing, recovery, query, and
+benchmark work are tracked as queued jobs with `disabled`,
+`indexingFull`, `indexingIncremental`, `ready`, `degraded`, `paused`,
+`recovering`, `rescanScheduled`, and `error` states. Status includes progress,
+active shard, queue length, error count, recent state transitions, schema
+version, worker thread health, cache metrics, and memory budget state.
+
+Indexes are still stored locally in VS Code global storage, but the sharded JSON
+manifest now carries a SQLite-compatible schema contract for future backends:
+`files`, `symbols`, `edges`, `postings`, `modules`, `state_machines`,
+`summaries`, `snapshots`, and `schema_version`. The current backend is reported
+as `json-sharded-sqlite-compatible`, so the runtime remains dependency-light
+while preserving a stable migration target for a true SQLite daemon.
+
+Fast parsing can run through a Node worker-thread pool controlled by
+`opencode.remote.codeGraph.workerConcurrency`; AST mode keeps using the main
+extension process because it needs VSIX-local WASM grammars. Watcher storms are
+coalesced into one scheduled rescan after
+`opencode.remote.codeGraph.watcherRescanThreshold` events. Indexing can be
+paused, resumed, or cancelled from commands or the Code Intelligence UI.
+
+For large benchmarks above 100k files, the benchmark switches to
+`streaming-sharded` mode: it parses every synthetic file, records shard and
+schema metrics, and lazily loads only query-relevant shards. This exercises the
+large-repo memory model without keeping a million parsed files in the extension
+host at once.
+
+For scale checks, run:
+
+```bash
+bun run benchmark:codegraph -- --files=1000
+```
+
+The report includes file count, LOC, language mix, benchmark mode, module
+count, average file size, call edges, symbols, parse/index time, throughput,
+peak heap, index bytes, shard count, query P50/P95/P99, incremental update
+time, and recovery time.
 
 ## 安装与连接
 
@@ -146,10 +197,20 @@ inline completion 默认关闭。开启后，扩展会在编辑器中注册 VS C
 | `opencode.remote.codeGraph.maxContextBytes` | `24000` | 单次请求最多注入的 code graph 上下文字节数。 |
 | `opencode.remote.codeGraph.maxDeepFiles` | `24` | 预留给深度机制/状态机分析的候选文件上限。 |
 | `opencode.remote.codeGraph.maxStateTransitions` | `120` | 预留给状态机证据的转移数量上限。 |
+| `opencode.remote.codeGraph.watcherRescanThreshold` | `750` | watcher 队列达到该数量后合并为一次 scheduled rescan。 |
+| `opencode.remote.codeGraph.workerConcurrency` | `4` | 本地分析 worker batch 和 benchmark planning 的目标并发。 |
+| `opencode.remote.codeGraph.queryCacheSize` | `80` | 本地 code graph 热查询上下文缓存数量。 |
+| `opencode.remote.codeGraph.memoryLimitMb` | `4096` | 本地 code graph 的软堆内存预算，超过后清理热缓存并标记 degraded。 |
 | `opencode.remote.codeGraph.compileCommandsPath` | `""` | 可选 `compile_commands.json` 路径，后续 semantic 分析使用。 |
 | `opencode.remote.codeGraph.clangdPath` | `""` | 可选 workspace host 上的 `clangd` 路径，后续 semantic 分析使用。 |
 | `opencode.remote.codeGraph.scipClangPath` | `""` | 可选 workspace host 上的 `scip-clang` 路径，后续 semantic 分析使用。 |
 | `opencode.remote.codeGraph.excludeGlobs` | `[]` | 本地 code graph 额外排除规则。 |
+| `opencode.remote.analysis.bridge.enabled` | `true` | 启动 localhost-only Analysis Tool Bridge，并生成 OpenCode custom tool。 |
+| `opencode.remote.analysis.maxEvidenceItems` | `40` | 单次 analysis tool 或 evidence pack 最多返回的证据条目数。 |
+| `opencode.remote.analysis.maxEvidenceBytes` | `60000` | 单次 analysis tool 或 evidence pack 最多返回的证据字节数。 |
+| `opencode.remote.analysis.maxFileSliceBytes` | `16000` | 单次本地文件片段查询最多返回的字节数。 |
+| `opencode.remote.analysis.maxGraphEdges` | `120` | 调用图和状态机查询最多返回的边数。 |
+| `opencode.remote.analysis.maxPaths` | `10` | 状态路径或调用路径最多返回的路径数。 |
 
 ### VS Code Local Agent 示例
 
@@ -174,14 +235,15 @@ VS Code 本地代码理解必须在远端 OpenCode 配置一个名为 `vscode-lo
         "lsp": "deny",
         "skill": "deny",
         "webfetch": "deny",
-        "websearch": "deny"
+        "websearch": "deny",
+        "opencode_local_analysis": "allow"
       }
     }
   }
 }
 ```
 
-这个 agent 应只根据插件注入的 VS Code 本地上下文、diagnostics、git diff 和本地 code graph evidence 回答；不要允许它读取或修改远端 OpenCode server 文件系统。
+这个 agent 应只根据插件注入的 VS Code 本地上下文、diagnostics、git diff、本地 code graph evidence 和 `opencode_local_analysis` 结果回答；不要允许它读取或修改远端 OpenCode server 文件系统。扩展也会生成 `.opencode/vscode-local-agent-policy.template.json` 作为离线权限模板。
 
 ## 命令与快捷键
 
@@ -198,6 +260,10 @@ VS Code 本地代码理解必须在远端 OpenCode 配置一个名为 `vscode-lo
 | `OpenCode Remote: Clear OpenCode Context` | 清空已附加的上下文文件。 |
 | `OpenCode Remote: Index Local Code Graph` | 建立或增量刷新本地 C/C++ code graph。 |
 | `OpenCode Remote: Rebuild Local Code Graph` | 强制重建本地 C/C++ code graph。 |
+| `OpenCode Remote: Pause Local Code Graph Indexing` | 暂停正在排队或执行的本地 code graph 索引任务。 |
+| `OpenCode Remote: Resume Local Code Graph Indexing` | 恢复暂停的本地 code graph 索引任务。 |
+| `OpenCode Remote: Cancel Local Code Graph Indexing` | 取消当前和排队中的本地 code graph 索引任务。 |
+| `OpenCode Remote: Run Local Code Graph Benchmark` | 运行 synthetic repo benchmark，并把报告写入 output channel。 |
 | `OpenCode Remote: Show Local Code Graph Status` | 查看本地 code graph 索引状态。 |
 | `OpenCode: Open opencode` | 在终端中打开 opencode。 |
 | `OpenCode: Open opencode in new tab` | 在新终端标签中打开 opencode。 |
@@ -224,6 +290,7 @@ bun install
 ```bash
 bun run compile
 bun test
+bun run benchmark:codegraph -- --files=1000
 bun run package
 ```
 

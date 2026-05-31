@@ -4,6 +4,7 @@ import { createChatViewHtml } from "./chat-html"
 import { CHAT_SESSION_TITLE, isPluginChatMessage, isPluginChatSession } from "./chat-session"
 import { applyOpenCodeEventToMessages, normalizeOpenCodeEvent } from "./chat-stream"
 import type { CodeGraphContextProvider } from "./codegraph-types"
+import type { CodeIntelligenceSnapshot } from "./analysis-types"
 import { isInlineCompletionMessage, isInlineCompletionSession } from "./completion-session"
 import {
   addPickedFilesToContext,
@@ -67,7 +68,12 @@ type ChatViewMessage =
   | { type: "searchFilesForMention"; query?: string; requestId?: number }
   | { type: "indexCodeGraph" }
   | { type: "rebuildCodeGraph" }
+  | { type: "pauseCodeGraph" }
+  | { type: "resumeCodeGraph" }
+  | { type: "cancelCodeGraph" }
   | { type: "showCodeGraphStatus" }
+  | { type: "refreshCodeIntelligence" }
+  | { type: "openEvidence"; path: string; line?: number }
   | {
       type: "connectWithSettings" | "testWithSettings"
       serverUrl: string
@@ -148,6 +154,9 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
   private agentError = ""
   private historyError = ""
   private codeGraphWaitDetail = ""
+  private codeIntelligence?: CodeIntelligenceSnapshot
+  private loadingCodeIntelligence = false
+  private codeIntelligenceError = ""
   private lastContextSummary: ContextSummaryItem[] = []
   private readonly flaggedSessions = new Set<string>()
   private readonly hiddenCompletionSessions = new Set<string>()
@@ -472,8 +481,26 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
         case "rebuildCodeGraph":
           await this.indexCodeGraph(true)
           break
+        case "pauseCodeGraph":
+          this.deps.codeGraph?.pauseIndexing("requested from Code Intelligence UI")
+          this.postState()
+          break
+        case "resumeCodeGraph":
+          this.deps.codeGraph?.resumeIndexing()
+          this.postState()
+          break
+        case "cancelCodeGraph":
+          this.deps.codeGraph?.cancelIndexing("requested from Code Intelligence UI")
+          this.postState()
+          break
         case "showCodeGraphStatus":
           await this.showCodeGraphStatus()
+          break
+        case "refreshCodeIntelligence":
+          await this.refreshCodeIntelligence()
+          break
+        case "openEvidence":
+          await this.openEvidence(message.path, message.line)
           break
         case "connectWithSettings":
           await this.connectWithSettings({
@@ -518,6 +545,53 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
     }
     await this.deps.codeGraph.showStatus()
     this.postState()
+  }
+
+  private async refreshCodeIntelligence() {
+    if (this.loadingCodeIntelligence) {
+      this.postState()
+      return
+    }
+    if (!this.deps.codeGraph) {
+      this.codeIntelligenceError = "Local code intelligence is not available in this OpenCode Remote view."
+      vscode.window.showWarningMessage("Local code intelligence is not available in this OpenCode Remote view.")
+      this.postState()
+      return
+    }
+    this.loadingCodeIntelligence = true
+    this.codeIntelligenceError = ""
+    this.postState()
+    try {
+      this.codeIntelligence = await this.deps.codeGraph.intelligenceSnapshot()
+      this.codeIntelligenceError = ""
+      this.deps.output.appendLine(
+        `[analysis] snapshot modules=${this.codeIntelligence?.modules.length ?? 0} stateMachines=${this.codeIntelligence?.stateMachines.length ?? 0}`,
+      )
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      this.codeIntelligenceError = message
+      this.deps.output.appendLine(`[analysis] snapshot failed: ${message}`)
+      vscode.window.showErrorMessage(`Local code intelligence failed: ${message}`)
+    } finally {
+      this.loadingCodeIntelligence = false
+      this.postState()
+    }
+  }
+
+  private async openEvidence(path: string, line = 1) {
+    const root = vscode.workspace.workspaceFolders?.[0]
+    if (!root) return
+    const normalized = path.replace(/\\/g, "/").replace(/^\/+/, "")
+    if (!normalized || normalized.split("/").includes("..")) {
+      vscode.window.showWarningMessage("Evidence path is outside the workspace.")
+      return
+    }
+    const uri = vscode.Uri.joinPath(root.uri, ...normalized.split("/"))
+    const document = await vscode.workspace.openTextDocument(uri)
+    const editor = await vscode.window.showTextDocument(document)
+    const position = new vscode.Position(Math.max(0, line - 1), 0)
+    editor.selection = new vscode.Selection(position, position)
+    editor.revealRange(new vscode.Range(position, position), vscode.TextEditorRevealType.InCenter)
   }
 
   private async connectWithSettings(input: ConnectionSettingsInput) {
@@ -1048,6 +1122,9 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
         contextFiles: this.deps.contextStore.labels(),
         codeGraph: this.deps.codeGraph?.status(),
         codeGraphWaitDetail: this.codeGraphWaitDetail,
+        codeIntelligence: this.codeIntelligence,
+        loadingCodeIntelligence: this.loadingCodeIntelligence,
+        codeIntelligenceError: this.codeIntelligenceError,
         lastContextSummary: this.lastContextSummary,
         autoContext: this.autoContextState(),
         usage: summarizeSessionUsage({
