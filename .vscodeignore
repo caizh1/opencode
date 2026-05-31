@@ -9,6 +9,7 @@ script/**
 .gitignore
 .opencode/**
 opencode.json
+opencode_ui_readability_plan.md
 bun.lock
 esbuild.js
 **/tsconfig.json

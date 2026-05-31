@@ -317,7 +317,7 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       background: var(--vscode-sideBar-background);
     }
     .messageMeta > span:first-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .messageStats { display: inline-flex; align-items: center; gap: 6px; min-width: 0; }
+    .messageStats { display: inline-flex; align-items: center; gap: 6px; min-width: 0; flex-wrap: wrap; justify-content: flex-end; }
     .messageUsage {
       min-width: 0;
       overflow: hidden;
@@ -326,6 +326,31 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       text-transform: none;
     }
     .messageTime { text-transform: none; white-space: nowrap; }
+    .messageActions {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      min-width: 0;
+      text-transform: none;
+    }
+    .messageAction {
+      min-height: 20px;
+      border: 1px solid var(--vscode-panel-border);
+      border-radius: 4px;
+      padding: 1px 5px;
+      color: var(--vscode-descriptionForeground);
+      background: transparent;
+      font-size: 10px;
+      line-height: 1.2;
+    }
+    .messageAction:hover {
+      color: var(--vscode-foreground);
+      border-color: var(--vscode-focusBorder);
+      background: var(--vscode-toolbar-hoverBackground);
+    }
+    .messageAction.copyMarkdown { color: var(--vscode-charts-purple, #b180d7); border-color: rgba(177, 128, 215, 0.5); }
+    .messageAction.collapseMessage { color: var(--vscode-charts-blue, #4da3ff); border-color: rgba(77, 163, 255, 0.5); }
+    .messageAction.jumpStructure { color: var(--vscode-testing-iconPassed, #73c991); border-color: rgba(115, 201, 145, 0.5); }
     .messageBody {
       padding: 10px 11px;
       font-size: var(--chat-content-font-size);
@@ -341,6 +366,59 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
     .timelineItem.tool .messageBody {
       font-size: var(--chat-content-font-size);
       line-height: 1.55;
+    }
+    .messageCard.messageCollapsed .messageBody,
+    .messageCard.messageCollapsed .messageOutline,
+    .messageCard.messageCollapsed .messageLongHint { display: none; }
+    .messageCard.longAnswer:not(.longExpanded) .messageBody {
+      max-height: min(620px, 72vh);
+      overflow: auto;
+      border-bottom: 1px solid var(--vscode-panel-border);
+    }
+    .messageLongHint {
+      display: none;
+      padding: 5px 11px 8px;
+      color: var(--vscode-descriptionForeground);
+      font-size: 10px;
+      background: var(--vscode-sideBar-background);
+    }
+    .messageCard.longAnswer:not(.longExpanded) .messageLongHint { display: block; }
+    .messageOutline {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      min-width: 0;
+      padding: 6px 9px;
+      border-bottom: 1px solid var(--vscode-panel-border);
+      background: var(--vscode-editor-background);
+      color: var(--vscode-descriptionForeground);
+      font-size: 10px;
+      overflow-x: auto;
+      scrollbar-width: thin;
+    }
+    .messageOutlineSummary { flex: 0 0 auto; font-weight: 650; color: var(--vscode-foreground); }
+    .messageOutlineButton {
+      flex: 0 0 auto;
+      max-width: 160px;
+      min-height: 22px;
+      border: 1px solid var(--vscode-panel-border);
+      border-radius: 999px;
+      padding: 1px 7px;
+      color: var(--vscode-descriptionForeground);
+      background: var(--vscode-sideBar-background);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      font-size: 10px;
+    }
+    .messageOutlineButton:hover {
+      color: var(--vscode-foreground);
+      border-color: var(--vscode-focusBorder);
+      background: var(--vscode-toolbar-hoverBackground);
+    }
+    .structureFlash {
+      outline: 2px solid var(--vscode-focusBorder);
+      outline-offset: 2px;
     }
     .messageBody > :first-child { margin-top: 0; }
     .messageBody > :last-child { margin-bottom: 0; }
@@ -385,6 +463,97 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       border-radius: 3px;
       padding: 1px 3px;
     }
+    .tableBlock {
+      margin: 11px 0;
+      border: 1px solid var(--vscode-panel-border);
+      border-radius: 7px;
+      background: var(--vscode-editor-background);
+      overflow: hidden;
+    }
+    .tableToolbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      min-width: 0;
+      padding: 6px 8px;
+      border-bottom: 1px solid var(--vscode-panel-border);
+      color: var(--vscode-descriptionForeground);
+      background: var(--vscode-sideBar-background);
+      font-size: 10px;
+    }
+    .tableKind {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      font-weight: 650;
+      color: var(--vscode-foreground);
+    }
+    .tableActions { display: inline-flex; align-items: center; gap: 4px; flex: 0 0 auto; }
+    .copyTable,
+    .toggleTableRaw {
+      min-height: 20px;
+      border: 1px solid transparent;
+      border-radius: 4px;
+      padding: 1px 5px;
+      color: var(--vscode-textLink-foreground);
+      background: transparent;
+      font-size: 10px;
+      line-height: 1.2;
+    }
+    .copyTable:hover,
+    .toggleTableRaw:hover { background: var(--vscode-toolbar-hoverBackground); }
+    .tableScroll {
+      width: 100%;
+      overflow-x: auto;
+      overflow-y: hidden;
+    }
+    .tableBlock table {
+      min-width: 100%;
+      width: max-content;
+      border-collapse: collapse;
+      font-size: var(--chat-content-font-size);
+      line-height: 1.4;
+    }
+    .tableBlock th,
+    .tableBlock td {
+      max-width: 420px;
+      border-right: 1px solid var(--vscode-panel-border);
+      border-bottom: 1px solid var(--vscode-panel-border);
+      padding: 5px 7px;
+      text-align: left;
+      vertical-align: top;
+      white-space: nowrap;
+    }
+    .tableBlock th {
+      position: sticky;
+      top: 0;
+      z-index: 1;
+      color: var(--vscode-foreground);
+      background: var(--vscode-editorStickyScroll-background, var(--vscode-sideBar-background));
+      font-weight: 700;
+    }
+    .tableBlock td { color: var(--vscode-foreground); }
+    .tableBlock tr:last-child td { border-bottom: 0; }
+    .tableBlock th:last-child,
+    .tableBlock td:last-child { border-right: 0; }
+    .tableRaw {
+      display: none;
+      margin: 0;
+      max-height: 260px;
+      overflow: auto;
+      padding: 9px;
+      border-top: 1px solid var(--vscode-panel-border);
+      color: var(--vscode-foreground);
+      background: var(--vscode-textCodeBlock-background);
+      font-family: var(--vscode-editor-font-family);
+      font-size: var(--chat-code-font-size);
+      line-height: 1.45;
+      white-space: pre;
+    }
+    .tableBlock.raw .tableScroll { display: none; }
+    .tableBlock.raw .tableRaw { display: block; }
     .codeBlock {
       margin: 11px 0;
       border: 1px solid var(--vscode-panel-border);
@@ -414,6 +583,16 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
     .copyCode:hover { background: var(--vscode-toolbar-hoverBackground); }
     .codeBlock pre { margin: 0; padding: 10px; overflow: auto; white-space: pre; line-height: 1.45; }
     .codeBlock code { font-family: var(--vscode-editor-font-family); font-size: var(--chat-code-font-size); }
+    .syntaxKeyword { color: var(--vscode-symbolIcon-keywordForeground, #c586c0); }
+    .syntaxString { color: var(--vscode-symbolIcon-stringForeground, #ce9178); }
+    .syntaxComment { color: var(--vscode-descriptionForeground); font-style: italic; }
+    .syntaxNumber { color: var(--vscode-symbolIcon-numberForeground, #b5cea8); }
+    .syntaxFunction { color: var(--vscode-symbolIcon-functionForeground, #dcdcaa); }
+    .syntaxType { color: var(--vscode-symbolIcon-classForeground, #4ec9b0); }
+    .syntaxProperty { color: var(--vscode-symbolIcon-propertyForeground, #9cdcfe); }
+    .syntaxInserted { color: var(--vscode-gitDecoration-addedResourceForeground, #73c991); }
+    .syntaxDeleted { color: var(--vscode-gitDecoration-deletedResourceForeground, #f48771); }
+    .syntaxHunk { color: var(--vscode-charts-blue, #4da3ff); }
     .toolCard {
       margin-top: 8px;
       border: 1px solid var(--vscode-panel-border);
@@ -456,48 +635,168 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       padding: 5px 6px 6px;
       background: var(--vscode-sideBar-background);
     }
-    .composerCollapseToggle {
-      width: 100%;
+    .composerStatusBar {
+      position: relative;
+      display: flex;
+      align-items: center;
+      gap: 5px;
       min-width: 0;
       min-height: 28px;
-      display: grid;
-      grid-template-columns: 18px auto minmax(0, 1fr);
+      overflow-x: auto;
+      overflow-y: hidden;
+      scrollbar-width: none;
+    }
+    .composerStatusBar::-webkit-scrollbar { display: none; }
+    .composerStatusToggle {
+      flex: 0 0 auto;
+      min-width: 88px;
+      height: 28px;
+      display: inline-flex;
       align-items: center;
-      gap: 7px;
-      border: 1px solid var(--vscode-panel-border);
+      justify-content: center;
+      gap: 6px;
+      border: 1px solid var(--vscode-focusBorder, rgba(77, 163, 255, 0.65));
       border-radius: 7px;
-      padding: 3px 8px;
-      color: var(--vscode-foreground);
-      background: var(--vscode-editor-background);
-      text-align: left;
+      padding: 0 9px;
+      color: var(--vscode-button-foreground);
+      background: var(--vscode-button-background);
       font-size: 10px;
-      line-height: 1.25;
+      font-weight: 700;
+      line-height: 1;
+      box-shadow: 0 0 0 1px rgba(77, 163, 255, 0.16) inset;
     }
-    .composerCollapseToggle:hover {
-      border-color: var(--vscode-focusBorder);
-      background: var(--vscode-toolbar-hoverBackground);
+    .composerStatusToggle:hover {
+      background: var(--vscode-button-hoverBackground);
+      box-shadow: 0 0 0 1px rgba(77, 163, 255, 0.32) inset;
     }
-    .composerChevron {
-      width: 0;
-      height: 0;
-      border-left: 7px solid transparent;
-      border-right: 7px solid transparent;
-      border-top: 9px solid currentColor;
-      justify-self: center;
-      transition: transform 120ms ease;
+    .composerToggleIcon {
+      position: relative;
+      width: 12px;
+      height: 12px;
+      flex: 0 0 auto;
     }
-    .composerWrap.collapsed .composerChevron { transform: rotate(-90deg); }
-    .composerCollapseLabel {
-      font-weight: 650;
-      white-space: nowrap;
+    .composerToggleIcon::before {
+      content: "";
+      position: absolute;
+      left: 1px;
+      right: 1px;
+      top: 2px;
+      border-top: 2px solid currentColor;
+      opacity: 0.9;
     }
-    .composerCollapseSummary {
+    .composerToggleIcon::after {
+      content: "";
+      position: absolute;
+      left: 3px;
+      top: 4px;
+      width: 6px;
+      height: 6px;
+      border-right: 2px solid currentColor;
+      border-bottom: 2px solid currentColor;
+      transform: rotate(45deg);
+      transition: transform 120ms ease, top 120ms ease;
+    }
+    .composerWrap.collapsed .composerToggleIcon::after {
+      top: 2px;
+      transform: rotate(225deg);
+    }
+    .composerToggleLabel {
       min-width: 0;
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
-      color: var(--vscode-descriptionForeground);
     }
+    .composerToggleShort { display: none; }
+    .composerStatusPill {
+      flex: 0 0 auto;
+      min-width: 0;
+      height: 24px;
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      border: 1px solid var(--vscode-panel-border);
+      border-radius: 6px;
+      padding: 0 8px;
+      color: var(--vscode-descriptionForeground);
+      background: var(--vscode-editor-background);
+      font-weight: 650;
+      font-size: 10px;
+      line-height: 22px;
+      white-space: nowrap;
+    }
+    .composerStatusPill:hover,
+    .composerStatusPill.open {
+      background: var(--vscode-toolbar-hoverBackground);
+      border-color: var(--vscode-focusBorder);
+    }
+    .composerStatusPill .pillText {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .composerStatusPill.panel { color: var(--vscode-foreground); }
+    .composerStatusPill.context { color: var(--vscode-charts-blue, #4da3ff); border-color: rgba(77, 163, 255, 0.52); background: rgba(77, 163, 255, 0.08); }
+    .composerStatusPill.index.ready { color: var(--vscode-testing-iconPassed, #73c991); border-color: rgba(115, 201, 145, 0.56); background: rgba(115, 201, 145, 0.08); }
+    .composerStatusPill.index.indexing,
+    .composerStatusPill.index.info { color: var(--vscode-charts-blue, #4da3ff); border-color: rgba(77, 163, 255, 0.52); background: rgba(77, 163, 255, 0.08); }
+    .composerStatusPill.index.warning,
+    .composerStatusPill.guard.warning,
+    .composerStatusPill.usage.warning { color: var(--vscode-editorWarning-foreground, #cca700); border-color: rgba(204, 167, 0, 0.62); background: rgba(204, 167, 0, 0.08); }
+    .composerStatusPill.index.error,
+    .composerStatusPill.usage.error { color: var(--vscode-errorForeground, #f48771); border-color: rgba(244, 135, 113, 0.62); background: rgba(244, 135, 113, 0.08); }
+    .composerStatusPill.guard.ok { color: var(--vscode-testing-iconPassed, #73c991); border-color: rgba(115, 201, 145, 0.56); background: rgba(115, 201, 145, 0.08); }
+    .composerStatusPill.guard.off { color: var(--vscode-descriptionForeground); }
+    .composerStatusPill.usage.normal,
+    .composerStatusPill.usage.pending { color: var(--vscode-charts-purple, #b180d7); border-color: rgba(177, 128, 215, 0.56); background: rgba(177, 128, 215, 0.08); }
+    .composerStatusPopover {
+      display: none;
+      position: absolute;
+      left: 6px;
+      right: 6px;
+      bottom: calc(100% + 6px);
+      z-index: 70;
+      max-height: min(240px, calc(100vh - 92px));
+      overflow: auto;
+      border: 1px solid var(--vscode-widget-border, var(--vscode-panel-border));
+      border-radius: 7px;
+      padding: 8px;
+      color: var(--vscode-foreground);
+      background: var(--vscode-dropdown-background);
+      box-shadow: 0 10px 28px rgba(0, 0, 0, 0.3);
+      font-size: 11px;
+      line-height: 1.35;
+    }
+    .composerStatusPopover.open { display: grid; gap: 7px; }
+    .statusPopoverHeader { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-weight: 700; }
+    .statusPopoverMeta { color: var(--vscode-descriptionForeground); overflow-wrap: anywhere; }
+    .statusPopoverRows { display: grid; gap: 5px; }
+    .statusPopoverRow {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      min-width: 0;
+      padding: 4px 6px;
+      border: 1px solid var(--vscode-panel-border);
+      border-radius: 6px;
+      background: var(--vscode-editor-background);
+    }
+    .statusPopoverLabel { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .statusPopoverActions { display: flex; align-items: center; gap: 5px; flex-wrap: wrap; }
+    .statusActionButton,
+    .contextRemoveButton {
+      min-height: 22px;
+      border-radius: 5px;
+      padding: 2px 7px;
+      color: var(--vscode-button-secondaryForeground);
+      background: var(--vscode-button-secondaryBackground);
+      font-size: 10px;
+      line-height: 1.2;
+    }
+    .statusActionButton:hover,
+    .contextRemoveButton:hover { background: var(--vscode-button-secondaryHoverBackground, var(--vscode-toolbar-hoverBackground)); }
+    .statusActionButton.primary { color: var(--vscode-button-foreground); background: var(--vscode-button-background); }
+    .statusActionButton.primary:hover { background: var(--vscode-button-hoverBackground); }
     .composerWrap.collapsed .composerPanel { display: none; }
     .composerPanel { display: grid; gap: 4px; min-width: 0; }
     .composerPanel .secondary {
@@ -823,14 +1122,16 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       padding: 0 5px 5px;
     }
     .send {
-      min-width: 30px;
+      min-width: 44px;
       height: 24px;
       border-radius: 5px;
       padding: 0 8px;
       color: var(--vscode-button-foreground);
       background: var(--vscode-button-background);
+      border: 1px solid var(--vscode-focusBorder, transparent);
       font-weight: 700;
       font-size: 10px;
+      box-shadow: 0 0 0 1px rgba(77, 163, 255, 0.18) inset;
     }
     .send:hover { background: var(--vscode-button-hoverBackground); }
     .composerHint {
@@ -969,6 +1270,28 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       background: var(--vscode-editor-background);
     }
     .toggles input { margin: 0; }
+    .composerActions .secondary {
+      border: 1px solid var(--vscode-panel-border);
+      transition: border-color 120ms ease, background 120ms ease;
+    }
+    .composerActions .secondary:hover {
+      border-color: var(--vscode-focusBorder);
+      background: var(--vscode-button-secondaryHoverBackground, var(--vscode-toolbar-hoverBackground));
+    }
+    .exportButton {
+      color: var(--vscode-charts-purple, #b180d7);
+      border-color: rgba(177, 128, 215, 0.56);
+      background: rgba(177, 128, 215, 0.08);
+    }
+    .attachButton {
+      color: var(--vscode-charts-blue, #4da3ff);
+      border-color: rgba(77, 163, 255, 0.42);
+      background: rgba(77, 163, 255, 0.06);
+    }
+    .refreshButton {
+      color: var(--vscode-descriptionForeground);
+      background: var(--vscode-button-secondaryBackground);
+    }
     .notice { min-height: 12px; color: var(--vscode-descriptionForeground); font-size: 10px; overflow-wrap: anywhere; }
     @media (max-width: 479px) {
       .topbar { gap: 6px; padding: 7px; }
@@ -984,6 +1307,11 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       }
       .settingsActions { justify-content: flex-start; }
     }
+    @media (max-width: 360px) {
+      .composerStatusToggle { min-width: 62px; padding-inline: 7px; }
+      .composerToggleFull { display: none; }
+      .composerToggleShort { display: inline; }
+    }
     @media (max-width: 300px) {
       .topbar { gap: 5px; padding: 6px; }
       .mark { width: 22px; height: 22px; }
@@ -991,7 +1319,7 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       .primary, .secondary { min-height: 24px; padding-inline: 6px; }
       .composerWrap { padding: 4px; }
       .composerHint { display: none; }
-      .send { min-width: 26px; padding: 0 6px; }
+      .send { min-width: 40px; padding: 0 6px; }
       .modelTrigger { height: 24px; }
     }
     @media (min-width: 760px) {
@@ -1006,6 +1334,27 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       .dots span:nth-child(3) { animation-delay: 260ms; }
       @keyframes messageIn { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: translateY(0); } }
       @keyframes pulse { 0%, 80%, 100% { opacity: 0.35; transform: translateY(0); } 40% { opacity: 1; transform: translateY(-2px); } }
+    }
+    @media (forced-colors: active) {
+      .messageAction,
+      .messageOutlineButton,
+      .tableBlock,
+      .tableBlock th,
+      .tableBlock td,
+      .copyTable,
+      .toggleTableRaw,
+      .composerStatusPill,
+      .statusActionButton,
+      .contextRemoveButton {
+        border-color: CanvasText;
+        forced-color-adjust: auto;
+      }
+      .messageAction:hover,
+      .messageOutlineButton:hover,
+      .copyTable:hover,
+      .toggleTableRaw:hover {
+        outline: 1px solid Highlight;
+      }
     }
   </style>
 </head>
@@ -1064,17 +1413,23 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
           <div class="empty">Ask about your code. Type @ to attach workspace files as context.</div>
         </main>
         <footer class="composerWrap">
-          <button id="composerCollapseToggle" class="composerCollapseToggle" type="button" aria-expanded="true" aria-controls="composerPanel" title="Collapse input and context panel">
-            <span class="composerChevron" aria-hidden="true"></span>
-            <span id="composerCollapseLabel" class="composerCollapseLabel">Hide panel</span>
-            <span id="composerCollapseSummary" class="composerCollapseSummary">Context 0 | Off | Guard ok</span>
-          </button>
+          <div id="composerStatusBar" class="composerStatusBar">
+            <button id="composerStatusToggle" class="composerStatusToggle" type="button" aria-expanded="true" aria-controls="composerPanel" title="Hide input panel">
+              <span class="composerToggleIcon" aria-hidden="true"></span>
+              <span class="composerToggleLabel">
+                <span id="composerToggleFull" class="composerToggleFull">Hide input</span>
+                <span id="composerToggleShort" class="composerToggleShort">Hide</span>
+              </span>
+            </button>
+            <button id="panelStatusPill" class="composerStatusPill panel" type="button" title="Collapse input panel"><span class="pillText">Panel</span></button>
+            <button id="contextStatusPill" class="composerStatusPill context" type="button" title="Show context details"><span class="pillText">Ctx 0</span></button>
+            <button id="indexStatusPill" class="composerStatusPill index info" type="button" title="Show index details"><span class="pillText">Off</span></button>
+            <button id="guardStatusPill" class="composerStatusPill guard ok" type="button" title="Show guard details"><span class="pillText">Guard ok</span></button>
+            <button id="usageStatusPill" class="composerStatusPill usage pending" type="button" title="Show usage details"><span class="pillText">Usage</span></button>
+          </div>
+          <div id="composerStatusPopover" class="composerStatusPopover" aria-hidden="true"></div>
           <div id="composerPanel" class="composerPanel">
-            <div id="guard" class="guard"></div>
-            <div id="usageMeter" class="usageMeter"></div>
-            <div id="codeGraph" class="codeGraph"></div>
             <div id="codeIntelligence" class="codeIntel"></div>
-            <div id="chips" class="chips"></div>
             <select id="modelSelect" class="modelSelectHidden" title="Model"></select>
             <div class="composer">
               <div id="suggestions" class="suggestions"></div>
@@ -1085,7 +1440,7 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
                 <button id="modelTrigger" class="modelTrigger" type="button" title="Model" aria-haspopup="listbox" aria-expanded="false" aria-controls="modelMenu">Model</button>
                 <button id="agentTrigger" class="modelTrigger agentTrigger" type="button" title="Agent" aria-haspopup="listbox" aria-expanded="false" aria-controls="agentMenu">Agent</button>
                 <div id="composerHint" class="composerHint">@ files, Ctrl+Enter send</div>
-                <button id="send" class="send" title="Send">></button>
+                <button id="send" class="send" title="Send">Send</button>
               </div>
             </div>
             <div class="composerActions">
@@ -1096,9 +1451,9 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
                 <label><input id="diff" type="checkbox"> Git diff</label>
               </div>
               <div class="row">
-                <button id="exportMarkdown" class="secondary" title="Export current chat to Markdown">Export</button>
-                <button id="attach" class="secondary" title="Attach file as persistent context">Attach</button>
-                <button id="refreshModels" class="secondary" title="Refresh models">Refresh</button>
+                <button id="exportMarkdown" class="secondary exportButton" title="Export current chat to Markdown">Export</button>
+                <button id="attach" class="secondary attachButton" title="Attach file as persistent context">Attach</button>
+                <button id="refreshModels" class="secondary refreshButton" title="Refresh models">Refresh</button>
               </div>
             </div>
             <div id="manualModelRow" class="manualModel">
@@ -1134,8 +1489,12 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
     let modelMenuOpen = false;
     let agentMenuOpen = false;
     let composerCollapsed = false;
+    let composerStatusPopover = "";
     let codeIntelligenceVisible = false;
     let selectedStateMachineId = "";
+    const collapsedMessages = new Set();
+    const expandedLongMessages = new Set();
+    const messageJumpIndex = new Map();
 
     el("server").textContent = "UI ready";
     el("connectionDetail").className = "detail";
@@ -1180,24 +1539,36 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
     el("refresh").addEventListener("click", () => vscode.postMessage({ type: "refresh" }));
     el("openOutput").addEventListener("click", () => vscode.postMessage({ type: "openOutput" }));
     el("newSession").addEventListener("click", () => vscode.postMessage({ type: "newSession" }));
-    el("composerCollapseToggle").addEventListener("click", toggleComposerPanel);
+    el("composerStatusToggle").addEventListener("click", toggleComposerPanel);
+    el("panelStatusPill").addEventListener("click", toggleComposerPanel);
+    el("contextStatusPill").addEventListener("click", (event) => toggleComposerStatusPopover(event, "context"));
+    el("indexStatusPill").addEventListener("click", (event) => toggleComposerStatusPopover(event, "index"));
+    el("guardStatusPill").addEventListener("click", (event) => toggleComposerStatusPopover(event, "guard"));
+    el("usageStatusPill").addEventListener("click", (event) => toggleComposerStatusPopover(event, "usage"));
+    el("composerStatusPopover").addEventListener("click", onComposerStatusPopoverClick);
     el("refreshModels").addEventListener("click", () => vscode.postMessage({ type: "refreshModels" }));
     el("modelSelect").addEventListener("change", onModelSelect);
     el("modelTrigger").addEventListener("click", (event) => {
       event.stopPropagation();
       toggleModelMenu();
     });
+    el("modelTrigger").addEventListener("keydown", (event) => onPopupMenuKeydown(event, "model"));
     el("agentTrigger").addEventListener("click", (event) => {
       event.stopPropagation();
       toggleAgentMenu();
     });
+    el("agentTrigger").addEventListener("keydown", (event) => onPopupMenuKeydown(event, "agent"));
     el("modelMenu").addEventListener("click", (event) => event.stopPropagation());
     el("agentMenu").addEventListener("click", (event) => event.stopPropagation());
+    el("modelMenu").addEventListener("keydown", (event) => onPopupMenuKeydown(event, "model"));
+    el("agentMenu").addEventListener("keydown", (event) => onPopupMenuKeydown(event, "agent"));
     window.addEventListener("click", () => {
       const hadModelMenu = modelMenuOpen;
       const hadAgentMenu = agentMenuOpen;
+      const hadStatusPopover = Boolean(composerStatusPopover);
       modelMenuOpen = false;
       agentMenuOpen = false;
+      composerStatusPopover = "";
       if (hadModelMenu) {
         renderModelMenu();
         renderModelTrigger();
@@ -1206,6 +1577,27 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
         renderAgentMenu();
         renderAgentTrigger();
       }
+      if (hadStatusPopover) renderComposerStatusBar();
+    });
+    window.addEventListener("keydown", (event) => {
+      if (event.key !== "Escape") return;
+      const hadPopup = modelMenuOpen || agentMenuOpen || Boolean(composerStatusPopover) || el("suggestions").classList.contains("open");
+      if (!hadPopup) return;
+      event.preventDefault();
+      modelMenuOpen = false;
+      agentMenuOpen = false;
+      composerStatusPopover = "";
+      mentionResults = [];
+      mentionStatus = "";
+      mentionError = "";
+      mentionTruncated = false;
+      mentionSearched = false;
+      renderModelMenu();
+      renderModelTrigger();
+      renderAgentMenu();
+      renderAgentTrigger();
+      renderSuggestions();
+      renderComposerStatusBar();
     });
     el("saveManualModel").addEventListener("click", saveManualModel);
     el("manualModel").addEventListener("keydown", (event) => {
@@ -1214,7 +1606,6 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
         saveManualModel();
       }
     });
-    el("codeGraph").addEventListener("click", onCodeGraphAction);
     el("codeIntelligence").addEventListener("click", onCodeIntelligenceAction);
     el("exportMarkdown").addEventListener("click", () => vscode.postMessage({ type: "exportMarkdown", scope: "session" }));
     el("attach").addEventListener("click", () => vscode.postMessage({ type: "addFile" }));
@@ -1273,7 +1664,7 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       } else {
         requestAnimationFrame(() => el("input").focus());
       }
-      renderComposerCollapse();
+      renderComposerStatusBar();
     }
 
     function closeComposerPopups() {
@@ -1467,24 +1858,20 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       renderSettings();
       renderSessions();
       renderMessages();
-      renderGuard();
-      renderUsageMeter();
-      renderCodeGraph();
       renderCodeIntelligence();
       renderModelSelector();
       renderAgentSelector();
-      renderMentionChips();
       renderConnectionButtons();
       el("diag").checked = Boolean(state.defaults && state.defaults.includeDiagnostics);
       el("diff").checked = Boolean(state.defaults && state.defaults.includeGitDiff);
       renderSendButton();
-      renderComposerCollapse();
+      renderComposerStatusBar();
     }
 
     function renderSendButton() {
       const blockedByGuard = localOnlyAgentBlocked() && !looksLikeExportRequest(el("input").value);
       el("send").disabled = Boolean(state.sending || blockedByGuard);
-      el("send").textContent = state.sending ? "..." : ">";
+      el("send").textContent = state.sending ? "..." : "Send";
     }
 
     function renderShell() {
@@ -1526,29 +1913,163 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       el("test").textContent = testPending ? "Testing..." : "Test";
     }
 
-    function renderComposerCollapse() {
+    function renderComposerStatusBar() {
       const wrap = document.querySelector(".composerWrap");
       const panel = el("composerPanel");
-      const button = el("composerCollapseToggle");
-      const label = el("composerCollapseLabel");
-      const summary = composerCollapseSummaryText();
+      const toggle = el("composerStatusToggle");
+      const toggleFull = el("composerToggleFull");
+      const toggleShort = el("composerToggleShort");
+      const toggleLabel = composerCollapsed ? "Show input" : "Hide input";
+      const toggleShortLabel = composerCollapsed ? "Show" : "Hide";
       wrap.className = "composerWrap" + (composerCollapsed ? " collapsed" : "");
       panel.hidden = composerCollapsed;
-      button.setAttribute("aria-expanded", composerCollapsed ? "false" : "true");
-      button.setAttribute("aria-label", composerCollapsed ? "Expand input and context panel" : "Collapse input and context panel");
-      button.title = composerCollapsed ? "Expand input and context panel" : "Collapse input and context panel";
-      label.textContent = composerCollapsed ? "Show panel" : "Hide panel";
-      el("composerCollapseSummary").textContent = summary;
+      toggle.className = "composerStatusToggle" + (composerCollapsed ? " collapsed" : " expanded");
+      toggle.setAttribute("aria-expanded", composerCollapsed ? "false" : "true");
+      toggle.setAttribute("aria-label", composerCollapsed ? "Show input and context panel" : "Hide input and context panel");
+      toggle.title = composerCollapsed ? "Show input and context panel" : "Hide input and context panel";
+      toggleFull.textContent = toggleLabel;
+      toggleShort.textContent = toggleShortLabel;
+
+      updateStatusPill(el("panelStatusPill"), {
+        text: "Panel",
+        title: composerCollapsed ? "Input panel hidden. Click Show input to expand." : "Input panel visible. Click Hide input to collapse.",
+        className: "composerStatusPill panel" + (composerCollapsed ? " collapsed" : " open"),
+      });
+      const context = composerContextStatus();
+      updateStatusPill(el("contextStatusPill"), context);
+      const index = composerIndexStatus();
+      updateStatusPill(el("indexStatusPill"), index);
+      const guard = composerGuardStatus();
+      updateStatusPill(el("guardStatusPill"), guard);
+      const usage = composerUsageStatus();
+      updateStatusPill(el("usageStatusPill"), usage);
+      renderComposerStatusPopover();
     }
 
-    function composerCollapseSummaryText() {
-      return "Context " + composerContextCount() + " | " + composerIndexSummary() + " | " + composerGuardSummary();
+    function updateStatusPill(node, input) {
+      node.className = input.className + (composerStatusPopover === input.popover ? " open" : "");
+      node.title = input.title || input.text;
+      const label = node.querySelector(".pillText") || node;
+      label.textContent = input.text;
+    }
+
+    function toggleComposerStatusPopover(event, name) {
+      event.stopPropagation();
+      composerStatusPopover = composerStatusPopover === name ? "" : name;
+      closeComposerPopups();
+      renderComposerStatusBar();
+    }
+
+    function renderComposerStatusPopover() {
+      const root = el("composerStatusPopover");
+      root.textContent = "";
+      root.className = "composerStatusPopover" + (composerStatusPopover ? " open" : "");
+      root.setAttribute("aria-hidden", composerStatusPopover ? "false" : "true");
+      if (!composerStatusPopover) return;
+      if (composerStatusPopover === "context") renderContextStatusPopover(root);
+      if (composerStatusPopover === "index") renderIndexStatusPopover(root);
+      if (composerStatusPopover === "guard") renderGuardStatusPopover(root);
+      if (composerStatusPopover === "usage") renderUsageStatusPopover(root);
+    }
+
+    function composerContextStatus() {
+      const count = composerContextCount();
+      return {
+        text: "Ctx " + count,
+        title: contextStatusDetail(),
+        className: "composerStatusPill context",
+        popover: "context",
+      };
     }
 
     function composerContextCount() {
       let count = mentionedFiles.length + (state.contextFiles || []).length;
       if (el("file").checked && state.autoContext && state.autoContext.currentFile) count += 1;
       return count;
+    }
+
+    function composerIndexStatus() {
+      const graph = state.codeGraph || {};
+      const stateName = graph.state || "disabled";
+      const view = codeGraphStatusView(graph, stateName);
+      return {
+        text: view.shortLabel,
+        title: codeGraphTitle(graph, view.label),
+        className: "composerStatusPill index " + view.kind,
+        popover: "index",
+      };
+    }
+
+    function codeGraphStatusView(graph, stateName) {
+      let kind = "info";
+      let shortLabel = "Off";
+      if (state.codeGraphWaitDetail) {
+        return { kind: "indexing", shortLabel: "Indexing", label: "Waiting for code graph indexing" };
+      }
+      if (stateName === "ready") {
+        kind = "ready";
+        shortLabel = "Indexed";
+      } else if (stateName === "indexing" || stateName === "indexingFull" || stateName === "indexingIncremental" || stateName === "recovering" || stateName === "rescanScheduled") {
+        kind = "indexing";
+        shortLabel = "Indexing";
+      } else if (stateName === "paused") {
+        kind = "warning";
+        shortLabel = "Paused";
+      } else if (stateName === "stale" || stateName === "degraded") {
+        kind = "warning";
+        shortLabel = "Index stale";
+      } else if (stateName === "error") {
+        kind = "error";
+        shortLabel = "Index error";
+      }
+      return { kind, shortLabel, label: codeGraphView(graph, stateName).label };
+    }
+
+    function composerGuardStatus() {
+      const detail = guardStatusDetail();
+      if (state.localOnlyWarning || localOnlyAgentBlocked()) {
+        return {
+          text: "Guard warn",
+          title: detail,
+          className: "composerStatusPill guard warning",
+          popover: "guard",
+        };
+      }
+      if (state.localOnlyMode === false) {
+        return {
+          text: "Guard off",
+          title: detail,
+          className: "composerStatusPill guard off",
+          popover: "guard",
+        };
+      }
+      return {
+        text: "Guard ok",
+        title: detail,
+        className: "composerStatusPill guard ok",
+        popover: "guard",
+      };
+    }
+
+    function composerUsageStatus() {
+      if (state.connectionState !== "connected") {
+        return {
+          text: "Usage",
+          title: "Connect to load usage.",
+          className: "composerStatusPill usage pending",
+          popover: "usage",
+        };
+      }
+      const usage = state.usage || {};
+      const level = usage.level || "normal";
+      const status = usage.status || "pending";
+      const kind = level === "warning" || level === "error" ? level : status === "pending" ? "pending" : "normal";
+      return {
+        text: usage.summary || "Usage pending",
+        title: usage.detail || usage.summary || "Usage pending",
+        className: "composerStatusPill usage " + kind,
+        popover: "usage",
+      };
     }
 
     function composerIndexSummary() {
@@ -1568,6 +2089,125 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
     function composerGuardSummary() {
       if (state.localOnlyWarning || localOnlyAgentBlocked()) return "Guard warning";
       return state.localOnlyMode === false ? "Guard off" : "Guard ok";
+    }
+
+    function contextStatusDetail() {
+      const lines = [];
+      const auto = state.autoContext || {};
+      if (el("file").checked) {
+        lines.push(auto.currentFile ? "Auto: " + ((el("sel").checked && auto.hasSelection ? "Selection: " : "Current: ") + auto.currentFile) : "Auto: no current file captured");
+      }
+      for (const file of mentionedFiles) lines.push("@ " + file.label);
+      for (const label of state.contextFiles || []) lines.push("Attached: " + label);
+      return lines.length > 0 ? lines.join(" | ") : "No local context selected.";
+    }
+
+    function guardStatusDetail() {
+      if (!state.localOnlyMode) return "Local-only guard is off.";
+      const agent = state.selectedAgent ? " VS Code agent: " + state.selectedAgent + "." : " VS Code agent unavailable.";
+      const model = state.selectedModel ? " Model: " + state.selectedModel + "." : " Model: server default.";
+      const sent = (state.lastContextSummary || []).filter((item) => !item.skipped).map((item) => item.path).slice(0, 4);
+      const sentText = sent.length > 0 ? " Last sent: " + sent.join(", ") + "." : " Selected context will be sent with the next prompt.";
+      return state.localOnlyWarning || "Local-only guard active." + agent + model + sentText;
+    }
+
+    function renderContextStatusPopover(root) {
+      appendStatusPopoverHeader(root, "Context", contextStatusDetail());
+      const rows = statusRows();
+      const auto = state.autoContext || {};
+      if (el("file").checked) {
+        appendStatusRow(rows, auto.currentFile ? ((el("sel").checked && auto.hasSelection ? "Selection: " : "Current: ") + auto.currentFile) : "No current file captured");
+      }
+      for (const file of mentionedFiles) {
+        const row = appendStatusRow(rows, "@" + file.label);
+        const remove = document.createElement("button");
+        remove.className = "contextRemoveButton";
+        remove.type = "button";
+        remove.textContent = "Remove";
+        remove.title = "Remove " + file.label;
+        remove.setAttribute("data-remove-mention", file.uri);
+        row.appendChild(remove);
+      }
+      for (const label of state.contextFiles || []) appendStatusRow(rows, "Attached: " + label);
+      if (!rows.childElementCount) appendStatusRow(rows, "No local context selected.");
+      root.appendChild(rows);
+    }
+
+    function renderIndexStatusPopover(root) {
+      const graph = state.codeGraph || { state: "disabled", detail: "Local code graph is disabled.", indexedFiles: 0, indexedFunctions: 0, indexedMacros: 0, truncated: false };
+      const stateName = graph.state || "disabled";
+      let view = codeGraphView(graph, stateName);
+      if (state.codeGraphWaitDetail) {
+        view = {
+          ...view,
+          label: "Waiting for code graph indexing",
+          meta: state.codeGraphWaitDetail
+        };
+      }
+      appendStatusPopoverHeader(root, view.label, view.meta || codeGraphTitle(graph, view.label));
+      const actions = document.createElement("div");
+      actions.className = "statusPopoverActions";
+      for (const action of view.actions) {
+        const button = document.createElement("button");
+        button.className = "statusActionButton" + (action.message === "refreshCodeIntelligence" ? " primary" : "");
+        button.type = "button";
+        button.textContent = action.label;
+        button.title = action.title || action.label;
+        button.disabled = Boolean(action.disabled);
+        if (action.message) button.setAttribute("data-code-graph-action", action.message);
+        actions.appendChild(button);
+      }
+      if (actions.childElementCount) root.appendChild(actions);
+    }
+
+    function renderGuardStatusPopover(root) {
+      appendStatusPopoverHeader(root, composerGuardSummary(), guardStatusDetail());
+    }
+
+    function renderUsageStatusPopover(root) {
+      const usage = state.usage || {};
+      appendStatusPopoverHeader(root, usage.summary || "Usage pending", usage.detail || "Connect to load token usage.");
+    }
+
+    function appendStatusPopoverHeader(root, title, meta) {
+      const header = document.createElement("div");
+      header.className = "statusPopoverHeader";
+      const label = document.createElement("div");
+      label.textContent = title;
+      header.appendChild(label);
+      root.appendChild(header);
+      const detail = document.createElement("div");
+      detail.className = "statusPopoverMeta";
+      detail.textContent = meta || title;
+      root.appendChild(detail);
+    }
+
+    function statusRows() {
+      const rows = document.createElement("div");
+      rows.className = "statusPopoverRows";
+      return rows;
+    }
+
+    function appendStatusRow(root, text) {
+      const row = document.createElement("div");
+      row.className = "statusPopoverRow";
+      const label = document.createElement("span");
+      label.className = "statusPopoverLabel";
+      label.textContent = text;
+      row.appendChild(label);
+      root.appendChild(row);
+      return row;
+    }
+
+    function onComposerStatusPopoverClick(event) {
+      event.stopPropagation();
+      const target = event.target;
+      const remove = target.closest("[data-remove-mention]");
+      if (remove) {
+        removeMention(remove.getAttribute("data-remove-mention") || "");
+        return;
+      }
+      onCodeGraphAction(event);
     }
 
     function renderSessions() {
@@ -1630,7 +2270,7 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       } else if (messages.length === 0) {
         root.appendChild(emptyState());
       } else {
-        for (const item of messages) root.appendChild(messageNode(item));
+        for (let index = 0; index < messages.length; index += 1) root.appendChild(messageNode(messages[index], index));
       }
       if (state.sending && !hasAssistantContentAfterLastUser(messages)) root.appendChild(thinkingNode());
       if (stick) requestAnimationFrame(() => {
@@ -1689,14 +2329,16 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       return node;
     }
 
-    function messageNode(item) {
+    function messageNode(item, index) {
+      const messageKey = stableMessageKey(item, index);
+      const bodyId = "message-body-" + domSafeId(messageKey);
       const node = document.createElement("article");
       node.className = "timelineItem " + (item.role || "message");
       const avatar = document.createElement("div");
       avatar.className = "avatar";
       avatar.textContent = avatarText(item.role);
       const card = document.createElement("div");
-      card.className = "messageCard";
+      card.setAttribute("data-message-key", messageKey);
       const meta = document.createElement("div");
       meta.className = "messageMeta";
       const role = document.createElement("span");
@@ -1713,15 +2355,179 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
         usage.title = item.usage.detail || item.usage.summary;
         stats.appendChild(usage);
       }
-      stats.appendChild(time);
-      meta.append(role, stats);
       const body = document.createElement("div");
       body.className = "messageBody";
+      body.id = bodyId;
       if (item.text) renderMarkdownInto(body, item.text);
       renderPartCards(body, item);
-      card.append(meta, body);
+      const structureTargets = messageStructureTargets(body);
+      const isLarge = isLargeMessage(item, body, structureTargets);
+      const isCollapsed = collapsedMessages.has(messageKey);
+      const isExpandedLong = expandedLongMessages.has(messageKey);
+      card.className = "messageCard"
+        + (isCollapsed ? " messageCollapsed" : "")
+        + (isLarge ? " longAnswer" : "")
+        + (isLarge && isExpandedLong ? " longExpanded" : "");
+      const actions = messageActions(item, messageKey, bodyId, {
+        hasStructureTargets: structureTargets.length > 0,
+        isCollapsed,
+        isLarge,
+        isExpandedLong
+      });
+      if (actions.childElementCount) stats.appendChild(actions);
+      stats.appendChild(time);
+      meta.append(role, stats);
+      card.appendChild(meta);
+      const outline = messageOutline(body, messageKey);
+      if (outline) card.appendChild(outline);
+      card.appendChild(body);
+      if (isLarge) {
+        const hint = document.createElement("div");
+        hint.className = "messageLongHint";
+        hint.textContent = "Long answer limited for performance. Use Full to expand.";
+        card.appendChild(hint);
+      }
       node.append(avatar, card);
       return node;
+    }
+
+    function stableMessageKey(item, index) {
+      return String(item.id || ((item.role || "message") + "-" + (item.timeCreated || index) + "-" + index));
+    }
+
+    function domSafeId(value) {
+      return String(value || "message").replace(/[^A-Za-z0-9_-]/g, "-").slice(0, 80) || "message";
+    }
+
+    function messageActions(item, messageKey, bodyId, options) {
+      const actions = document.createElement("span");
+      actions.className = "messageActions";
+      if (item.text) {
+        actions.appendChild(messageActionButton("Copy", "Copy answer text", "copyAnswer", (button) => copyTextWithFeedback(markdownToPlainText(item.text), button, "Copied answer.")));
+        actions.appendChild(messageActionButton("MD", "Copy answer as Markdown", "copyMarkdown", (button) => copyTextWithFeedback(item.text, button, "Copied Markdown.")));
+      }
+      if (options.hasStructureTargets) {
+        actions.appendChild(messageActionButton("Jump", "Jump to next code or table block", "jumpStructure", () => scrollToNextMessageStructure(messageKey)));
+      }
+      if (options.isLarge) {
+        const label = options.isExpandedLong ? "Limit" : "Full";
+        const title = options.isExpandedLong ? "Restore large answer limit" : "Expand full long answer";
+        const expandLong = messageActionButton(label, title, "expandLong", () => toggleLongMessage(messageKey));
+        expandLong.setAttribute("aria-pressed", options.isExpandedLong ? "true" : "false");
+        actions.appendChild(expandLong);
+      }
+      const collapse = messageActionButton(options.isCollapsed ? "Expand" : "Collapse", options.isCollapsed ? "Expand answer" : "Collapse answer", "collapseMessage", () => toggleMessageCollapse(messageKey));
+      collapse.setAttribute("aria-expanded", options.isCollapsed ? "false" : "true");
+      collapse.setAttribute("aria-controls", bodyId);
+      actions.appendChild(collapse);
+      return actions;
+    }
+
+    function messageActionButton(label, title, className, onClick) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "messageAction " + className;
+      button.textContent = label;
+      button.title = title;
+      button.setAttribute("aria-label", title);
+      button.addEventListener("click", (event) => {
+        event.stopPropagation();
+        onClick(button);
+      });
+      return button;
+    }
+
+    function toggleMessageCollapse(messageKey) {
+      if (collapsedMessages.has(messageKey)) collapsedMessages.delete(messageKey);
+      else collapsedMessages.add(messageKey);
+      renderMessages();
+    }
+
+    function toggleLongMessage(messageKey) {
+      if (expandedLongMessages.has(messageKey)) expandedLongMessages.delete(messageKey);
+      else expandedLongMessages.add(messageKey);
+      renderMessages();
+    }
+
+    function messageStructureTargets(root) {
+      return Array.from(root.querySelectorAll(".codeBlock, .tableBlock"));
+    }
+
+    function isLargeMessage(item, body, structureTargets) {
+      if (item.role !== "assistant" && item.role !== "tool") return false;
+      const textLength = String(item.text || "").length;
+      const blockCount = body.children.length;
+      return textLength > 5200 || blockCount > 18 || structureTargets.length > 5;
+    }
+
+    function messageOutline(body, messageKey) {
+      const headings = Array.from(body.querySelectorAll(".mdHeading"));
+      const codeBlocks = Array.from(body.querySelectorAll(".codeBlock"));
+      const tables = Array.from(body.querySelectorAll(".tableBlock"));
+      const totalStructures = headings.length + codeBlocks.length + tables.length;
+      if (totalStructures < 3 && headings.length < 2 && (codeBlocks.length + tables.length) < 2) return undefined;
+      const outline = document.createElement("nav");
+      outline.className = "messageOutline";
+      outline.setAttribute("aria-label", "Answer outline");
+      const summary = document.createElement("span");
+      summary.className = "messageOutlineSummary";
+      summary.textContent = headings.length + " sections / " + codeBlocks.length + " code / " + tables.length + " table";
+      outline.appendChild(summary);
+      const targets = [];
+      for (const heading of headings) targets.push({ label: compactLabel(heading.textContent || "Section"), target: heading });
+      for (let index = 0; index < codeBlocks.length; index += 1) targets.push({ label: "Code " + (index + 1), target: codeBlocks[index] });
+      for (let index = 0; index < tables.length; index += 1) targets.push({ label: "Table " + (index + 1), target: tables[index] });
+      for (const item of targets.slice(0, 8)) {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "messageOutlineButton";
+        button.textContent = item.label;
+        button.title = "Jump to " + item.label;
+        button.addEventListener("click", () => {
+          messageJumpIndex.set(messageKey, 0);
+          scrollToMessageTarget(item.target);
+        });
+        outline.appendChild(button);
+      }
+      return outline;
+    }
+
+    function compactLabel(value) {
+      const text = String(value || "").replace(/\\s+/g, " ").trim();
+      return text.length > 28 ? text.slice(0, 27) + "..." : text || "Section";
+    }
+
+    function scrollToNextMessageStructure(messageKey) {
+      const body = el("message-body-" + domSafeId(messageKey));
+      if (!body) return;
+      const targets = messageStructureTargets(body);
+      if (!targets.length) {
+        setNotice("No code or table block in this message.");
+        return;
+      }
+      const next = (messageJumpIndex.get(messageKey) || 0) % targets.length;
+      messageJumpIndex.set(messageKey, next + 1);
+      scrollToMessageTarget(targets[next]);
+    }
+
+    function scrollToMessageTarget(target) {
+      target.scrollIntoView({ block: "nearest", inline: "nearest", behavior: "smooth" });
+      target.classList.add("structureFlash");
+      if (!target.hasAttribute("tabindex")) target.setAttribute("tabindex", "-1");
+      target.focus({ preventScroll: true });
+      window.setTimeout(() => target.classList.remove("structureFlash"), 900);
+    }
+
+    function markdownToPlainText(text) {
+      return String(text || "")
+        .replace(/^\\s*\`\`\`[^\\n]*\\n/gm, "")
+        .replace(/^\\s*\`\`\`\\s*$/gm, "")
+        .replace(new RegExp(String.fromCharCode(96) + "([^" + String.fromCharCode(96) + "]+)" + String.fromCharCode(96), "g"), "$1")
+        .replace(/\\*\\*([^*]+)\\*\\*/g, "$1")
+        .replace(/\\*([^*]+)\\*/g, "$1")
+        .replace(/^#{1,6}\\s+/gm, "")
+        .replace(/^>\\s?/gm, "")
+        .trim();
     }
 
     function thinkingNode() {
@@ -1839,7 +2645,8 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
         flushList();
         flushQuote();
       };
-      for (const rawLine of lines) {
+      for (let index = 0; index < lines.length; index += 1) {
+        const rawLine = lines[index];
         const line = rawLine.trim();
         if (!line) {
           flushBlocks();
@@ -1868,7 +2675,7 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
           root.appendChild(heading);
           continue;
         }
-        const unordered = line.match(/^[-*]\\s+(.+)$/);
+        const unordered = line.match(/^[-*+]\\s+(.+)$/);
         const ordered = line.match(/^\\d+[.)]\\s+(.+)$/);
         if (unordered || ordered) {
           flushParagraph();
@@ -1885,11 +2692,365 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
           list.appendChild(item);
           continue;
         }
+        const table = detectTableBlock(lines, index);
+        if (table) {
+          flushBlocks();
+          root.appendChild(tableBlock(table));
+          index = table.end - 1;
+          continue;
+        }
         flushList();
         flushQuote();
         paragraph.push(line);
       }
       flushBlocks();
+    }
+
+    function detectTableBlock(lines, start) {
+      return detectMarkdownTable(lines, start)
+        || detectDelimitedTable(lines, start, "\t", "tsv")
+        || detectDelimitedTable(lines, start, ",", "csv")
+        || detectKeyValueBlock(lines, start)
+        || detectPlainAlignedTable(lines, start);
+    }
+
+    function detectMarkdownTable(lines, start) {
+      if (start + 1 >= lines.length) return undefined;
+      const header = parseMarkdownTableRow(lines[start]);
+      const divider = parseMarkdownTableRow(lines[start + 1]);
+      if (header.length < 2 || divider.length !== header.length || !isMarkdownDividerRow(divider)) return undefined;
+      const rows = [header];
+      let end = start + 2;
+      while (end < lines.length && lines[end].trim()) {
+        const row = parseMarkdownTableRow(lines[end]);
+        if (row.length !== header.length) break;
+        rows.push(row);
+        end += 1;
+      }
+      if (rows.length < 2) return undefined;
+      return {
+        kind: "markdown",
+        rows,
+        hasHeader: true,
+        raw: lines.slice(start, end).join("\\n"),
+        end
+      };
+    }
+
+    function parseMarkdownTableRow(line) {
+      let value = String(line || "").trim();
+      if (value.indexOf("|") === -1) return [];
+      if (value.startsWith("|")) value = value.slice(1);
+      if (value.endsWith("|")) value = value.slice(0, -1);
+      return splitMarkdownCells(value).map(cleanTableCell);
+    }
+
+    function splitMarkdownCells(value) {
+      const cells = [];
+      let current = "";
+      for (let index = 0; index < value.length; index += 1) {
+        const char = value[index];
+        if (char.charCodeAt(0) === 92 && value[index + 1] === "|") {
+          current += "|";
+          index += 1;
+          continue;
+        }
+        if (char === "|") {
+          cells.push(current);
+          current = "";
+          continue;
+        }
+        current += char;
+      }
+      cells.push(current);
+      return cells;
+    }
+
+    function isMarkdownDividerRow(cells) {
+      return cells.length >= 2 && cells.every((cell) => /^:?-{3,}:?$/.test(cell.replace(/\\s/g, "")));
+    }
+
+    function detectDelimitedTable(lines, start, delimiter, kind) {
+      const rows = [];
+      let end = start;
+      while (end < lines.length && lines[end].trim() && lines[end].indexOf(delimiter) !== -1) {
+        const row = parseDelimitedLine(lines[end], delimiter).map(cleanTableCell);
+        if (row.length < 2) break;
+        rows.push(row);
+        end += 1;
+      }
+      if (!validTableRows(rows)) return undefined;
+      if (looksLikeMarkdownListRows(rows) || looksLikeMarkdownLabelRows(rows)) return undefined;
+      if (kind === "csv" && !likelyHeaderRow(rows) && rows.length < 3) return undefined;
+      return {
+        kind,
+        rows,
+        hasHeader: likelyHeaderRow(rows),
+        raw: lines.slice(start, end).join("\\n"),
+        end
+      };
+    }
+
+    function parseDelimitedLine(line, delimiter) {
+      const cells = [];
+      let current = "";
+      let quoted = false;
+      const text = String(line || "");
+      for (let index = 0; index < text.length; index += 1) {
+        const char = text[index];
+        if (quoted) {
+          if (char === '"' && text[index + 1] === '"') {
+            current += '"';
+            index += 1;
+          } else if (char === '"') {
+            quoted = false;
+          } else {
+            current += char;
+          }
+          continue;
+        }
+        if (char === '"') {
+          quoted = true;
+          continue;
+        }
+        if (char === delimiter) {
+          cells.push(current);
+          current = "";
+          continue;
+        }
+        current += char;
+      }
+      cells.push(current);
+      return cells;
+    }
+
+    function detectKeyValueBlock(lines, start) {
+      const pairs = [];
+      let end = start;
+      while (end < lines.length && lines[end].trim()) {
+        const pair = parseKeyValueLine(lines[end]);
+        if (!pair) break;
+        pairs.push(pair);
+        end += 1;
+      }
+      if (pairs.length < 2) return undefined;
+      return {
+        kind: "keyValue",
+        rows: [["Key", "Value"]].concat(pairs),
+        hasHeader: true,
+        raw: lines.slice(start, end).join("\\n"),
+        end
+      };
+    }
+
+    function parseKeyValueLine(line) {
+      const match = String(line || "").trim().match(/^([^:=|]{1,56})\\s*[:=]\\s+(.+)$/);
+      if (!match) return undefined;
+      const key = cleanTableCell(match[1]);
+      const value = cleanTableCell(match[2]);
+      if (!key || !value || /^[-*#>]/.test(key) || key.split(/\\s+/).length > 8) return undefined;
+      return [key, value];
+    }
+
+    function detectPlainAlignedTable(lines, start) {
+      const rows = [];
+      let end = start;
+      while (end < lines.length && lines[end].trim() && /\\S\\s{2,}\\S/.test(lines[end])) {
+        const row = lines[end].trim().split(/\\s{2,}/).map(cleanTableCell);
+        if (row.length < 2) break;
+        rows.push(row);
+        end += 1;
+      }
+      if (!validTableRows(rows)) return undefined;
+      if (looksLikeMarkdownListRows(rows) || looksLikeMarkdownLabelRows(rows)) return undefined;
+      if (!likelyHeaderRow(rows) && rows.length < 3) return undefined;
+      return {
+        kind: "aligned",
+        rows,
+        hasHeader: likelyHeaderRow(rows),
+        raw: lines.slice(start, end).join("\\n"),
+        end
+      };
+    }
+
+    function validTableRows(rows) {
+      if (rows.length < 2) return false;
+      const width = rows[0].length;
+      if (width < 2 || width > 12) return false;
+      return rows.every((row) => row.length === width && row.some((cell) => cell.trim()));
+    }
+
+    function looksLikeMarkdownListRows(rows) {
+      return rows.some((row) => isMarkdownListMarkerCell(row[0]));
+    }
+
+    function isMarkdownListMarkerCell(value) {
+      return /^[-*+]$/.test(value) || /^\\d+[.)]$/.test(value);
+    }
+
+    function looksLikeMarkdownLabelRows(rows) {
+      return rows.length > 0 && rows.every((row) => isMarkdownLabelCellSafe(row[0]));
+    }
+
+    function isMarkdownLabelCellSafe(value) {
+      const text = String(value || "").trim();
+      const plain = text.replace(/^\\*\\*/, "").replace(/\\*\\*$/, "").trim();
+      const colon = String.fromCharCode(0xff1a);
+      return plain.length > 1 && plain.length <= 56 && (plain.endsWith(":") || plain.endsWith(colon));
+    }
+
+    function isMarkdownLabelCell(value) {
+      const text = String(value || "").trim();
+      const plain = text.replace(/^\\*\\*/, "").replace(/\\*\\*$/, "").trim();
+      return /^.{1,56}[:锛歖]$/.test(plain) || /^\\*\\*.{1,56}[:锛歖]\\*\\*$/.test(text);
+    }
+
+    function likelyHeaderRow(rows) {
+      if (rows.length < 2) return false;
+      const first = rows[0].join(" ");
+      const second = rows[1].join(" ");
+      return /[A-Za-z_\\u4e00-\\u9fff]/.test(first) && first !== second;
+    }
+
+    function cleanTableCell(value) {
+      return String(value || "").replace(/^"|"$/g, "").replace(/\\s+/g, " ").trim();
+    }
+
+    function tableBlock(tableData) {
+      const block = document.createElement("section");
+      block.className = "tableBlock " + tableData.kind;
+      block.setAttribute("role", "region");
+      block.setAttribute("aria-label", tableKindLabel(tableData));
+      block.setAttribute("data-table-kind", tableData.kind);
+      block.setAttribute("tabindex", "-1");
+
+      const toolbar = document.createElement("div");
+      toolbar.className = "tableToolbar";
+      const label = document.createElement("span");
+      label.className = "tableKind";
+      label.textContent = tableKindLabel(tableData) + " - " + tableData.rows.length + " rows";
+      const actions = document.createElement("span");
+      actions.className = "tableActions";
+      const copyMarkdown = tableButton("Copy Markdown", "Copy table as Markdown", "copyTable copyTableMarkdown", () => copyTextWithFeedback(tableToMarkdown(tableData), copyMarkdown, "Copied table Markdown."));
+      const copyCsv = tableButton("Copy CSV", "Copy table as CSV", "copyTable copyTableCsv", () => copyTextWithFeedback(tableToCsv(tableData), copyCsv, "Copied table CSV."));
+      const raw = tableButton("Raw", "Show raw table text", "toggleTableRaw", () => {
+        const isRaw = block.classList.toggle("raw");
+        raw.textContent = isRaw ? "Table" : "Raw";
+        raw.title = isRaw ? "Show rendered table" : "Show raw table text";
+        raw.setAttribute("aria-label", raw.title);
+        raw.setAttribute("aria-pressed", isRaw ? "true" : "false");
+      });
+      raw.setAttribute("aria-pressed", "false");
+      actions.append(copyMarkdown, copyCsv, raw);
+      toolbar.append(label, actions);
+
+      const scroll = document.createElement("div");
+      scroll.className = "tableScroll";
+      const table = document.createElement("table");
+      table.setAttribute("aria-label", tableKindLabel(tableData));
+      renderTableRows(table, tableData);
+      scroll.appendChild(table);
+
+      const rawBlock = document.createElement("pre");
+      rawBlock.className = "tableRaw";
+      rawBlock.setAttribute("aria-label", "Raw table text");
+      rawBlock.textContent = tableData.raw || "";
+
+      block.append(toolbar, scroll, rawBlock);
+      return block;
+    }
+
+    function tableButton(label, title, className, onClick) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = className;
+      button.textContent = label;
+      button.title = title;
+      button.setAttribute("aria-label", title);
+      button.addEventListener("click", (event) => {
+        event.stopPropagation();
+        onClick();
+      });
+      return button;
+    }
+
+    function renderTableRows(table, tableData) {
+      const rows = normalizedRows(tableData.rows);
+      if (!rows.length) return;
+      let start = 0;
+      if (tableData.hasHeader) {
+        const thead = document.createElement("thead");
+        const tr = document.createElement("tr");
+        for (const cell of rows[0]) {
+          const th = document.createElement("th");
+          appendInlineMarkdown(th, cell);
+          tr.appendChild(th);
+        }
+        thead.appendChild(tr);
+        table.appendChild(thead);
+        start = 1;
+      }
+      const tbody = document.createElement("tbody");
+      for (let rowIndex = start; rowIndex < rows.length; rowIndex += 1) {
+        const tr = document.createElement("tr");
+        for (const cell of rows[rowIndex]) {
+          const td = document.createElement("td");
+          appendInlineMarkdown(td, cell);
+          tr.appendChild(td);
+        }
+        tbody.appendChild(tr);
+      }
+      table.appendChild(tbody);
+    }
+
+    function normalizedRows(rows) {
+      const width = rows.reduce((max, row) => Math.max(max, row.length), 0);
+      return rows.map((row) => {
+        const next = row.slice();
+        while (next.length < width) next.push("");
+        return next;
+      });
+    }
+
+    function tableKindLabel(tableData) {
+      if (tableData.kind === "markdown") return "Markdown table";
+      if (tableData.kind === "csv") return "CSV table";
+      if (tableData.kind === "tsv") return "TSV table";
+      if (tableData.kind === "keyValue") return "Key-value table";
+      return "Aligned table";
+    }
+
+    function tableToMarkdown(tableData) {
+      const rows = normalizedRows(tableData.rows);
+      if (!rows.length) return "";
+      const width = rows[0].length;
+      const header = tableData.hasHeader ? rows[0] : generatedHeaders(width);
+      const bodyRows = tableData.hasHeader ? rows.slice(1) : rows;
+      const lines = [];
+      lines.push("| " + header.map(escapeMarkdownTableCell).join(" | ") + " |");
+      lines.push("| " + header.map(() => "---").join(" | ") + " |");
+      for (const row of bodyRows) lines.push("| " + row.map(escapeMarkdownTableCell).join(" | ") + " |");
+      return lines.join("\\n");
+    }
+
+    function generatedHeaders(width) {
+      const headers = [];
+      for (let index = 0; index < width; index += 1) headers.push("Column " + (index + 1));
+      return headers;
+    }
+
+    function escapeMarkdownTableCell(value) {
+      return String(value || "").split("|").join(String.fromCharCode(92) + "|").replace(/\\r?\\n/g, " ").trim();
+    }
+
+    function tableToCsv(tableData) {
+      return normalizedRows(tableData.rows).map((row) => row.map(escapeCsvCell).join(",")).join("\\n");
+    }
+
+    function escapeCsvCell(value) {
+      const text = String(value || "");
+      if (/[",\\r\\n]/.test(text)) return '"' + text.replace(/"/g, '""') + '"';
+      return text;
     }
 
     function appendInlineMarkdown(root, text) {
@@ -1982,23 +3143,203 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       head.append(label, copy);
       const pre = document.createElement("pre");
       const code = document.createElement("code");
-      code.textContent = codeText;
+      appendHighlightedCode(code, codeText, language);
       pre.appendChild(code);
       block.append(head, pre);
       return block;
     }
 
-    async function copyCode(text, button) {
+    function appendHighlightedCode(root, codeText, language) {
+      const normalized = normalizeCodeLanguage(language);
+      if (!normalized) {
+        root.textContent = codeText;
+        return;
+      }
+      if (normalized === "diff") {
+        appendDiffHighlightedCode(root, codeText);
+        return;
+      }
+      const tokens = tokenizeCode(codeText, normalized);
+      for (const token of tokens) {
+        if (!token.type) {
+          root.appendChild(document.createTextNode(token.text));
+          continue;
+        }
+        const span = document.createElement("span");
+        span.className = "syntaxToken syntax" + token.type;
+        span.textContent = token.text;
+        root.appendChild(span);
+      }
+    }
+
+    function appendDiffHighlightedCode(root, codeText) {
+      const lines = String(codeText || "").split(/(\\n)/);
+      for (const line of lines) {
+        if (line === "\\n") {
+          root.appendChild(document.createTextNode(line));
+          continue;
+        }
+        const span = document.createElement("span");
+        if (/^@@/.test(line)) span.className = "syntaxToken syntaxHunk";
+        else if (/^\\+/.test(line)) span.className = "syntaxToken syntaxInserted";
+        else if (/^-/.test(line)) span.className = "syntaxToken syntaxDeleted";
+        span.textContent = line;
+        root.appendChild(span.className ? span : document.createTextNode(line));
+      }
+    }
+
+    function tokenizeCode(codeText, language) {
+      const text = String(codeText || "");
+      const tokens = [];
+      let index = 0;
+      while (index < text.length) {
+        const char = text[index];
+        const next = text[index + 1];
+        if (char === "/" && next === "/") {
+          const end = lineEnd(text, index);
+          pushToken(tokens, "Comment", text.slice(index, end));
+          index = end;
+          continue;
+        }
+        if (char === "/" && next === "*") {
+          const end = text.indexOf("*/", index + 2);
+          const stop = end === -1 ? text.length : end + 2;
+          pushToken(tokens, "Comment", text.slice(index, stop));
+          index = stop;
+          continue;
+        }
+        if ((language === "python" || language === "shell") && char === "#") {
+          const end = lineEnd(text, index);
+          pushToken(tokens, "Comment", text.slice(index, end));
+          index = end;
+          continue;
+        }
+        if (char === '"' || char === "'" || char === "\`") {
+          const end = stringEnd(text, index, char);
+          const type = language === "json" && nextJsonNonSpace(text, end) === ":" ? "Property" : "String";
+          pushToken(tokens, type, text.slice(index, end));
+          index = end;
+          continue;
+        }
+        if (/\\d/.test(char)) {
+          const match = text.slice(index).match(/^\\d+(?:\\.\\d+)?(?:[eE][+-]?\\d+)?/);
+          if (match) {
+            pushToken(tokens, "Number", match[0]);
+            index += match[0].length;
+            continue;
+          }
+        }
+        if (/[A-Za-z_$]/.test(char)) {
+          const match = text.slice(index).match(/^[A-Za-z_$][\\w$]*/);
+          if (match) {
+            const word = match[0];
+            const type = codeTokenType(word, text, index + word.length, language);
+            pushToken(tokens, type, word);
+            index += word.length;
+            continue;
+          }
+        }
+        pushToken(tokens, "", char);
+        index += 1;
+      }
+      return tokens;
+    }
+
+    function codeTokenType(word, text, end, language) {
+      const keywords = codeKeywords(language);
+      if (keywords.has(word)) return "Keyword";
+      if (codeTypes(language).has(word) || /^[A-Z][A-Za-z0-9_]*$/.test(word)) return "Type";
+      const next = nextJsonNonSpace(text, end);
+      if (next === "(") return "Function";
+      return "";
+    }
+
+    function normalizeCodeLanguage(language) {
+      const value = String(language || "").trim().toLowerCase().split(/\\s+/)[0];
+      if (!value) return "";
+      if (["ts", "tsx", "typescript"].includes(value)) return "typescript";
+      if (["js", "jsx", "javascript"].includes(value)) return "javascript";
+      if (["c", "h"].includes(value)) return "c";
+      if (["cpp", "c++", "cc", "cxx", "hpp", "hxx"].includes(value)) return "cpp";
+      if (["py", "python"].includes(value)) return "python";
+      if (["json"].includes(value)) return "json";
+      if (["diff", "patch"].includes(value)) return "diff";
+      if (["sh", "shell", "bash", "zsh", "powershell", "ps1"].includes(value)) return "shell";
+      return "";
+    }
+
+    function codeKeywords(language) {
+      const common = ["return", "if", "else", "for", "while", "do", "switch", "case", "break", "continue", "try", "catch", "finally", "throw", "new", "class", "struct", "enum", "const", "let", "var", "function", "async", "await", "import", "export", "from", "default", "extends", "implements", "public", "private", "protected", "static", "true", "false", "null", "undefined"];
+      const cLike = ["typedef", "sizeof", "volatile", "extern", "inline", "register", "union", "goto", "case", "default"];
+      const python = ["def", "class", "import", "from", "as", "with", "lambda", "yield", "None", "True", "False", "and", "or", "not", "in", "is", "elif", "except", "finally", "global", "nonlocal", "pass", "raise"];
+      const shell = ["if", "then", "else", "elif", "fi", "for", "while", "do", "done", "case", "esac", "function", "export", "local", "return", "echo"];
+      const json = ["true", "false", "null"];
+      if (language === "python") return new Set(python);
+      if (language === "shell") return new Set(shell);
+      if (language === "json") return new Set(json);
+      if (language === "c" || language === "cpp") return new Set(common.concat(cLike));
+      return new Set(common);
+    }
+
+    function codeTypes(language) {
+      const cTypes = ["void", "char", "short", "int", "long", "float", "double", "signed", "unsigned", "bool", "size_t", "uint8_t", "uint16_t", "uint32_t", "uint64_t", "int8_t", "int16_t", "int32_t", "int64_t"];
+      const tsTypes = ["string", "number", "boolean", "unknown", "never", "any", "void", "Promise", "Record", "Array", "ReadonlyArray"];
+      if (language === "c" || language === "cpp") return new Set(cTypes);
+      if (language === "typescript" || language === "javascript") return new Set(tsTypes);
+      return new Set([]);
+    }
+
+    function pushToken(tokens, type, text) {
+      if (!text) return;
+      const last = tokens[tokens.length - 1];
+      if (last && last.type === type) {
+        last.text += text;
+        return;
+      }
+      tokens.push({ type, text });
+    }
+
+    function lineEnd(text, start) {
+      const end = text.indexOf("\\n", start);
+      return end === -1 ? text.length : end;
+    }
+
+    function stringEnd(text, start, quote) {
+      let escaped = false;
+      for (let index = start + 1; index < text.length; index += 1) {
+        const char = text[index];
+        if (escaped) {
+          escaped = false;
+          continue;
+        }
+        if (char === "\\\\") {
+          escaped = true;
+          continue;
+        }
+        if (char === quote) return index + 1;
+        if (char === "\\n" && quote !== "\`") return index;
+      }
+      return text.length;
+    }
+
+    function nextJsonNonSpace(text, start) {
+      for (let index = start; index < text.length; index += 1) {
+        if (!/\\s/.test(text[index])) return text[index];
+      }
+      return "";
+    }
+
+    async function copyTextWithFeedback(text, button, successMessage) {
       const previousLabel = button ? button.textContent : "";
       try {
-        await navigator.clipboard.writeText(text);
+        await navigator.clipboard.writeText(String(text || ""));
         if (button) {
           button.textContent = "Copied";
           window.setTimeout(() => {
             button.textContent = previousLabel || "Copy";
           }, 1200);
         }
-        setNotice("Copied code.");
+        setNotice(successMessage || "Copied.");
       } catch {
         if (button) {
           button.textContent = "Failed";
@@ -2010,92 +3351,8 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       }
     }
 
-    function renderGuard() {
-      const guard = el("guard");
-      if (!state.localOnlyMode) {
-        guard.className = "guard";
-        guard.innerHTML = "";
-        return;
-      }
-      const agent = state.selectedAgent
-        ? " VS Code agent: " + state.selectedAgent + "."
-        : " VS Code agent unavailable.";
-      const model = state.selectedModel ? " Model: " + state.selectedModel + "." : " Model: server default.";
-      const sent = (state.lastContextSummary || []).filter((item) => !item.skipped).map((item) => item.path).slice(0, 4);
-      const sentText = sent.length > 0 ? " Last sent: " + sent.join(", ") + "." : " Shown chips are sent as local context.";
-      const detailText = state.localOnlyWarning || "Local-only guard active." + agent + model + sentText;
-      const summaryText = state.localOnlyWarning
-        ? "Agent guard warning"
-        : "Local guard - " + currentAgentLabel() + " - " + (sent.length > 0 ? sent.length + " file" + (sent.length === 1 ? "" : "s") : "context");
-      guard.className = "guard visible" + (state.localOnlyWarning ? " warning" : "");
-      guard.tabIndex = 0;
-      guard.title = detailText;
-      guard.innerHTML = "";
-      const summary = document.createElement("span");
-      summary.className = "guardSummary";
-      summary.textContent = summaryText;
-      const detail = document.createElement("span");
-      detail.className = "guardDetail";
-      detail.textContent = detailText;
-      guard.append(summary, detail);
-    }
-
-    function renderUsageMeter() {
-      const node = el("usageMeter");
-      if (state.connectionState !== "connected") {
-        node.className = "usageMeter";
-        node.textContent = "";
-        node.title = "";
-        return;
-      }
-      const usage = state.usage || {};
-      const summary = usage.summary || "Usage pending";
-      const detail = usage.detail || summary;
-      node.className = "usageMeter visible " + (usage.level || "normal") + " " + (usage.status || "pending");
-      node.textContent = summary;
-      node.title = detail;
-    }
-
-    function renderCodeGraph() {
-      const node = el("codeGraph");
-      const graph = state.codeGraph || { state: "disabled", detail: "Local code graph is disabled.", indexedFiles: 0, indexedFunctions: 0, indexedMacros: 0, truncated: false };
-      const stateName = graph.state || "disabled";
-      let view = codeGraphView(graph, stateName);
-      if (state.codeGraphWaitDetail) {
-        view = {
-          ...view,
-          label: "Waiting for code graph indexing",
-          meta: state.codeGraphWaitDetail
-        };
-      }
-      node.className = "codeGraph " + stateName;
-      node.title = codeGraphTitle(graph, view.label);
-      node.innerHTML = "";
-
-      const main = document.createElement("div");
-      main.className = "codeGraphMain";
-      const label = document.createElement("div");
-      label.className = "codeGraphLabel";
-      label.textContent = view.label;
-      const meta = document.createElement("div");
-      meta.className = "codeGraphMeta";
-      meta.textContent = view.meta;
-      main.append(label, meta);
-
-      const actions = document.createElement("div");
-      actions.className = "codeGraphActions";
-      for (const action of view.actions) {
-        const button = document.createElement("button");
-        button.className = "codeGraphButton";
-        button.type = "button";
-        button.textContent = action.label;
-        button.title = action.title || action.label;
-        button.disabled = Boolean(action.disabled);
-        if (action.message) button.setAttribute("data-code-graph-action", action.message);
-        actions.appendChild(button);
-      }
-
-      node.append(main, actions);
+    async function copyCode(text, button) {
+      await copyTextWithFeedback(text, button, "Copied code.");
     }
 
     function codeGraphView(graph, stateName) {
@@ -2188,7 +3445,7 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
         requestCodeIntelligenceRefresh();
         return;
       }
-      renderCodeGraph();
+      renderComposerStatusBar();
       renderCodeIntelligence();
     }
 
@@ -2196,7 +3453,7 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       if (state.loadingCodeIntelligence) return;
       state.loadingCodeIntelligence = true;
       state.codeIntelligenceError = "";
-      renderCodeGraph();
+      renderComposerStatusBar();
       renderCodeIntelligence();
       vscode.postMessage({ type: "refreshCodeIntelligence" });
     }
@@ -2457,7 +3714,7 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       const hide = target.closest("[data-code-intel-hide]");
       if (hide) {
         codeIntelligenceVisible = false;
-        renderCodeGraph();
+        renderComposerStatusBar();
         renderCodeIntelligence();
         return;
       }
@@ -2632,6 +3889,46 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       renderAgentTrigger();
     }
 
+    function onPopupMenuKeydown(event, kind) {
+      const isModel = kind === "model";
+      const isOpen = isModel ? modelMenuOpen : agentMenuOpen;
+      const menuId = isModel ? "modelMenu" : "agentMenu";
+      const triggerId = isModel ? "modelTrigger" : "agentTrigger";
+      if (event.key === "Escape" && isOpen) {
+        event.preventDefault();
+        if (isModel) {
+          modelMenuOpen = false;
+          renderModelMenu();
+          renderModelTrigger();
+        } else {
+          agentMenuOpen = false;
+          renderAgentMenu();
+          renderAgentTrigger();
+        }
+        el(triggerId).focus();
+        return;
+      }
+      if (event.key !== "ArrowDown" && event.key !== "ArrowUp" && event.key !== "Home" && event.key !== "End") return;
+      event.preventDefault();
+      if (!isOpen) {
+        if (isModel) toggleModelMenu();
+        else toggleAgentMenu();
+      }
+      requestAnimationFrame(() => focusPopupMenuItem(menuId, event.key));
+    }
+
+    function focusPopupMenuItem(menuId, key) {
+      const items = Array.from(el(menuId).querySelectorAll(".modelMenuItem")).filter((item) => !item.disabled);
+      if (!items.length) return;
+      const current = items.indexOf(document.activeElement);
+      let next = current;
+      if (key === "Home") next = 0;
+      else if (key === "End") next = items.length - 1;
+      else if (key === "ArrowUp") next = current <= 0 ? items.length - 1 : current - 1;
+      else next = current < 0 || current >= items.length - 1 ? 0 : current + 1;
+      items[next].focus();
+    }
+
     function renderAgentMenu() {
       const root = el("agentMenu");
       root.innerHTML = "";
@@ -2775,17 +4072,7 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
     }
 
     function renderMentionChips() {
-      const chips = el("chips");
-      chips.innerHTML = "";
-      if (el("file").checked) {
-        const auto = state.autoContext || {};
-        const label = auto.currentFile
-          ? (el("sel").checked && auto.hasSelection ? "Selection: " : "Current: ") + auto.currentFile
-          : "No current file captured";
-        chips.appendChild(autoChip(label, Boolean(auto.currentFile)));
-      }
-      for (const file of mentionedFiles) chips.appendChild(chip(file, true));
-      for (const label of state.contextFiles || []) chips.appendChild(chip({ label, uri: label }, false));
+      renderComposerStatusBar();
     }
 
     function autoChip(text, captured) {
