@@ -1935,6 +1935,56 @@ noLLMServer.instance(
 )
 
 noLLMServer.instance(
+  "applies DOCX upload image limits before model context",
+  () =>
+    Effect.gen(function* () {
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const session = yield* sessions.create({})
+      const bytes = yield* Effect.promise(() => createDocx())
+
+      const msg = yield* prompt.prompt({
+        sessionID: session.id,
+        agent: "build",
+        noReply: true,
+        parts: [
+          {
+            type: "file",
+            mime: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            url:
+              "data:application/vnd.openxmlformats-officedocument.wordprocessingml.document;base64," +
+              Buffer.from(bytes).toString("base64"),
+            filename: "brief.docx",
+          },
+        ],
+      })
+
+      if (msg.info.role !== "user") throw new Error("expected user message")
+
+      expect(
+        msg.parts.some(
+          (part) =>
+            part.type === "file" && part.filename === "brief.docx" && part.metadata?.opencodeDocx?.displayOnly === true,
+        ),
+      ).toBe(true)
+      expect(
+        msg.parts.some(
+          (part) =>
+            part.type === "text" &&
+            part.synthetic &&
+            part.text.includes("[Image omitted: image1.png]") &&
+            part.text.includes("image count limit (0)"),
+        ),
+      ).toBe(true)
+      expect(msg.parts.some((part) => part.type === "file" && part.filename === "image1.png")).toBe(false)
+
+      yield* sessions.remove(session.id)
+    }),
+  { config: { ...cfg, attachment: { docx: { max_images: 0 } } } },
+  30_000,
+)
+
+noLLMServer.instance(
   "keeps stored part order stable when file resolution is async",
   () =>
     Effect.gen(function* () {

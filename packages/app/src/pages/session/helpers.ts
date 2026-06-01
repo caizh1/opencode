@@ -151,6 +151,29 @@ export const getTabReorderIndex = (tabs: readonly string[], from: string, to: st
   return toIndex
 }
 
+export const closeFileTabs = (input: {
+  tabs: readonly string[]
+  pathFromTab: (tab: string) => string | undefined
+  isDirty: (path: string) => boolean
+  discardEdit: (path: string) => void
+  confirmDiscard: (paths: readonly string[]) => boolean
+  closeTabs: (tabs: readonly string[]) => void
+}) => {
+  if (input.tabs.length === 0) return false
+
+  const dirty = input.tabs.flatMap((tab) => {
+    const path = input.pathFromTab(tab)
+    if (!path) return []
+    if (!input.isDirty(path)) return []
+    return [path]
+  })
+  if (dirty.length > 0 && !input.confirmDiscard(dirty)) return false
+
+  for (const path of dirty) input.discardEdit(path)
+  input.closeTabs(input.tabs)
+  return true
+}
+
 export const createSizing = () => {
   const [state, setState] = createStore({ active: false })
   let t: number | undefined

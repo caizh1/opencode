@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import { createRoot, createSignal } from "solid-js"
-import { createSessionKeyReader, ensureSessionKey, pruneSessionKeys } from "./layout"
+import { createSessionKeyReader, ensureSessionKey, nextSessionTabsForCloseMany, pruneSessionKeys } from "./layout"
 
 describe("layout session-key helpers", () => {
   test("couples touch and scroll seed in order", () => {
@@ -65,5 +65,31 @@ describe("pruneSessionKeys", () => {
     })
 
     expect(drop).toEqual([])
+  })
+})
+
+describe("nextSessionTabsForCloseMany", () => {
+  test("closes only requested tabs and keeps context", () => {
+    expect(
+      nextSessionTabsForCloseMany(
+        {
+          active: "file://b.ts",
+          all: ["context", "file://a.ts", "file://b.ts"],
+        },
+        ["file://a.ts", "file://b.ts"],
+      ),
+    ).toEqual({ active: "context", all: ["context"] })
+  })
+
+  test("keeps review active because review is not a file tab", () => {
+    expect(
+      nextSessionTabsForCloseMany(
+        {
+          active: "review",
+          all: ["file://a.ts"],
+        },
+        ["file://a.ts"],
+      ),
+    ).toEqual({ active: "review", all: [] })
   })
 })

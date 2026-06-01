@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test"
 import { createMemo, createRoot } from "solid-js"
 import { createStore } from "solid-js/store"
 import {
+  closeFileTabs,
   createOpenReviewFile,
   createOpenSessionFileTab,
   createSessionTabs,
@@ -114,6 +115,45 @@ describe("getTabReorderIndex", () => {
 
   test("returns undefined for unknown droppable id", () => {
     expect(getTabReorderIndex(["a", "b", "c"], "a", "missing")).toBeUndefined()
+  })
+})
+
+describe("closeFileTabs", () => {
+  test("keeps context/review out of the caller-provided file tab list", () => {
+    const closed: string[][] = []
+    const result = closeFileTabs({
+      tabs: ["file://a.ts", "file://b.ts"],
+      pathFromTab: (tab) => tab.slice("file://".length),
+      isDirty: () => false,
+      discardEdit: () => {},
+      confirmDiscard: () => true,
+      closeTabs: (tabs) => closed.push([...tabs]),
+    })
+
+    expect(result).toBe(true)
+    expect(closed).toEqual([["file://a.ts", "file://b.ts"]])
+  })
+
+  test("confirms once and discards dirty files before closing", () => {
+    const discarded: string[] = []
+    const closed: string[][] = []
+    const confirmed: string[][] = []
+    const result = closeFileTabs({
+      tabs: ["file://a.ts", "file://b.ts"],
+      pathFromTab: (tab) => tab.slice("file://".length),
+      isDirty: (path) => path === "a.ts",
+      discardEdit: (path) => discarded.push(path),
+      confirmDiscard: (paths) => {
+        confirmed.push([...paths])
+        return true
+      },
+      closeTabs: (tabs) => closed.push([...tabs]),
+    })
+
+    expect(result).toBe(true)
+    expect(confirmed).toEqual([["a.ts"]])
+    expect(discarded).toEqual(["a.ts"])
+    expect(closed).toEqual([["file://a.ts", "file://b.ts"]])
   })
 })
 

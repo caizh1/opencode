@@ -196,7 +196,6 @@ export function createZoomableImageContainer(input: {
 }): HTMLElement {
   const content = document.createElement("div")
   const image = document.createElement("img")
-  image.src = input.src
   image.alt = input.alt ?? ""
   content.appendChild(image)
 
@@ -208,12 +207,21 @@ export function createZoomableImageContainer(input: {
     naturalHeight: input.naturalHeight,
   })
 
-  image.addEventListener("load", () => {
+  let loaded = false
+  const handleLoad = () => {
+    if (loaded) return
+    loaded = true
     if (!input.naturalWidth || !input.naturalHeight) {
       container.setNaturalSize(image.naturalWidth, image.naturalHeight)
     }
     input.onLoad?.()
-  })
+  }
+
+  image.addEventListener("load", handleLoad)
+  image.src = input.src
+  if (image.complete && (input.naturalWidth || image.naturalWidth) && (input.naturalHeight || image.naturalHeight)) {
+    handleLoad()
+  }
 
   return container.element
 }

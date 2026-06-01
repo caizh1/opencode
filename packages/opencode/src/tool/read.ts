@@ -10,6 +10,8 @@ import { assertExternalDirectoryEffect } from "./external-directory"
 import { Instruction } from "../session/instruction"
 import { isPdfAttachment, sniffAttachmentMime } from "@/util/media"
 import { Reference } from "@/reference/reference"
+import { Config } from "@/config/config"
+import { ConfigAttachment } from "@/config/attachment"
 import { extractDocx, formatDocxForModel, isDocxMime } from "@/document/docx"
 import { withDocxMetadata } from "@/document/docx-metadata"
 
@@ -46,6 +48,7 @@ export const ReadTool = Tool.define(
     const lsp = yield* LSP.Service
     const reference = yield* Reference.Service
     const scope = yield* Scope.Scope
+    const config = yield* Config.Service
 
     const miss = Effect.fn("ReadTool.miss")(function* (filepath: string) {
       const dir = path.dirname(filepath)
@@ -270,8 +273,13 @@ export const ReadTool = Tool.define(
       const isImage = SUPPORTED_IMAGE_MIMES.has(mime)
 
       if (isDocxMime(mime)) {
+        yield* ctx.metadata({ title, metadata: { filePath: filepath, stage: "docx:reading" } })
         const bytes = yield* fs.readFile(filepath)
-        const docx = yield* Effect.tryPromise(() => extractDocx(bytes))
+        yield* ctx.metadata({ title, metadata: { filePath: filepath, stage: "docx:extracting" } })
+        const cfg = yield* config.get()
+        const docx = yield* Effect.tryPromise(() =>
+          extractDocx(bytes, ConfigAttachment.resolveDocx(cfg.attachment?.docx)),
+        )
         const output = `DOCX read successfully\n\n${formatDocxForModel({ filename: path.basename(filepath), docx })}`
         return {
           title,
@@ -281,19 +289,21 @@ export const ReadTool = Tool.define(
             truncated: false,
             loaded: loaded.map((item) => item.filepath),
           },
-          attachments: docx.images.map((image) => ({
-            type: "file" as const,
-            mime: image.mime,
-            url: `data:${image.mime};base64,${image.data}`,
-            filename: image.filename,
-            metadata: withDocxMetadata(undefined, {
-              hidden: true,
-              modelContext: true,
-              kind: "image",
-              source: path.basename(filepath),
-              index: image.index,
-            }),
-          })),
+          attachments: docx.images.length
+            ? docx.images.map((image) => ({
+                type: "file" as const,
+                mime: image.mime,
+                url: `data:${image.mime};base64,${image.data}`,
+                filename: image.filename,
+                metadata: withDocxMetadata(undefined, {
+                  hidden: true,
+                  modelContext: true,
+                  kind: "image",
+                  source: path.basename(filepath),
+                  index: image.index,
+                }),
+              }))
+            : undefined,
         }
       }
 

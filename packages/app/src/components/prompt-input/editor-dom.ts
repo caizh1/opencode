@@ -1,5 +1,15 @@
 const MAX_BREAKS = 200
 
+type DocumentCaretPosition = {
+  offsetNode: Node
+  offset: number
+}
+
+type DocumentWithPointCaret = Document & {
+  caretPositionFromPoint?: (x: number, y: number) => DocumentCaretPosition | null
+  caretRangeFromPoint?: (x: number, y: number) => Range | null
+}
+
 export function createTextFragment(content: string): DocumentFragment {
   const fragment = document.createDocumentFragment()
   let breaks = 0
@@ -117,6 +127,17 @@ export function setCursorPosition(parent: HTMLElement, position: number) {
   fallbackSelection?.addRange(fallbackRange)
 }
 
+export function setCursorPositionFromPoint(parent: HTMLElement, x: number, y: number) {
+  const range = rangeFromPoint(x, y)
+  const selection = window.getSelection()
+  if (!range || !selection || !parent.contains(range.startContainer)) return false
+
+  range.collapse(true)
+  selection.removeAllRanges()
+  selection.addRange(range)
+  return true
+}
+
 export function setRangeEdge(parent: HTMLElement, range: Range, edge: "start" | "end", offset: number) {
   let remaining = offset
   const nodes = Array.from(parent.childNodes)
@@ -145,4 +166,16 @@ export function setRangeEdge(parent: HTMLElement, range: Range, edge: "start" | 
 
     remaining -= length
   }
+}
+
+function rangeFromPoint(x: number, y: number) {
+  const doc = document as DocumentWithPointCaret
+  const position = doc.caretPositionFromPoint?.(x, y)
+  if (position) {
+    const range = document.createRange()
+    range.setStart(position.offsetNode, position.offset)
+    return range
+  }
+
+  return doc.caretRangeFromPoint?.(x, y) ?? null
 }

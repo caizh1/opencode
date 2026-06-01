@@ -17,10 +17,11 @@ import {
   type ComponentProps,
   type ParentProps,
 } from "solid-js"
-import { Dynamic } from "solid-js/web"
+import { createStore, reconcile, type SetStoreFunction, type Store } from "solid-js/store"
 import type { FileNode } from "@opencode-ai/sdk/v2"
 import { useLanguage } from "@/context/language"
 import { useSDK } from "@/context/sdk"
+import { showToast } from "@opencode-ai/ui/toast"
 
 const MAX_DEPTH = 128
 
@@ -33,6 +34,70 @@ type Kind = "add" | "del" | "mix"
 type Filter = {
   files: Set<string>
   dirs: Set<string>
+}
+
+export type SelectionMode = "replace" | "toggle" | "range"
+
+export type SelectedFileTreeNode = Pick<FileNode, "name" | "path" | "type">
+
+type FileTreeSelection = {
+  selected: Record<string, SelectedFileTreeNode>
+  anchor?: string
+}
+
+export function parentDir(path: string) {
+  const idx = path.lastIndexOf("/")
+  if (idx === -1) return ""
+  return path.slice(0, idx)
+}
+
+export function nextFileTreeSelection(input: {
+  selected: readonly string[]
+  anchor?: string
+  target: string
+  visible: readonly string[]
+  mode: SelectionMode
+}) {
+  const selected = new Set(input.selected)
+
+  if (input.mode === "toggle") {
+    if (selected.has(input.target)) {
+      selected.delete(input.target)
+      const next = Array.from(selected)
+      return {
+        selected: next,
+        anchor: next.includes(input.anchor ?? "") ? input.anchor : next[0],
+      }
+    }
+    selected.add(input.target)
+    return { selected: Array.from(selected), anchor: input.target }
+  }
+
+  if (input.mode === "range" && input.anchor) {
+    const start = input.visible.indexOf(input.anchor)
+    const end = input.visible.indexOf(input.target)
+    if (start !== -1 && end !== -1) {
+      const [from, to] = start < end ? [start, end] : [end, start]
+      for (const path of input.visible.slice(from, to + 1)) selected.add(path)
+      return { selected: Array.from(selected), anchor: input.anchor }
+    }
+  }
+
+  return { selected: [input.target], anchor: input.target }
+}
+
+export function deleteTargets(nodes: readonly SelectedFileTreeNode[]) {
+  const sorted = nodes
+    .map((node) => ({ ...node, path: node.path.replaceAll("\\", "/").replace(/\/+$/, "") }))
+    .filter((node) => node.path.length > 0)
+    .sort((a, b) => a.path.length - b.path.length)
+
+  return sorted.filter((node, index) => {
+    return !sorted.slice(0, index).some((parent) => {
+      if (parent.type !== "directory") return false
+      return node.path === parent.path || node.path.startsWith(`${parent.path}/`)
+    })
+  })
 }
 
 export function shouldListRoot(input: { level: number; dir?: { loaded?: boolean; loading?: boolean } }) {
@@ -110,7 +175,7 @@ const visibleKind = (node: FileNode, kinds?: ReadonlyMap<string, Kind>, marks?: 
 
 const buildDragImage = (target: HTMLElement) => {
   const icon = target.querySelector('[data-component="file-icon"]') ?? target.querySelector("svg")
-  const text = target.querySelector("span")
+  const text = target.querySelector('[data-filetree-label="true"]') ?? target.querySelector("span")
   if (!icon || !text) return
 
   const image = document.createElement("div")
@@ -133,15 +198,13 @@ const withFileDragImage = (event: DragEvent) => {
 const FileTreeNode = (
   p: ParentProps &
     ComponentProps<"div"> &
-    ComponentProps<"button"> & {
+    {
       node: FileNode
       level: number
       active?: string
       nodeClass?: string
       draggable: boolean
-      kinds?: ReadonlyMap<string, Kind>
-      marks?: Set<string>
-      as?: "div" | "button"
+      selected?: boolean
     },
 ) => {
   const [local, rest] = splitProps(p, [
@@ -150,31 +213,23 @@ const FileTreeNode = (
     "active",
     "nodeClass",
     "draggable",
-    "kinds",
-    "marks",
-    "as",
+    "selected",
     "children",
     "class",
     "classList",
   ])
-  const kind = () => visibleKind(local.node, local.kinds, local.marks)
-  const active = () => !!kind() && !local.node.ignored
-  const color = () => {
-    const value = kind()
-    if (!value) return
-    return kindTextColor(value)
-  }
 
   return (
-    <Dynamic
-      component={local.as ?? "div"}
+    <div
       classList={{
-        "w-full min-w-0 h-6 flex items-center justify-start gap-x-1.5 rounded-md px-1.5 py-0 text-left hover:bg-surface-raised-base-hover active:bg-surface-base-active transition-colors cursor-pointer": true,
+        "group/filetree w-full min-w-0 h-6 flex items-center justify-start gap-x-1.5 rounded-md px-1.5 py-0 text-left hover:bg-surface-raised-base-hover active:bg-surface-base-active transition-colors cursor-pointer": true,
         "bg-surface-base-active": local.node.path === local.active,
+        "bg-surface-raised-base-hover": local.selected,
         ...local.classList,
         [local.class ?? ""]: !!local.class,
         [local.nodeClass ?? ""]: !!local.nodeClass,
       }}
+      data-selected={local.selected ? "" : undefined}
       style={`padding-left: ${Math.max(0, 8 + local.level * 12 - (local.node.type === "file" ? 24 : 4))}px`}
       draggable={local.draggable}
       onDragStart={(event: DragEvent) => {
@@ -187,25 +242,41 @@ const FileTreeNode = (
       {...rest}
     >
       {local.children}
+    </div>
+  )
+}
+
+const FileTreeNodeLabel = (props: { node: FileNode; kinds?: ReadonlyMap<string, Kind>; marks?: Set<string> }) => {
+  const kind = () => visibleKind(props.node, props.kinds, props.marks)
+  const active = () => !!kind() && !props.node.ignored
+  const color = () => {
+    const value = kind()
+    if (!value) return
+    return kindTextColor(value)
+  }
+
+  return (
+    <>
       <span
+        data-filetree-label="true"
         classList={{
           "flex-1 min-w-0 text-12-medium whitespace-nowrap truncate": true,
-          "text-text-weaker": local.node.ignored,
-          "text-text-weak": !local.node.ignored && !active(),
+          "text-text-weaker": props.node.ignored,
+          "text-text-weak": !props.node.ignored && !active(),
         }}
         style={active() ? color() : undefined}
       >
-        {local.node.name}
+        {props.node.name}
       </span>
       <span class="shrink-0 text-[10px] leading-none text-text-weaker ml-auto whitespace-nowrap">
-        {formatRelTime(local.node.mtime)}
+        {formatRelTime(props.node.mtime)}
         &nbsp;
-        {formatSize(local.node.size)}
+        {formatSize(props.node.size)}
       </span>
       {(() => {
         const value = kind()
         if (!value) return null
-        if (local.node.type === "file") {
+        if (props.node.type === "file") {
           return (
             <span class="shrink-0 w-4 text-center text-12-medium" style={kindTextColor(value)}>
               {kindLabel(value)}
@@ -214,7 +285,7 @@ const FileTreeNode = (
         }
         return <div class="shrink-0 size-1.5 mr-1.5 rounded-full" style={kindDotColor(value)} />
       })()}
-    </Dynamic>
+    </>
   )
 }
 
@@ -235,12 +306,17 @@ export default function FileTree(props: {
   _deeps?: Map<string, number>
   _kinds?: ReadonlyMap<string, Kind>
   _chain?: readonly string[]
+  _selection?: Store<FileTreeSelection>
+  _setSelection?: SetStoreFunction<FileTreeSelection>
 }) {
   const file = useFile()
   const language = useLanguage()
   const sdk = useSDK()
   const level = props.level ?? 0
   const draggable = () => props.draggable ?? true
+  const [ownedSelection, setOwnedSelection] = createStore<FileTreeSelection>({ selected: {} })
+  const selection = props._selection ?? ownedSelection
+  const setSelection = props._setSelection ?? setOwnedSelection
 
   const key = (p: string) =>
     file
@@ -415,6 +491,139 @@ export default function FileTree(props: {
     return out
   })
 
+  const selectedNodes = createMemo(() => Object.values(selection.selected))
+  const selectedSet = createMemo(() => new Set(selectedNodes().map((node) => node.path)))
+  const selected = (node: FileNode) => selectedSet().has(node.path)
+  const selectedNode = (node: FileNode): SelectedFileTreeNode => ({
+    name: node.name,
+    path: node.path,
+    type: node.type,
+  })
+  const clearSelection = () => {
+    setSelection("selected", reconcile({}))
+    setSelection("anchor", undefined)
+  }
+  const selectOnly = (node: FileNode) => {
+    setSelection("selected", reconcile({ [node.path]: selectedNode(node) }))
+    setSelection("anchor", node.path)
+  }
+  const updateSelection = (
+    event: Pick<MouseEvent | KeyboardEvent, "shiftKey" | "ctrlKey" | "metaKey">,
+    node: FileNode,
+    modeOverride?: SelectionMode,
+  ) => {
+    const visible = nodes()
+    const visibleByPath = new Map(visible.map((item) => [item.path, selectedNode(item)]))
+    const currentByPath = new Map(selectedNodes().map((item) => [item.path, item]))
+    const mode = modeOverride ?? (event.shiftKey ? "range" : event.ctrlKey || event.metaKey ? "toggle" : "replace")
+    const next = nextFileTreeSelection({
+      selected: Object.keys(selection.selected),
+      anchor: selection.anchor,
+      target: node.path,
+      visible: visible.map((item) => item.path),
+      mode,
+    })
+    const value = Object.fromEntries(
+      next.selected.flatMap((path) => {
+        const item = visibleByPath.get(path) ?? currentByPath.get(path)
+        if (!item) return []
+        return [[path, item]]
+      }),
+    )
+    setSelection("selected", reconcile(value))
+    setSelection("anchor", next.anchor)
+  }
+  const selectForContextMenu = (node: FileNode) => {
+    if (selected(node)) return
+    selectOnly(node)
+  }
+  const contextSelection = (node: FileNode) => {
+    if (!selected(node)) return [selectedNode(node)]
+    return selectedNodes()
+  }
+  const deleteSelected = async (items: readonly SelectedFileTreeNode[]) => {
+    const targets = deleteTargets(items)
+    if (targets.length === 0) return
+    if (typeof window === "undefined") return
+
+    const count = items.length
+    const message =
+      count === 1
+        ? `Delete "${items[0]?.name ?? targets[0]?.name}"?`
+        : language.t("session.files.deleteSelectedConfirm", { count })
+    if (!window.confirm(message)) return
+
+    const results = await Promise.all(
+      targets.map((target) =>
+        fetch(
+          `${sdk.url}/file/delete?path=${encodeURIComponent(target.path)}&directory=${encodeURIComponent(sdk.directory)}`,
+          { method: "DELETE" },
+        ).then(
+          (res) => ({ target, ok: res.ok }),
+          () => ({ target, ok: false }),
+        ),
+      ),
+    )
+    const succeeded = results.filter((result) => result.ok).map((result) => result.target)
+    const failed = results.length - succeeded.length
+
+    if (succeeded.length > 0) {
+      await Promise.all([...new Set(succeeded.map((target) => parentDir(target.path)))].map((dir) => file.tree.refresh(dir)))
+      clearSelection()
+    }
+
+    if (failed > 0) {
+      showToast({
+        title: language.t("session.files.deleteFailed"),
+        description: language.t("session.files.deleteFailedDescription", { count: failed }),
+        variant: "error",
+      })
+    }
+  }
+  const deleteLabel = (node: FileNode) => {
+    const count = contextSelection(node).length
+    if (count <= 1) return language.t("session.files.delete")
+    return language.t("session.files.deleteSelected", { count })
+  }
+  const selectionBox = (node: FileNode) => (
+    <button
+      type="button"
+      role="checkbox"
+      aria-checked={selected(node)}
+      draggable={false}
+      class="shrink-0 size-3.5 rounded-sm border flex items-center justify-center transition-opacity appearance-none p-0"
+      classList={{
+        "border-border-base bg-background-base opacity-0 group-hover/filetree:opacity-100 group-focus-within/filetree:opacity-100":
+          !selected(node) && selectedNodes().length === 0,
+        "border-border-base bg-background-base opacity-60 group-hover/filetree:opacity-100 group-focus-within/filetree:opacity-100":
+          !selected(node) && selectedNodes().length > 0,
+        "border-icon-interactive-base bg-surface-selected-base text-icon-interactive-base opacity-100": selected(node),
+      }}
+      onPointerDown={(event) => {
+        event.stopPropagation()
+      }}
+      onMouseDown={(event) => {
+        event.stopPropagation()
+      }}
+      onClick={(event: MouseEvent) => {
+        event.preventDefault()
+        event.stopPropagation()
+        updateSelection(event, node, event.shiftKey ? "range" : "toggle")
+      }}
+      onKeyDown={(event: KeyboardEvent) => {
+        if (event.key !== " " && event.key !== "Enter") return
+        event.preventDefault()
+        event.stopPropagation()
+        updateSelection(event, node, event.shiftKey ? "range" : "toggle")
+      }}
+      aria-label={language.t("session.files.select")}
+    >
+      <Show when={selected(node)}>
+        <Icon name="check-small" size="small" />
+      </Show>
+    </button>
+  )
+
   return (
     <div data-component="filetree" class={`flex flex-col gap-0.5 ${props.class ?? ""}`}>
       <For each={nodes()}>
@@ -437,21 +646,40 @@ export default function FileTree(props: {
                     onOpenChange={(open) => (open ? file.tree.expand(node.path) : file.tree.collapse(node.path))}
                   >
                     <ContextMenu.Trigger>
-                      <Collapsible.Trigger>
-                        <FileTreeNode
-                          node={node}
-                          level={level}
-                          active={props.active}
-                          nodeClass={props.nodeClass}
-                          draggable={draggable()}
-                          kinds={kinds()}
-                          marks={marks()}
+                      <FileTreeNode
+                        node={node}
+                        level={level}
+                        active={props.active}
+                        nodeClass={props.nodeClass}
+                        draggable={draggable()}
+                        selected={selected(node)}
+                        onContextMenu={() => selectForContextMenu(node)}
+                      >
+                        {selectionBox(node)}
+                        <button
+                          type="button"
+                          aria-expanded={expanded()}
+                          class="min-w-0 h-full flex flex-1 items-center justify-start gap-x-1.5 p-0 text-left bg-transparent border-0 appearance-none cursor-pointer"
+                          onClick={(event: MouseEvent) => {
+                            if (event.shiftKey || event.ctrlKey || event.metaKey) {
+                              event.preventDefault()
+                              event.stopPropagation()
+                              updateSelection(event, node)
+                              return
+                            }
+                            if (expanded()) {
+                              file.tree.collapse(node.path)
+                              return
+                            }
+                            file.tree.expand(node.path)
+                          }}
                         >
                           <div class="size-4 flex items-center justify-center text-icon-weak">
                             <Icon name={expanded() ? "chevron-down" : "chevron-right"} size="small" />
                           </div>
-                        </FileTreeNode>
-                      </Collapsible.Trigger>
+                          <FileTreeNodeLabel node={node} kinds={kinds()} marks={marks()} />
+                        </button>
+                      </FileTreeNode>
                     </ContextMenu.Trigger>
                     <Collapsible.Content class="relative pt-0.5">
                       <div
@@ -480,6 +708,8 @@ export default function FileTree(props: {
                           _deeps={deeps()}
                           _kinds={kinds()}
                           _chain={chain}
+                          _selection={selection}
+                          _setSelection={setSelection}
                         />
                       </Show>
                     </Collapsible.Content>
@@ -497,20 +727,10 @@ export default function FileTree(props: {
                       <ContextMenu.Separator />
                       <ContextMenu.Item
                         onSelect={async () => {
-                          if (!window.confirm(`Delete "${node.name}"?`)) return
-                          try {
-                            const res = await fetch(`${sdk.url}/file/delete?path=${encodeURIComponent(node.path)}&directory=${encodeURIComponent(sdk.directory)}`, { method: "DELETE" })
-                            if (res.ok) {
-                              const parentDir = (() => {
-                                const idx = node.path.lastIndexOf("/")
-                                return idx === -1 ? "" : node.path.slice(0, idx)
-                              })()
-                              await file.tree.refresh(parentDir)
-                            }
-                          } catch {}
+                          await deleteSelected(contextSelection(node))
                         }}
                       >
-                        <ContextMenu.ItemLabel>{language.t("session.files.delete")}</ContextMenu.ItemLabel>
+                        <ContextMenu.ItemLabel>{deleteLabel(node)}</ContextMenu.ItemLabel>
                       </ContextMenu.Item>
                     </ContextMenu.Content>
                   </ContextMenu.Portal>
@@ -525,44 +745,56 @@ export default function FileTree(props: {
                       active={props.active}
                       nodeClass={props.nodeClass}
                       draggable={draggable()}
-                      kinds={kinds()}
-                      marks={marks()}
-                      as="button"
-                      type="button"
-                      onClick={() => props.onFileClick?.(node)}
+                      selected={selected(node)}
+                      onContextMenu={() => selectForContextMenu(node)}
                     >
-                      <div class="w-4 shrink-0" />
-                      <Switch>
-                        <Match when={node.ignored}>
-                          <FileIcon
-                            node={node}
-                            class="size-4 filetree-icon filetree-icon--mono"
-                            style="color: var(--icon-weak-base)"
-                            mono
-                          />
-                        </Match>
-                        <Match when={active()}>
-                          <FileIcon
-                            node={node}
-                            class="size-4 filetree-icon filetree-icon--mono"
-                            style={kindTextColor(kind()!)}
-                            mono
-                          />
-                        </Match>
-                        <Match when={!node.ignored}>
-                          <span class="filetree-iconpair size-4">
+                      {selectionBox(node)}
+                      <button
+                        type="button"
+                        class="min-w-0 h-full flex flex-1 items-center justify-start gap-x-1.5 p-0 text-left bg-transparent border-0 appearance-none cursor-pointer"
+                        onClick={(event: MouseEvent) => {
+                          if (event.shiftKey || event.ctrlKey || event.metaKey) {
+                            event.preventDefault()
+                            updateSelection(event, node)
+                            return
+                          }
+                          props.onFileClick?.(node)
+                        }}
+                      >
+                        <div class="w-4 shrink-0" />
+                        <Switch>
+                          <Match when={node.ignored}>
                             <FileIcon
                               node={node}
-                              class="size-4 filetree-icon filetree-icon--color opacity-0 group-hover/filetree:opacity-100"
-                            />
-                            <FileIcon
-                              node={node}
-                              class="size-4 filetree-icon filetree-icon--mono group-hover/filetree:opacity-0"
+                              class="size-4 filetree-icon filetree-icon--mono"
+                              style="color: var(--icon-weak-base)"
                               mono
                             />
-                          </span>
-                        </Match>
-                      </Switch>
+                          </Match>
+                          <Match when={active()}>
+                            <FileIcon
+                              node={node}
+                              class="size-4 filetree-icon filetree-icon--mono"
+                              style={kindTextColor(kind()!)}
+                              mono
+                            />
+                          </Match>
+                          <Match when={!node.ignored}>
+                            <span class="filetree-iconpair size-4">
+                              <FileIcon
+                                node={node}
+                                class="size-4 filetree-icon filetree-icon--color opacity-0 group-hover/filetree:opacity-100"
+                              />
+                              <FileIcon
+                                node={node}
+                                class="size-4 filetree-icon filetree-icon--mono group-hover/filetree:opacity-0"
+                                mono
+                              />
+                            </span>
+                          </Match>
+                        </Switch>
+                        <FileTreeNodeLabel node={node} kinds={kinds()} marks={marks()} />
+                      </button>
                     </FileTreeNode>
                   </ContextMenu.Trigger>
                   <ContextMenu.Portal>
@@ -578,20 +810,10 @@ export default function FileTree(props: {
                       <ContextMenu.Separator />
                       <ContextMenu.Item
                         onSelect={async () => {
-                          if (!window.confirm(`Delete "${node.name}"?`)) return
-                          try {
-                            const res = await fetch(`${sdk.url}/file/delete?path=${encodeURIComponent(node.path)}&directory=${encodeURIComponent(sdk.directory)}`, { method: "DELETE" })
-                            if (res.ok) {
-                              const parentDir = (() => {
-                                const idx = node.path.lastIndexOf("/")
-                                return idx === -1 ? "" : node.path.slice(0, idx)
-                              })()
-                              await file.tree.refresh(parentDir)
-                            }
-                          } catch {}
+                          await deleteSelected(contextSelection(node))
                         }}
                       >
-                        <ContextMenu.ItemLabel>{language.t("session.files.delete")}</ContextMenu.ItemLabel>
+                        <ContextMenu.ItemLabel>{deleteLabel(node)}</ContextMenu.ItemLabel>
                       </ContextMenu.Item>
                     </ContextMenu.Content>
                   </ContextMenu.Portal>

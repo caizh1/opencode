@@ -1,5 +1,38 @@
 import { describe, expect, test } from "bun:test"
-import { createTextFragment, getCursorPosition, getNodeLength, getTextLength, setCursorPosition } from "./editor-dom"
+import {
+  createTextFragment,
+  getCursorPosition,
+  getNodeLength,
+  getTextLength,
+  setCursorPosition,
+  setCursorPositionFromPoint,
+} from "./editor-dom"
+
+type TestCaretPosition = {
+  offsetNode: Node
+  offset: number
+  getClientRect: () => DOMRect
+}
+
+type PointCaretOverrides = {
+  caretPositionFromPoint?: (x: number, y: number) => TestCaretPosition | null
+  caretRangeFromPoint?: (x: number, y: number) => Range | null
+}
+
+function overrideDocumentPointCaret(overrides: PointCaretOverrides) {
+  const caretPosition = Object.getOwnPropertyDescriptor(document, "caretPositionFromPoint")
+  const caretRange = Object.getOwnPropertyDescriptor(document, "caretRangeFromPoint")
+  Object.defineProperty(document, "caretPositionFromPoint", { configurable: true, value: overrides.caretPositionFromPoint })
+  Object.defineProperty(document, "caretRangeFromPoint", { configurable: true, value: overrides.caretRangeFromPoint })
+
+  return () => {
+    if (caretPosition) Object.defineProperty(document, "caretPositionFromPoint", caretPosition)
+    else delete (document as PointCaretOverrides).caretPositionFromPoint
+
+    if (caretRange) Object.defineProperty(document, "caretRangeFromPoint", caretRange)
+    else delete (document as PointCaretOverrides).caretRangeFromPoint
+  }
+}
 
 describe("prompt-input editor dom", () => {
   test("createTextFragment preserves newlines with consecutive br nodes", () => {
@@ -95,5 +128,72 @@ describe("prompt-input editor dom", () => {
     expect(getCursorPosition(container)).toBe(3)
 
     container.remove()
+  })
+
+  test("setCursorPositionFromPoint uses caretPositionFromPoint inside editor", () => {
+    const container = document.createElement("div")
+    const text = document.createTextNode("abcd")
+    container.appendChild(text)
+    document.body.appendChild(container)
+
+    const restore = overrideDocumentPointCaret({
+      caretPositionFromPoint: () => ({ offsetNode: text, offset: 2, getClientRect: () => new DOMRect() }),
+      caretRangeFromPoint: () => {
+        throw new Error("caretRangeFromPoint should not be used")
+      },
+    })
+
+    try {
+      expect(setCursorPositionFromPoint(container, 10, 20)).toBe(true)
+      expect(getCursorPosition(container)).toBe(2)
+    } finally {
+      restore()
+      container.remove()
+    }
+  })
+
+  test("setCursorPositionFromPoint falls back to caretRangeFromPoint", () => {
+    const container = document.createElement("div")
+    const text = document.createTextNode("abcd")
+    container.appendChild(text)
+    document.body.appendChild(container)
+
+    const restore = overrideDocumentPointCaret({
+      caretRangeFromPoint: () => {
+        const range = document.createRange()
+        range.setStart(text, 3)
+        return range
+      },
+    })
+
+    try {
+      expect(setCursorPositionFromPoint(container, 10, 20)).toBe(true)
+      expect(getCursorPosition(container)).toBe(3)
+    } finally {
+      restore()
+      container.remove()
+    }
+  })
+
+  test("setCursorPositionFromPoint rejects ranges outside editor", () => {
+    const container = document.createElement("div")
+    const text = document.createTextNode("abcd")
+    const outside = document.createTextNode("outside")
+    container.appendChild(text)
+    document.body.append(container, outside)
+    setCursorPosition(container, 1)
+
+    const restore = overrideDocumentPointCaret({
+      caretPositionFromPoint: () => ({ offsetNode: outside, offset: 2, getClientRect: () => new DOMRect() }),
+    })
+
+    try {
+      expect(setCursorPositionFromPoint(container, 10, 20)).toBe(false)
+      expect(getCursorPosition(container)).toBe(1)
+    } finally {
+      restore()
+      outside.remove()
+      container.remove()
+    }
   })
 })

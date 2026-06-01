@@ -30,6 +30,7 @@ type PromptAttachmentsInput = {
   isDialogActive: () => boolean
   setDraggingType: (type: "image" | "@mention" | null) => void
   focusEditor: () => void
+  focusEditorAt?: (x: number, y: number) => boolean
   addPart: (part: ContentPart) => boolean
   readClipboardImage?: () => Promise<File | null>
 }
@@ -170,7 +171,7 @@ export function createPromptAttachments(input: PromptAttachmentsInput) {
     const filePrefix = "file:"
     if (plainText?.startsWith(filePrefix)) {
       const filePath = plainText.slice(filePrefix.length)
-      input.focusEditor()
+      if (!input.focusEditorAt?.(event.clientX, event.clientY)) input.focusEditor()
       input.addPart({ type: "file", path: filePath, content: "@" + filePath, start: 0, end: 0 })
       return
     }

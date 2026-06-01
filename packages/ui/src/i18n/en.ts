@@ -113,6 +113,9 @@ export const dict: Record<string, string> = {
   "ui.scrollView.ariaLabel": "scrollable content",
 
   "ui.tool.read": "Read",
+  "ui.tool.read.running": "Reading",
+  "ui.tool.read.completed": "Read complete",
+  "ui.tool.read.error": "Read failed",
   "ui.tool.loaded": "Loaded",
   "ui.tool.list": "List",
   "ui.tool.glob": "Glob",

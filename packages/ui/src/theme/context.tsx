@@ -56,6 +56,7 @@ const names: Record<string, string> = {
   flexoki: "Flexoki",
   github: "GitHub",
   "gpt-web": "GPT Web",
+  "ios26-liquid-glass": "iOS 26 Liquid Glass",
   gruvbox: "Gruvbox",
   kanagawa: "Kanagawa",
   "lucent-orng": "Lucent Orng",

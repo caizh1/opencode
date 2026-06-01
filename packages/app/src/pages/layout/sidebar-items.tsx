@@ -1,5 +1,6 @@
 import type { Session } from "@opencode-ai/sdk/v2/client"
 import { Avatar } from "@opencode-ai/ui/avatar"
+import { DropdownMenu } from "@opencode-ai/ui/dropdown-menu"
 import { Icon } from "@opencode-ai/ui/icon"
 import { IconButton } from "@opencode-ai/ui/icon-button"
 import { Spinner } from "@opencode-ai/ui/spinner"
@@ -16,6 +17,7 @@ import { messageAgentColor } from "@/utils/agent"
 import { sessionTitle } from "@/utils/session-title"
 import { sessionPermissionRequest } from "../session/composer/session-request-tree"
 import { childSessionOnPath, getProjectAvatarSource, hasProjectPermissions } from "./helpers"
+import type { createSessionFolderStore } from "./session-folders"
 
 export const ProjectIcon = (props: {
   project: LocalProject
@@ -80,10 +82,12 @@ export type SessionItemProps = {
   showTooltip?: boolean
   showChild?: boolean
   level?: number
+  folderIndent?: number
   sidebarExpanded: Accessor<boolean>
   clearHoverProjectSoon: () => void
   prefetchSession: (session: Session, priority?: "high" | "low") => void
   archiveSession: (session: Session) => Promise<void>
+  folderActions?: ReturnType<typeof createSessionFolderStore>
 }
 
 const SessionRow = (props: {
@@ -162,6 +166,7 @@ export const SessionItem = (props: SessionItemProps): JSX.Element => {
 
   const tint = createMemo(() => messageAgentColor(sessionStore.message[props.session.id], sessionStore.agent))
   const tooltip = createMemo(() => props.showTooltip ?? (props.mobile || !props.sidebarExpanded()))
+  const hasFolders = createMemo(() => (props.folderActions?.folders().length ?? 0) > 0)
   const currentChild = createMemo(() => {
     if (!props.showChild) return
     return childSessionOnPath(sessionStore.session, props.session.id, params.id)
@@ -210,7 +215,7 @@ export const SessionItem = (props: SessionItemProps): JSX.Element => {
       <div
         data-session-id={props.session.id}
         class="group/session relative w-full min-w-0 rounded-md cursor-default pr-3 transition-colors hover:bg-surface-raised-base-hover [&:has(:focus-visible)]:bg-surface-raised-base-hover has-[[data-expanded]]:bg-surface-raised-base-hover has-[.active]:bg-surface-base-active"
-        style={{ "padding-left": `${8 + (props.level ?? 0) * 16}px` }}
+        style={{ "padding-left": `${8 + ((props.folderIndent ?? 0) + (props.level ?? 0)) * 16}px` }}
       >
         <div class="flex min-w-0 items-center gap-1">
           <div class="min-w-0 flex-1">
@@ -235,25 +240,61 @@ export const SessionItem = (props: SessionItemProps): JSX.Element => {
             <div
               class="shrink-0 overflow-hidden transition-[width,opacity]"
               classList={{
-                "w-6 opacity-100 pointer-events-auto": !!props.mobile,
+                "w-12 opacity-100 pointer-events-auto": !!props.mobile && hasFolders(),
+                "w-6 opacity-100 pointer-events-auto": !!props.mobile && !hasFolders(),
                 "w-0 opacity-0 pointer-events-none": !props.mobile,
-                "group-hover/session:w-6 group-hover/session:opacity-100 group-hover/session:pointer-events-auto": true,
-                "group-focus-within/session:w-6 group-focus-within/session:opacity-100 group-focus-within/session:pointer-events-auto": true,
+                "group-hover/session:w-12 group-focus-within/session:w-12": hasFolders(),
+                "group-hover/session:w-6 group-focus-within/session:w-6": !hasFolders(),
+                "group-hover/session:opacity-100 group-hover/session:pointer-events-auto": true,
+                "group-focus-within/session:opacity-100 group-focus-within/session:pointer-events-auto": true,
               }}
             >
-              <Tooltip value={language.t("common.archive")} placement="top">
-                <IconButton
-                  icon="archive"
-                  variant="ghost"
-                  class="size-6 rounded-md"
-                  aria-label={language.t("common.archive")}
-                  onClick={(event) => {
-                    event.preventDefault()
-                    event.stopPropagation()
-                    void props.archiveSession(props.session)
-                  }}
-                />
-              </Tooltip>
+              <div class="flex items-center gap-0">
+                <Show when={hasFolders()}>
+                  <DropdownMenu modal={false} placement="bottom-end">
+                    <Tooltip value={language.t("session.folder.moveTo")} placement="top">
+                      <DropdownMenu.Trigger
+                        as={IconButton}
+                        icon="folder"
+                        variant="ghost"
+                        class="size-6 rounded-md"
+                        aria-label={language.t("session.folder.moveTo")}
+                      />
+                    </Tooltip>
+                    <DropdownMenu.Portal>
+                      <DropdownMenu.Content>
+                        <DropdownMenu.Group>
+                          <DropdownMenu.GroupLabel>{language.t("session.folder.moveTo")}</DropdownMenu.GroupLabel>
+                          <DropdownMenu.Item onSelect={() => props.folderActions?.move(props.session.id, undefined)}>
+                            <DropdownMenu.ItemLabel>{language.t("session.folder.uncategorized")}</DropdownMenu.ItemLabel>
+                          </DropdownMenu.Item>
+                          <DropdownMenu.Separator />
+                          <For each={props.folderActions?.folders() ?? []}>
+                            {(folder) => (
+                              <DropdownMenu.Item onSelect={() => props.folderActions?.move(props.session.id, folder.id)}>
+                                <DropdownMenu.ItemLabel>{folder.name}</DropdownMenu.ItemLabel>
+                              </DropdownMenu.Item>
+                            )}
+                          </For>
+                        </DropdownMenu.Group>
+                      </DropdownMenu.Content>
+                    </DropdownMenu.Portal>
+                  </DropdownMenu>
+                </Show>
+                <Tooltip value={language.t("common.archive")} placement="top">
+                  <IconButton
+                    icon="archive"
+                    variant="ghost"
+                    class="size-6 rounded-md"
+                    aria-label={language.t("common.archive")}
+                    onClick={(event) => {
+                      event.preventDefault()
+                      event.stopPropagation()
+                      void props.archiveSession(props.session)
+                    }}
+                  />
+                </Tooltip>
+              </div>
             </div>
           </Show>
         </div>

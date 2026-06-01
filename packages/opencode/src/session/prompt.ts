@@ -26,6 +26,7 @@ import * as Stream from "effect/Stream"
 import { Command } from "../command"
 import { pathToFileURL, fileURLToPath } from "url"
 import { Config } from "@/config/config"
+import { ConfigAttachment } from "@/config/attachment"
 import { ConfigMarkdown } from "@/config/markdown"
 import { SessionSummary } from "./summary"
 import { NamedError } from "@opencode-ai/core/util/error"
@@ -41,7 +42,7 @@ import { Truncate } from "@/tool/truncate"
 import { Image } from "@/image/image"
 import { extractDocx, formatDocxForModel, isDocxMime } from "@/document/docx"
 import { isDocxModelContext, withDocxMetadata } from "@/document/docx-metadata"
-import { decodeDataUrl, decodeDataUrlBytes } from "@/util/data-url"
+import { dataUrlBase64ByteLength, decodeDataUrl, decodeDataUrlBytes } from "@/util/data-url"
 import { Process } from "@/util/process"
 import { Cause, Effect, Exit, Latch, Layer, Option, Scope, Context, Schema, Types } from "effect"
 import * as EffectLogger from "@opencode-ai/core/effect/logger"
@@ -871,7 +872,10 @@ export const layer = Layer.effect(
                   ]
                 }
 
-                const docx = yield* Effect.tryPromise(() => extractDocx(decoded.bytes)).pipe(Effect.exit)
+                const cfg = yield* config.get()
+                const docx = yield* Effect.tryPromise(() =>
+                  extractDocx(decoded.bytes, ConfigAttachment.resolveDocx(cfg.attachment?.docx)),
+                ).pipe(Effect.exit)
                 if (Exit.isFailure(docx)) {
                   const error = Cause.squash(docx.cause)
                   return [
@@ -1148,8 +1152,23 @@ export const layer = Layer.effect(
         { message: info, parts: resolvedParts },
       )
 
+      const cfg = yield* config.get()
+      const maxBase64Bytes = cfg.attachment?.image?.max_base64_bytes ?? ConfigAttachment.DEFAULT_IMAGE_MAX_BASE64_BYTES
       const parts = yield* Effect.forEach(resolvedParts, (part) => {
         if (part.type !== "file" || !part.mime.startsWith("image/")) return Effect.succeed([part])
+        const base64Bytes = isDocxModelContext(part) ? dataUrlBase64ByteLength(part.url) : undefined
+        if (base64Bytes !== undefined && base64Bytes > maxBase64Bytes) {
+          return Effect.succeed([
+            {
+              id: PartID.ascending(),
+              messageID: info.id,
+              sessionID: input.sessionID,
+              type: "text" as const,
+              synthetic: true,
+              text: `[DOCX image omitted: ${part.filename ?? "image"} exceeded the image base64 byte limit (${maxBase64Bytes}).]`,
+            },
+          ])
+        }
 
         return image.normalize(part).pipe(
           Effect.catchIf(

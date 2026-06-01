@@ -165,6 +165,11 @@ export const { use: useHighlights, provider: HighlightsProvider } = createSimple
     }
 
     const start = (previous: string) => {
+      if (platform.platform !== "desktop") {
+        markSeen()
+        return
+      }
+
       if (!settings.general.releaseNotes()) {
         markSeen()
         return

@@ -22,3 +22,12 @@ export function decodeDataUrlBytes(url: string) {
       : new TextEncoder().encode(decodeURIComponent(body)),
   }
 }
+
+export function dataUrlBase64ByteLength(url: string) {
+  const idx = url.indexOf(",")
+  if (idx === -1) return
+
+  const head = url.slice(0, idx)
+  if (!head.includes(";base64")) return
+  return Buffer.byteLength(url.slice(idx + 1), "utf8")
+}

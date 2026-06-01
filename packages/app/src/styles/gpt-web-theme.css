@@ -206,6 +206,62 @@ html[data-theme="gpt-web"] [data-component="dropdown-menu-sub-content"] [data-sl
   background: var(--gpt-panel-hover);
 }
 
+html[data-theme="gpt-web"] [data-component="toast"],
+html[data-theme="gpt-web"] [data-component="toast-v2"] {
+  background: var(--gpt-panel-raised);
+  border: 1px solid var(--gpt-border);
+  border-radius: var(--gpt-radius-md);
+  box-shadow: var(--gpt-shadow-panel);
+  color: var(--text-base);
+}
+
+html[data-theme="gpt-web"] [data-component="toast"] [data-slot="toast-title"],
+html[data-theme="gpt-web"] [data-component="toast-v2"] [data-slot="toast-v2-title"] {
+  color: var(--text-strong);
+}
+
+html[data-theme="gpt-web"] [data-component="toast"] [data-slot="toast-description"],
+html[data-theme="gpt-web"] [data-component="toast-v2"] [data-slot="toast-v2-description"] {
+  color: var(--text-base);
+}
+
+html[data-theme="gpt-web"] [data-component="toast"] [data-slot="toast-icon"] [data-component="icon"],
+html[data-theme="gpt-web"] [data-component="toast-v2"] [data-slot="toast-v2-icon"],
+html[data-theme="gpt-web"] [data-component="toast-v2"] [data-slot="toast-v2-icon"] [data-component="icon"] {
+  color: var(--icon-base);
+}
+
+html[data-theme="gpt-web"] [data-component="toast"] [data-slot="toast-action"] {
+  color: var(--text-weak);
+}
+
+html[data-theme="gpt-web"] [data-component="toast"] [data-slot="toast-action"]:first-child {
+  color: var(--text-strong);
+}
+
+html[data-theme="gpt-web"] [data-component="toast"] [data-slot="toast-close-button"],
+html[data-theme="gpt-web"] [data-component="toast-v2"] [data-slot="toast-v2-close-button"] {
+  color: var(--icon-base);
+}
+
+html[data-theme="gpt-web"] [data-component="toast"] [data-slot="toast-close-button"]:hover,
+html[data-theme="gpt-web"] [data-component="toast-v2"] [data-slot="toast-v2-close-button"]:hover {
+  background: var(--gpt-panel-hover);
+  color: var(--icon-hover);
+}
+
+html[data-theme="gpt-web"] [data-component="toast"] [data-slot="toast-close-button"]:hover [data-slot="icon-svg"] {
+  color: var(--icon-hover);
+}
+
+html[data-theme="gpt-web"] [data-component="toast-v2"] [data-slot="toast-v2-close-button"] svg path {
+  stroke: currentColor;
+}
+
+html[data-theme="gpt-web"] [data-component="toast-v2"] [data-slot="toast-v2-actions"] [data-component="button-v2"] {
+  color: var(--text-strong);
+}
+
 html[data-theme="gpt-web"] [data-component="session-turn-diff-view"],
 html[data-theme="gpt-web"] [data-component="file-tree"],
 html[data-theme="gpt-web"] [data-component="terminal-panel"],

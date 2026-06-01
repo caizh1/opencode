@@ -1179,8 +1179,17 @@ export type ImageAttachmentConfig = {
   max_base64_bytes?: number
 }
 
+export type DocxAttachmentConfig = {
+  max_images?: number
+  max_image_bytes?: number
+  max_total_image_bytes?: number
+  timeout_ms?: number
+  max_text_chars?: number
+}
+
 export type AttachmentConfig = {
   image?: ImageAttachmentConfig
+  docx?: DocxAttachmentConfig
 }
 
 export type Config = {

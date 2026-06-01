@@ -1,6 +1,7 @@
 @import "@opencode-ai/ui/styles/tailwind";
 @import "@opencode-ai/ui/v2/styles/tailwind.css";
 @import "./styles/gpt-web-theme.css";
+@import "./styles/ios26-liquid-glass-theme.css";
 
 @font-face {
   font-family: "JetBrainsMono Nerd Font Mono";

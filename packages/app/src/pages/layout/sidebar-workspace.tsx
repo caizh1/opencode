@@ -19,6 +19,7 @@ import { useLanguage } from "@/context/language"
 import { pathKey } from "@/utils/path-key"
 import { NewSessionItem, SessionItem, SessionSkeleton } from "./sidebar-items"
 import { sortedRootSessions } from "./helpers"
+import { createSessionFolderStore, groupSessionsByFolder, type SessionFolder } from "./session-folders"
 import { useIsFetching } from "@tanstack/solid-query"
 
 type InlineEditorComponent = (props: {
@@ -54,6 +55,8 @@ export type WorkspaceSidebarContext = {
   showDeleteWorkspaceDialog: (root: string, directory: string) => void
   setScrollContainerRef: (el: HTMLDivElement | undefined, mobile?: boolean) => void
 }
+
+type SessionFolderController = ReturnType<typeof createSessionFolderStore>
 
 export const WorkspaceDragOverlay = (props: {
   sidebarProject: Accessor<LocalProject | undefined>
@@ -233,62 +236,196 @@ const WorkspaceActions = (props: {
   </div>
 )
 
+const SessionFolderGroupView = (props: {
+  directory: string
+  folder: SessionFolder
+  sessions: Session[]
+  slug: Accessor<string>
+  mobile?: boolean
+  ctx: WorkspaceSidebarContext
+  folders: SessionFolderController
+  language: ReturnType<typeof useLanguage>
+  allSessions: Accessor<Session[]>
+}): JSX.Element => {
+  const editorID = () => `session-folder:${props.directory}:${props.folder.id}`
+  const editing = createMemo(() => props.ctx.editorOpen(editorID()))
+  const open = () => props.folder.expanded ?? true
+
+  return (
+    <Collapsible
+      variant="ghost"
+      open={open()}
+      class="shrink-0"
+      onOpenChange={(value) => props.folders.setExpanded(props.folder.id, value)}
+    >
+      <div class="group/session-folder relative rounded-md hover:bg-surface-raised-base-hover [&:has(:focus-visible)]:bg-surface-raised-base-hover">
+        <Show
+          when={editing()}
+          fallback={
+            <Collapsible.Trigger class="flex items-center gap-1 min-w-0 w-full pl-2 pr-10 py-1.5 rounded-md text-left">
+              <Icon name={open() ? "chevron-down" : "chevron-right"} size="small" class="text-icon-base shrink-0" />
+              <Icon name="folder" size="small" class="text-icon-weak shrink-0" />
+              <span class="min-w-0 flex-1 truncate text-14-medium text-text-base">{props.folder.name}</span>
+              <span class="shrink-0 text-12-regular text-text-weaker">{props.sessions.length}</span>
+            </Collapsible.Trigger>
+          }
+        >
+          <div class="flex items-center gap-1 min-w-0 w-full pl-7 pr-10 py-1.5 rounded-md">
+            <Icon name="folder" size="small" class="text-icon-weak shrink-0" />
+            <props.ctx.InlineEditor
+              id={editorID()}
+              value={() => props.folder.name}
+              onSave={(next) => props.folders.rename(props.folder.id, next)}
+              class="min-w-0 flex-1 text-14-medium text-text-base"
+              displayClass="min-w-0 flex-1 truncate text-14-medium text-text-base"
+              editing={editing()}
+              stopPropagation
+              openOnDblClick={false}
+            />
+          </div>
+        </Show>
+        <div class="absolute right-1 top-1/2 -translate-y-1/2 opacity-0 pointer-events-none transition-opacity group-hover/session-folder:opacity-100 group-hover/session-folder:pointer-events-auto group-focus-within/session-folder:opacity-100 group-focus-within/session-folder:pointer-events-auto">
+          <DropdownMenu modal={false} placement="bottom-end">
+            <Tooltip value={props.language.t("common.moreOptions")} placement="top">
+              <DropdownMenu.Trigger
+                as={IconButton}
+                icon="dot-grid"
+                variant="ghost"
+                class="size-6 rounded-md"
+                aria-label={props.language.t("common.moreOptions")}
+              />
+            </Tooltip>
+            <DropdownMenu.Portal>
+              <DropdownMenu.Content>
+                <DropdownMenu.Item onSelect={() => props.ctx.openEditor(editorID(), props.folder.name)}>
+                  <DropdownMenu.ItemLabel>{props.language.t("common.rename")}</DropdownMenu.ItemLabel>
+                </DropdownMenu.Item>
+                <DropdownMenu.Item onSelect={() => props.folders.remove(props.folder.id)}>
+                  <DropdownMenu.ItemLabel>{props.language.t("session.folder.delete")}</DropdownMenu.ItemLabel>
+                </DropdownMenu.Item>
+              </DropdownMenu.Content>
+            </DropdownMenu.Portal>
+          </DropdownMenu>
+        </div>
+      </div>
+      <Collapsible.Content>
+        <div class="flex flex-col gap-1">
+          <For each={props.sessions}>
+            {(session) => (
+              <SessionItem
+                session={session}
+                list={props.allSessions()}
+                navList={props.ctx.navList}
+                slug={props.slug()}
+                mobile={props.mobile}
+                showChild
+                folderIndent={1}
+                sidebarExpanded={props.ctx.sidebarExpanded}
+                clearHoverProjectSoon={props.ctx.clearHoverProjectSoon}
+                prefetchSession={props.ctx.prefetchSession}
+                archiveSession={props.ctx.archiveSession}
+                folderActions={props.folders}
+              />
+            )}
+          </For>
+        </div>
+      </Collapsible.Content>
+    </Collapsible>
+  )
+}
+
 const WorkspaceSessionList = (props: {
+  directory: string
   slug: Accessor<string>
   mobile?: boolean
   ctx: WorkspaceSidebarContext
   showNew: Accessor<boolean>
   loading: Accessor<boolean>
   sessions: Accessor<Session[]>
+  folders: SessionFolderController
   hasMore: Accessor<boolean>
   loadMore: () => Promise<void>
   language: ReturnType<typeof useLanguage>
-}): JSX.Element => (
-  <nav class="flex flex-col gap-1">
-    <Show when={props.showNew()}>
-      <NewSessionItem
-        slug={props.slug()}
-        mobile={props.mobile}
-        sidebarExpanded={props.ctx.sidebarExpanded}
-        clearHoverProjectSoon={props.ctx.clearHoverProjectSoon}
-      />
-    </Show>
-    <Show when={props.loading()}>
-      <SessionSkeleton />
-    </Show>
-    <For each={props.sessions()}>
-      {(session) => (
-        <SessionItem
-          session={session}
-          list={props.sessions()}
-          navList={props.ctx.navList}
+}): JSX.Element => {
+  const grouped = createMemo(() => groupSessionsByFolder(props.sessions(), props.folders.state()))
+
+  return (
+    <nav class="flex flex-col gap-1">
+      <Show when={props.showNew()}>
+        <NewSessionItem
           slug={props.slug()}
           mobile={props.mobile}
-          showChild
           sidebarExpanded={props.ctx.sidebarExpanded}
           clearHoverProjectSoon={props.ctx.clearHoverProjectSoon}
-          prefetchSession={props.ctx.prefetchSession}
-          archiveSession={props.ctx.archiveSession}
         />
-      )}
-    </For>
-    <Show when={props.hasMore()}>
-      <div class="relative w-full py-1">
+      </Show>
+      <Show when={!props.loading()}>
         <Button
           variant="ghost"
-          class="flex w-full text-left justify-start text-14-regular text-text-weak pl-2 pr-10"
+          class="flex w-full text-left justify-start items-center gap-2 text-14-regular text-text-weak pl-2 pr-3"
           size="large"
           onClick={(e: MouseEvent) => {
-            void props.loadMore()
+            props.folders.create(props.language.t("session.folder.defaultName"))
             ;(e.currentTarget as HTMLButtonElement).blur()
           }}
         >
-          {props.language.t("common.loadMore")}
+          <Icon name="folder-add-left" size="small" />
+          <span class="min-w-0 truncate">{props.language.t("session.folder.create")}</span>
         </Button>
-      </div>
-    </Show>
-  </nav>
-)
+      </Show>
+      <Show when={props.loading()}>
+        <SessionSkeleton />
+      </Show>
+      <For each={grouped().groups}>
+        {(group) => (
+          <SessionFolderGroupView
+            directory={props.directory}
+            folder={group.folder}
+            sessions={group.sessions}
+            slug={props.slug}
+            mobile={props.mobile}
+            ctx={props.ctx}
+            folders={props.folders}
+            language={props.language}
+            allSessions={props.sessions}
+          />
+        )}
+      </For>
+      <For each={grouped().unfiled}>
+        {(session) => (
+          <SessionItem
+            session={session}
+            list={props.sessions()}
+            navList={props.ctx.navList}
+            slug={props.slug()}
+            mobile={props.mobile}
+            showChild
+            sidebarExpanded={props.ctx.sidebarExpanded}
+            clearHoverProjectSoon={props.ctx.clearHoverProjectSoon}
+            prefetchSession={props.ctx.prefetchSession}
+            archiveSession={props.ctx.archiveSession}
+            folderActions={props.folders}
+          />
+        )}
+      </For>
+      <Show when={props.hasMore()}>
+        <div class="relative w-full py-1">
+          <Button
+            variant="ghost"
+            class="flex w-full text-left justify-start text-14-regular text-text-weak pl-2 pr-10"
+            size="large"
+            onClick={(e: MouseEvent) => {
+              void props.loadMore()
+              ;(e.currentTarget as HTMLButtonElement).blur()
+            }}
+          >
+            {props.language.t("common.loadMore")}
+          </Button>
+        </div>
+      </Show>
+    </nav>
+  )
+}
 
 export const SortableWorkspace = (props: {
   ctx: WorkspaceSidebarContext
@@ -303,6 +440,7 @@ export const SortableWorkspace = (props: {
   const queryOptions = useQueryOptions()
   const language = useLanguage()
   const sortable = createSortable(props.directory)
+  const folders = createSessionFolderStore(props.directory, () => language.t("session.folder.defaultName"))
   const [workspaceStore, setWorkspaceStore] = serverSync.child(props.directory, { bootstrap: false })
   const [menu, setMenu] = createStore({
     open: false,
@@ -424,12 +562,14 @@ export const SortableWorkspace = (props: {
 
         <Collapsible.Content>
           <WorkspaceSessionList
+            directory={props.directory}
             slug={slug}
             mobile={props.mobile}
             ctx={props.ctx}
             showNew={showNew}
             loading={loading}
             sessions={sessions}
+            folders={folders}
             hasMore={hasMore}
             loadMore={loadMore}
             language={language}
@@ -449,6 +589,7 @@ export const LocalWorkspace = (props: {
   const serverSync = useServerSync()
   const queryOptions = useQueryOptions()
   const language = useLanguage()
+  const folders = createSessionFolderStore(props.project.worktree, () => language.t("session.folder.defaultName"))
   const workspace = createMemo(() => {
     const [store, setStore] = serverSync.child(props.project.worktree)
     return { store, setStore }
@@ -470,12 +611,14 @@ export const LocalWorkspace = (props: {
       class="size-full flex flex-col py-2 overflow-y-auto no-scrollbar [overflow-anchor:none]"
     >
       <WorkspaceSessionList
+        directory={props.project.worktree}
         slug={slug}
         mobile={props.mobile}
         ctx={props.ctx}
         showNew={() => false}
         loading={loading}
         sessions={sessions}
+        folders={folders}
         hasMore={hasMore}
         loadMore={loadMore}
         language={language}

@@ -101,6 +101,14 @@ function nextSessionTabsForOpen(current: SessionTabs | undefined, tab: string): 
   return { all, active: tab }
 }
 
+export function nextSessionTabsForCloseMany(current: SessionTabs | undefined, closing: readonly string[]) {
+  if (!current) return
+  const closed = new Set(closing)
+  const all = current.all.filter((tab) => !closed.has(tab))
+  const active = current.active && closed.has(current.active) ? all[0] : current.active
+  return { all, active }
+}
+
 const sessionPath = (key: string) => {
   const dir = key.split("/")[0]
   if (!dir) return
@@ -918,6 +926,12 @@ export const { use: useLayout, provider: LayoutProvider } = createSimpleContext(
               setStore("sessionTabs", session, "all", all)
               setStore("sessionTabs", session, "active", next)
             })
+          },
+          closeMany(tabs: readonly string[]) {
+            const session = key()
+            const next = nextSessionTabsForCloseMany(store.sessionTabs[session], tabs.map(normalize))
+            if (!next) return
+            setStore("sessionTabs", session, next)
           },
           move(tab: string, to: number) {
             const session = key()

@@ -103,6 +103,9 @@ export const dict = {
   "ui.scrollView.ariaLabel": "可滚动内容",
 
   "ui.tool.read": "读取",
+  "ui.tool.read.running": "读取中",
+  "ui.tool.read.completed": "已读取",
+  "ui.tool.read.error": "读取失败",
   "ui.tool.loaded": "已加载",
   "ui.tool.list": "列表",
   "ui.tool.glob": "Glob",

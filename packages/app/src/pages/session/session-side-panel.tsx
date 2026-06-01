@@ -24,7 +24,13 @@ import { useSettings } from "@/context/settings"
 import { useSync } from "@/context/sync"
 import { createFileTabListSync } from "@/pages/session/file-tab-scroll"
 import { FileTabContent } from "@/pages/session/file-tabs"
-import { createOpenSessionFileTab, createSessionTabs, getTabReorderIndex, type Sizing } from "@/pages/session/helpers"
+import {
+  closeFileTabs,
+  createOpenSessionFileTab,
+  createSessionTabs,
+  getTabReorderIndex,
+  type Sizing,
+} from "@/pages/session/helpers"
 import { setSessionHandoff } from "@/pages/session/handoff"
 import { useSessionLayout } from "@/pages/session/session-layout"
 
@@ -158,6 +164,19 @@ export function SessionSidePanel(props: {
     if (fileTreeTab() !== "changes") return
     layout.fileTree.setTab("all")
   }
+  const closeAllFileTabs = () => {
+    closeFileTabs({
+      tabs: openedTabs(),
+      pathFromTab: file.pathFromTab,
+      isDirty: file.isDirty,
+      discardEdit: file.discardEdit,
+      confirmDiscard: (paths) => {
+        if (typeof window === "undefined") return false
+        return window.confirm(language.t("session.files.edit.discardAllConfirm", { count: paths.length }))
+      },
+      closeTabs: tabs().closeMany,
+    })
+  }
 
   const [store, setStore] = createStore({
     activeDraggable: undefined as string | undefined,
@@ -287,7 +306,23 @@ export function SessionSidePanel(props: {
                         <SortableProvider ids={openedTabs()}>
                           <For each={openedTabs()}>{(tab) => <SortableTab tab={tab} onTabClose={tabs().close} />}</For>
                         </SortableProvider>
-                        <div class="bg-background-stronger h-full shrink-0 sticky right-0 z-10 flex items-center justify-center pr-3">
+                        <div class="bg-background-stronger h-full shrink-0 sticky right-0 z-10 flex items-center justify-center gap-0.5 pr-3">
+                          <Show when={openedTabs().length > 0}>
+                            <TooltipKeybind
+                              title={language.t("command.tab.closeAllFiles")}
+                              keybind={command.keybind("tab.closeAllFiles")}
+                              class="flex items-center"
+                            >
+                              <IconButton
+                                icon="close-small"
+                                variant="ghost"
+                                iconSize="large"
+                                class="!rounded-md"
+                                onClick={closeAllFileTabs}
+                                aria-label={language.t("command.tab.closeAllFiles")}
+                              />
+                            </TooltipKeybind>
+                          </Show>
                           <TooltipKeybind
                             title={language.t("command.file.open")}
                             keybind={command.keybind("file.open")}

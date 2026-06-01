@@ -444,22 +444,6 @@ export const Terminal = (props: TerminalProps) => {
           output.flush(resolve)
         })
 
-      if (restore && restoreSize) {
-        await write(restore)
-        fit.fit()
-        scheduleSize(t.cols, t.rows)
-        if (scrollY !== undefined) t.scrollToLine(scrollY)
-        startResize()
-      } else {
-        fit.fit()
-        scheduleSize(t.cols, t.rows)
-        if (restore) {
-          await write(restore)
-          if (scrollY !== undefined) t.scrollToLine(scrollY)
-        }
-        startResize()
-      }
-
       const once = { value: false }
       const decoder = new TextDecoder()
 
@@ -470,14 +454,37 @@ export const Terminal = (props: TerminalProps) => {
         local.onConnectError?.(err)
       }
 
-      const gone = () =>
+      const sessionExists = () =>
         client.pty
-          .get({ ptyID: id }, { throwOnError: false })
-          .then((result) => result.response.status === 404)
-          .catch((err) => {
-            debugTerminal("failed to inspect terminal session", err)
-            return false
+          .list(undefined, { throwOnError: false })
+          .then((result) => {
+            if (result.response.status !== 200) return true
+            return result.data?.some((pty) => pty.id === id) ?? false
           })
+          .catch((err) => {
+            debugTerminal("failed to inspect terminal sessions", err)
+            return true
+          })
+
+      if (restore && restoreSize) {
+        await write(restore)
+        fit.fit()
+        if (scrollY !== undefined) t.scrollToLine(scrollY)
+      } else {
+        fit.fit()
+        if (restore) {
+          await write(restore)
+          if (scrollY !== undefined) t.scrollToLine(scrollY)
+        }
+      }
+
+      if (!(await sessionExists())) {
+        fail(new Error(language.t("terminal.connectionLost.description")))
+        return
+      }
+
+      scheduleSize(t.cols, t.rows)
+      startResize()
 
       const connectToken = async () => {
         const result = await client.pty
@@ -494,7 +501,8 @@ export const Terminal = (props: TerminalProps) => {
           })
         if (!result) return
         if (result.response.status === 200 && result.data?.ticket) return result.data.ticket
-        if (result.response.status === 404 || result.response.status === 405) return
+        if (result.response.status === 404) throw new Error(language.t("terminal.connectionLost.description"))
+        if (result.response.status === 405) return
         if (result.response.status === 403)
           throw new Error("PTY connect ticket rejected by origin or CSRF checks. Check the server CORS config.")
         throw new Error(`PTY connect ticket failed with ${result.response.status}`)
@@ -508,7 +516,7 @@ export const Terminal = (props: TerminalProps) => {
         reconn = setTimeout(async () => {
           reconn = undefined
           if (disposed) return
-          if (await gone()) {
+          if (!(await sessionExists())) {
             if (disposed) return
             fail(err)
             return

@@ -1,0 +1,429 @@
+html[data-theme="ios26-liquid-glass"] {
+  --ios-page-bg: light-dark(#f4f9ff, #07101a);
+  --ios-page-bg-muted: light-dark(#edf6ff, #0b111a);
+  --ios-glass-bg: light-dark(rgb(255 255 255 / 0.68), rgb(20 30 45 / 0.58));
+  --ios-glass-bg-strong: light-dark(rgb(255 255 255 / 0.82), rgb(23 32 51 / 0.72));
+  --ios-glass-hover: light-dark(rgb(255 255 255 / 0.9), rgb(36 52 76 / 0.78));
+  --ios-glass-border: light-dark(rgb(255 255 255 / 0.72), rgb(255 255 255 / 0.14));
+  --ios-glass-border-strong: light-dark(rgb(10 132 255 / 0.24), rgb(100 210 255 / 0.24));
+  --ios-glass-highlight: light-dark(rgb(255 255 255 / 0.86), rgb(255 255 255 / 0.16));
+  --ios-glass-shadow:
+    inset 0 1px 0 var(--ios-glass-highlight),
+    0 0 0 1px light-dark(rgb(255 255 255 / 0.5), rgb(255 255 255 / 0.08)),
+    0 18px 48px light-dark(rgb(60 112 170 / 0.16), rgb(0 0 0 / 0.34));
+  --ios-glass-shadow-soft:
+    inset 0 1px 0 var(--ios-glass-highlight),
+    0 10px 28px light-dark(rgb(60 112 170 / 0.12), rgb(0 0 0 / 0.24));
+  --ios-glass-sheen:
+    radial-gradient(circle at 18% 0%, light-dark(rgb(255 255 255 / 0.92), rgb(255 255 255 / 0.2)) 0 24%, transparent 25%),
+    linear-gradient(135deg, light-dark(rgb(255 255 255 / 0.58), rgb(255 255 255 / 0.1)), transparent 52%);
+  --ios-tint-soft: light-dark(rgb(10 132 255 / 0.1), rgb(100 210 255 / 0.13));
+  --ios-tint-hover: light-dark(rgb(10 132 255 / 0.15), rgb(100 210 255 / 0.18));
+  --ios-radius-sm: 12px;
+  --ios-radius-md: 16px;
+  --ios-radius-lg: 22px;
+  --ios-radius-xl: 28px;
+  --radius-md: 0.75rem;
+  --radius-lg: 1rem;
+  --radius-xl: 1.35rem;
+  --v2-background-bg-base: var(--ios-page-bg);
+  --v2-background-bg-deep: var(--ios-page-bg-muted);
+  --v2-background-bg-layer-01: light-dark(#ffffff, #111927);
+  --v2-background-bg-layer-02: light-dark(#eef6ff, #172033);
+  --v2-background-bg-layer-03: light-dark(#dbeafe, #23364e);
+  --v2-background-bg-accent: var(--icon-interactive-base);
+  --v2-border-border-muted: light-dark(rgb(10 132 255 / 0.11), rgb(255 255 255 / 0.09));
+  --v2-border-border-base: light-dark(rgb(10 132 255 / 0.18), rgb(255 255 255 / 0.13));
+  --v2-border-border-strong: light-dark(rgb(10 132 255 / 0.26), rgb(100 210 255 / 0.24));
+  --v2-overlay-simple-overlay-hover: var(--ios-tint-soft);
+  --v2-overlay-simple-overlay-pressed: var(--ios-tint-hover);
+  --v2-elevation-raised: var(--ios-glass-shadow-soft);
+  --v2-elevation-floating: var(--ios-glass-shadow);
+  --v2-elevation-overlay: var(--ios-glass-shadow);
+  --v2-elevation-button-neutral:
+    inset 0 1px 0 var(--ios-glass-highlight), 0 0 0 1px var(--ios-glass-border),
+    0 1px 2px light-dark(rgb(60 112 170 / 0.12), rgb(0 0 0 / 0.26));
+  --v2-elevation-button-contrast:
+    inset 0 1px 0 light-dark(rgb(255 255 255 / 0.38), rgb(255 255 255 / 0.2)),
+    0 0 0 1px light-dark(rgb(10 132 255 / 0.34), rgb(100 210 255 / 0.3)),
+    0 8px 20px light-dark(rgb(10 132 255 / 0.18), rgb(0 0 0 / 0.34));
+  --shadow-xs-border: 0 0 0 1px var(--ios-glass-border), var(--ios-glass-shadow-soft);
+  --shadow-xs-border-base: 0 0 0 1px var(--ios-glass-border), var(--ios-glass-shadow-soft);
+  --shadow-lg-border-base: var(--ios-glass-shadow);
+  background:
+    linear-gradient(180deg, light-dark(#fbfdff, #07101a), var(--ios-page-bg-muted) 58%, var(--ios-page-bg));
+}
+
+html[data-theme="ios26-liquid-glass"] body {
+  background:
+    linear-gradient(180deg, light-dark(#fbfdff, #07101a), var(--ios-page-bg-muted) 58%, var(--ios-page-bg));
+}
+
+html[data-theme="ios26-liquid-glass"] [data-component="sidebar-rail"] {
+  background: linear-gradient(180deg, var(--ios-glass-bg-strong), var(--ios-glass-bg));
+  border-right: 1px solid var(--ios-glass-border);
+  box-shadow: inset -1px 0 0 light-dark(rgb(255 255 255 / 0.7), rgb(255 255 255 / 0.05));
+}
+
+html[data-theme="ios26-liquid-glass"] main,
+html[data-theme="ios26-liquid-glass"] [data-component="session-new-design"],
+html[data-theme="ios26-liquid-glass"] .bg-background-base,
+html[data-theme="ios26-liquid-glass"] .bg-background-stronger,
+html[data-theme="ios26-liquid-glass"] .bg-v2-background-bg-base {
+  background-color: var(--ios-page-bg);
+}
+
+html[data-theme="ios26-liquid-glass"] .bg-v2-background-bg-deep {
+  background-color: var(--ios-page-bg-muted);
+}
+
+html[data-theme="ios26-liquid-glass"] [data-session-title] {
+  background: linear-gradient(to bottom, var(--ios-page-bg) 0 62%, color-mix(in srgb, var(--ios-page-bg) 0%, transparent));
+}
+
+html[data-theme="ios26-liquid-glass"] [data-slot="session-title-child"],
+html[data-theme="ios26-liquid-glass"] [data-slot="session-title-parent"] {
+  font-size: 14px;
+  font-weight: 650;
+}
+
+html[data-theme="ios26-liquid-glass"] [data-component="session-turn"] {
+  color: var(--text-base);
+}
+
+html[data-theme="ios26-liquid-glass"] [data-slot="session-turn-message-container"] {
+  padding-left: clamp(16px, 3vw, 30px);
+  padding-right: clamp(16px, 3vw, 30px);
+}
+
+html[data-theme="ios26-liquid-glass"] [data-component="user-message"] {
+  color: var(--text-strong);
+}
+
+html[data-theme="ios26-liquid-glass"] [data-component="user-message"] [data-slot="user-message-body"],
+html[data-theme="ios26-liquid-glass"] [data-component="user-message"] [data-slot="user-message-attachments"] {
+  max-width: min(78%, 700px);
+}
+
+html[data-theme="ios26-liquid-glass"] [data-component="user-message"] [data-slot="user-message-text"] {
+  background:
+    var(--ios-glass-sheen),
+    linear-gradient(135deg, light-dark(rgb(255 255 255 / 0.82), rgb(31 45 66 / 0.72)), var(--ios-tint-soft));
+  border-color: var(--ios-glass-border);
+  border-radius: var(--ios-radius-lg);
+  box-shadow: var(--ios-glass-shadow-soft);
+  padding: 10px 14px;
+}
+
+html[data-theme="ios26-liquid-glass"] [data-component="user-message"]:hover [data-slot="user-message-text"] {
+  background:
+    var(--ios-glass-sheen),
+    linear-gradient(135deg, var(--ios-glass-hover), var(--ios-tint-hover));
+}
+
+html[data-theme="ios26-liquid-glass"] [data-component="assistant-message"] {
+  gap: 10px;
+}
+
+html[data-theme="ios26-liquid-glass"] [data-component="text-part"] {
+  margin-top: 18px;
+  color: var(--text-base);
+}
+
+html[data-theme="ios26-liquid-glass"] [data-component="markdown"] {
+  color: var(--text-base);
+}
+
+html[data-theme="ios26-liquid-glass"] [data-component="markdown"] pre,
+html[data-theme="ios26-liquid-glass"] [data-component="markdown-code"],
+html[data-theme="ios26-liquid-glass"] [data-component="bash-output"],
+html[data-theme="ios26-liquid-glass"] [data-component="tool-output"] {
+  background: light-dark(rgb(255 255 255 / 0.72), rgb(11 17 26 / 0.72));
+  border-color: var(--ios-glass-border-strong);
+  border-radius: var(--ios-radius-md);
+  box-shadow: inset 0 1px 0 var(--ios-glass-highlight);
+}
+
+html[data-theme="ios26-liquid-glass"] [data-component="tool-part-wrapper"],
+html[data-theme="ios26-liquid-glass"] [data-component="edit-tool"],
+html[data-theme="ios26-liquid-glass"] [data-component="write-tool"],
+html[data-theme="ios26-liquid-glass"] [data-component="apply-patch-tool"],
+html[data-theme="ios26-liquid-glass"] [data-component="session-turn-diffs-group"],
+html[data-theme="ios26-liquid-glass"] [data-component="context-tool-group-list"],
+html[data-theme="ios26-liquid-glass"] [data-component="todos"],
+html[data-theme="ios26-liquid-glass"] .error-card {
+  border-radius: var(--ios-radius-md);
+}
+
+html[data-theme="ios26-liquid-glass"] [data-component="tool-trigger"],
+html[data-theme="ios26-liquid-glass"] [data-component="edit-trigger"],
+html[data-theme="ios26-liquid-glass"] [data-component="write-trigger"],
+html[data-theme="ios26-liquid-glass"] [data-slot="apply-patch-trigger-content"],
+html[data-theme="ios26-liquid-glass"] [data-slot="session-turn-diffs-header"] {
+  border-radius: var(--ios-radius-sm);
+}
+
+html[data-theme="ios26-liquid-glass"] [data-component="session-prompt-dock"] {
+  background: linear-gradient(to top, var(--ios-page-bg) 80%, color-mix(in srgb, var(--ios-page-bg) 0%, transparent));
+  padding-bottom: 16px;
+}
+
+html[data-theme="ios26-liquid-glass"] [data-component="session-prompt-dock"] > div {
+  max-width: min(840px, calc(100vw - 32px));
+}
+
+html[data-theme="ios26-liquid-glass"] [data-component="session-composer"],
+html[data-theme="ios26-liquid-glass"] [data-component="session-new-composer"] {
+  background:
+    var(--ios-glass-sheen),
+    linear-gradient(135deg, var(--ios-glass-bg-strong), var(--ios-glass-bg));
+  border: 1px solid var(--ios-glass-border);
+  border-radius: var(--ios-radius-xl);
+  box-shadow: var(--ios-glass-shadow);
+}
+
+html[data-theme="ios26-liquid-glass"] [data-component="session-composer-text"],
+html[data-theme="ios26-liquid-glass"] [data-component="session-new-design-text"],
+html[data-theme="ios26-liquid-glass"] [data-component="prompt-input"] {
+  color: var(--text-strong);
+}
+
+html[data-theme="ios26-liquid-glass"] [data-component="button"],
+html[data-theme="ios26-liquid-glass"] [data-component="icon-button"],
+html[data-theme="ios26-liquid-glass"] [data-component="button-v2"] {
+  border-radius: var(--ios-radius-sm);
+  transition:
+    background-color 140ms ease,
+    border-color 140ms ease,
+    box-shadow 140ms ease;
+}
+
+html[data-theme="ios26-liquid-glass"] [data-component="button"][data-variant="ghost"]:hover:not(:disabled),
+html[data-theme="ios26-liquid-glass"] [data-component="icon-button"][data-variant="ghost"]:hover:not(:disabled) {
+  background: var(--ios-tint-soft);
+}
+
+html[data-theme="ios26-liquid-glass"] [data-component="tabs"] [data-slot="tabs-list"],
+html[data-theme="ios26-liquid-glass"] [data-component="tabs-v2"] [data-slot="tabs-v2-list"] {
+  background: linear-gradient(135deg, var(--ios-glass-bg-strong), var(--ios-glass-bg));
+  border-color: var(--ios-glass-border);
+  box-shadow: inset 0 1px 0 var(--ios-glass-highlight);
+}
+
+html[data-theme="ios26-liquid-glass"] [data-component="tabs"] [data-slot="tabs-trigger-wrapper"],
+html[data-theme="ios26-liquid-glass"] [data-component="tabs-v2"] [data-slot="tabs-v2-trigger-wrapper"] {
+  border-radius: var(--ios-radius-sm);
+}
+
+html[data-theme="ios26-liquid-glass"] [data-component="dialog-content"],
+html[data-theme="ios26-liquid-glass"] [data-component="popover-content"],
+html[data-theme="ios26-liquid-glass"] [data-component="dropdown-menu-content"],
+html[data-theme="ios26-liquid-glass"] [data-component="dropdown-menu-sub-content"] {
+  background:
+    var(--ios-glass-sheen),
+    linear-gradient(135deg, var(--ios-glass-bg-strong), var(--ios-glass-bg));
+  border-color: var(--ios-glass-border);
+  border-radius: var(--ios-radius-md);
+  box-shadow: var(--ios-glass-shadow);
+}
+
+html[data-theme="ios26-liquid-glass"] [data-component="toast"] {
+  background:
+    var(--ios-glass-sheen),
+    linear-gradient(135deg, var(--ios-glass-bg-strong), var(--ios-glass-bg));
+  border-color: var(--ios-glass-border);
+  color: var(--text-base);
+  box-shadow: var(--ios-glass-shadow);
+}
+
+html[data-theme="ios26-liquid-glass"] [data-component="toast"] [data-slot="toast-icon"] [data-component="icon"],
+html[data-theme="ios26-liquid-glass"] [data-component="toast"] [data-slot="toast-title"],
+html[data-theme="ios26-liquid-glass"] [data-component="toast"] [data-slot="toast-action"]:first-child {
+  color: var(--text-strong);
+}
+
+html[data-theme="ios26-liquid-glass"] [data-component="toast"] [data-slot="toast-description"] {
+  color: var(--text-base);
+}
+
+html[data-theme="ios26-liquid-glass"] [data-component="toast"] [data-slot="toast-action"] {
+  color: var(--text-weak);
+}
+
+html[data-theme="ios26-liquid-glass"] [data-component="toast"] [data-slot="toast-close-button"],
+html[data-theme="ios26-liquid-glass"] [data-component="toast"] [data-slot="toast-close-button"] [data-component="icon"] {
+  color: var(--icon-base);
+}
+
+html[data-theme="ios26-liquid-glass"] [data-component="dropdown-menu-content"] [data-slot="dropdown-menu-item"]:hover,
+html[data-theme="ios26-liquid-glass"] [data-component="dropdown-menu-sub-content"] [data-slot="dropdown-menu-item"]:hover,
+html[data-theme="ios26-liquid-glass"] [data-component="dropdown-menu-content"] [data-slot="dropdown-menu-sub-trigger"]:hover,
+html[data-theme="ios26-liquid-glass"] [data-component="dropdown-menu-sub-content"] [data-slot="dropdown-menu-sub-trigger"]:hover {
+  background: var(--ios-tint-soft);
+}
+
+html[data-theme="ios26-liquid-glass"]
+  [data-component="status-popover-panel"]
+  [data-component="tabs"][data-variant="alt"]
+  [data-slot="tabs-list"] {
+  gap: 6px;
+  padding-left: 10px;
+  padding-right: 10px;
+}
+
+html[data-theme="ios26-liquid-glass"]
+  [data-component="status-popover-panel"]
+  [data-component="tabs"][data-variant="alt"]
+  [data-slot="tabs-trigger-wrapper"] {
+  height: 26px;
+  align-self: center;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  color: var(--text-base);
+}
+
+html[data-theme="ios26-liquid-glass"]
+  [data-component="status-popover-panel"]
+  [data-component="tabs"][data-variant="alt"]
+  [data-slot="tabs-trigger"] {
+  border-bottom: 0;
+  padding: 0 9px;
+}
+
+html[data-theme="ios26-liquid-glass"]
+  [data-component="status-popover-panel"]
+  [data-component="tabs"][data-variant="alt"]
+  [data-slot="tabs-trigger-wrapper"]:hover:not(:disabled) {
+  background: var(--ios-tint-soft);
+  color: var(--text-strong);
+}
+
+html[data-theme="ios26-liquid-glass"]
+  [data-component="status-popover-panel"]
+  [data-component="tabs"][data-variant="alt"]
+  [data-slot="tabs-trigger-wrapper"]:has([data-slot="tabs-trigger"]:focus-visible) {
+  background: var(--ios-tint-soft);
+  box-shadow: 0 0 0 2px var(--ios-glass-border-strong);
+  color: var(--text-strong);
+}
+
+html[data-theme="ios26-liquid-glass"]
+  [data-component="status-popover-panel"]
+  [data-component="tabs"][data-variant="alt"]
+  [data-slot="tabs-trigger-wrapper"]:has([data-selected]) {
+  background:
+    var(--ios-glass-sheen),
+    linear-gradient(135deg, var(--ios-glass-bg-strong), var(--ios-glass-bg));
+  border-color: var(--ios-glass-border);
+  border-bottom-color: var(--ios-glass-border);
+  box-shadow:
+    inset 0 1px 0 var(--ios-glass-highlight),
+    0 4px 12px light-dark(rgb(60 112 170 / 0.12), rgb(0 0 0 / 0.22));
+  color: var(--text-strong);
+}
+
+html[data-theme="ios26-liquid-glass"]
+  [data-component="status-popover-panel"]
+  [data-component="tabs"][data-variant="alt"]
+  [data-slot="tabs-trigger-wrapper"]:has([data-selected]):has([data-slot="tabs-trigger"]:focus-visible) {
+  box-shadow:
+    inset 0 1px 0 var(--ios-glass-highlight),
+    0 4px 12px light-dark(rgb(60 112 170 / 0.12), rgb(0 0 0 / 0.22)),
+    0 0 0 2px var(--ios-glass-border-strong);
+}
+
+html[data-theme="ios26-liquid-glass"] [data-component="settings-general"] {
+  --ios-settings-row-border: light-dark(rgb(10 132 255 / 0.12), rgb(255 255 255 / 0.08));
+}
+
+html[data-theme="ios26-liquid-glass"] [data-component="settings-page-header"] {
+  background: linear-gradient(
+    to bottom,
+    var(--ios-page-bg) 0 66%,
+    color-mix(in srgb, var(--ios-page-bg) 0%, transparent)
+  );
+  padding: 16px 0 20px;
+}
+
+html[data-theme="ios26-liquid-glass"] [data-component="settings-page-header"] [data-slot="settings-page-header-content"] {
+  min-height: 50px;
+  justify-content: center;
+  padding: 13px 16px;
+  background:
+    var(--ios-glass-sheen),
+    linear-gradient(135deg, var(--ios-glass-bg-strong), var(--ios-glass-bg));
+  border: 1px solid var(--ios-glass-border);
+  border-radius: var(--ios-radius-lg);
+  box-shadow: var(--ios-glass-shadow-soft);
+}
+
+html[data-theme="ios26-liquid-glass"] [data-component="settings-page-header"] [data-slot="settings-page-title"] {
+  line-height: 1.25;
+}
+
+html[data-theme="ios26-liquid-glass"] [data-component="settings-list"] {
+  overflow: hidden;
+  background:
+    var(--ios-glass-sheen),
+    linear-gradient(135deg, var(--ios-glass-bg-strong), var(--ios-glass-bg));
+  border: 1px solid var(--ios-glass-border);
+  border-radius: var(--ios-radius-lg);
+  box-shadow: var(--ios-glass-shadow-soft);
+}
+
+html[data-theme="ios26-liquid-glass"] [data-component="settings-row"] {
+  border-color: var(--ios-settings-row-border);
+}
+
+html[data-theme="ios26-liquid-glass"] [data-component="session-turn-diff-view"],
+html[data-theme="ios26-liquid-glass"] [data-component="file-tree"],
+html[data-theme="ios26-liquid-glass"] [data-component="terminal-panel"],
+html[data-theme="ios26-liquid-glass"] [data-slot="tabs-content"] {
+  background: var(--ios-page-bg);
+}
+
+html[data-theme="ios26-liquid-glass"] [data-component="session-progress-bar"] {
+  background: linear-gradient(90deg, var(--icon-interactive-base), light-dark(#5ac8fa, #64d2ff));
+}
+
+html[data-theme="ios26-liquid-glass"] ::selection {
+  background: light-dark(rgb(10 132 255 / 0.22), rgb(100 210 255 / 0.32));
+}
+
+@supports ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  html[data-theme="ios26-liquid-glass"] [data-component="session-composer"],
+  html[data-theme="ios26-liquid-glass"] [data-component="session-new-composer"],
+  html[data-theme="ios26-liquid-glass"] [data-component="dialog-content"],
+  html[data-theme="ios26-liquid-glass"] [data-component="popover-content"],
+  html[data-theme="ios26-liquid-glass"] [data-component="dropdown-menu-content"],
+  html[data-theme="ios26-liquid-glass"] [data-component="dropdown-menu-sub-content"],
+  html[data-theme="ios26-liquid-glass"] [data-component="toast"] {
+    -webkit-backdrop-filter: blur(18px) saturate(150%);
+    backdrop-filter: blur(18px) saturate(150%);
+  }
+
+  html[data-theme="ios26-liquid-glass"] [data-component="settings-page-header"] [data-slot="settings-page-header-content"] {
+    -webkit-backdrop-filter: blur(12px) saturate(135%);
+    backdrop-filter: blur(12px) saturate(135%);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html[data-theme="ios26-liquid-glass"] *,
+  html[data-theme="ios26-liquid-glass"] *::before,
+  html[data-theme="ios26-liquid-glass"] *::after {
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+  }
+}
+
+@media (max-width: 767px) {
+  html[data-theme="ios26-liquid-glass"] [data-component="user-message"] [data-slot="user-message-body"],
+  html[data-theme="ios26-liquid-glass"] [data-component="user-message"] [data-slot="user-message-attachments"] {
+    max-width: 88%;
+  }
+
+  html[data-theme="ios26-liquid-glass"] [data-component="session-prompt-dock"] > div {
+    max-width: calc(100vw - 20px);
+  }
+}

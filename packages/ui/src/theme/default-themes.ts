@@ -14,6 +14,7 @@ import everforestThemeJson from "./themes/everforest.json"
 import flexokiThemeJson from "./themes/flexoki.json"
 import githubThemeJson from "./themes/github.json"
 import gptWebThemeJson from "./themes/gpt-web.json"
+import ios26LiquidGlassThemeJson from "./themes/ios26-liquid-glass.json"
 import gruvboxThemeJson from "./themes/gruvbox.json"
 import kanagawaThemeJson from "./themes/kanagawa.json"
 import lucentOrngThemeJson from "./themes/lucent-orng.json"
@@ -53,6 +54,7 @@ export const everforestTheme = everforestThemeJson as DesktopTheme
 export const flexokiTheme = flexokiThemeJson as DesktopTheme
 export const githubTheme = githubThemeJson as DesktopTheme
 export const gptWebTheme = gptWebThemeJson as DesktopTheme
+export const ios26LiquidGlassTheme = ios26LiquidGlassThemeJson as DesktopTheme
 export const gruvboxTheme = gruvboxThemeJson as DesktopTheme
 export const kanagawaTheme = kanagawaThemeJson as DesktopTheme
 export const lucentOrngTheme = lucentOrngThemeJson as DesktopTheme
@@ -93,6 +95,7 @@ export const DEFAULT_THEMES: Record<string, DesktopTheme> = {
   flexoki: flexokiTheme,
   github: githubTheme,
   "gpt-web": gptWebTheme,
+  "ios26-liquid-glass": ios26LiquidGlassTheme,
   gruvbox: gruvboxTheme,
   kanagawa: kanagawaTheme,
   "lucent-orng": lucentOrngTheme,

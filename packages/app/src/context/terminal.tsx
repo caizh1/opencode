@@ -213,6 +213,12 @@ function createWorkspaceTerminalSession(
   })
   onCleanup(unsub)
 
+  const save = (pty: Partial<LocalPTY> & { id: string }) => {
+    const index = store.all.findIndex((x) => x.id === pty.id)
+    if (index === -1) return
+    setStore("all", index, (item) => ({ ...item, ...pty }))
+  }
+
   const update = (client: ReturnType<typeof useSDK>["client"], pty: Partial<LocalPTY> & { id: string }) => {
     const index = store.all.findIndex((x) => x.id === pty.id)
     const previous = index >= 0 ? store.all[index] : undefined
@@ -300,6 +306,7 @@ function createWorkspaceTerminalSession(
     update(pty: Partial<LocalPTY> & { id: string }) {
       update(sdk.client, pty)
     },
+    save,
     trim(id: string) {
       const index = store.all.findIndex((x) => x.id === id)
       if (index === -1) return
@@ -326,6 +333,7 @@ function createWorkspaceTerminalSession(
         update(pty: Partial<LocalPTY> & { id: string }) {
           update(client, pty)
         },
+        save,
         async clone(id: string) {
           await clone(client, id)
         },

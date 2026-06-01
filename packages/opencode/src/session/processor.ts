@@ -4,6 +4,7 @@ import * as Stream from "effect/Stream"
 import { Agent } from "@/agent/agent"
 import { Bus } from "@/bus"
 import { Config } from "@/config/config"
+import { ConfigAttachment } from "@/config/attachment"
 import { Permission } from "@/permission"
 import { Plugin } from "@/plugin"
 import { Snapshot } from "@/snapshot"
@@ -19,6 +20,8 @@ import { SessionSummary } from "./summary"
 import type { Provider } from "@/provider/provider"
 import { Question } from "@/question"
 import { errorMessage } from "@/util/error"
+import { isDocxModelContext } from "@/document/docx-metadata"
+import { dataUrlBase64ByteLength } from "@/util/data-url"
 import * as Log from "@opencode-ai/core/util/log"
 import { isRecord } from "@/util/record"
 import { EventV2Bridge } from "@/event-v2-bridge"
@@ -57,6 +60,8 @@ type Input = {
   sessionID: SessionID
   model: Provider.Model
 }
+
+type NormalizedAttachment = { attachment: MessageV2.FilePart } | { warning: string } | { failed: true }
 
 export interface Interface {
   readonly create: (input: Input) => Effect.Effect<Handle>
@@ -452,25 +457,55 @@ export const layer = Layer.effect(
           case "tool-result": {
             const toolCall = yield* readToolCall(value.id)
             const rawOutput = toolResultOutput(value)
-            const normalized = yield* Effect.forEach(rawOutput.attachments ?? [], (attachment) =>
-              attachment.mime.startsWith("image/")
-                ? image.normalize(attachment).pipe(
+            const cfg = yield* config.get()
+            const maxBase64Bytes =
+              cfg.attachment?.image?.max_base64_bytes ?? ConfigAttachment.DEFAULT_IMAGE_MAX_BASE64_BYTES
+            const normalized = yield* Effect.forEach(
+              rawOutput.attachments ?? [],
+              (attachment): Effect.Effect<NormalizedAttachment> =>
+                Effect.gen(function* () {
+                  if (!attachment.mime.startsWith("image/")) return { attachment } satisfies NormalizedAttachment
+
+                  const docx = isDocxModelContext(attachment)
+                  const base64Bytes = docx ? dataUrlBase64ByteLength(attachment.url) : undefined
+                  if (base64Bytes !== undefined && base64Bytes > maxBase64Bytes) {
+                    return {
+                      warning: `[DOCX image omitted: ${attachment.filename ?? "image"} exceeded the image base64 byte limit (${maxBase64Bytes}).]`,
+                    } satisfies NormalizedAttachment
+                  }
+
+                  const resized = yield* image.normalize(attachment).pipe(
                     Effect.catchIf(
                       (error) => error instanceof Image.ResizerUnavailableError,
                       () => Effect.succeed(attachment),
                     ),
                     Effect.exit,
                   )
-                : Effect.succeed(Exit.succeed<MessageV2.FilePart>(attachment)),
+                  if (Exit.isSuccess(resized)) return { attachment: resized.value } satisfies NormalizedAttachment
+                  if (!docx) return { failed: true } satisfies NormalizedAttachment
+
+                  const error = Cause.squash(resized.cause)
+                  return {
+                    warning: `[DOCX image omitted: ${attachment.filename ?? "image"} could not be decoded or resized: ${
+                      error instanceof Error ? error.message : String(error)
+                    }]`,
+                  } satisfies NormalizedAttachment
+                }),
             )
-            const omitted = normalized.filter(Exit.isFailure).length
-            const attachments = normalized.filter(Exit.isSuccess).map((item) => item.value)
+            const omitted = normalized.filter((item) => "failed" in item && item.failed).length
+            const warnings = normalized.flatMap((item) => ("warning" in item && item.warning ? [item.warning] : []))
+            const attachments = normalized.flatMap((item) => ("attachment" in item ? [item.attachment] : []))
+            const warningText = [
+              ...warnings,
+              omitted === 0
+                ? ""
+                : `[${omitted} image${omitted === 1 ? "" : "s"} omitted: could not be resized below the image size limit.]`,
+            ]
+              .filter(Boolean)
+              .join("\n")
             const output = {
               ...rawOutput,
-              output:
-                omitted === 0
-                  ? rawOutput.output
-                  : `${rawOutput.output}\n\n[${omitted} image${omitted === 1 ? "" : "s"} omitted: could not be resized below the image size limit.]`,
+              output: warningText ? `${rawOutput.output}\n\n${warningText}` : rawOutput.output,
               attachments: attachments.length ? attachments : undefined,
             }
             // TODO(v2): Temporary dual-write while migrating session messages to v2 events.

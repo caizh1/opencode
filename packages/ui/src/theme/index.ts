@@ -50,6 +50,7 @@ export {
   flexokiTheme,
   githubTheme,
   gptWebTheme,
+  ios26LiquidGlassTheme,
   gruvboxTheme,
   kanagawaTheme,
   lucentOrngTheme,

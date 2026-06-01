@@ -19,6 +19,17 @@ beforeEach(() => {
 })
 
 describe("theme preload", () => {
+  test("defaults to liquid glass when no theme preference is saved", () => {
+    document.head.innerHTML = '<meta name="theme-color" content="">'
+
+    run()
+
+    expect(document.documentElement.dataset.theme).toBe("ios26-liquid-glass")
+    expect(document.documentElement.dataset.colorScheme).toBe("light")
+    expect(localStorage.getItem("opencode-theme-id")).toBeNull()
+    expect(document.querySelector("meta[name='theme-color']")?.getAttribute("content")).toBe("#fbfdff")
+  })
+
   test("migrates legacy oc-1 to oc-2 before mount", () => {
     localStorage.setItem("opencode-theme-id", "oc-1")
     localStorage.setItem("opencode-theme-css-light", "--background-base:#fff;")

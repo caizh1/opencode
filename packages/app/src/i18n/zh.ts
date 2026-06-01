@@ -57,6 +57,7 @@ export const dict = {
   "command.file.save": "保存文件",
 
   "command.tab.close": "关闭标签页",
+  "command.tab.closeAllFiles": "Close all file tabs",
 
   "command.context.addSelection": "将所选内容添加到上下文",
   "command.context.addSelection.description": "添加当前文件中选中的行",
@@ -526,6 +527,11 @@ export const dict = {
   "session.files.all": "所有文件",
   "session.files.empty": "无文件",
   "session.files.binaryContent": "二进制文件（无法显示内容）",
+  "session.files.deleteSelected": "Delete selected ({{count}})",
+  "session.files.deleteSelectedConfirm": "Delete {{count}} selected items?",
+  "session.files.deleteFailed": "Failed to delete files",
+  "session.files.deleteFailedDescription": "{{count}} items could not be deleted.",
+  "session.files.select": "Select",
   "session.files.edit.edit": "编辑",
   "session.files.edit.discard": "放弃",
   "session.files.edit.unsaved": "未保存",
@@ -534,6 +540,13 @@ export const dict = {
   "session.files.edit.readOnly": "只读",
   "session.files.edit.externalChange": "文件已在外部变更。保存会覆盖磁盘上的最新版本。",
   "session.files.edit.discardConfirm": "放弃“{{name}}”中未保存的更改吗？",
+  "session.files.edit.discardAllConfirm": "Discard unsaved changes in {{count}} files?",
+
+  "session.folder.create": "New folder",
+  "session.folder.defaultName": "Folder",
+  "session.folder.delete": "Delete folder",
+  "session.folder.moveTo": "Move to folder",
+  "session.folder.uncategorized": "Uncategorized",
   "session.messages.renderEarlier": "显示更早的消息",
   "session.messages.loadingEarlier": "正在加载更早的消息...",
   "session.messages.loadEarlier": "加载更早的消息",

@@ -50,6 +50,7 @@ const readLayer = (flags: Partial<RuntimeFlags.Info> = {}) =>
     Agent.defaultLayer,
     AppFileSystem.defaultLayer,
     CrossSpawnSpawner.defaultLayer,
+    Config.defaultLayer,
     Instruction.defaultLayer,
     LSP.defaultLayer,
     referenceLayer(flags),
@@ -623,6 +624,23 @@ describe("tool.read binary detection", () => {
           mime: "image/png",
           metadata: { opencodeDocx: { hidden: true, modelContext: true, kind: "image" } },
         })
+      }),
+    30_000,
+  )
+
+  it.live(
+    "uses DOCX attachment limits from config",
+    () =>
+      Effect.gen(function* () {
+        const dir = yield* tmpdirScoped({ config: { attachment: { docx: { max_images: 0 } } } })
+        yield* put(path.join(dir, "brief.docx"), yield* Effect.promise(() => createDocx()))
+
+        const result = yield* exec(dir, { filePath: path.join(dir, "brief.docx") })
+        expect(result.output).toContain("DOCX read successfully")
+        expect(result.output).toContain("Hello World")
+        expect(result.output).toContain("[Image omitted: image1.png]")
+        expect(result.output).toContain("image count limit (0)")
+        expect(result.attachments).toBeUndefined()
       }),
     30_000,
   )

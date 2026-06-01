@@ -58,6 +58,7 @@ import { animate } from "motion"
 import { useLocation } from "@solidjs/router"
 import { attached, inline, kind } from "./message-file"
 import { readPartText } from "./message-part-text"
+import { readToolTrigger } from "./read-tool-trigger"
 
 async function writeClipboard(text: string): Promise<boolean> {
   const body = typeof document === "undefined" ? undefined : document.body
@@ -746,26 +747,19 @@ function contextToolDetail(part: ToolPart): string | undefined {
   return undefined
 }
 
+function toolStateTitle(part: ToolPart) {
+  return "title" in part.state && typeof part.state.title === "string" ? part.state.title : undefined
+}
+
 function contextToolTrigger(part: ToolPart, i18n: ReturnType<typeof useI18n>) {
   const input = (part.state.input ?? {}) as Record<string, unknown>
   const path = typeof input.path === "string" ? input.path : "/"
-  const filePath = typeof input.filePath === "string" ? input.filePath : undefined
   const pattern = typeof input.pattern === "string" ? input.pattern : undefined
   const include = typeof input.include === "string" ? input.include : undefined
-  const offset = typeof input.offset === "number" ? input.offset : undefined
-  const limit = typeof input.limit === "number" ? input.limit : undefined
 
   switch (part.tool) {
-    case "read": {
-      const args: string[] = []
-      if (offset !== undefined) args.push("offset=" + offset)
-      if (limit !== undefined) args.push("limit=" + limit)
-      return {
-        title: i18n.t("ui.tool.read"),
-        subtitle: filePath ? getFilename(filePath) : "",
-        args,
-      }
-    }
+    case "read":
+      return readToolTrigger(input, part.state.status, toolStateTitle(part), i18n)
     case "list":
       return {
         title: i18n.t("ui.tool.list"),
@@ -1018,10 +1012,10 @@ export function ContextToolGroup(props: { parts: ToolPart[]; busy?: boolean; onS
                             <span data-slot="basic-tool-tool-title">
                               <TextShimmer text={trigger().title} active={running()} />
                             </span>
-                            <Show when={!running() && trigger().subtitle}>
+                            <Show when={trigger().subtitle}>
                               <span data-slot="basic-tool-tool-subtitle">{trigger().subtitle}</span>
                             </Show>
-                            <Show when={!running() && trigger().args?.length}>
+                            <Show when={trigger().args?.length}>
                               <For each={trigger().args}>
                                 {(arg) => <span data-slot="basic-tool-tool-arg">{arg}</span>}
                               </For>
@@ -1283,6 +1277,7 @@ export interface ToolProps {
   input: Record<string, any>
   metadata: Record<string, any>
   tool: string
+  title?: string
   sessionID?: string
   output?: string
   status?: string
@@ -1428,6 +1423,7 @@ PART_MAPPING["tool"] = function ToolPartDisplay(props) {
               input={input()}
               tool={part().tool}
               sessionID={part().sessionID}
+              title={toolStateTitle(part())}
               metadata={partMetadata()}
               // @ts-expect-error
               output={part().state.output}
@@ -1602,9 +1598,6 @@ ToolRegistry.register({
   render(props) {
     const data = useData()
     const i18n = useI18n()
-    const args: string[] = []
-    if (props.input.offset) args.push("offset=" + props.input.offset)
-    if (props.input.limit) args.push("limit=" + props.input.limit)
     const loaded = createMemo(() => {
       if (props.status !== "completed") return []
       const value = props.metadata.loaded
@@ -1613,15 +1606,7 @@ ToolRegistry.register({
     })
     return (
       <>
-        <BasicTool
-          {...props}
-          icon="glasses"
-          trigger={{
-            title: i18n.t("ui.tool.read"),
-            subtitle: props.input.filePath ? getFilename(props.input.filePath) : "",
-            args,
-          }}
-        />
+        <BasicTool {...props} icon="glasses" trigger={readToolTrigger(props.input, props.status, props.title, i18n)} />
         <For each={loaded()}>
           {(filepath) => (
             <div data-component="tool-loaded-file">

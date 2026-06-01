@@ -54,7 +54,13 @@ import { usePlatform } from "@/context/platform"
 import { useSettings } from "@/context/settings"
 import { useSessionLayout } from "@/pages/session/session-layout"
 import { createSessionTabs } from "@/pages/session/helpers"
-import { createTextFragment, getCursorPosition, setCursorPosition, setRangeEdge } from "./prompt-input/editor-dom"
+import {
+  createTextFragment,
+  getCursorPosition,
+  setCursorPosition,
+  setCursorPositionFromPoint,
+  setRangeEdge,
+} from "./prompt-input/editor-dom"
 import { createPromptAttachments } from "./prompt-input/attachments"
 import { ACCEPTED_FILE_TYPES } from "./prompt-input/files"
 import {
@@ -1082,6 +1088,10 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
     focusEditor: () => {
       editorRef.focus()
       setCursorPosition(editorRef, promptLength(prompt.current()))
+    },
+    focusEditorAt: (x, y) => {
+      editorRef.focus()
+      return setCursorPositionFromPoint(editorRef, x, y)
     },
     addPart,
     readClipboardImage: platform.readClipboardImage,

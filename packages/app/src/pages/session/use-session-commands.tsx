@@ -16,7 +16,7 @@ import { useTerminal } from "@/context/terminal"
 import { showToast } from "@opencode-ai/ui/toast"
 import { findLast } from "@opencode-ai/core/util/array"
 import { getFilename } from "@opencode-ai/core/util/path"
-import { createSessionTabs } from "@/pages/session/helpers"
+import { closeFileTabs, createSessionTabs } from "@/pages/session/helpers"
 import { extractPromptFromParts } from "@/utils/prompt"
 import { UserMessage } from "@opencode-ai/sdk/v2"
 import { useSessionLayout } from "@/pages/session/session-layout"
@@ -73,6 +73,7 @@ export const useSessionCommands = (actions: SessionCommandContext) => {
   })
   const activeFileTab = tabState.activeFileTab
   const closableTab = tabState.closableTab
+  const openedTabs = tabState.openedTabs
   const desktopV2 = () => platform.platform === "desktop" && USE_DESKTOP_V2
   const shown = () => (desktopV2() ? settings.general.showFileTree() : true)
 
@@ -235,6 +236,19 @@ export const useSessionCommands = (actions: SessionCommandContext) => {
       file.discardEdit(path)
     }
     tabs().close(tab)
+  }
+  const closeAllFileTabs = () => {
+    closeFileTabs({
+      tabs: openedTabs(),
+      pathFromTab: file.pathFromTab,
+      isDirty: file.isDirty,
+      discardEdit: file.discardEdit,
+      confirmDiscard: (paths) => {
+        if (typeof window === "undefined") return false
+        return window.confirm(language.t("session.files.edit.discardAllConfirm", { count: paths.length }))
+      },
+      closeTabs: tabs().closeMany,
+    })
   }
 
   const saveActiveFile = () => {
@@ -466,6 +480,12 @@ export const useSessionCommands = (actions: SessionCommandContext) => {
       keybind: "mod+w",
       disabled: !closableTab(),
       onSelect: closeTab,
+    }),
+    fileCommand({
+      id: "tab.closeAllFiles",
+      title: language.t("command.tab.closeAllFiles"),
+      disabled: openedTabs().length === 0,
+      onSelect: closeAllFileTabs,
     }),
   ]
 

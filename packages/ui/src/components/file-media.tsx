@@ -274,14 +274,12 @@ export function FileMedia(props: { media?: FileMediaOptions; fallback: () => JSX
             if (k !== "image" && k !== "audio") return props.fallback()
             if (k === "image") {
               return (
-                <div class="flex justify-center bg-background-stronger px-6 py-4">
-                  <img
-                    src={value()}
-                    alt={cfg()?.path}
-                    class="max-h-[60vh] max-w-full rounded border border-border-weak-base bg-background-base object-contain"
-                    onLoad={onLoad}
-                  />
-                </div>
+                <ZoomableMediaPreview
+                  src={value()}
+                  alt={cfg()?.path}
+                  class="bg-background-stronger px-6 py-4"
+                  onLoad={onLoad}
+                />
               )
             }
 

@@ -18,6 +18,7 @@ type ImageRef = {
   filename: string
   mime: string
   index: number
+  size?: number
 }
 
 export type DocxImage = {
@@ -31,6 +32,25 @@ export type ExtractedDocx = {
   text: string
   images: DocxImage[]
   warnings: string[]
+}
+
+export type ExtractDocxOptions = {
+  maxImages: number
+  maxImageBytes: number
+  maxTotalImageBytes: number
+  timeoutMs: number
+  maxTextChars: number
+}
+
+type ExtractContext = {
+  entries: Map<string, Entry>
+  images: ImageRef[]
+  imageByTarget: Map<string, ImageRef>
+  omittedByTarget: Map<string, string>
+  warnings: string[]
+  options: ExtractDocxOptions
+  started: number
+  totalImageBytes: number
 }
 
 const parser = new XMLParser({
@@ -51,6 +71,13 @@ const imageMimes = new Map([
   ["png", "image/png"],
   ["webp", "image/webp"],
 ])
+const defaultOptions: ExtractDocxOptions = {
+  maxImages: 20,
+  maxImageBytes: 3_932_160,
+  maxTotalImageBytes: 20_971_520,
+  timeoutMs: 30_000,
+  maxTextChars: 200_000,
+}
 
 export function isDocxMime(mime: string) {
   return mime.split(";", 1)[0]?.trim().toLowerCase() === DOCX_MIME
@@ -76,12 +103,21 @@ export function formatDocxForModel(input: { filename?: string; docx: ExtractedDo
   return [`<docx filename="${filename}">`, body, images, warnings, "</docx>"].filter(Boolean).join("\n")
 }
 
-export async function extractDocx(bytes: Uint8Array): Promise<ExtractedDocx> {
+export async function extractDocx(bytes: Uint8Array, options?: Partial<ExtractDocxOptions>): Promise<ExtractedDocx> {
   configure(zipOptions)
   const reader = new ZipReader(new Uint8ArrayReader(Uint8Array.from(bytes)), zipOptions)
   try {
     const entries = new Map((await reader.getEntries()).map((entry) => [entry.filename, entry]))
-    const ctx = { images: [] as ImageRef[], warnings: [] as string[] }
+    const ctx: ExtractContext = {
+      entries,
+      images: [],
+      imageByTarget: new Map(),
+      omittedByTarget: new Map(),
+      warnings: [],
+      options: { ...defaultOptions, ...(options ?? {}) },
+      started: Date.now(),
+      totalImageBytes: 0,
+    }
     const main = await extractPart(entries, "word/document.xml", "Document", ctx, false)
     const documentRelationships = await relationshipsFor(entries, "word/document.xml")
     const related = (
@@ -100,11 +136,15 @@ export async function extractDocx(bytes: Uint8Array): Promise<ExtractedDocx> {
         extractPart(entries, "word/endnotes.xml", "Endnotes", ctx, true),
       ])
     ).filter(Boolean)
-    const images = await Promise.all(ctx.images.map((image) => readImage(entries, image, ctx.warnings)))
+    const images: DocxImage[] = []
+    for (const image of ctx.images) {
+      const data = await readImage(ctx, image)
+      if (data) images.push(data)
+    }
 
     return {
-      text: [main, ...related, ...notes].filter(Boolean).join("\n\n"),
-      images: images.filter((image): image is DocxImage => image !== undefined),
+      text: truncateText([main, ...related, ...notes].filter(Boolean).join("\n\n"), ctx),
+      images,
       warnings: ctx.warnings,
     }
   } finally {
@@ -116,7 +156,7 @@ async function extractPart(
   entries: Map<string, Entry>,
   file: string,
   label: string,
-  ctx: { images: ImageRef[]; warnings: string[] },
+  ctx: ExtractContext,
   titled: boolean,
 ): Promise<string> {
   const xml = await readText(entries, file)
@@ -132,7 +172,7 @@ async function extractPart(
 function blocksForPart(
   nodes: XmlNode[],
   relationships: { byId: Map<string, Relationship> },
-  ctx: { images: ImageRef[]; warnings: string[] },
+  ctx: ExtractContext,
 ): string {
   const root = firstByLocal(nodes, ["document", "hdr", "ftr", "footnotes", "endnotes"])
   const container = firstByLocal(children(root), ["body"]) ?? root
@@ -151,11 +191,7 @@ function blocksForPart(
   return blocks.join("\n\n")
 }
 
-function blockText(
-  nodes: XmlNode[],
-  relationships: { byId: Map<string, Relationship> },
-  ctx: { images: ImageRef[]; warnings: string[] },
-): string {
+function blockText(nodes: XmlNode[], relationships: { byId: Map<string, Relationship> }, ctx: ExtractContext): string {
   return nodes
     .flatMap((node) => {
       const name = localName(nodeName(node))
@@ -168,11 +204,7 @@ function blockText(
     .join("\n")
 }
 
-function tableText(
-  node: XmlNode,
-  relationships: { byId: Map<string, Relationship> },
-  ctx: { images: ImageRef[]; warnings: string[] },
-): string {
+function tableText(node: XmlNode, relationships: { byId: Map<string, Relationship> }, ctx: ExtractContext): string {
   return children(node)
     .filter((child) => localName(nodeName(child)) === "tr")
     .map((row) =>
@@ -189,19 +221,11 @@ function tableText(
     .join("\n")
 }
 
-function paragraphText(
-  node: XmlNode,
-  relationships: { byId: Map<string, Relationship> },
-  ctx: { images: ImageRef[]; warnings: string[] },
-): string {
+function paragraphText(node: XmlNode, relationships: { byId: Map<string, Relationship> }, ctx: ExtractContext): string {
   return inlineText(children(node), relationships, ctx).replace(/[ \t]+\n/g, "\n")
 }
 
-function inlineText(
-  nodes: XmlNode[],
-  relationships: { byId: Map<string, Relationship> },
-  ctx: { images: ImageRef[]; warnings: string[] },
-): string {
+function inlineText(nodes: XmlNode[], relationships: { byId: Map<string, Relationship> }, ctx: ExtractContext): string {
   return nodes
     .map((node) => {
       const name = localName(nodeName(node))
@@ -216,11 +240,7 @@ function inlineText(
     .join("")
 }
 
-function imageText(
-  node: XmlNode,
-  relationships: { byId: Map<string, Relationship> },
-  ctx: { images: ImageRef[]; warnings: string[] },
-) {
+function imageText(node: XmlNode, relationships: { byId: Map<string, Relationship> }, ctx: ExtractContext) {
   const name = localName(nodeName(node))
   if (name !== "blip" && name !== "imagedata") return
 
@@ -235,18 +255,64 @@ function imageText(
 
   const mime = imageMime(relationship.target)
   const filename = path.posix.basename(relationship.target)
+  const target = relationship.target
+  const existing = ctx.imageByTarget.get(target)
+  if (existing) return `[Image ${existing.index}: ${existing.filename}]`
+  const omitted = ctx.omittedByTarget.get(target)
+  if (omitted) return omitted
+
+  if (timedOut(ctx))
+    return omitImage(ctx, target, filename, `DOCX image extraction timed out after ${ctx.options.timeoutMs}ms.`)
   if (!mime) {
-    ctx.warnings.push(`Image ${filename} was omitted because its format is unsupported.`)
-    return `[Image omitted: ${filename}]`
+    return omitImage(ctx, target, filename, `Image ${filename} was omitted because its format is unsupported.`)
+  }
+  if (ctx.images.length >= ctx.options.maxImages) {
+    return omitImage(
+      ctx,
+      target,
+      filename,
+      `Image ${filename} was omitted because the DOCX image count limit (${ctx.options.maxImages}) was reached.`,
+    )
+  }
+
+  const entry = ctx.entries.get(target)
+  if (!entry?.getData || entry.directory) {
+    return omitImage(
+      ctx,
+      target,
+      filename,
+      `Image ${filename} was omitted because it was missing from the DOCX package.`,
+    )
+  }
+
+  const size = entrySize(entry)
+  if (size !== undefined && size > ctx.options.maxImageBytes) {
+    return omitImage(
+      ctx,
+      target,
+      filename,
+      `Image ${filename} was omitted because it exceeded the per-image byte limit (${ctx.options.maxImageBytes}).`,
+    )
+  }
+  if (size !== undefined && ctx.totalImageBytes + size > ctx.options.maxTotalImageBytes) {
+    return omitImage(
+      ctx,
+      target,
+      filename,
+      `Image ${filename} was omitted because it exceeded the DOCX total image byte limit (${ctx.options.maxTotalImageBytes}).`,
+    )
   }
 
   const ref = {
-    target: relationship.target,
+    target,
     filename,
     mime,
     index: ctx.images.length + 1,
+    size,
   }
   ctx.images.push(ref)
+  ctx.imageByTarget.set(target, ref)
+  if (size !== undefined) ctx.totalImageBytes += size
   return `[Image ${ref.index}: ${filename}]`
 }
 
@@ -287,27 +353,114 @@ async function readText(entries: Map<string, Entry>, file: string) {
   return entry.getData(new TextWriter(), zipOptions)
 }
 
-async function readImage(entries: Map<string, Entry>, image: ImageRef, warnings: string[]) {
-  const entry = entries.get(image.target)
+async function readImage(ctx: ExtractContext, image: ImageRef) {
+  if (timedOut(ctx)) {
+    warn(
+      ctx,
+      `Image ${image.filename} was omitted because DOCX image extraction timed out after ${ctx.options.timeoutMs}ms.`,
+    )
+    return
+  }
+
+  const entry = ctx.entries.get(image.target)
   if (!entry?.getData || entry.directory) {
-    warnings.push(`Image ${image.filename} was omitted because it was missing from the DOCX package.`)
+    warn(ctx, `Image ${image.filename} was omitted because it was missing from the DOCX package.`)
     return
   }
 
   try {
+    const bytes = await promiseWithTimeout(
+      entry.getData(new Uint8ArrayWriter(), zipOptions),
+      timeRemaining(ctx),
+      `Image ${image.filename} timed out after ${ctx.options.timeoutMs}ms.`,
+    )
+    if (image.size === undefined) {
+      if (bytes.length > ctx.options.maxImageBytes) {
+        warn(
+          ctx,
+          `Image ${image.filename} was omitted because it exceeded the per-image byte limit (${ctx.options.maxImageBytes}).`,
+        )
+        return
+      }
+      if (ctx.totalImageBytes + bytes.length > ctx.options.maxTotalImageBytes) {
+        warn(
+          ctx,
+          `Image ${image.filename} was omitted because it exceeded the DOCX total image byte limit (${ctx.options.maxTotalImageBytes}).`,
+        )
+        return
+      }
+      ctx.totalImageBytes += bytes.length
+    }
+    if (image.size !== undefined && bytes.length > ctx.options.maxImageBytes) {
+      ctx.totalImageBytes -= image.size
+      warn(
+        ctx,
+        `Image ${image.filename} was omitted because it exceeded the per-image byte limit (${ctx.options.maxImageBytes}).`,
+      )
+      return
+    }
+
     return {
       filename: image.filename,
       mime: image.mime,
-      data: Buffer.from(await entry.getData(new Uint8ArrayWriter(), zipOptions)).toString("base64"),
+      data: Buffer.from(bytes).toString("base64"),
       index: image.index,
     }
   } catch (error) {
-    warnings.push(
+    warn(
+      ctx,
       `Image ${image.filename} was omitted because it could not be read: ${
         error instanceof Error ? error.message : String(error)
       }`,
     )
   }
+}
+
+function omitImage(ctx: ExtractContext, target: string, filename: string, warning: string) {
+  warn(ctx, warning)
+  const placeholder = `[Image omitted: ${filename}]`
+  ctx.omittedByTarget.set(target, placeholder)
+  return placeholder
+}
+
+function warn(ctx: ExtractContext, message: string) {
+  if (!ctx.warnings.includes(message)) ctx.warnings.push(message)
+}
+
+function timedOut(ctx: ExtractContext) {
+  return timeRemaining(ctx) <= 0
+}
+
+function timeRemaining(ctx: ExtractContext) {
+  return ctx.options.timeoutMs - (Date.now() - ctx.started)
+}
+
+async function promiseWithTimeout<T>(promise: Promise<T>, ms: number, message: string) {
+  if (ms <= 0) throw new Error(message)
+
+  let timeout: ReturnType<typeof setTimeout> | undefined
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<T>((_, reject) => {
+        timeout = setTimeout(() => reject(new Error(message)), ms)
+      }),
+    ])
+  } finally {
+    if (timeout) clearTimeout(timeout)
+  }
+}
+
+function entrySize(entry: Entry) {
+  const data = entry as Entry & { uncompressedSize?: unknown; size?: unknown }
+  if (typeof data.uncompressedSize === "number") return data.uncompressedSize
+  if (typeof data.size === "number") return data.size
+}
+
+function truncateText(text: string, ctx: ExtractContext) {
+  if (text.length <= ctx.options.maxTextChars) return text
+  warn(ctx, `DOCX text was truncated to ${ctx.options.maxTextChars} characters.`)
+  return text.slice(0, ctx.options.maxTextChars)
 }
 
 function parseXml(xml: string): XmlNode[] {
