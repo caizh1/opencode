@@ -10,6 +10,7 @@ import { useSync } from "@/context/sync"
 import { getSessionHandoff, setSessionHandoff } from "@/pages/session/handoff"
 import { useSessionKey } from "@/pages/session/session-layout"
 import { SessionPermissionDock } from "@/pages/session/composer/session-permission-dock"
+import { SessionPlanExitDock } from "@/pages/session/composer/session-plan-exit-dock"
 import { SessionQuestionDock } from "@/pages/session/composer/session-question-dock"
 import { SessionFollowupDock } from "@/pages/session/composer/session-followup-dock"
 import { SessionRevertDock } from "@/pages/session/composer/session-revert-dock"
@@ -60,6 +61,8 @@ export function SessionComposerRegion(props: {
   const parentID = createMemo(() => info()?.parentID)
   const child = createMemo(() => !!parentID())
   const showComposer = createMemo(() => !props.state.blocked() || child())
+  const planExitRequest = createMemo(() => props.state.planExitRequest())
+  const questionRequest = createMemo(() => (planExitRequest() ? undefined : props.state.questionRequest()))
 
   const previewPrompt = () =>
     prompt
@@ -155,7 +158,15 @@ export function SessionComposerRegion(props: {
           "md:max-w-200 md:mx-auto 2xl:max-w-[1000px]": props.centered,
         }}
       >
-        <Show when={props.state.questionRequest()} keyed>
+        <Show when={planExitRequest()} keyed>
+          {(request) => (
+            <div>
+              <SessionPlanExitDock request={request} onSubmit={props.onResponseSubmit} />
+            </div>
+          )}
+        </Show>
+
+        <Show when={questionRequest()} keyed>
           {(request) => (
             <div>
               <SessionQuestionDock request={request} onSubmit={props.onResponseSubmit} />

@@ -21,6 +21,11 @@ export function shouldSkipSessionPrefetch(input: { message: boolean; info?: Meta
   return (input.now ?? Date.now()) - input.info.at < SESSION_PREFETCH_TTL
 }
 
+export function hasCompleteSessionMessageCache(input: { messages: readonly unknown[] | undefined; limit: number | undefined }) {
+  if (input.limit === undefined) return false
+  return input.messages !== undefined && input.messages.length >= input.limit
+}
+
 const cache = new Map<string, Meta>()
 const inflight = new Map<string, Promise<Meta | undefined>>()
 const rev = new Map<string, number>()

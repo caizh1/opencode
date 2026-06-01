@@ -317,6 +317,10 @@ export type QuestionRejected = {
 
 export type Todo = {
   /**
+   * Unique identifier for the todo item
+   */
+  id: string
+  /**
    * Brief description of the task
    */
   content: string

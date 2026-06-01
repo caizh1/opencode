@@ -15,9 +15,21 @@ import { useNotification } from "@/context/notification"
 import { usePermission } from "@/context/permission"
 import { messageAgentColor } from "@/utils/agent"
 import { sessionTitle } from "@/utils/session-title"
+import { getRelativeTime } from "@/utils/time"
 import { sessionPermissionRequest } from "../session/composer/session-request-tree"
 import { childSessionOnPath, getProjectAvatarSource, hasProjectPermissions } from "./helpers"
 import type { createSessionFolderStore } from "./session-folders"
+
+type InlineEditorComponent = (props: {
+  id: string
+  value: Accessor<string>
+  onSave: (next: string) => void
+  class?: string
+  displayClass?: string
+  editing?: boolean
+  stopPropagation?: boolean
+  openOnDblClick?: boolean
+}) => JSX.Element
 
 export const ProjectIcon = (props: {
   project: LocalProject
@@ -87,6 +99,10 @@ export type SessionItemProps = {
   clearHoverProjectSoon: () => void
   prefetchSession: (session: Session, priority?: "high" | "low") => void
   archiveSession: (session: Session) => Promise<void>
+  renameSession: (session: Session, title: string) => Promise<void>
+  editorOpen: (id: string) => boolean
+  openEditor: (id: string, value: string) => void
+  InlineEditor: InlineEditorComponent
   folderActions?: ReturnType<typeof createSessionFolderStore>
 }
 
@@ -104,43 +120,101 @@ const SessionRow = (props: {
   sidebarOpened: Accessor<boolean>
   warmPress: () => void
   warmFocus: () => void
+  editorID: string
+  editing: Accessor<boolean>
+  InlineEditor: InlineEditorComponent
+  openRename: () => void
+  renameSession: (title: string) => void
 }): JSX.Element => {
-  const title = () => sessionTitle(props.session.title)
+  const language = useLanguage()
+  const title = () => sessionTitle(props.session.title) ?? ""
+  const updatedAt = () => props.session.time.updated ?? props.session.time.created
+  const titleClass = "text-14-regular text-text-strong min-w-0 flex-1 truncate"
+  const LeadingStatus = () => (
+    <Show when={props.hasPermissions() || props.hasError() || props.unseenCount() > 0}>
+      <div
+        class="shrink-0 size-6 flex items-center justify-center"
+        style={{ color: props.tint() ?? "var(--icon-interactive-base)" }}
+      >
+        <Switch>
+          <Match when={props.hasPermissions()}>
+            <div class="size-1.5 rounded-full bg-surface-warning-strong" />
+          </Match>
+          <Match when={props.hasError()}>
+            <div class="size-1.5 rounded-full bg-text-diff-delete-base" />
+          </Match>
+          <Match when={props.unseenCount() > 0}>
+            <div class="size-1.5 rounded-full bg-text-interactive-base" />
+          </Match>
+        </Switch>
+      </div>
+    </Show>
+  )
+  const TrailingStatus = () => (
+    <Show
+      when={props.isWorking()}
+      fallback={
+        <span class="shrink-0 whitespace-nowrap text-12-regular text-text-weak">
+          {getRelativeTime(new Date(updatedAt()).toISOString(), language.t)}
+        </span>
+      }
+    >
+      <div
+        class="shrink-0 size-6 flex items-center justify-center"
+        style={{ color: props.tint() ?? "var(--icon-interactive-base)" }}
+      >
+        <Spinner class="size-[15px]" />
+      </div>
+    </Show>
+  )
+  const titleInput = () => (
+    <props.InlineEditor
+      id={props.editorID}
+      value={title}
+      onSave={props.renameSession}
+      class={titleClass}
+      displayClass={titleClass}
+      editing={props.editing()}
+      stopPropagation
+      openOnDblClick={false}
+    />
+  )
 
   return (
-    <A
-      href={`/${props.slug}/session/${props.session.id}`}
-      class={`flex items-center gap-2 min-w-0 w-full text-left focus:outline-none ${props.dense ? "py-0.5" : "py-1"}`}
-      onPointerDown={props.warmPress}
-      onFocus={props.warmFocus}
-      onClick={() => {
-        if (props.sidebarOpened()) return
-        props.clearHoverProjectSoon()
-      }}
-    >
-      <Show when={props.isWorking() || props.hasPermissions() || props.hasError() || props.unseenCount() > 0}>
-        <div
-          class="shrink-0 size-6 flex items-center justify-center"
-          style={{ color: props.tint() ?? "var(--icon-interactive-base)" }}
+    <Show
+      when={props.editing()}
+      fallback={
+        <A
+          href={`/${props.slug}/session/${props.session.id}`}
+          class={`flex items-center gap-2 min-w-0 w-full text-left focus:outline-none ${props.dense ? "py-0.5" : "py-1"}`}
+          onPointerDown={props.warmPress}
+          onFocus={props.warmFocus}
+          onClick={() => {
+            if (props.sidebarOpened()) return
+            props.clearHoverProjectSoon()
+          }}
         >
-          <Switch>
-            <Match when={props.isWorking()}>
-              <Spinner class="size-[15px]" />
-            </Match>
-            <Match when={props.hasPermissions()}>
-              <div class="size-1.5 rounded-full bg-surface-warning-strong" />
-            </Match>
-            <Match when={props.hasError()}>
-              <div class="size-1.5 rounded-full bg-text-diff-delete-base" />
-            </Match>
-            <Match when={props.unseenCount() > 0}>
-              <div class="size-1.5 rounded-full bg-text-interactive-base" />
-            </Match>
-          </Switch>
-        </div>
-      </Show>
-      <span class="text-14-regular text-text-strong min-w-0 flex-1 truncate">{title()}</span>
-    </A>
+          <LeadingStatus />
+          <span
+            class={titleClass}
+            onDblClick={(event) => {
+              event.preventDefault()
+              event.stopPropagation()
+              props.openRename()
+            }}
+          >
+            {title()}
+          </span>
+          <TrailingStatus />
+        </A>
+      }
+    >
+      <div class={`flex items-center gap-2 min-w-0 w-full text-left ${props.dense ? "py-0.5" : "py-1"}`}>
+        <LeadingStatus />
+        {titleInput()}
+        <TrailingStatus />
+      </div>
+    </Show>
   )
 }
 
@@ -165,12 +239,21 @@ export const SessionItem = (props: SessionItemProps): JSX.Element => {
   })
 
   const tint = createMemo(() => messageAgentColor(sessionStore.message[props.session.id], sessionStore.agent))
-  const tooltip = createMemo(() => props.showTooltip ?? (props.mobile || !props.sidebarExpanded()))
+  const editorID = () => `session:${props.session.directory}:${props.session.id}`
+  const title = () => sessionTitle(props.session.title) ?? ""
+  const editing = createMemo(() => props.editorOpen(editorID()))
+  const tooltip = createMemo(() => !editing() && (props.showTooltip ?? (props.mobile || !props.sidebarExpanded())))
   const hasFolders = createMemo(() => (props.folderActions?.folders().length ?? 0) > 0)
   const currentChild = createMemo(() => {
     if (!props.showChild) return
     return childSessionOnPath(sessionStore.session, props.session.id, params.id)
   })
+  const openRename = () => props.openEditor(editorID(), title())
+  const rename = (next: string) => {
+    const trimmed = next.trim()
+    if (!trimmed || trimmed === title()) return
+    void props.renameSession(props.session, trimmed)
+  }
 
   const warm = (span: number, priority: "high" | "low") => {
     const nav = props.navList?.()
@@ -207,6 +290,11 @@ export const SessionItem = (props: SessionItemProps): JSX.Element => {
       sidebarOpened={layout.sidebar.opened}
       warmPress={() => warm(2, "high")}
       warmFocus={() => warm(2, "high")}
+      editorID={editorID()}
+      editing={editing}
+      InlineEditor={props.InlineEditor}
+      openRename={openRename}
+      renameSession={rename}
     />
   )
 
@@ -239,6 +327,7 @@ export const SessionItem = (props: SessionItemProps): JSX.Element => {
           <Show when={!props.level}>
             <div
               class="shrink-0 overflow-hidden transition-[width,opacity]"
+              onPointerDown={(event) => event.stopPropagation()}
               classList={{
                 "w-12 opacity-100 pointer-events-auto": !!props.mobile && hasFolders(),
                 "w-6 opacity-100 pointer-events-auto": !!props.mobile && !hasFolders(),
@@ -281,19 +370,27 @@ export const SessionItem = (props: SessionItemProps): JSX.Element => {
                     </DropdownMenu.Portal>
                   </DropdownMenu>
                 </Show>
-                <Tooltip value={language.t("common.archive")} placement="top">
-                  <IconButton
-                    icon="archive"
-                    variant="ghost"
-                    class="size-6 rounded-md"
-                    aria-label={language.t("common.archive")}
-                    onClick={(event) => {
-                      event.preventDefault()
-                      event.stopPropagation()
-                      void props.archiveSession(props.session)
-                    }}
-                  />
-                </Tooltip>
+                <DropdownMenu modal={false} placement="bottom-end">
+                  <Tooltip value={language.t("common.moreOptions")} placement="top">
+                    <DropdownMenu.Trigger
+                      as={IconButton}
+                      icon="dot-grid"
+                      variant="ghost"
+                      class="size-6 rounded-md"
+                      aria-label={language.t("common.moreOptions")}
+                    />
+                  </Tooltip>
+                  <DropdownMenu.Portal>
+                    <DropdownMenu.Content>
+                      <DropdownMenu.Item onSelect={openRename}>
+                        <DropdownMenu.ItemLabel>{language.t("common.rename")}</DropdownMenu.ItemLabel>
+                      </DropdownMenu.Item>
+                      <DropdownMenu.Item onSelect={() => void props.archiveSession(props.session)}>
+                        <DropdownMenu.ItemLabel>{language.t("common.archive")}</DropdownMenu.ItemLabel>
+                      </DropdownMenu.Item>
+                    </DropdownMenu.Content>
+                  </DropdownMenu.Portal>
+                </DropdownMenu>
               </div>
             </div>
           </Show>

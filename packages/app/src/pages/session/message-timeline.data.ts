@@ -1,9 +1,25 @@
 import { parseCommentNote, readCommentMetadata } from "@/utils/comment-note"
 import { AssistantMessage, Part, SessionStatus, SnapshotFileDiff, UserMessage } from "@opencode-ai/sdk/v2"
-import { groupParts, PartGroup, renderable } from "@opencode-ai/ui/message-part"
 import { Data, Equal } from "effect"
 
 export type SummaryDiff = SnapshotFileDiff & { file: string }
+
+type PartRef = {
+  messageID: string
+  partID: string
+}
+
+export type PartGroup =
+  | {
+      key: string
+      type: "part"
+      ref: PartRef
+    }
+  | {
+      key: string
+      type: "context"
+      refs: PartRef[]
+    }
 
 export type TimelineRowMap = {
   CommentStrip: {
@@ -30,6 +46,9 @@ export type TimelineRowMap = {
   Error: { userMessageID: string; text: string }
   BottomSpacer: {}
 }
+
+const CONTEXT_GROUP_TOOLS = new Set(["read", "glob", "grep", "list"])
+const HIDDEN_TOOLS = new Set<string>()
 
 export namespace TimelineRow {
   export class CommentStrip extends Data.TaggedClass("CommentStrip")<{
@@ -106,6 +125,71 @@ export namespace TimelineRow {
   }
 }
 
+function isContextGroupTool(part: Part) {
+  return part.type === "tool" && CONTEXT_GROUP_TOOLS.has(part.tool)
+}
+
+function groupParts(parts: { messageID: string; part: Part }[]) {
+  const result: PartGroup[] = []
+  let start = -1
+
+  const flush = (end: number) => {
+    if (start < 0) return
+    const first = parts[start]
+    const last = parts[end]
+    if (!first || !last) {
+      start = -1
+      return
+    }
+    result.push({
+      key: `context:${first.part.id}`,
+      type: "context",
+      refs: parts.slice(start, end + 1).map((item) => ({
+        messageID: item.messageID,
+        partID: item.part.id,
+      })),
+    })
+    start = -1
+  }
+
+  parts.forEach((item, index) => {
+    if (isContextGroupTool(item.part)) {
+      if (start < 0) start = index
+      return
+    }
+
+    flush(index - 1)
+    result.push({
+      key: `part:${item.messageID}:${item.part.id}`,
+      type: "part",
+      ref: {
+        messageID: item.messageID,
+        partID: item.part.id,
+      },
+    })
+  })
+
+  flush(parts.length - 1)
+  return result
+}
+
+function latestTodoSnapshotParts<T extends { messageID: string; part: Part }>(parts: T[]) {
+  const latest = parts.findLast((item) => item.part.type === "tool" && item.part.tool === "todowrite")?.part.id
+  if (!latest) return parts
+  return parts.filter((item) => item.part.type !== "tool" || item.part.tool !== "todowrite" || item.part.id === latest)
+}
+
+function renderable(part: Part, showReasoning = true) {
+  if (part.type === "tool") {
+    if (HIDDEN_TOOLS.has(part.tool)) return false
+    if (part.tool === "question") return part.state.status !== "pending" && part.state.status !== "running"
+    return true
+  }
+  if (part.type === "text") return !!part.text?.trim()
+  if (part.type === "reasoning") return showReasoning && !!part.text?.trim()
+  return part.type === "compaction"
+}
+
 export namespace Timeline {
   export function constructMessageRows(
     userMessage: UserMessage,
@@ -131,24 +215,25 @@ export namespace Timeline {
         .filter((part) => renderable(part, showReasoning))
         .map((part) => ({ messageID: message.id, messageIndex, part })),
     )
+    const visibleAssistantPartRefs = latestTodoSnapshotParts(assistantPartRefs)
     const assistantItems =
       interrupted && !compaction
         ? [
-            ...groupParts(assistantPartRefs.filter((ref) => ref.messageIndex <= interruptedMessageIndex)).map(
+            ...groupParts(visibleAssistantPartRefs.filter((ref) => ref.messageIndex <= interruptedMessageIndex)).map(
               (group) => ({
                 type: "part" as const,
                 group,
               }),
             ),
             { type: "interrupted" as const },
-            ...groupParts(assistantPartRefs.filter((ref) => ref.messageIndex > interruptedMessageIndex)).map(
+            ...groupParts(visibleAssistantPartRefs.filter((ref) => ref.messageIndex > interruptedMessageIndex)).map(
               (group) => ({
                 type: "part" as const,
                 group,
               }),
             ),
           ]
-        : groupParts(assistantPartRefs).map((group) => ({ type: "part" as const, group }))
+        : groupParts(visibleAssistantPartRefs).map((group) => ({ type: "part" as const, group }))
     if (comments.length > 0)
       rows.push(
         new TimelineRow.CommentStrip({

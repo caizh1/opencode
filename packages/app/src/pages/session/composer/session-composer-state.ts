@@ -9,17 +9,9 @@ import { usePermission } from "@/context/permission"
 import { useSDK } from "@/context/sdk"
 import { useSync } from "@/context/sync"
 import { sessionPermissionRequest, sessionQuestionRequest } from "./session-request-tree"
+import { planExitQuestionRequest, todoState } from "./session-composer-state-helpers"
 
-export const todoState = (input: {
-  count: number
-  done: boolean
-  live: boolean
-}): "hide" | "clear" | "open" | "close" => {
-  if (input.count === 0) return "hide"
-  if (!input.live) return "clear"
-  if (!input.done) return "open"
-  return "close"
-}
+export { planExitQuestionRequest, todoState } from "./session-composer-state-helpers"
 
 const idle = { type: "idle" as const }
 
@@ -34,6 +26,8 @@ export function createSessionComposerState(options?: { closeMs?: number | (() =>
   const questionRequest = createMemo((): QuestionRequest | undefined => {
     return sessionQuestionRequest(sync.data.session, sync.data.question, params.id)
   })
+
+  const planExitRequest = createMemo(() => planExitQuestionRequest(questionRequest(), sync.data.part))
 
   const permissionRequest = createMemo((): PermissionRequest | undefined => {
     return sessionPermissionRequest(sync.data.session, sync.data.permission, params.id, (item) => {
@@ -52,6 +46,11 @@ export function createSessionComposerState(options?: { closeMs?: number | (() =>
     if (!id) return []
     return serverSync.data.session_todo[id] ?? []
   })
+  const todoKey = createMemo(() =>
+    todos()
+      .map((todo) => [todo.id, todo.content, todo.status, todo.priority].join("\u0000"))
+      .join("\u0001"),
+  )
 
   const done = createMemo(
     () => todos().length > 0 && todos().every((todo) => todo.status === "completed" || todo.status === "cancelled"),
@@ -64,6 +63,7 @@ export function createSessionComposerState(options?: { closeMs?: number | (() =>
     dock: todos().length > 0 && live(),
     closing: false,
     opening: false,
+    hiddenTodoKey: undefined as string | undefined,
   })
 
   const permissionResponding = createMemo(() => {
@@ -107,18 +107,10 @@ export function createSessionComposerState(options?: { closeMs?: number | (() =>
     }, closeMs())
   }
 
-  // Keep stale turn todos from reopening if the model never clears them.
-  const clear = () => {
-    const id = params.id
-    if (!id) return
-    serverSync.todo.set(id, [])
-    sync.set("todo", id, [])
-  }
-
   createEffect(
     on(
-      () => [todos().length, done(), live()] as const,
-      ([count, complete, active]) => {
+      () => [todos().length, done(), live(), todoKey()] as const,
+      ([count, complete, active, key]) => {
         if (raf) cancelAnimationFrame(raf)
         raf = undefined
 
@@ -126,19 +118,13 @@ export function createSessionComposerState(options?: { closeMs?: number | (() =>
           count,
           done: complete,
           live: active,
+          stale: active && !!key && store.hiddenTodoKey === key,
         })
 
         if (next === "hide") {
           if (timer) window.clearTimeout(timer)
           timer = undefined
-          setStore({ dock: false, closing: false, opening: false })
-          return
-        }
-
-        if (next === "clear") {
-          if (timer) window.clearTimeout(timer)
-          timer = undefined
-          clear()
+          setStore({ dock: false, closing: false, opening: false, hiddenTodoKey: key || undefined })
           return
         }
 
@@ -146,7 +132,7 @@ export function createSessionComposerState(options?: { closeMs?: number | (() =>
           if (timer) window.clearTimeout(timer)
           timer = undefined
           const hidden = !store.dock || store.closing
-          setStore({ dock: true, closing: false })
+          setStore({ dock: true, closing: false, hiddenTodoKey: undefined })
           if (hidden) {
             setStore("opening", true)
             raf = requestAnimationFrame(() => {
@@ -178,6 +164,7 @@ export function createSessionComposerState(options?: { closeMs?: number | (() =>
   return {
     blocked,
     questionRequest,
+    planExitRequest,
     permissionRequest,
     permissionResponding,
     decide,

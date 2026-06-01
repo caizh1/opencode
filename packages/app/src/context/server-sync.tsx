@@ -235,7 +235,7 @@ export function createServerSyncContext() {
       })
       if (next.length !== store.session.length) {
         setStore("session", reconcile(next, { key: "id" }))
-        cleanupDroppedSessionCaches(store, setStore, next, setSessionTodo)
+        cleanupDroppedSessionCaches(store, setStore, next, setSessionTodo, directory)
       }
       children.unpin(key)
       return
@@ -272,7 +272,7 @@ export function createServerSyncContext() {
                   }),
                 )
                 setStore("session", reconcile(sessions, { key: "id" }))
-                cleanupDroppedSessionCaches(store, setStore, sessions, setSessionTodo)
+                cleanupDroppedSessionCaches(store, setStore, sessions, setSessionTodo, directory)
               })
               sessionMeta.set(key, { limit })
             })

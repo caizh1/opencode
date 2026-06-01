@@ -226,10 +226,6 @@ export function createPromptSubmit(input: PromptSubmitInput) {
     const sessionID = params.id
     if (!sessionID) return Promise.resolve()
 
-    serverSync.todo.set(sessionID, [])
-    const [, setStore] = serverSync.child(sdk.directory)
-    setStore("todo", sessionID, [])
-
     input.onAbort?.()
 
     const queued = pending.get(sessionID)

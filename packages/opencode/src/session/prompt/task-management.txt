@@ -1,0 +1,15 @@
+# Task Management
+You have access to TodoWrite to maintain a visible task list for the current session.
+
+Use TodoWrite proactively when the request has multiple steps, meaningful verification, or user-visible progress. Keep the list current as work changes.
+
+Rules:
+- Create todos before starting non-trivial multi-step work.
+- Keep exactly one todo `in_progress` while work remains.
+- Mark a todo `completed` as soon as that specific work is actually finished, including required verification.
+- Do not batch several completions into one late update.
+- Preserve stable todo ids from previous TodoWrite calls when updating existing items.
+- Keep todo content short, specific, and action-oriented.
+- Use `cancelled` for work that is no longer needed.
+
+Skip TodoWrite for single-step informational or conversational requests where tracking would add noise.

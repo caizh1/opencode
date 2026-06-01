@@ -504,6 +504,7 @@ describe("JSON to SQLite migration", () => {
 
     const todos = db.select().from(TodoTable).orderBy(TodoTable.position).all()
     expect(todos.length).toBe(2)
+    expect(todos[0].id).toBe("todo_1")
     expect(todos[0].content).toBe("First todo")
     expect(todos[0].status).toBe("pending")
     expect(todos[0].priority).toBe("high")
@@ -535,6 +536,7 @@ describe("JSON to SQLite migration", () => {
     const todos = db.select().from(TodoTable).orderBy(TodoTable.position).all()
 
     expect(todos.length).toBe(3)
+    expect(todos.every((todo) => todo.id.length > 0)).toBe(true)
     expect(todos[0].content).toBe("Third")
     expect(todos[0].position).toBe(0)
     expect(todos[1].content).toBe("First")

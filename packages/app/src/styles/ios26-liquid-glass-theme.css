@@ -227,6 +227,20 @@ html[data-theme="ios26-liquid-glass"] [data-component="dropdown-menu-sub-content
   box-shadow: var(--ios-glass-shadow);
 }
 
+html[data-theme="ios26-liquid-glass"] [data-component="tooltip"],
+html[data-theme="ios26-liquid-glass"] [data-slot="markdown-copy-button"]::after {
+  --text-invert-base: var(--text-base);
+  --text-invert-weak: var(--text-weak);
+  --text-invert-weaker: var(--text-weaker);
+  --text-invert-strong: var(--text-strong);
+  background:
+    var(--ios-glass-sheen),
+    linear-gradient(135deg, var(--ios-glass-bg-strong), var(--ios-glass-bg));
+  border-color: var(--ios-glass-border);
+  color: var(--text-strong);
+  box-shadow: var(--ios-glass-shadow);
+}
+
 html[data-theme="ios26-liquid-glass"] [data-component="toast"] {
   background:
     var(--ios-glass-sheen),
@@ -397,6 +411,8 @@ html[data-theme="ios26-liquid-glass"] ::selection {
   html[data-theme="ios26-liquid-glass"] [data-component="popover-content"],
   html[data-theme="ios26-liquid-glass"] [data-component="dropdown-menu-content"],
   html[data-theme="ios26-liquid-glass"] [data-component="dropdown-menu-sub-content"],
+  html[data-theme="ios26-liquid-glass"] [data-component="tooltip"],
+  html[data-theme="ios26-liquid-glass"] [data-slot="markdown-copy-button"]::after,
   html[data-theme="ios26-liquid-glass"] [data-component="toast"] {
     -webkit-backdrop-filter: blur(18px) saturate(150%);
     backdrop-filter: blur(18px) saturate(150%);

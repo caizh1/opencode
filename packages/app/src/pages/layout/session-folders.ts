@@ -20,6 +20,48 @@ export type SessionFolderGroup = {
   sessions: Session[]
 }
 
+const SESSION_DRAG_PREFIX = "session:"
+const SESSION_FOLDER_DROP_PREFIX = "session-folder:"
+
+export function sessionDragID(sessionID: string) {
+  return `${SESSION_DRAG_PREFIX}${sessionID}`
+}
+
+export function sessionFolderDropID(folderID: string) {
+  return `${SESSION_FOLDER_DROP_PREFIX}${folderID}`
+}
+
+function parsePrefixedID(id: unknown, prefix: string) {
+  if (typeof id !== "string") return
+  if (!id.startsWith(prefix)) return
+  const value = id.slice(prefix.length)
+  if (!value) return
+  return value
+}
+
+export function parseSessionDragID(id: unknown) {
+  return parsePrefixedID(id, SESSION_DRAG_PREFIX)
+}
+
+export function parseSessionFolderDropID(id: unknown) {
+  return parsePrefixedID(id, SESSION_FOLDER_DROP_PREFIX)
+}
+
+export function resolveSessionFolderDrop(input: {
+  draggableID: unknown
+  droppableID: unknown
+  state: SessionFolderState
+  sessions?: readonly Session[]
+}) {
+  const sessionID = parseSessionDragID(input.draggableID)
+  const folderID = parseSessionFolderDropID(input.droppableID)
+  if (!sessionID || !folderID) return
+  if (input.sessions && !input.sessions.some((session) => session.id === sessionID)) return
+  if (!input.state.folders.some((folder) => folder.id === folderID)) return
+  if (input.state.assignments[sessionID] === folderID) return
+  return { sessionID, folderID }
+}
+
 export function groupSessionsByFolder(sessions: readonly Session[], state: SessionFolderState) {
   const folders = state.folders
   const ids = new Set(folders.map((folder) => folder.id))
@@ -38,6 +80,15 @@ export function nextFolderName(folders: readonly SessionFolder[], base: string) 
   let index = 2
   while (used.has(`${base} ${index}`)) index += 1
   return `${base} ${index}`
+}
+
+export function removeSessionFolder(state: SessionFolderState, folderID: string) {
+  return {
+    folders: state.folders.filter((folder) => folder.id !== folderID),
+    assignments: Object.fromEntries(
+      Object.entries(state.assignments).filter((entry) => entry[1] !== folderID),
+    ) as SessionFolderState["assignments"],
+  }
 }
 
 function createFolderID() {
@@ -84,14 +135,9 @@ export function createSessionFolderStore(directory: string, defaultName: Accesso
       setState("folders", index, "name", nextFolderName(state.folders.filter((folder) => folder.id !== id), trimmed))
     },
     remove(id: string) {
-      setState(
-        produce((draft) => {
-          draft.folders = draft.folders.filter((folder) => folder.id !== id)
-          for (const [sessionID, folderID] of Object.entries(draft.assignments)) {
-            if (folderID === id) delete draft.assignments[sessionID]
-          }
-        }),
-      )
+      const next = removeSessionFolder(state, id)
+      setState("folders", next.folders)
+      setState("assignments", next.assignments)
     },
     move(sessionID: string, folderID: string | undefined) {
       if (!hasFolder(folderID)) {

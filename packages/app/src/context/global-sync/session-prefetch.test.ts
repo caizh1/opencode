@@ -3,6 +3,7 @@ import {
   clearSessionPrefetch,
   clearSessionPrefetchDirectory,
   getSessionPrefetch,
+  hasCompleteSessionMessageCache,
   runSessionPrefetch,
   setSessionPrefetch,
   shouldSkipSessionPrefetch,
@@ -61,6 +62,14 @@ describe("session prefetch", () => {
     expect(getSessionPrefetch("/tmp/d", "ses_1")).toBeUndefined()
     expect(getSessionPrefetch("/tmp/d", "ses_2")).toBeUndefined()
     expect(getSessionPrefetch("/tmp/e", "ses_1")).toEqual({ limit: 30, cursor: "c", complete: true, at: 3 })
+  })
+
+  test("requires enough messages before treating prefetched metadata as complete cache", () => {
+    expect(hasCompleteSessionMessageCache({ messages: undefined, limit: 0 })).toBe(false)
+    expect(hasCompleteSessionMessageCache({ messages: [], limit: undefined })).toBe(false)
+    expect(hasCompleteSessionMessageCache({ messages: [], limit: 0 })).toBe(true)
+    expect(hasCompleteSessionMessageCache({ messages: [{ id: "msg_1" }], limit: 2 })).toBe(false)
+    expect(hasCompleteSessionMessageCache({ messages: [{ id: "msg_1" }, { id: "msg_2" }], limit: 2 })).toBe(true)
   })
 
   test("refreshes stale first-page prefetched history", () => {

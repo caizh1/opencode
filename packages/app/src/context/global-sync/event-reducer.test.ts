@@ -3,6 +3,7 @@ import type { Message, Part, PermissionRequest, Project, QuestionRequest, Sessio
 import { createStore } from "solid-js/store"
 import type { State } from "./types"
 import { applyDirectoryEvent, applyGlobalEvent, cleanupDroppedSessionCaches } from "./event-reducer"
+import { clearSessionPrefetch, getSessionPrefetch, setSessionPrefetch } from "./session-prefetch"
 
 const rootSession = (input: { id: string; parentID?: string; archived?: number }) =>
   ({
@@ -168,6 +169,9 @@ describe("applyDirectoryEvent", () => {
 
   test("cleans session caches when archived", () => {
     const message = userMessage("msg_1", "ses_1")
+    const directory = "/tmp/archive-prefetch"
+    clearSessionPrefetch(directory, ["ses_1"])
+    setSessionPrefetch({ directory, sessionID: "ses_1", limit: 1, complete: true, at: 1 })
     const [store, setStore] = createStore(
       baseState({
         session: [rootSession({ id: "ses_1" }), rootSession({ id: "ses_2" })],
@@ -187,7 +191,7 @@ describe("applyDirectoryEvent", () => {
       store,
       setStore,
       push() {},
-      directory: "/tmp",
+      directory,
       loadLsp() {},
     })
 
@@ -200,6 +204,7 @@ describe("applyDirectoryEvent", () => {
     expect(store.permission.ses_1).toBeUndefined()
     expect(store.question.ses_1).toBeUndefined()
     expect(store.session_status.ses_1).toBeUndefined()
+    expect(getSessionPrefetch(directory, "ses_1")).toBeUndefined()
   })
 
   test("cleans session caches when deleted and decrements only root totals", () => {
@@ -293,6 +298,9 @@ describe("applyDirectoryEvent", () => {
   })
 
   test("cleanupDroppedSessionCaches clears part-only orphan state", () => {
+    const directory = "/tmp/drop-prefetch"
+    clearSessionPrefetch(directory, ["ses_drop"])
+    setSessionPrefetch({ directory, sessionID: "ses_drop", limit: 1, complete: true, at: 1 })
     const [store, setStore] = createStore(
       baseState({
         session: [rootSession({ id: "ses_keep" })],
@@ -300,9 +308,10 @@ describe("applyDirectoryEvent", () => {
       }),
     )
 
-    cleanupDroppedSessionCaches(store, setStore, store.session)
+    cleanupDroppedSessionCaches(store, setStore, store.session, undefined, directory)
 
     expect(store.part.msg_1).toBeUndefined()
+    expect(getSessionPrefetch(directory, "ses_drop")).toBeUndefined()
   })
 
   test("upserts and removes messages while clearing orphaned parts", () => {

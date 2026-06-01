@@ -502,7 +502,7 @@ function taskSession(
 }
 
 const CONTEXT_GROUP_TOOLS = new Set(["read", "glob", "grep", "list"])
-const HIDDEN_TOOLS = new Set(["todowrite"])
+const HIDDEN_TOOLS = new Set<string>()
 
 function list<T>(value: T[] | undefined | null, fallback: T[]) {
   if (Array.isArray(value)) return value
@@ -601,6 +601,12 @@ export function groupParts(parts: { messageID: string; part: PartType }[]) {
   return result
 }
 
+export function latestTodoSnapshotParts<T extends { messageID: string; part: PartType }>(parts: T[]) {
+  const latest = parts.findLast((item) => item.part.type === "tool" && item.part.tool === "todowrite")?.part.id
+  if (!latest) return parts
+  return parts.filter((item) => item.part.type !== "tool" || item.part.tool !== "todowrite" || item.part.id === latest)
+}
+
 function index<T extends { id: string }>(items: readonly T[]) {
   return new Map(items.map((item) => [item.id, item] as const))
 }
@@ -649,13 +655,15 @@ export function AssistantParts(props: {
   const grouped = createMemo(
     () =>
       groupParts(
-        props.messages.flatMap((message) =>
-          list(data.store.part?.[message.id], emptyParts)
-            .filter((part) => renderable(part, props.showReasoningSummaries ?? true))
-            .map((part) => ({
-              messageID: message.id,
-              part,
-            })),
+        latestTodoSnapshotParts(
+          props.messages.flatMap((message) =>
+            list(data.store.part?.[message.id], emptyParts)
+              .filter((part) => renderable(part, props.showReasoningSummaries ?? true))
+              .map((part) => ({
+                messageID: message.id,
+                part,
+              })),
+          ),
         ),
       ),
     [] as PartGroup[],
@@ -822,6 +830,31 @@ function ExaOutput(props: { output?: string }) {
         </div>
       </div>
     </Show>
+  )
+}
+
+function todoDot(status: Todo["status"]) {
+  if (status !== "in_progress") return undefined
+  return (
+    <svg
+      viewBox="0 0 12 12"
+      width="12"
+      height="12"
+      fill="currentColor"
+      xmlns="http://www.w3.org/2000/svg"
+      class="block"
+    >
+      <circle
+        cx="6"
+        cy="6"
+        r="3"
+        style={{
+          animation: "var(--animate-pulse-scale)",
+          "transform-origin": "center",
+          "transform-box": "fill-box",
+        }}
+      />
+    </svg>
   )
 }
 
@@ -1355,7 +1388,6 @@ PART_MAPPING["tool"] = function ToolPartDisplay(props) {
   const data = useData()
   const i18n = useI18n()
   const part = () => props.part as ToolPart
-  if (part().tool === "todowrite") return null
 
   const hideQuestion = createMemo(
     () => part().tool === "question" && (part().state.status === "pending" || part().state.status === "running"),
@@ -2312,10 +2344,17 @@ ToolRegistry.register({
           <div data-component="todos">
             <For each={todos()}>
               {(todo: Todo) => (
-                <Checkbox readOnly checked={todo.status === "completed"}>
+                <Checkbox
+                  readOnly
+                  checked={todo.status === "completed"}
+                  indeterminate={todo.status === "in_progress"}
+                  data-in-progress={todo.status === "in_progress" ? "" : undefined}
+                  data-state={todo.status}
+                  icon={todoDot(todo.status)}
+                >
                   <span
                     data-slot="message-part-todo-content"
-                    data-completed={todo.status === "completed" ? "completed" : undefined}
+                    data-state={todo.status}
                   >
                     {todo.content}
                   </span>

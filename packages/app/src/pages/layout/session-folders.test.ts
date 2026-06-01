@@ -1,6 +1,14 @@
 import { describe, expect, test } from "bun:test"
 import type { Session } from "@opencode-ai/sdk/v2/client"
-import { groupSessionsByFolder, nextFolderName, type SessionFolderState } from "./session-folders"
+import {
+  groupSessionsByFolder,
+  nextFolderName,
+  removeSessionFolder,
+  resolveSessionFolderDrop,
+  sessionDragID,
+  sessionFolderDropID,
+  type SessionFolderState,
+} from "./session-folders"
 
 const session = (id: string) =>
   ({
@@ -41,5 +49,69 @@ describe("session folders", () => {
         "Folder",
       ),
     ).toBe("Folder 3")
+  })
+
+  test("removing a folder keeps assigned sessions visible as uncategorized", () => {
+    const state = removeSessionFolder(
+      {
+        folders: [
+          { id: "f1", name: "Work", created: 1 },
+          { id: "f2", name: "Later", created: 2 },
+        ],
+        assignments: { a: "f1", b: "f2" },
+      },
+      "f1",
+    )
+
+    const grouped = groupSessionsByFolder([session("a"), session("b")], state)
+
+    expect(grouped.groups).toEqual([{ folder: { id: "f2", name: "Later", created: 2 }, sessions: [session("b")] }])
+    expect(grouped.unfiled).toEqual([session("a")])
+  })
+
+  test("resolves valid drag drops onto folders", () => {
+    expect(
+      resolveSessionFolderDrop({
+        draggableID: sessionDragID("a"),
+        droppableID: sessionFolderDropID("f1"),
+        state: {
+          folders: [{ id: "f1", name: "Work", created: 1 }],
+          assignments: {},
+        },
+        sessions: [session("a")],
+      }),
+    ).toEqual({ sessionID: "a", folderID: "f1" })
+  })
+
+  test("ignores invalid and redundant folder drops", () => {
+    const state: SessionFolderState = {
+      folders: [{ id: "f1", name: "Work", created: 1 }],
+      assignments: { a: "f1" },
+    }
+
+    expect(
+      resolveSessionFolderDrop({
+        draggableID: "a",
+        droppableID: sessionFolderDropID("f1"),
+        state,
+        sessions: [session("a")],
+      }),
+    ).toBeUndefined()
+    expect(
+      resolveSessionFolderDrop({
+        draggableID: sessionDragID("missing"),
+        droppableID: sessionFolderDropID("f1"),
+        state,
+        sessions: [session("a")],
+      }),
+    ).toBeUndefined()
+    expect(
+      resolveSessionFolderDrop({
+        draggableID: sessionDragID("a"),
+        droppableID: sessionFolderDropID("f1"),
+        state,
+        sessions: [session("a")],
+      }),
+    ).toBeUndefined()
   })
 })

@@ -1,7 +1,15 @@
 import { useNavigate, useParams } from "@solidjs/router"
 import { createEffect, createMemo, For, Show, type Accessor, type JSX } from "solid-js"
 import { createStore } from "solid-js/store"
-import { createSortable } from "@thisbeyond/solid-dnd"
+import {
+  DragDropProvider,
+  DragDropSensors,
+  closestCenter,
+  createDraggable,
+  createDroppable,
+  createSortable,
+  type DragEvent,
+} from "@thisbeyond/solid-dnd"
 import { createMediaQuery } from "@solid-primitives/media"
 import { base64Encode } from "@opencode-ai/core/util/encode"
 import { getFilename } from "@opencode-ai/core/util/path"
@@ -17,9 +25,17 @@ import { type LocalProject } from "@/context/layout"
 import { useServerSync, useQueryOptions } from "@/context/server-sync"
 import { useLanguage } from "@/context/language"
 import { pathKey } from "@/utils/path-key"
-import { NewSessionItem, SessionItem, SessionSkeleton } from "./sidebar-items"
+import { ConstrainDragXAxis } from "@/utils/solid-dnd"
+import { NewSessionItem, SessionItem, SessionSkeleton, type SessionItemProps } from "./sidebar-items"
 import { sortedRootSessions } from "./helpers"
-import { createSessionFolderStore, groupSessionsByFolder, type SessionFolder } from "./session-folders"
+import {
+  createSessionFolderStore,
+  groupSessionsByFolder,
+  resolveSessionFolderDrop,
+  sessionDragID,
+  sessionFolderDropID,
+  type SessionFolder,
+} from "./session-folders"
 import { useIsFetching } from "@tanstack/solid-query"
 
 type InlineEditorComponent = (props: {
@@ -41,6 +57,7 @@ export type WorkspaceSidebarContext = {
   clearHoverProjectSoon: () => void
   prefetchSession: (session: Session, priority?: "high" | "low") => void
   archiveSession: (session: Session) => Promise<void>
+  renameSession: (session: Session, title: string) => Promise<void>
   workspaceName: (directory: string, projectId?: string, branch?: string) => string | undefined
   renameWorkspace: (directory: string, next: string, projectId?: string, branch?: string) => void
   editorOpen: (id: string) => boolean
@@ -57,6 +74,20 @@ export type WorkspaceSidebarContext = {
 }
 
 type SessionFolderController = ReturnType<typeof createSessionFolderStore>
+
+const DraggableSessionItem = (props: SessionItemProps): JSX.Element => {
+  const draggable = createDraggable(sessionDragID(props.session.id))
+
+  return (
+    <div
+      // @ts-ignore
+      use:draggable
+      classList={{ "opacity-30": draggable.isActiveDraggable }}
+    >
+      <SessionItem {...props} />
+    </div>
+  )
+}
 
 export const WorkspaceDragOverlay = (props: {
   sidebarProject: Accessor<LocalProject | undefined>
@@ -250,6 +281,7 @@ const SessionFolderGroupView = (props: {
   const editorID = () => `session-folder:${props.directory}:${props.folder.id}`
   const editing = createMemo(() => props.ctx.editorOpen(editorID()))
   const open = () => props.folder.expanded ?? true
+  const droppable = createDroppable(sessionFolderDropID(props.folder.id))
 
   return (
     <Collapsible
@@ -258,7 +290,12 @@ const SessionFolderGroupView = (props: {
       class="shrink-0"
       onOpenChange={(value) => props.folders.setExpanded(props.folder.id, value)}
     >
-      <div class="group/session-folder relative rounded-md hover:bg-surface-raised-base-hover [&:has(:focus-visible)]:bg-surface-raised-base-hover">
+      <div
+        // @ts-ignore
+        use:droppable
+        class="group/session-folder relative rounded-md hover:bg-surface-raised-base-hover [&:has(:focus-visible)]:bg-surface-raised-base-hover"
+        classList={{ "bg-surface-raised-base-hover": droppable.isActiveDroppable }}
+      >
         <Show
           when={editing()}
           fallback={
@@ -312,7 +349,7 @@ const SessionFolderGroupView = (props: {
         <div class="flex flex-col gap-1">
           <For each={props.sessions}>
             {(session) => (
-              <SessionItem
+              <DraggableSessionItem
                 session={session}
                 list={props.allSessions()}
                 navList={props.ctx.navList}
@@ -324,6 +361,10 @@ const SessionFolderGroupView = (props: {
                 clearHoverProjectSoon={props.ctx.clearHoverProjectSoon}
                 prefetchSession={props.ctx.prefetchSession}
                 archiveSession={props.ctx.archiveSession}
+                renameSession={props.ctx.renameSession}
+                editorOpen={props.ctx.editorOpen}
+                openEditor={props.ctx.openEditor}
+                InlineEditor={props.ctx.InlineEditor}
                 folderActions={props.folders}
               />
             )}
@@ -348,82 +389,100 @@ const WorkspaceSessionList = (props: {
   language: ReturnType<typeof useLanguage>
 }): JSX.Element => {
   const grouped = createMemo(() => groupSessionsByFolder(props.sessions(), props.folders.state()))
+  const moveDroppedSession = (event: DragEvent) => {
+    const drop = resolveSessionFolderDrop({
+      draggableID: event.draggable.id,
+      droppableID: event.droppable?.id,
+      state: props.folders.state(),
+      sessions: props.sessions(),
+    })
+    if (!drop) return
+    props.folders.move(drop.sessionID, drop.folderID)
+  }
 
   return (
-    <nav class="flex flex-col gap-1">
-      <Show when={props.showNew()}>
-        <NewSessionItem
-          slug={props.slug()}
-          mobile={props.mobile}
-          sidebarExpanded={props.ctx.sidebarExpanded}
-          clearHoverProjectSoon={props.ctx.clearHoverProjectSoon}
-        />
-      </Show>
-      <Show when={!props.loading()}>
-        <Button
-          variant="ghost"
-          class="flex w-full text-left justify-start items-center gap-2 text-14-regular text-text-weak pl-2 pr-3"
-          size="large"
-          onClick={(e: MouseEvent) => {
-            props.folders.create(props.language.t("session.folder.defaultName"))
-            ;(e.currentTarget as HTMLButtonElement).blur()
-          }}
-        >
-          <Icon name="folder-add-left" size="small" />
-          <span class="min-w-0 truncate">{props.language.t("session.folder.create")}</span>
-        </Button>
-      </Show>
-      <Show when={props.loading()}>
-        <SessionSkeleton />
-      </Show>
-      <For each={grouped().groups}>
-        {(group) => (
-          <SessionFolderGroupView
-            directory={props.directory}
-            folder={group.folder}
-            sessions={group.sessions}
-            slug={props.slug}
-            mobile={props.mobile}
-            ctx={props.ctx}
-            folders={props.folders}
-            language={props.language}
-            allSessions={props.sessions}
-          />
-        )}
-      </For>
-      <For each={grouped().unfiled}>
-        {(session) => (
-          <SessionItem
-            session={session}
-            list={props.sessions()}
-            navList={props.ctx.navList}
+    <DragDropProvider onDragEnd={moveDroppedSession} collisionDetector={closestCenter}>
+      <DragDropSensors />
+      <ConstrainDragXAxis />
+      <nav class="flex flex-col gap-1">
+        <Show when={props.showNew()}>
+          <NewSessionItem
             slug={props.slug()}
             mobile={props.mobile}
-            showChild
             sidebarExpanded={props.ctx.sidebarExpanded}
             clearHoverProjectSoon={props.ctx.clearHoverProjectSoon}
-            prefetchSession={props.ctx.prefetchSession}
-            archiveSession={props.ctx.archiveSession}
-            folderActions={props.folders}
           />
-        )}
-      </For>
-      <Show when={props.hasMore()}>
-        <div class="relative w-full py-1">
+        </Show>
+        <Show when={!props.loading()}>
           <Button
             variant="ghost"
-            class="flex w-full text-left justify-start text-14-regular text-text-weak pl-2 pr-10"
+            class="flex w-full text-left justify-start items-center gap-2 text-14-regular text-text-weak pl-2 pr-3"
             size="large"
             onClick={(e: MouseEvent) => {
-              void props.loadMore()
+              props.folders.create(props.language.t("session.folder.defaultName"))
               ;(e.currentTarget as HTMLButtonElement).blur()
             }}
           >
-            {props.language.t("common.loadMore")}
+            <Icon name="folder-add-left" size="small" />
+            <span class="min-w-0 truncate">{props.language.t("session.folder.create")}</span>
           </Button>
-        </div>
-      </Show>
-    </nav>
+        </Show>
+        <Show when={props.loading()}>
+          <SessionSkeleton />
+        </Show>
+        <For each={grouped().groups}>
+          {(group) => (
+            <SessionFolderGroupView
+              directory={props.directory}
+              folder={group.folder}
+              sessions={group.sessions}
+              slug={props.slug}
+              mobile={props.mobile}
+              ctx={props.ctx}
+              folders={props.folders}
+              language={props.language}
+              allSessions={props.sessions}
+            />
+          )}
+        </For>
+        <For each={grouped().unfiled}>
+          {(session) => (
+            <DraggableSessionItem
+              session={session}
+              list={props.sessions()}
+              navList={props.ctx.navList}
+              slug={props.slug()}
+              mobile={props.mobile}
+              showChild
+              sidebarExpanded={props.ctx.sidebarExpanded}
+              clearHoverProjectSoon={props.ctx.clearHoverProjectSoon}
+              prefetchSession={props.ctx.prefetchSession}
+              archiveSession={props.ctx.archiveSession}
+              renameSession={props.ctx.renameSession}
+              editorOpen={props.ctx.editorOpen}
+              openEditor={props.ctx.openEditor}
+              InlineEditor={props.ctx.InlineEditor}
+              folderActions={props.folders}
+            />
+          )}
+        </For>
+        <Show when={props.hasMore()}>
+          <div class="relative w-full py-1">
+            <Button
+              variant="ghost"
+              class="flex w-full text-left justify-start text-14-regular text-text-weak pl-2 pr-10"
+              size="large"
+              onClick={(e: MouseEvent) => {
+                void props.loadMore()
+                ;(e.currentTarget as HTMLButtonElement).blur()
+              }}
+            >
+              {props.language.t("common.loadMore")}
+            </Button>
+          </div>
+        </Show>
+      </nav>
+    </DragDropProvider>
   )
 }
 

@@ -56,6 +56,7 @@ import { createAim } from "@/utils/aim"
 import { setNavigate } from "@/utils/notification-click"
 import { Worktree as WorktreeState } from "@/utils/worktree"
 import { setSessionHandoff } from "@/pages/session/handoff"
+import { sessionTitle } from "@/utils/session-title"
 
 import { useDialog } from "@opencode-ai/ui/context/dialog"
 import { useTheme, type ColorScheme } from "@opencode-ai/ui/theme/context"
@@ -996,6 +997,32 @@ export default function Layout(props: ParentProps) {
         navigate(`/${params.dir}/session`)
       }
     }
+  }
+
+  async function renameSession(session: Session, title: string) {
+    const trimmed = title.trim()
+    if (!trimmed || trimmed === (sessionTitle(session.title) ?? "")) return
+
+    const updated = await serverSDK.client.session
+      .update({
+        directory: session.directory,
+        sessionID: session.id,
+        title: trimmed,
+      })
+      .then((result) => result.data)
+      .catch((err) => {
+        showToast({
+          title: language.t("common.requestFailed"),
+          description: errorMessage(err, language.t("common.requestFailed")),
+        })
+        return undefined
+      })
+    if (!updated) return
+
+    const [store, setStore] = serverSync.child(session.directory)
+    const match = Binary.search(store.session, session.id, (item) => item.id)
+    if (!match.found) return
+    setStore("session", match.index, reconcile(updated))
   }
 
   command.register("layout", () => {
@@ -1985,6 +2012,7 @@ export default function Layout(props: ParentProps) {
     clearHoverProjectSoon,
     prefetchSession,
     archiveSession,
+    renameSession,
     workspaceName,
     renameWorkspace,
     editorOpen,
@@ -2031,6 +2059,10 @@ export default function Layout(props: ParentProps) {
       clearHoverProjectSoon,
       prefetchSession,
       archiveSession,
+      renameSession,
+      editorOpen,
+      openEditor,
+      InlineEditor,
     },
   }
 

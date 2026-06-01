@@ -199,6 +199,18 @@ html[data-theme="gpt-web"] [data-component="dropdown-menu-sub-content"] {
   box-shadow: var(--gpt-shadow-panel);
 }
 
+html[data-theme="gpt-web"] [data-component="tooltip"],
+html[data-theme="gpt-web"] [data-slot="markdown-copy-button"]::after {
+  --text-invert-base: var(--text-base);
+  --text-invert-weak: var(--text-weak);
+  --text-invert-weaker: var(--text-weaker);
+  --text-invert-strong: var(--text-strong);
+  background: var(--gpt-panel-raised);
+  border-color: var(--gpt-border);
+  color: var(--text-strong);
+  box-shadow: var(--gpt-shadow-panel);
+}
+
 html[data-theme="gpt-web"] [data-component="dropdown-menu-content"] [data-slot="dropdown-menu-item"]:hover,
 html[data-theme="gpt-web"] [data-component="dropdown-menu-sub-content"] [data-slot="dropdown-menu-item"]:hover,
 html[data-theme="gpt-web"] [data-component="dropdown-menu-content"] [data-slot="dropdown-menu-sub-trigger"]:hover,

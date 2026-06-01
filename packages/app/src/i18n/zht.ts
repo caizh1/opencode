@@ -236,6 +236,10 @@ export const dict = {
   "prompt.placeholder.summarizeComment": "摘要這則評論…",
   "prompt.mode.shell": "Shell",
   "prompt.mode.normal": "Prompt",
+  "session.planExit.title": "計劃已完成",
+  "session.planExit.description": "切換到 build 代理程式並開始執行，或繼續完善計劃。",
+  "session.planExit.execute": "執行計劃",
+  "session.planExit.continue": "繼續計劃",
   "prompt.mode.shell.exit": "按 esc 退出",
 
   "prompt.example.1": "修復程式碼庫中的一個 TODO",

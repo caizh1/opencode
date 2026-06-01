@@ -1,9 +1,10 @@
 import { afterEach, describe, expect } from "bun:test"
 import { mkdir } from "node:fs/promises"
 import path from "node:path"
-import { Cause, Effect, Exit, Layer } from "effect"
+import { Cause, Effect, Exit, Layer, Queue } from "effect"
 import { Flag } from "@opencode-ai/core/flag/flag"
 import { registerAdapter } from "../../src/control-plane/adapters"
+import { Bus } from "@/bus"
 import type { WorkspaceAdapter } from "../../src/control-plane/types"
 import { Workspace } from "../../src/control-plane/workspace"
 import { PermissionID } from "../../src/permission/schema"
@@ -16,6 +17,7 @@ import { Server } from "../../src/server/server"
 import * as HttpSessionError from "../../src/server/routes/instance/httpapi/handlers/session-errors"
 import { SessionPaths } from "../../src/server/routes/instance/httpapi/groups/session"
 import { Session } from "@/session/session"
+import { Todo } from "@/session/todo"
 import { MessageID, PartID, SessionID, type SessionID as SessionIDType } from "../../src/session/schema"
 import { MessageV2 } from "../../src/session/message-v2"
 import { Database } from "@/storage/db"
@@ -42,7 +44,10 @@ const instanceStoreLayer = InstanceStore.defaultLayer.pipe(
     Layer.succeed(InstanceBootstrapService.Service, InstanceBootstrapService.Service.of({ run: Effect.void })),
   ),
 )
-const it = testEffect(Layer.mergeAll(instanceStoreLayer, Project.defaultLayer, Session.defaultLayer, workspaceLayer))
+const todoLayer = Todo.layer.pipe(Layer.provideMerge(Bus.defaultLayer))
+const it = testEffect(
+  Layer.mergeAll(instanceStoreLayer, Project.defaultLayer, Session.defaultLayer, todoLayer, workspaceLayer),
+)
 
 function app() {
   return Server.Default().app
@@ -364,6 +369,53 @@ describe("session HttpApi", () => {
           (yield* requestJson<{ items: SessionMessage.Message[] }>(`/api/session/${parent.id}/message`, { headers }))
             .items,
         ).toMatchObject([{ type: "assistant" }])
+      }),
+    { git: true, config: { formatter: false, lsp: false } },
+  )
+
+  it.instance(
+    "persists stable todo ids and returns them from the todo route",
+    () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const headers = { "x-opencode-directory": test.directory }
+        const session = yield* createSession({ title: "todos" })
+        const todoSvc = yield* Todo.Service
+        const bus = yield* Bus.Service
+        const events = yield* Queue.unbounded<readonly Todo.Info[]>()
+        const off = yield* bus.subscribeCallback(Todo.Event.Updated, (event) => {
+          Queue.offerUnsafe(events, event.properties.todos)
+        })
+        yield* Effect.addFinalizer(() => Effect.sync(off))
+
+        const updated = yield* todoSvc.update({
+          sessionID: session.id,
+          todos: [
+            { content: "Inspect", status: "in_progress", priority: "high" },
+            { id: "todo_keep", content: "Verify", status: "pending", priority: "medium" },
+          ],
+        })
+        const first = yield* todoSvc.get(session.id)
+
+        expect(yield* Queue.take(events)).toEqual(updated)
+        expect(first[0]?.id).toBeTruthy()
+        expect(first[1]?.id).toBe("todo_keep")
+
+        yield* todoSvc.update({
+          sessionID: session.id,
+          todos: [
+            { content: "Inspect", status: "completed", priority: "high" },
+            { id: "todo_keep", content: "Verify", status: "in_progress", priority: "medium" },
+          ],
+        })
+
+        expect((yield* todoSvc.get(session.id))[0]?.id).toBe(first[0]?.id)
+        expect(
+          yield* requestJson<Todo.Info[]>(pathFor(SessionPaths.todo, { sessionID: session.id }), { headers }),
+        ).toEqual([
+          { id: first[0]?.id, content: "Inspect", status: "completed", priority: "high" },
+          { id: "todo_keep", content: "Verify", status: "in_progress", priority: "medium" },
+        ])
       }),
     { git: true, config: { formatter: false, lsp: false } },
   )

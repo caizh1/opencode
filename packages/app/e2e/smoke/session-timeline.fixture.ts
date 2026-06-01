@@ -219,6 +219,37 @@ function turn(index: number): Message[] {
     ...(index % 17 === 0
       ? [toolPart(index, 12, "task", { description: "Inspect generated fixture", subagent_type: "explore" }, 160)]
       : []),
+    ...(index % 19 === 0
+      ? [
+          toolPart(index, 13, "todowrite", {
+            todos: [
+              {
+                id: `todo_${index}_inspect`,
+                content: "Inspect generated fixture",
+                status: "in_progress",
+                priority: "high",
+              },
+              { id: `todo_${index}_verify`, content: "Verify fixture output", status: "pending", priority: "medium" },
+            ],
+          }),
+          toolPart(index, 14, "todowrite", {
+            todos: [
+              {
+                id: `todo_${index}_inspect`,
+                content: "Inspect generated fixture",
+                status: "completed",
+                priority: "high",
+              },
+              {
+                id: `todo_${index}_verify`,
+                content: "Verify fixture output",
+                status: "in_progress",
+                priority: "medium",
+              },
+            ],
+          }),
+        ]
+      : []),
   ]
   return [user, assistantMessage(targetID, index, user.info.id, parts)]
 }
@@ -230,7 +261,6 @@ const sourceMessages = Array.from({ length: 12 }, (_, index) => [
 ]).flat()
 
 function renderable(part: MessagePart) {
-  if (part.type === "tool" && part.tool === "todowrite") return false
   if (part.type === "text") return !!part.text.trim()
   if (part.type === "reasoning") return !!part.text.trim()
   return part.type !== "step-start" && part.type !== "step-finish" && part.type !== "patch"
@@ -238,6 +268,14 @@ function renderable(part: MessagePart) {
 
 function orderedParts(message: Message) {
   return message.parts.slice().sort((a, b) => a.id.localeCompare(b.id))
+}
+
+function expectedParts(message: Message) {
+  const parts = orderedParts(message).filter(renderable)
+  const latestTodo = parts.findLast((part) => part.type === "tool" && part.tool === "todowrite")?.id
+  return latestTodo
+    ? parts.filter((part) => part.type !== "tool" || part.tool !== "todowrite" || part.id === latestTodo)
+    : parts
 }
 
 export const fixture = {
@@ -291,9 +329,7 @@ export const fixture = {
       .filter((message) => message.info.role === "user")
       .map((message) => message.info.id),
     targetPartIDs: targetMessages.flatMap((message) =>
-      orderedParts(message)
-        .filter(renderable)
-        .map((part) => part.id),
+      expectedParts(message).map((part) => part.id),
     ),
   },
 }

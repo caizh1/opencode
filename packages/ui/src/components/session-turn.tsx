@@ -96,7 +96,7 @@ function summaryDiff(value: SnapshotFileDiff): value is SummaryDiff {
   return typeof value.file === "string"
 }
 
-const hidden = new Set(["todowrite"])
+const hidden = new Set<string>()
 
 function partState(part: PartType, showReasoningSummaries: boolean) {
   if (part.type === "tool") {
@@ -406,7 +406,7 @@ export function SessionTurn(
                 </div>
               </Show>
               <Show when={assistantMessages().length > 0}>
-                <div data-slot="session-turn-assistant-content" aria-hidden={working()}>
+                <div data-slot="session-turn-assistant-content" inert={working()}>
                   <AssistantParts
                     messages={assistantMessages()}
                     showAssistantCopyPartID={assistantCopyPartID()}

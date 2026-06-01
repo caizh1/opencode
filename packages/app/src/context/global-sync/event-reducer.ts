@@ -14,6 +14,7 @@ import type {
 import type { State, VcsCache } from "./types"
 import { trimSessions } from "./session-trim"
 import { dropSessionCaches } from "./session-cache"
+import { clearSessionPrefetch } from "./session-prefetch"
 import { diffs as list, message as clean } from "@/utils/diffs"
 
 const SKIP_PARTS = new Set(["patch", "step-start", "step-finish"])
@@ -48,12 +49,14 @@ export function applyGlobalEvent(input: {
 }
 
 function cleanupSessionCaches(
+  directory: string,
   setStore: SetStoreFunction<State>,
   sessionID: string,
   setSessionTodo?: (sessionID: string, todos: Todo[] | undefined) => void,
 ) {
   if (!sessionID) return
   setSessionTodo?.(sessionID, undefined)
+  clearSessionPrefetch(directory, [sessionID])
   setStore(
     produce((draft) => {
       dropSessionCaches(draft, [sessionID])
@@ -66,6 +69,7 @@ export function cleanupDroppedSessionCaches(
   setStore: SetStoreFunction<State>,
   next: Session[],
   setSessionTodo?: (sessionID: string, todos: Todo[] | undefined) => void,
+  directory?: string,
 ) {
   const keep = new Set(next.map((item) => item.id))
   const stale = [
@@ -83,6 +87,7 @@ export function cleanupDroppedSessionCaches(
   for (const sessionID of stale) {
     setSessionTodo?.(sessionID, undefined)
   }
+  if (directory) clearSessionPrefetch(directory, stale)
   setStore(
     produce((draft) => {
       dropSessionCaches(draft, stale)
@@ -117,7 +122,7 @@ export function applyDirectoryEvent(input: {
       next.splice(result.index, 0, info)
       const trimmed = trimSessions(next, { limit: input.store.limit, permission: input.store.permission })
       input.setStore("session", reconcile(trimmed, { key: "id" }))
-      cleanupDroppedSessionCaches(input.store, input.setStore, trimmed, input.setSessionTodo)
+      cleanupDroppedSessionCaches(input.store, input.setStore, trimmed, input.setSessionTodo, input.directory)
       if (!info.parentID) input.setStore("sessionTotal", (value) => value + 1)
       break
     }
@@ -134,7 +139,7 @@ export function applyDirectoryEvent(input: {
             }),
           )
         }
-        cleanupSessionCaches(input.setStore, info.id, input.setSessionTodo)
+        cleanupSessionCaches(input.directory, input.setStore, info.id, input.setSessionTodo)
         if (info.parentID) break
         input.setStore("sessionTotal", (value) => Math.max(0, value - 1))
         break
@@ -147,7 +152,7 @@ export function applyDirectoryEvent(input: {
       next.splice(result.index, 0, info)
       const trimmed = trimSessions(next, { limit: input.store.limit, permission: input.store.permission })
       input.setStore("session", reconcile(trimmed, { key: "id" }))
-      cleanupDroppedSessionCaches(input.store, input.setStore, trimmed, input.setSessionTodo)
+      cleanupDroppedSessionCaches(input.store, input.setStore, trimmed, input.setSessionTodo, input.directory)
       break
     }
     case "session.deleted": {
@@ -161,7 +166,7 @@ export function applyDirectoryEvent(input: {
           }),
         )
       }
-      cleanupSessionCaches(input.setStore, info.id, input.setSessionTodo)
+      cleanupSessionCaches(input.directory, input.setStore, info.id, input.setSessionTodo)
       if (info.parentID) break
       input.setStore("sessionTotal", (value) => Math.max(0, value - 1))
       break
