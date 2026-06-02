@@ -1,5 +1,12 @@
 # Project Instructions
 
+## Response Language
+
+- All assistant responses to the user must be written in Chinese, even when the
+  user asks in another language. Code, commands, file paths, logs, API names,
+  package names, and text that must be quoted verbatim may remain in their
+  original language.
+
 ## Development
 
 - Use `bun install` to install dependencies.

@@ -4,6 +4,7 @@ import type {
   OpenCodeMessage,
   OpenCodeMessageInfo,
   OpenCodeMessagePart,
+  OpenCodeSessionStatus,
 } from "./types"
 
 export type ChatStreamApplyResult = {
@@ -13,6 +14,7 @@ export type ChatStreamApplyResult = {
   completed: boolean
   refreshSessions: boolean
   error?: string
+  retry?: OpenCodeSessionStatus
 }
 
 export function normalizeOpenCodeEvent(input: unknown): OpenCodeEvent | undefined {
@@ -98,9 +100,15 @@ export function applyOpenCodeEventToMessages(
     }
     case "session.status": {
       const status = objectRecord(objectRecord(event.properties).status)
+      const type = stringValue(status.type)
+      const normalizedStatus = {
+        ...status,
+        type,
+      } as OpenCodeSessionStatus
       return {
         ...result,
-        idle: stringValue(status.type) === "idle",
+        idle: type === "idle",
+        retry: type === "retry" ? normalizedStatus : undefined,
       }
     }
     case "session.error":

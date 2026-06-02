@@ -164,6 +164,32 @@ describe("RemoteOpenCodeClient", () => {
     ])
   })
 
+  test("reads remote session retry statuses", async () => {
+    const baseUrl = await listen((request, response) => {
+      if (request.url === "/session/status") {
+        json(response, 200, {
+          s1: {
+            type: "retry",
+            attempt: 16,
+            message: "Gateway Time-out",
+            next: 1780364586400,
+          },
+        })
+        return
+      }
+      response.writeHead(404).end()
+    })
+
+    await expect(new RemoteOpenCodeClient(settings(baseUrl)).getSessionStatuses()).resolves.toEqual({
+      s1: {
+        type: "retry",
+        attempt: 16,
+        message: "Gateway Time-out",
+        next: 1780364586400,
+      },
+    })
+  })
+
   test("does not hide agent discovery failures", async () => {
     const baseUrl = await listen((request, response) => {
       if (request.url === "/agent") {

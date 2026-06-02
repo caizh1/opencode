@@ -275,17 +275,17 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
     }
     .timelineItem {
       display: grid;
-      grid-template-columns: 24px minmax(0, 1fr);
-      gap: 7px;
+      grid-template-columns: 20px minmax(0, 1fr);
+      gap: 5px;
       align-items: start;
     }
     .avatar {
-      width: 22px;
-      height: 22px;
-      border-radius: 6px;
+      width: 18px;
+      height: 18px;
+      border-radius: 5px;
       display: grid;
       place-items: center;
-      font-size: 9px;
+      font-size: 8px;
       font-weight: 700;
       color: var(--vscode-button-foreground);
       background: var(--vscode-button-background);
@@ -305,19 +305,20 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       display: flex;
       align-items: center;
       justify-content: space-between;
-      gap: 8px;
+      gap: 5px;
       min-width: 0;
       flex-wrap: wrap;
-      padding: 6px 9px;
+      padding: 3px 6px;
       border-bottom: 1px solid var(--vscode-panel-border);
       color: var(--vscode-descriptionForeground);
-      font-size: 10px;
-      text-transform: uppercase;
+      font-size: 9px;
+      line-height: 1.1;
+      text-transform: none;
       letter-spacing: 0;
       background: var(--vscode-sideBar-background);
     }
     .messageMeta > span:first-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .messageStats { display: inline-flex; align-items: center; gap: 6px; min-width: 0; flex-wrap: wrap; justify-content: flex-end; }
+    .messageStats { display: inline-flex; align-items: center; gap: 3px; min-width: 0; flex-wrap: wrap; justify-content: flex-end; }
     .messageUsage {
       min-width: 0;
       overflow: hidden;
@@ -329,19 +330,19 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
     .messageActions {
       display: inline-flex;
       align-items: center;
-      gap: 4px;
+      gap: 3px;
       min-width: 0;
       text-transform: none;
     }
     .messageAction {
-      min-height: 20px;
+      min-height: 17px;
       border: 1px solid var(--vscode-panel-border);
-      border-radius: 4px;
-      padding: 1px 5px;
+      border-radius: 3px;
+      padding: 0 4px;
       color: var(--vscode-descriptionForeground);
       background: transparent;
-      font-size: 10px;
-      line-height: 1.2;
+      font-size: 9px;
+      line-height: 1;
     }
     .messageAction:hover {
       color: var(--vscode-foreground);
@@ -386,13 +387,13 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
     .messageOutline {
       display: flex;
       align-items: center;
-      gap: 5px;
+      gap: 4px;
       min-width: 0;
-      padding: 6px 9px;
+      padding: 3px 6px;
       border-bottom: 1px solid var(--vscode-panel-border);
       background: var(--vscode-editor-background);
       color: var(--vscode-descriptionForeground);
-      font-size: 10px;
+      font-size: 9px;
       overflow-x: auto;
       scrollbar-width: thin;
     }
@@ -400,16 +401,16 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
     .messageOutlineButton {
       flex: 0 0 auto;
       max-width: 160px;
-      min-height: 22px;
+      min-height: 18px;
       border: 1px solid var(--vscode-panel-border);
       border-radius: 999px;
-      padding: 1px 7px;
+      padding: 0 5px;
       color: var(--vscode-descriptionForeground);
       background: var(--vscode-sideBar-background);
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
-      font-size: 10px;
+      font-size: 9px;
     }
     .messageOutlineButton:hover {
       color: var(--vscode-foreground);
@@ -630,18 +631,18 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
     .composerWrap {
       flex: 0 0 auto;
       display: grid;
-      gap: 5px;
+      gap: 3px;
       border-top: 1px solid var(--vscode-sideBarSectionHeader-border, var(--vscode-panel-border));
-      padding: 5px 6px 6px;
+      padding: 3px 5px 3px;
       background: var(--vscode-sideBar-background);
     }
     .composerStatusBar {
       position: relative;
       display: flex;
       align-items: center;
-      gap: 5px;
+      gap: 4px;
       min-width: 0;
-      min-height: 28px;
+      min-height: 22px;
       overflow-x: auto;
       overflow-y: hidden;
       scrollbar-width: none;
@@ -649,18 +650,18 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
     .composerStatusBar::-webkit-scrollbar { display: none; }
     .composerStatusToggle {
       flex: 0 0 auto;
-      min-width: 88px;
-      height: 28px;
+      min-width: 64px;
+      height: 22px;
       display: inline-flex;
       align-items: center;
       justify-content: center;
-      gap: 6px;
+      gap: 4px;
       border: 1px solid var(--vscode-focusBorder, rgba(77, 163, 255, 0.65));
-      border-radius: 7px;
-      padding: 0 9px;
+      border-radius: 5px;
+      padding: 0 7px;
       color: var(--vscode-button-foreground);
       background: var(--vscode-button-background);
-      font-size: 10px;
+      font-size: 9px;
       font-weight: 700;
       line-height: 1;
       box-shadow: 0 0 0 1px rgba(77, 163, 255, 0.16) inset;
@@ -671,8 +672,8 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
     }
     .composerToggleIcon {
       position: relative;
-      width: 12px;
-      height: 12px;
+      width: 10px;
+      height: 10px;
       flex: 0 0 auto;
     }
     .composerToggleIcon::before {
@@ -681,18 +682,18 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       left: 1px;
       right: 1px;
       top: 2px;
-      border-top: 2px solid currentColor;
+      border-top: 1.5px solid currentColor;
       opacity: 0.9;
     }
     .composerToggleIcon::after {
       content: "";
       position: absolute;
-      left: 3px;
-      top: 4px;
+      left: 2px;
+      top: 3px;
       width: 6px;
       height: 6px;
-      border-right: 2px solid currentColor;
-      border-bottom: 2px solid currentColor;
+      border-right: 1.5px solid currentColor;
+      border-bottom: 1.5px solid currentColor;
       transform: rotate(45deg);
       transition: transform 120ms ease, top 120ms ease;
     }
@@ -710,18 +711,18 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
     .composerStatusPill {
       flex: 0 0 auto;
       min-width: 0;
-      height: 24px;
+      height: 20px;
       display: inline-flex;
       align-items: center;
-      gap: 5px;
+      gap: 4px;
       border: 1px solid var(--vscode-panel-border);
-      border-radius: 6px;
-      padding: 0 8px;
+      border-radius: 5px;
+      padding: 0 6px;
       color: var(--vscode-descriptionForeground);
       background: var(--vscode-editor-background);
       font-weight: 650;
-      font-size: 10px;
-      line-height: 22px;
+      font-size: 9px;
+      line-height: 18px;
       white-space: nowrap;
     }
     .composerStatusPill:hover,
@@ -734,20 +735,46 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       text-overflow: ellipsis;
       white-space: nowrap;
     }
+    .composerStatusPill.compactRing {
+      width: 22px;
+      min-width: 22px;
+      justify-content: center;
+      padding: 0;
+    }
+    .statusRing {
+      position: relative;
+      width: 12px;
+      height: 12px;
+      flex: 0 0 auto;
+      border-radius: 999px;
+      background: conic-gradient(var(--ring-fill, currentColor) var(--ring-progress, 0%), var(--ring-empty, rgba(127, 127, 127, 0.24)) 0);
+      box-shadow: 0 0 0 1px var(--ring-border, rgba(127, 127, 127, 0.28)) inset;
+    }
+    .statusRing::after {
+      content: "";
+      position: absolute;
+      inset: 3px;
+      border-radius: inherit;
+      background: var(--vscode-editor-background);
+      box-shadow: 0 0 0 1px rgba(127, 127, 127, 0.08);
+    }
+    .statusRing.indeterminate {
+      --ring-progress: 32%;
+    }
     .composerStatusPill.panel { color: var(--vscode-foreground); }
     .composerStatusPill.context { color: var(--vscode-charts-blue, #4da3ff); border-color: rgba(77, 163, 255, 0.52); background: rgba(77, 163, 255, 0.08); }
-    .composerStatusPill.index.ready { color: var(--vscode-testing-iconPassed, #73c991); border-color: rgba(115, 201, 145, 0.56); background: rgba(115, 201, 145, 0.08); }
+    .composerStatusPill.index.ready { color: var(--vscode-testing-iconPassed, #73c991); border-color: rgba(115, 201, 145, 0.56); background: rgba(115, 201, 145, 0.08); --ring-fill: var(--vscode-testing-iconPassed, #73c991); --ring-empty: rgba(115, 201, 145, 0.22); --ring-border: rgba(115, 201, 145, 0.34); }
     .composerStatusPill.index.indexing,
-    .composerStatusPill.index.info { color: var(--vscode-charts-blue, #4da3ff); border-color: rgba(77, 163, 255, 0.52); background: rgba(77, 163, 255, 0.08); }
+    .composerStatusPill.index.info { color: var(--vscode-charts-blue, #4da3ff); border-color: rgba(77, 163, 255, 0.52); background: rgba(77, 163, 255, 0.08); --ring-fill: var(--vscode-charts-blue, #4da3ff); --ring-empty: rgba(77, 163, 255, 0.22); --ring-border: rgba(77, 163, 255, 0.34); }
     .composerStatusPill.index.warning,
     .composerStatusPill.guard.warning,
-    .composerStatusPill.usage.warning { color: var(--vscode-editorWarning-foreground, #cca700); border-color: rgba(204, 167, 0, 0.62); background: rgba(204, 167, 0, 0.08); }
+    .composerStatusPill.usage.warning { color: var(--vscode-editorWarning-foreground, #cca700); border-color: rgba(204, 167, 0, 0.62); background: rgba(204, 167, 0, 0.08); --ring-fill: var(--vscode-editorWarning-foreground, #cca700); --ring-empty: rgba(204, 167, 0, 0.22); --ring-border: rgba(204, 167, 0, 0.36); }
     .composerStatusPill.index.error,
-    .composerStatusPill.usage.error { color: var(--vscode-errorForeground, #f48771); border-color: rgba(244, 135, 113, 0.62); background: rgba(244, 135, 113, 0.08); }
+    .composerStatusPill.usage.error { color: var(--vscode-errorForeground, #f48771); border-color: rgba(244, 135, 113, 0.62); background: rgba(244, 135, 113, 0.08); --ring-fill: var(--vscode-errorForeground, #f48771); --ring-empty: rgba(244, 135, 113, 0.22); --ring-border: rgba(244, 135, 113, 0.36); }
     .composerStatusPill.guard.ok { color: var(--vscode-testing-iconPassed, #73c991); border-color: rgba(115, 201, 145, 0.56); background: rgba(115, 201, 145, 0.08); }
     .composerStatusPill.guard.off { color: var(--vscode-descriptionForeground); }
     .composerStatusPill.usage.normal,
-    .composerStatusPill.usage.pending { color: var(--vscode-charts-purple, #b180d7); border-color: rgba(177, 128, 215, 0.56); background: rgba(177, 128, 215, 0.08); }
+    .composerStatusPill.usage.pending { color: var(--vscode-charts-purple, #b180d7); border-color: rgba(177, 128, 215, 0.56); background: rgba(177, 128, 215, 0.08); --ring-fill: var(--vscode-charts-purple, #b180d7); --ring-empty: rgba(177, 128, 215, 0.22); --ring-border: rgba(177, 128, 215, 0.34); }
     .composerStatusPopover {
       display: none;
       position: absolute;
@@ -798,11 +825,11 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
     .statusActionButton.primary { color: var(--vscode-button-foreground); background: var(--vscode-button-background); }
     .statusActionButton.primary:hover { background: var(--vscode-button-hoverBackground); }
     .composerWrap.collapsed .composerPanel { display: none; }
-    .composerPanel { display: grid; gap: 4px; min-width: 0; }
+    .composerPanel { display: grid; gap: 3px; min-width: 0; }
     .composerPanel .secondary {
-      min-height: 24px;
-      padding: 2px 6px;
-      font-size: 10px;
+      min-height: 22px;
+      padding: 1px 6px;
+      font-size: 9px;
     }
     .guard {
       display: none;
@@ -1068,19 +1095,30 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
     }
     .manualModel { display: none; grid-template-columns: minmax(0, 1fr) auto; gap: 4px; min-width: 0; }
     .manualModel.open { display: grid; }
-    .chips { display: flex; flex-wrap: wrap; align-content: flex-start; gap: 4px; min-width: 0; min-height: 0; max-height: 42px; overflow: auto; }
+    .srOnly {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      padding: 0;
+      margin: -1px;
+      overflow: hidden;
+      clip: rect(0, 0, 0, 0);
+      white-space: nowrap;
+      border: 0;
+    }
+    .chips { display: flex; flex-wrap: wrap; align-content: flex-start; gap: 3px; min-width: 0; min-height: 0; max-height: 38px; overflow: auto; }
     .chip {
       display: inline-flex;
       align-items: center;
-      gap: 5px;
+      gap: 4px;
       max-width: 100%;
       min-width: 0;
       border: 1px solid var(--vscode-panel-border);
       border-radius: 999px;
-      padding: 1px 6px;
+      padding: 0 5px;
       color: var(--vscode-descriptionForeground);
       background: var(--vscode-editor-background);
-      font-size: 10px;
+      font-size: 9px;
     }
     .chip.autoContext.captured { color: var(--vscode-foreground); border-color: var(--vscode-focusBorder); }
     .chip.autoContext.missing { color: var(--vscode-errorForeground); border-color: var(--vscode-inputValidation-warningBorder, var(--vscode-editorWarning-foreground)); }
@@ -1091,7 +1129,7 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       position: relative;
       display: grid;
       grid-template-rows: auto auto;
-      gap: 4px;
+      gap: 3px;
       border: 1px solid var(--vscode-input-border, var(--vscode-panel-border));
       background: var(--vscode-input-background);
       border-radius: 8px;
@@ -1102,10 +1140,10 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       display: block;
       width: 100%;
       min-width: 0;
-      min-height: 48px;
+      min-height: 44px;
       max-height: 120px;
       resize: vertical;
-      padding: 7px;
+      padding: 6px;
       border: 0;
       outline: none;
       color: var(--vscode-input-foreground);
@@ -1117,13 +1155,13 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       display: grid;
       grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, max-content) auto;
       align-items: center;
-      gap: 6px;
+      gap: 4px;
       min-width: 0;
-      padding: 0 5px 5px;
+      padding: 0 4px 4px;
     }
     .send {
       min-width: 44px;
-      height: 24px;
+      height: 22px;
       border-radius: 5px;
       padding: 0 8px;
       color: var(--vscode-button-foreground);
@@ -1148,14 +1186,14 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       z-index: 2;
       width: 100%;
       min-width: 0;
-      height: 24px;
+      height: 22px;
       border-radius: 5px;
       border: 1px solid var(--vscode-button-border, var(--vscode-widget-border, var(--vscode-panel-border)));
       padding: 0 18px 0 7px;
       color: var(--vscode-foreground);
       background: var(--vscode-dropdown-background, var(--vscode-editor-background));
       font-size: 9px;
-      line-height: 22px;
+      line-height: 20px;
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
@@ -1251,52 +1289,80 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
     .suggestionIcon { color: var(--vscode-descriptionForeground); font-size: 10px; text-transform: uppercase; }
     .suggestionLabel { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .suggestionMeta { padding: 7px 8px; color: var(--vscode-descriptionForeground); font-size: 11px; }
-    .composerActions {
+    .composerActions { min-width: 0; }
+    .composerActionRow {
       display: flex;
       align-items: center;
-      justify-content: space-between;
-      gap: 4px;
+      gap: 9px;
       flex-wrap: wrap;
       min-width: 0;
     }
-    .toggles { display: flex; flex-wrap: wrap; gap: 4px; min-width: 0; color: var(--vscode-descriptionForeground); font-size: 10px; }
+    .toggles { display: contents; color: var(--vscode-descriptionForeground); font-size: 9px; }
     .toggles label {
       display: inline-flex;
       align-items: center;
       gap: 3px;
-      border: 1px solid var(--vscode-panel-border);
-      border-radius: 999px;
-      padding: 1px 5px;
-      background: var(--vscode-editor-background);
+      min-height: 18px;
+      color: var(--vscode-descriptionForeground);
+      font-size: 9px;
+      line-height: 1;
+      white-space: nowrap;
     }
-    .toggles input { margin: 0; }
+    .toggles input {
+      width: 11px;
+      height: 11px;
+      flex: 0 0 auto;
+      margin: 0;
+      accent-color: var(--vscode-focusBorder, var(--vscode-button-background));
+    }
+    .toggleShort { display: none; }
     .composerActions .secondary {
-      border: 1px solid var(--vscode-panel-border);
       transition: border-color 120ms ease, background 120ms ease;
     }
     .composerActions .secondary:hover {
-      border-color: var(--vscode-focusBorder);
       background: var(--vscode-button-secondaryHoverBackground, var(--vscode-toolbar-hoverBackground));
     }
+    .composerIconButton {
+      width: 18px;
+      min-width: 18px;
+      height: 18px;
+      min-height: 18px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      border: 0;
+      border-radius: 4px;
+      padding: 0;
+      color: var(--vscode-icon-foreground, var(--vscode-foreground));
+      background: transparent;
+      line-height: 1;
+    }
+    .composerIconButton .buttonIcon {
+      width: 13px;
+      height: 13px;
+      flex: 0 0 auto;
+      pointer-events: none;
+    }
+    .composerIconButton.loading .buttonIcon { animation: statusRingSpin 900ms linear infinite; }
     .exportButton {
       color: var(--vscode-charts-purple, #b180d7);
-      border-color: rgba(177, 128, 215, 0.56);
-      background: rgba(177, 128, 215, 0.08);
     }
     .attachButton {
       color: var(--vscode-charts-blue, #4da3ff);
-      border-color: rgba(77, 163, 255, 0.42);
-      background: rgba(77, 163, 255, 0.06);
     }
     .refreshButton {
       color: var(--vscode-descriptionForeground);
-      background: var(--vscode-button-secondaryBackground);
     }
-    .notice { min-height: 12px; color: var(--vscode-descriptionForeground); font-size: 10px; overflow-wrap: anywhere; }
+    .notice { min-height: 0; color: var(--vscode-descriptionForeground); font-size: 10px; overflow-wrap: anywhere; }
+    .notice:empty { display: none; }
     @media (max-width: 479px) {
       .topbar { gap: 6px; padding: 7px; }
       .icon { max-width: 52px; padding: 0 6px; }
       .primary, .secondary { padding-inline: 7px; }
+      .composerActionRow { gap: 7px; }
+      .toggles label { font-size: 9px; }
+      .toggles input { width: 10px; height: 10px; }
+      .composerIconButton { width: 18px; min-width: 18px; height: 18px; padding: 0; }
       .composerToolbar {
         grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
         gap: 4px;
@@ -1311,13 +1377,18 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       .composerStatusToggle { min-width: 62px; padding-inline: 7px; }
       .composerToggleFull { display: none; }
       .composerToggleShort { display: inline; }
+      .composerActionRow { gap: 6px; }
+      .toggleFull { display: none; }
+      .toggleShort { display: inline; }
     }
     @media (max-width: 300px) {
       .topbar { gap: 5px; padding: 6px; }
       .mark { width: 22px; height: 22px; }
       .icon { min-width: 24px; max-width: 34px; height: 24px; padding: 0 5px; }
       .primary, .secondary { min-height: 24px; padding-inline: 6px; }
-      .composerWrap { padding: 4px; }
+      .composerWrap { padding: 3px 4px; }
+      .composerActionRow { gap: 5px 7px; }
+      .composerIconButton { width: 18px; min-width: 18px; height: 18px; min-height: 18px; padding: 0; }
       .composerHint { display: none; }
       .send { min-width: 40px; padding: 0 6px; }
       .modelTrigger { height: 24px; }
@@ -1332,8 +1403,10 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       .dots span { animation: pulse 900ms ease-in-out infinite; }
       .dots span:nth-child(2) { animation-delay: 130ms; }
       .dots span:nth-child(3) { animation-delay: 260ms; }
+      .statusRing.indeterminate { animation: statusRingSpin 900ms linear infinite; }
       @keyframes messageIn { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: translateY(0); } }
       @keyframes pulse { 0%, 80%, 100% { opacity: 0.35; transform: translateY(0); } 40% { opacity: 1; transform: translateY(-2px); } }
+      @keyframes statusRingSpin { to { transform: rotate(360deg); } }
     }
     @media (forced-colors: active) {
       .messageAction,
@@ -1344,8 +1417,10 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       .copyTable,
       .toggleTableRaw,
       .composerStatusPill,
+      .statusRing,
       .statusActionButton,
-      .contextRemoveButton {
+      .contextRemoveButton,
+      .composerIconButton {
         border-color: CanvasText;
         forced-color-adjust: auto;
       }
@@ -1423,9 +1498,9 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
             </button>
             <button id="panelStatusPill" class="composerStatusPill panel" type="button" title="Collapse input panel"><span class="pillText">Panel</span></button>
             <button id="contextStatusPill" class="composerStatusPill context" type="button" title="Show context details"><span class="pillText">Ctx 0</span></button>
-            <button id="indexStatusPill" class="composerStatusPill index info" type="button" title="Show index details"><span class="pillText">Off</span></button>
+            <button id="indexStatusPill" class="composerStatusPill index info compactRing" type="button" title="Show index details"><span class="pillText statusRing" aria-hidden="true"></span></button>
             <button id="guardStatusPill" class="composerStatusPill guard ok" type="button" title="Show guard details"><span class="pillText">Guard ok</span></button>
-            <button id="usageStatusPill" class="composerStatusPill usage pending" type="button" title="Show usage details"><span class="pillText">Usage</span></button>
+            <button id="usageStatusPill" class="composerStatusPill usage pending compactRing" type="button" title="Show usage details"><span class="pillText statusRing" aria-hidden="true"></span></button>
           </div>
           <div id="composerStatusPopover" class="composerStatusPopover" aria-hidden="true"></div>
           <div id="composerPanel" class="composerPanel">
@@ -1444,16 +1519,35 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
               </div>
             </div>
             <div class="composerActions">
-              <div class="toggles">
-                <label><input id="sel" type="checkbox" checked> Selection</label>
-                <label><input id="file" type="checkbox" checked> Current file</label>
-                <label><input id="diag" type="checkbox"> Diagnostics</label>
-                <label><input id="diff" type="checkbox"> Git diff</label>
-              </div>
-              <div class="row">
-                <button id="exportMarkdown" class="secondary exportButton" title="Export current chat to Markdown">Export</button>
-                <button id="attach" class="secondary attachButton" title="Attach file as persistent context">Attach</button>
-                <button id="refreshModels" class="secondary refreshButton" title="Refresh models">Refresh</button>
+              <div class="composerActionRow">
+                <div class="toggles">
+                  <label><input id="sel" type="checkbox" checked><span class="toggleFull">Selection</span><span class="toggleShort">Selection</span></label>
+                  <label><input id="file" type="checkbox" checked><span class="toggleFull">Current file</span><span class="toggleShort">Current</span></label>
+                  <label><input id="diag" type="checkbox"><span class="toggleFull">Diagnostics</span><span class="toggleShort">Diag</span></label>
+                  <label><input id="diff" type="checkbox"><span class="toggleFull">Git diff</span><span class="toggleShort">Diff</span></label>
+                </div>
+                <button id="exportMarkdown" class="secondary exportButton composerIconButton" title="Export current chat to Markdown" aria-label="Export current chat to Markdown">
+                  <svg class="buttonIcon" viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M8 2.5v7"></path>
+                    <path d="M5.2 7.1 8 9.9l2.8-2.8"></path>
+                    <path d="M3.2 12.5h9.6"></path>
+                  </svg>
+                  <span class="srOnly">Export current chat to Markdown</span>
+                </button>
+                <button id="attach" class="secondary attachButton composerIconButton" title="Attach file as persistent context" aria-label="Attach file as persistent context">
+                  <svg class="buttonIcon" viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M6 8.2 9.8 4.4a2.1 2.1 0 0 1 3 3L7.6 12.6a3.2 3.2 0 0 1-4.5-4.5l5-5"></path>
+                    <path d="M8 10 11.6 6.4"></path>
+                  </svg>
+                  <span class="srOnly">Attach file as persistent context</span>
+                </button>
+                <button id="refreshModels" class="secondary refreshButton composerIconButton" title="Refresh models" aria-label="Refresh models">
+                  <svg class="buttonIcon" viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M12.8 5.4A5 5 0 1 0 13 10"></path>
+                    <path d="M12.8 2.8v2.6h-2.6"></path>
+                  </svg>
+                  <span class="srOnly">Refresh models</span>
+                </button>
               </div>
             </div>
             <div id="manualModelRow" class="manualModel">
@@ -1489,7 +1583,9 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
     let modelMenuOpen = false;
     let agentMenuOpen = false;
     let composerCollapsed = false;
-    let composerStatusPopover = "";
+    let composerPinnedStatusPopover = "";
+    let composerHoverStatusPopover = "";
+    let composerHoverCloseTimer = 0;
     let codeIntelligenceVisible = false;
     let selectedStateMachineId = "";
     const collapsedMessages = new Set();
@@ -1541,11 +1637,13 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
     el("newSession").addEventListener("click", () => vscode.postMessage({ type: "newSession" }));
     el("composerStatusToggle").addEventListener("click", toggleComposerPanel);
     el("panelStatusPill").addEventListener("click", toggleComposerPanel);
-    el("contextStatusPill").addEventListener("click", (event) => toggleComposerStatusPopover(event, "context"));
-    el("indexStatusPill").addEventListener("click", (event) => toggleComposerStatusPopover(event, "index"));
-    el("guardStatusPill").addEventListener("click", (event) => toggleComposerStatusPopover(event, "guard"));
-    el("usageStatusPill").addEventListener("click", (event) => toggleComposerStatusPopover(event, "usage"));
+    bindComposerStatusPill("contextStatusPill", "context", false);
+    bindComposerStatusPill("indexStatusPill", "index", true);
+    bindComposerStatusPill("guardStatusPill", "guard", false);
+    bindComposerStatusPill("usageStatusPill", "usage", true);
     el("composerStatusPopover").addEventListener("click", onComposerStatusPopoverClick);
+    el("composerStatusPopover").addEventListener("mouseenter", cancelComposerHoverClose);
+    el("composerStatusPopover").addEventListener("mouseleave", () => scheduleComposerHoverClose());
     el("refreshModels").addEventListener("click", () => vscode.postMessage({ type: "refreshModels" }));
     el("modelSelect").addEventListener("change", onModelSelect);
     el("modelTrigger").addEventListener("click", (event) => {
@@ -1565,10 +1663,10 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
     window.addEventListener("click", () => {
       const hadModelMenu = modelMenuOpen;
       const hadAgentMenu = agentMenuOpen;
-      const hadStatusPopover = Boolean(composerStatusPopover);
+      const hadStatusPopover = Boolean(activeComposerStatusPopover());
       modelMenuOpen = false;
       agentMenuOpen = false;
-      composerStatusPopover = "";
+      closeComposerStatusPopoverState();
       if (hadModelMenu) {
         renderModelMenu();
         renderModelTrigger();
@@ -1581,12 +1679,12 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
     });
     window.addEventListener("keydown", (event) => {
       if (event.key !== "Escape") return;
-      const hadPopup = modelMenuOpen || agentMenuOpen || Boolean(composerStatusPopover) || el("suggestions").classList.contains("open");
+      const hadPopup = modelMenuOpen || agentMenuOpen || Boolean(activeComposerStatusPopover()) || el("suggestions").classList.contains("open");
       if (!hadPopup) return;
       event.preventDefault();
       modelMenuOpen = false;
       agentMenuOpen = false;
-      composerStatusPopover = "";
+      closeComposerStatusPopoverState();
       mentionResults = [];
       mentionStatus = "";
       mentionError = "";
@@ -1947,29 +2045,93 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
     }
 
     function updateStatusPill(node, input) {
-      node.className = input.className + (composerStatusPopover === input.popover ? " open" : "");
+      const activePopover = activeComposerStatusPopover();
+      node.className = input.className + (input.ring ? " compactRing" : "") + (activePopover === input.popover ? " open" : "");
       node.title = input.title || input.text;
+      node.setAttribute("aria-label", input.ariaLabel || input.title || input.text);
+      node.style.removeProperty("--ring-progress");
       const label = node.querySelector(".pillText") || node;
+      if (input.ring) {
+        label.className = "pillText statusRing" + (input.ring.indeterminate ? " indeterminate" : "");
+        label.setAttribute("aria-hidden", "true");
+        label.textContent = "";
+        if (typeof input.ring.progress === "number") node.style.setProperty("--ring-progress", formatRingProgress(input.ring.progress));
+        return;
+      }
+      label.className = "pillText";
+      label.removeAttribute("aria-hidden");
       label.textContent = input.text;
+    }
+
+    function bindComposerStatusPill(id, name, hover) {
+      const node = el(id);
+      node.addEventListener("click", (event) => toggleComposerStatusPopover(event, name));
+      if (!hover) return;
+      node.addEventListener("mouseenter", () => showComposerHoverPopover(name));
+      node.addEventListener("mouseleave", () => scheduleComposerHoverClose(name));
+      node.addEventListener("focus", () => showComposerHoverPopover(name));
+      node.addEventListener("blur", () => scheduleComposerHoverClose(name));
     }
 
     function toggleComposerStatusPopover(event, name) {
       event.stopPropagation();
-      composerStatusPopover = composerStatusPopover === name ? "" : name;
+      cancelComposerHoverClose();
+      composerPinnedStatusPopover = composerPinnedStatusPopover === name ? "" : name;
+      composerHoverStatusPopover = "";
       closeComposerPopups();
       renderComposerStatusBar();
     }
 
     function renderComposerStatusPopover() {
       const root = el("composerStatusPopover");
+      const activePopover = activeComposerStatusPopover();
       root.textContent = "";
-      root.className = "composerStatusPopover" + (composerStatusPopover ? " open" : "");
-      root.setAttribute("aria-hidden", composerStatusPopover ? "false" : "true");
-      if (!composerStatusPopover) return;
-      if (composerStatusPopover === "context") renderContextStatusPopover(root);
-      if (composerStatusPopover === "index") renderIndexStatusPopover(root);
-      if (composerStatusPopover === "guard") renderGuardStatusPopover(root);
-      if (composerStatusPopover === "usage") renderUsageStatusPopover(root);
+      root.className = "composerStatusPopover" + (activePopover ? " open" : "");
+      root.setAttribute("aria-hidden", activePopover ? "false" : "true");
+      if (!activePopover) return;
+      if (activePopover === "context") renderContextStatusPopover(root);
+      if (activePopover === "index") renderIndexStatusPopover(root);
+      if (activePopover === "guard") renderGuardStatusPopover(root);
+      if (activePopover === "usage") renderUsageStatusPopover(root);
+    }
+
+    function activeComposerStatusPopover() {
+      return composerPinnedStatusPopover || composerHoverStatusPopover;
+    }
+
+    function showComposerHoverPopover(name) {
+      if (composerPinnedStatusPopover) return;
+      cancelComposerHoverClose();
+      if (composerHoverStatusPopover === name) return;
+      composerHoverStatusPopover = name;
+      renderComposerStatusBar();
+    }
+
+    function scheduleComposerHoverClose(name) {
+      if (composerPinnedStatusPopover) return;
+      cancelComposerHoverClose();
+      composerHoverCloseTimer = window.setTimeout(() => {
+        if (composerPinnedStatusPopover) return;
+        if (name && composerHoverStatusPopover !== name) return;
+        const popover = el("composerStatusPopover");
+        const active = document.activeElement;
+        const activeStatusPill = active && active.closest && active.closest("#indexStatusPill, #usageStatusPill");
+        if (popover.matches(":hover") || popover.matches(":focus-within") || activeStatusPill) return;
+        composerHoverStatusPopover = "";
+        renderComposerStatusBar();
+      }, 160);
+    }
+
+    function cancelComposerHoverClose() {
+      if (!composerHoverCloseTimer) return;
+      window.clearTimeout(composerHoverCloseTimer);
+      composerHoverCloseTimer = 0;
+    }
+
+    function closeComposerStatusPopoverState() {
+      cancelComposerHoverClose();
+      composerPinnedStatusPopover = "";
+      composerHoverStatusPopover = "";
     }
 
     function composerContextStatus() {
@@ -1992,11 +2154,14 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       const graph = state.codeGraph || {};
       const stateName = graph.state || "disabled";
       const view = codeGraphStatusView(graph, stateName);
+      const title = codeGraphTitle(graph, view.label);
       return {
         text: view.shortLabel,
-        title: codeGraphTitle(graph, view.label),
+        title,
         className: "composerStatusPill index " + view.kind,
         popover: "index",
+        ariaLabel: "Index status: " + view.shortLabel + ". " + title,
+        ring: indexStatusRing(graph, stateName, view.kind),
       };
     }
 
@@ -2058,18 +2223,52 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
           title: "Connect to load usage.",
           className: "composerStatusPill usage pending",
           popover: "usage",
+          ariaLabel: "Context usage: connect to load usage.",
+          ring: { progress: 0 },
         };
       }
       const usage = state.usage || {};
       const level = usage.level || "normal";
       const status = usage.status || "pending";
       const kind = level === "warning" || level === "error" ? level : status === "pending" ? "pending" : "normal";
+      const title = usage.detail || usage.summary || "Usage pending";
       return {
         text: usage.summary || "Usage pending",
-        title: usage.detail || usage.summary || "Usage pending",
+        title,
         className: "composerStatusPill usage " + kind,
         popover: "usage",
+        ariaLabel: "Context usage: " + title,
+        ring: { progress: contextUsageRatio(usage) ?? 0 },
       };
+    }
+
+    function indexStatusRing(graph, stateName, kind) {
+      if (kind === "indexing") {
+        const progress = progressRatio(graph.progress);
+        return progress === undefined ? { indeterminate: true } : { progress };
+      }
+      if (stateName === "ready") return { progress: 1 };
+      if (kind === "warning" || kind === "error") return { progress: progressRatio(graph.progress) ?? 1 };
+      return { progress: 0 };
+    }
+
+    function contextUsageRatio(usage) {
+      const ratio = usage && usage.context && usage.context.ratio;
+      return typeof ratio === "number" && Number.isFinite(ratio) ? clamp01(ratio) : undefined;
+    }
+
+    function progressRatio(progress) {
+      if (!progress || !progress.total) return undefined;
+      return clamp01(Number(progress.completed || 0) / Number(progress.total));
+    }
+
+    function clamp01(value) {
+      if (!Number.isFinite(value)) return 0;
+      return Math.max(0, Math.min(1, value));
+    }
+
+    function formatRingProgress(value) {
+      return (Math.round(clamp01(value) * 1000) / 10) + "%";
     }
 
     function composerIndexSummary() {
@@ -3805,11 +4004,23 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
         select.appendChild(modelOption("__manual", "Manual..."));
       }
       select.value = current && Array.from(select.options).some((option) => option.value === current) ? current : "";
-      el("refreshModels").textContent = state.loadingModels ? "..." : "Refresh";
-      el("refreshModels").disabled = Boolean(state.loadingModels);
+      setIconButtonState(el("refreshModels"), {
+        label: state.loadingModels ? "Refreshing models" : "Refresh models",
+        loading: Boolean(state.loadingModels),
+        disabled: Boolean(state.loadingModels)
+      });
       renderModelTrigger();
       renderModelMenu();
       if (state.modelError) setNotice(state.modelError);
+    }
+
+    function setIconButtonState(button, input) {
+      button.disabled = Boolean(input.disabled);
+      button.classList.toggle("loading", Boolean(input.loading));
+      button.title = input.label;
+      button.setAttribute("aria-label", input.label);
+      const label = button.querySelector(".srOnly");
+      if (label) label.textContent = input.label;
     }
 
     function modelOption(value, label) {

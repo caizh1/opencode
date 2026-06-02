@@ -46,6 +46,7 @@ import type {
   OpenCodeModelInfo,
   OpenCodePart,
   OpenCodeSession,
+  OpenCodeSessionStatus,
   PromptModel,
   CodeGraphStatus,
   RenderedUsage,
@@ -58,6 +59,8 @@ const MODEL_REFRESH_TIMEOUT_MS = 8000
 const AGENT_REFRESH_TIMEOUT_MS = 8000
 const SESSION_REFRESH_TIMEOUT_MS = 8000
 const MESSAGE_REFRESH_TIMEOUT_MS = 5000
+const SESSION_STATUS_TIMEOUT_MS = 5000
+const SEND_STATUS_POLL_INTERVAL_MS = 5000
 const EXPORT_INTENT_TIMEOUT_MS = 15000
 const EXPORT_INTENT_SESSION_TITLE = "VS Code export intent"
 
@@ -135,6 +138,12 @@ type MentionIndexState = {
   truncated: boolean
 }
 
+type ActiveSend = {
+  client: RemoteOpenCodeClient
+  sessionID: string
+  generation: number
+}
+
 type RemoteChatViewProviderDeps = {
   output: vscode.OutputChannel
   contextStore: LocalContextStore
@@ -189,11 +198,15 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
   private readonly finalizingSessions = new Set<string>()
   private readonly pendingLocalUserMessageIDs = new Set<string>()
   private readonly pendingLocalUserTexts = new Set<string>()
+  private activeSend?: ActiveSend
+  private activeSendGeneration = 0
+  private sendStatusTimer?: ReturnType<typeof setTimeout>
 
   constructor(private readonly deps: RemoteChatViewProviderDeps) {}
 
   dispose() {
     this.stopEventSubscription()
+    this.stopSendStatusWatchdog()
   }
 
   resolveWebviewView(webviewView: vscode.WebviewView) {
@@ -223,7 +236,10 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
   setConnectionState(state: ConnectionState, detail = "") {
     this.connectionState = state
     this.connectionDetail = detail
-    if (state !== "connected") this.stopEventSubscription()
+    if (state !== "connected") {
+      this.stopEventSubscription()
+      this.clearActiveSendState()
+    }
     this.postState()
   }
 
@@ -345,6 +361,98 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
     this.eventStreamFailed = false
   }
 
+  private startSendStatusWatchdog(client: RemoteOpenCodeClient, sessionID: string) {
+    this.stopSendStatusWatchdog()
+    const generation = ++this.activeSendGeneration
+    this.activeSend = { client, sessionID, generation }
+    this.scheduleSendStatusWatchdog(client, sessionID, generation)
+  }
+
+  private scheduleSendStatusWatchdog(client: RemoteOpenCodeClient, sessionID: string, generation: number) {
+    this.stopSendStatusWatchdog()
+    this.sendStatusTimer = setTimeout(() => {
+      this.sendStatusTimer = undefined
+      void this.pollActiveSendStatus(client, sessionID, generation)
+    }, SEND_STATUS_POLL_INTERVAL_MS)
+  }
+
+  private stopSendStatusWatchdog() {
+    if (!this.sendStatusTimer) return
+    clearTimeout(this.sendStatusTimer)
+    this.sendStatusTimer = undefined
+  }
+
+  private clearActiveSendState() {
+    this.activeSendGeneration += 1
+    this.activeSend = undefined
+    this.stopSendStatusWatchdog()
+    this.pendingLocalUserMessageIDs.clear()
+    this.pendingLocalUserTexts.clear()
+    this.sending = false
+  }
+
+  private isActiveSend(client: RemoteOpenCodeClient, sessionID: string, generation: number) {
+    return (
+      this.sending &&
+      this.sessionID === sessionID &&
+      this.activeSend?.client === client &&
+      this.activeSend.sessionID === sessionID &&
+      this.activeSend.generation === generation
+    )
+  }
+
+  private async pollActiveSendStatus(client: RemoteOpenCodeClient, sessionID: string, generation: number) {
+    if (!this.isActiveSend(client, sessionID, generation)) return
+
+    try {
+      const statuses = await withRequestTimeout("session status", SESSION_STATUS_TIMEOUT_MS, (signal) =>
+        client.getSessionStatuses(signal),
+      )
+      if (!this.isActiveSend(client, sessionID, generation)) return
+
+      const status = statuses[sessionID]
+      if (status?.type === "idle") {
+        void this.finishStreamingSession(client, sessionID)
+        return
+      }
+      if (status?.type === "retry") {
+        await this.failActiveSendWithRetry(client, sessionID, status, generation)
+        return
+      }
+    } catch (error) {
+      if (this.isActiveSend(client, sessionID, generation)) this.logEventError("session status poll failed", error)
+    }
+
+    if (this.isActiveSend(client, sessionID, generation)) this.scheduleSendStatusWatchdog(client, sessionID, generation)
+  }
+
+  private async failActiveSendWithRetry(
+    client: RemoteOpenCodeClient,
+    sessionID: string,
+    status: OpenCodeSessionStatus,
+    generation = this.activeSend?.generation,
+  ) {
+    if (generation === undefined || !this.isActiveSend(client, sessionID, generation)) return
+
+    this.stopSendStatusWatchdog()
+    const message = remoteRetryMessage(status)
+    this.deps.output.appendLine(`[event] ${message}`)
+    try {
+      await this.refreshSessionList(client)
+      if (this.sessionID === sessionID) await this.loadSessionMessages(client, sessionID)
+    } catch (error) {
+      this.logEventError("retry message refresh failed", error)
+    }
+    if (!this.isActiveSend(client, sessionID, generation)) return
+
+    this.pendingLocalUserMessageIDs.clear()
+    this.pendingLocalUserTexts.clear()
+    this.messages = [...this.messages, localMessage("error", message)]
+    this.sending = false
+    this.activeSend = undefined
+    this.postState()
+  }
+
   private handleRemoteEvent(client: RemoteOpenCodeClient, rawEvent: unknown) {
     if (this.deps.getClient() !== client) return
     const event = normalizeOpenCodeEvent(rawEvent)
@@ -362,12 +470,16 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
       this.postState()
     }
     if (result.error) {
+      this.clearActiveSendState()
       this.messages = [...this.messages, localMessage("error", `Remote session error: ${result.error}`)]
-      this.sending = false
       this.postState()
     }
 
     const sessionID = this.sessionID
+    if (sessionID && result.retry) {
+      void this.failActiveSendWithRetry(client, sessionID, result.retry)
+      return
+    }
     if (sessionID && (result.idle || result.completed)) {
       void this.finishStreamingSession(client, sessionID)
     }
@@ -381,6 +493,9 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
   private async finishStreamingSession(client: RemoteOpenCodeClient, sessionID: string) {
     if (this.finalizingSessions.has(sessionID)) return
     this.finalizingSessions.add(sessionID)
+    const activeGeneration =
+      this.activeSend?.client === client && this.activeSend.sessionID === sessionID ? this.activeSend.generation : undefined
+    if (activeGeneration !== undefined) this.stopSendStatusWatchdog()
     try {
       if (this.deps.getClient() !== client) return
       await this.refreshSessionList(client)
@@ -390,6 +505,9 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
     } finally {
       this.finalizingSessions.delete(sessionID)
       if (this.sessionID === sessionID) {
+        if (activeGeneration !== undefined && this.activeSend?.generation === activeGeneration) this.activeSend = undefined
+        this.pendingLocalUserMessageIDs.clear()
+        this.pendingLocalUserTexts.clear()
         this.sending = false
         this.postState()
       }
@@ -432,6 +550,7 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
     const client = this.connectedClient("Connect before creating a session.")
     if (!client) return
 
+    this.clearActiveSendState()
     this.loadingMessages = true
     this.postState()
     try {
@@ -641,6 +760,7 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
     const client = this.connectedClient("Connect before selecting a session.")
     if (!client || !sessionID) return
 
+    this.clearActiveSendState()
     this.sessionID = sessionID
     this.loadingMessages = true
     this.postState()
@@ -875,6 +995,7 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
         model: input.model,
         agent: input.agent,
       })
+      if (this.sending && this.sessionID === sessionID) this.startSendStatusWatchdog(client, sessionID)
       await this.refreshSessionList(client)
       return true
     }
@@ -1373,6 +1494,15 @@ function codeGraphErrorMessage(status: CodeGraphStatus, cause?: unknown) {
   const causeMessage = cause ? formatErrorMessage(cause) : ""
   const detail = status.detail || causeMessage || "Local code graph indexing failed."
   return `Local code graph is not ready: ${detail} Rebuild the local code graph or disable opencode.remote.codeGraph.enabled before sending.`
+}
+
+function remoteRetryMessage(status: OpenCodeSessionStatus) {
+  const attempt = "attempt" in status && typeof status.attempt === "number" ? `（第 ${status.attempt} 次）` : ""
+  const detail =
+    "message" in status && typeof status.message === "string" && status.message.trim()
+      ? `：${status.message.trim()}`
+      : ""
+  return `远端 OpenCode 正在重试模型请求${attempt}${detail}。当前会话可能过大，可以新建会话后重试。`
 }
 
 function renderMessage(message: OpenCodeMessage): RenderedMessage {

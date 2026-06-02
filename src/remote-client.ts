@@ -4,6 +4,7 @@ import type {
   OpenCodeMessage,
   OpenCodeModelInfo,
   OpenCodeSession,
+  OpenCodeSessionStatus,
   PromptModel,
   RemoteSettings,
 } from "./types"
@@ -81,6 +82,10 @@ export class RemoteOpenCodeClient {
 
   async listSessions(signal?: AbortSignal) {
     return this.request<OpenCodeSession[]>("/session", { method: "GET", signal })
+  }
+
+  async getSessionStatuses(signal?: AbortSignal) {
+    return this.request<Record<string, OpenCodeSessionStatus>>("/session/status", { method: "GET", signal })
   }
 
   async createSession(title?: string, signal?: AbortSignal) {

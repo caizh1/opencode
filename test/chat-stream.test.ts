@@ -149,6 +149,27 @@ describe("chat stream events", () => {
       }, "s1").completed,
     ).toBe(true)
   })
+
+  test("reports remote session retry statuses", () => {
+    const result = applyOpenCodeEventToMessages(
+      [],
+      {
+        type: "session.status",
+        properties: {
+          sessionID: "s1",
+          status: { type: "retry", attempt: 16, message: "Gateway Time-out", next: 1780364586400 },
+        },
+      },
+      "s1",
+    )
+
+    expect(result.retry).toMatchObject({
+      type: "retry",
+      attempt: 16,
+      message: "Gateway Time-out",
+      next: 1780364586400,
+    })
+  })
 })
 
 function messageUpdated(sessionID: string, messageID: string): OpenCodeEvent {
