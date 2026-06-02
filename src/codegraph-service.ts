@@ -14,9 +14,9 @@ import {
   shardInfo,
   shardKeyForPath,
 } from "./codegraph-index"
-import { buildCodeGraphContext } from "./codegraph-query"
+import { buildHybridCodeGraphContext } from "./codegraph-query"
 import { CodeGraphHotCache, planShardKeysForQuery } from "./codegraph-shard-planner"
-import { buildCodeIntelligenceSnapshot, queryEvidence, runAnalysisTool } from "./codegraph-analysis"
+import { buildCodeIntelligenceSnapshot, queryEvidenceAsync, runAnalysisTool } from "./codegraph-analysis"
 import { formatCodeGraphBenchmarkReport, runCodeGraphSyntheticBenchmark } from "./codegraph-benchmark"
 import { CodeGraphWorkerPool } from "./codegraph-worker-host"
 import {
@@ -26,6 +26,18 @@ import {
 } from "./codegraph-storage-schema"
 import { LocalAnalysisJobQueue, recordStateTransition, type LocalAnalysisJob } from "./local-analysis-service"
 import type { AnalysisToolName, AnalysisToolResult, CodeIntelligenceSnapshot, QueryEvidenceResult } from "./analysis-types"
+import { extractStateMachines } from "./state-machine-extractor"
+import { checkRagEndpoint, createHttpEmbeddingProvider, createHttpRerankProvider } from "./rag-provider"
+import {
+  buildRagVectorIndex,
+  createRagSerializedManifest,
+  decodeRagShardVectors,
+  encodeRagShardVectors,
+  splitRagVectorIndex,
+  type RagSerializedManifest,
+  type RagSerializedShardMetadata,
+} from "./rag-index"
+import type { EmbeddingProvider, HybridRetrievalOptions, RagVectorIndex, RerankProvider } from "./rag-types"
 import type {
   CodeGraphFile,
   CodeGraphIndex,
@@ -34,7 +46,7 @@ import type {
   CodeGraphShardData,
   CodeGraphShardManifest,
 } from "./codegraph-types"
-import type { CodeGraphStatus, RemoteSettings } from "./types"
+import type { CodeGraphStatus, RagStatus, RemoteSettings } from "./types"
 
 const INDEX_VERSION = CURRENT_CODE_GRAPH_INDEX_VERSION
 const INDEX_TIME_SLICE_MS = 35
@@ -81,6 +93,11 @@ export class LocalCodeGraphService implements vscode.Disposable {
   private readonly transitions: NonNullable<CodeGraphStatus["transitions"]> = []
   private queryCache = new CodeGraphHotCache<string, CodeGraphPromptContext>(80)
   private shardCache = new CodeGraphHotCache<string, Record<string, CodeGraphFile>>(64)
+  private ragIndex?: RagVectorIndex
+  private ragEmbeddingProvider?: EmbeddingProvider
+  private ragRerankProvider?: RerankProvider
+  private lastRagElapsedMs: number | undefined
+  private ragStatusValue = disabledRagStatus()
   private changeTimer?: ReturnType<typeof setTimeout>
   private rescanScheduled = false
   private cancelRequested = false
@@ -122,6 +139,10 @@ export class LocalCodeGraphService implements vscode.Disposable {
       memoryDegraded: heapUsed > memoryLimitBytes,
       memoryLimitBytes,
       heapUsedBytes: heapUsed,
+      ragChunks: this.ragStatusValue.chunks,
+      ragEmbeddedChunks: this.ragStatusValue.embeddedChunks,
+      ragVectorShards: this.ragStatusValue.vectorShards,
+      lastRagElapsedMs: this.lastRagElapsedMs,
     })
   }
 
@@ -263,8 +284,11 @@ export class LocalCodeGraphService implements vscode.Disposable {
       ? ` Analyzer: ${status.analysisMode} on ${status.analyzerHost ?? "unknown"}${status.analyzerPlatform ? ` (${status.analyzerPlatform})` : ""}.`
       : ""
     const degraded = status.analyzerDegradedReason ? ` ${status.analyzerDegradedReason}` : ""
+    const rag = status.rag?.embeddingEnabled
+      ? ` RAG: ${status.rag.embeddedChunks}/${status.rag.chunks} chunk(s), ${status.rag.vectorShards} shard(s), ${status.rag.endpointKind}${status.rag.fallbackReason ? `, fallback ${status.rag.fallbackReason}` : ""}.`
+      : " RAG: embedding disabled; BM25/graph/state-machine fallback active."
     await vscode.window.showInformationMessage(
-      `Local code graph: ${status.state}. ${status.indexedFiles} file(s), ${status.indexedFunctions} function(s), ${status.indexedMacros} macro(s). ${status.detail}${updated}${truncated}${storage}${schema}${queue}${errors}${size}${skipped}${analyzer}${degraded}`.trim(),
+      `Local code graph: ${status.state}. ${status.indexedFiles} file(s), ${status.indexedFunctions} function(s), ${status.indexedMacros} macro(s). ${status.detail}${updated}${truncated}${storage}${schema}${queue}${errors}${size}${skipped}${analyzer}${degraded}${rag}`.trim(),
     )
   }
 
@@ -281,7 +305,7 @@ export class LocalCodeGraphService implements vscode.Disposable {
     const activeIndex = await this.activeIndexForQuestion(input.question, input.relatedPaths)
     if (!activeIndex) return undefined
     this.resizeQueryCache(settings.codeGraph.queryCacheSize)
-    const cacheKey = codeGraphQueryCacheKey(input)
+    const cacheKey = `${codeGraphQueryCacheKey(input)}:${this.ragIndex?.updatedAt ?? 0}:${settings.rag.embedding.enabled ? "rag" : "fallback"}`
     const cached = this.queryCache.get(cacheKey)
     if (cached) {
       this.jobs.recordQueryCacheHit()
@@ -294,13 +318,14 @@ export class LocalCodeGraphService implements vscode.Disposable {
       relatedPaths: input.relatedPaths,
       maxShards: Math.max(1, settings.codeGraph.maxDeepFiles),
     })
-    const context = buildCodeGraphContext({
+    const context = await buildHybridCodeGraphContext({
       index: activeIndex,
       question: input.question,
       relatedPaths: input.relatedPaths,
       maxBytes: input.maxBytes,
       maxDepth: input.maxDepth,
       maxFanout: input.maxFanout,
+      hybrid: this.hybridOptions(),
     })
     if (context) {
       this.cacheQueryContext(cacheKey, context)
@@ -314,7 +339,7 @@ export class LocalCodeGraphService implements vscode.Disposable {
     if (!this.index) await this.ensureIndexLoaded()
     const activeIndex = await this.activeIndexForQuestion("", [])
     if (!activeIndex) return undefined
-    return buildCodeIntelligenceSnapshot(activeIndex, this.lastAnalysisTrace, this.analysisAudit.slice(-50).reverse())
+    return buildCodeIntelligenceSnapshot(activeIndex, this.lastAnalysisTrace, this.analysisAudit.slice(-50).reverse(), this.ragStatusValue)
   }
 
   async queryEvidence(question: string): Promise<QueryEvidenceResult | undefined> {
@@ -323,13 +348,13 @@ export class LocalCodeGraphService implements vscode.Disposable {
     const activeIndex = await this.activeIndexForQuestion(question, [])
     if (!activeIndex) return undefined
     const settings = this.getSettings()
-    const result = queryEvidence(activeIndex, question, {
+    const result = await queryEvidenceAsync(activeIndex, question, {
       maxEvidenceItems: settings.analysis.maxEvidenceItems,
       maxEvidenceBytes: settings.analysis.maxEvidenceBytes,
       maxFileSliceBytes: settings.analysis.maxFileSliceBytes,
       maxGraphEdges: settings.analysis.maxGraphEdges,
       maxPaths: settings.analysis.maxPaths,
-    })
+    }, this.hybridOptions())
     this.lastAnalysisTrace = result.trace
     return result
   }
@@ -354,6 +379,7 @@ export class LocalCodeGraphService implements vscode.Disposable {
         maxPaths: settings.analysis.maxPaths,
       },
       readFileSlice: (slice) => this.readWorkspaceFileSlice(slice),
+      hybrid: this.hybridOptions(),
     })
     this.analysisAudit.push(result.audit)
     if (this.analysisAudit.length > 200) this.analysisAudit.splice(0, this.analysisAudit.length - 200)
@@ -524,6 +550,7 @@ export class LocalCodeGraphService implements vscode.Disposable {
       this.index.schema = createCodeGraphStorageManifest(this.index)
       const savedStats = this.index.stats
       await this.saveIndex(budget)
+      await this.refreshRagIndex()
       this.unloadColdShardsIfLarge()
       this.output.appendLine(
         `[codegraph] indexed ${savedStats?.files ?? Object.keys(nextFiles).length} file(s), ${savedStats?.functions ?? countFunctions(this.index)} function(s)${
@@ -712,6 +739,7 @@ export class LocalCodeGraphService implements vscode.Disposable {
     }, skippedFiles, () => budget.yieldIfNeeded())
     this.index.schema = createCodeGraphStorageManifest(this.index)
     await this.saveIndex(budget)
+    await this.refreshRagIndex(changes.map((change) => workspaceRelativePath(change.uri)))
     this.unloadColdShardsIfLarge()
     this.output.appendLine(`[codegraph] incrementally updated ${changes.length} file change(s)`)
     this.setReadyStatus("Local C/C++ code graph is ready after incremental update.")
@@ -738,6 +766,7 @@ export class LocalCodeGraphService implements vscode.Disposable {
     try {
       const checkpoint = await this.readJobCheckpoint(root)
       this.index = await this.loadShardedIndex(root, budget)
+      await this.loadRagIndex(root)
       this.jobs.recordRecovery(Date.now() - started)
       this.output.appendLine(`[codegraph] loaded sharded index in ${Date.now() - started}ms`)
       await this.clearJobCheckpoint(root)
@@ -757,6 +786,7 @@ export class LocalCodeGraphService implements vscode.Disposable {
         )
         this.index.schema = createCodeGraphStorageManifest(this.index)
         await this.saveIndex(budget)
+        await this.loadRagIndex(root)
         this.jobs.recordRecovery(Date.now() - started)
         this.output.appendLine(`[codegraph] migrated legacy index in ${Date.now() - started}ms`)
         await this.clearJobCheckpoint(root)
@@ -963,6 +993,196 @@ export class LocalCodeGraphService implements vscode.Disposable {
     }
   }
 
+  private hybridOptions(): HybridRetrievalOptions {
+    this.configureRagProviders()
+    return {
+      settings: this.getSettings().rag,
+      vectorIndex: this.ragIndex,
+      embeddingProvider: this.ragEmbeddingProvider,
+      rerankProvider: this.ragRerankProvider,
+    }
+  }
+
+  private configureRagProviders() {
+    const settings = this.getSettings().rag
+    this.ragEmbeddingProvider = undefined
+    this.ragRerankProvider = undefined
+    if (settings.embedding.enabled && settings.embedding.endpoint) {
+      try {
+        this.ragEmbeddingProvider = createHttpEmbeddingProvider(settings)
+      } catch (error) {
+        this.setRagStatus({
+          ...this.ragStatusValue,
+          enabled: true,
+          embeddingEnabled: true,
+          endpointKind: checkRagEndpoint(settings.embedding.endpoint, settings.allowedHosts).kind,
+          fallbackReason: error instanceof Error ? error.message : String(error),
+        })
+      }
+    }
+    if (settings.rerank.enabled && settings.rerank.endpoint) {
+      try {
+        this.ragRerankProvider = createHttpRerankProvider(settings)
+      } catch (error) {
+        this.setRagStatus({
+          ...this.ragStatusValue,
+          enabled: true,
+          rerankEnabled: true,
+          fallbackReason: error instanceof Error ? error.message : String(error),
+        })
+      }
+    }
+  }
+
+  private async refreshRagIndex(changedPaths?: string[]) {
+    const root = workspaceRoot()
+    const settings = this.getSettings().rag
+    if (!root || !this.index) return
+    if (!settings.embedding.enabled) {
+      this.ragIndex = undefined
+      this.setRagStatus(disabledRagStatus("embedding disabled; BM25/graph/state-machine fallback active"))
+      return
+    }
+    const policy = checkRagEndpoint(settings.embedding.endpoint, settings.allowedHosts)
+    if (!policy.ok) {
+      this.ragIndex = undefined
+      this.setRagStatus({
+        ...disabledRagStatus(policy.reason),
+        enabled: true,
+        embeddingEnabled: true,
+        rerankEnabled: settings.rerank.enabled,
+        endpointKind: policy.kind,
+        fallbackReason: policy.reason,
+      })
+      return
+    }
+    this.configureRagProviders()
+    if (!this.ragEmbeddingProvider) return
+
+    const started = Date.now()
+    this.setRagStatus({
+      ...this.ragStatusValue,
+      enabled: true,
+      embeddingEnabled: true,
+      rerankEnabled: settings.rerank.enabled,
+      endpointKind: policy.kind,
+      fallbackReason: undefined,
+      lastError: undefined,
+      embeddingProvider: this.ragEmbeddingProvider.id,
+      rerankProvider: this.ragRerankProvider?.id,
+    })
+    try {
+      const activeIndex = this.isLazyManifestIndex() ? await this.activeIndexForQuestion("", []) : this.index
+      if (!activeIndex) return
+      const next = await buildRagVectorIndex({
+        index: activeIndex,
+        provider: this.ragEmbeddingProvider,
+        previous: this.ragIndex,
+        changedPaths,
+        stateMachines: extractStateMachines(activeIndex, { maxTransitions: this.getSettings().codeGraph.maxStateTransitions }),
+      })
+      this.ragIndex = next
+      this.lastRagElapsedMs = Date.now() - started
+      await this.saveRagIndex(root, next)
+      this.setRagStatus({
+        enabled: true,
+        embeddingEnabled: true,
+        rerankEnabled: settings.rerank.enabled,
+        endpointKind: policy.kind,
+        chunks: next.chunks.length,
+        embeddedChunks: next.vectors.length,
+        vectorShards: new Set(next.chunks.map((chunk) => chunk.shard)).size,
+        embeddingProvider: next.provider,
+        rerankProvider: this.ragRerankProvider?.id,
+        dimension: next.dimension,
+        updatedAt: next.updatedAt,
+      })
+      this.output.appendLine(`[rag] embedded ${next.vectors.length}/${next.chunks.length} chunk(s) in ${this.lastRagElapsedMs}ms`)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      this.lastRagElapsedMs = Date.now() - started
+      this.setRagStatus({
+        ...this.ragStatusValue,
+        enabled: true,
+        embeddingEnabled: true,
+        rerankEnabled: settings.rerank.enabled,
+        endpointKind: policy.kind,
+        lastError: message,
+        fallbackReason: message,
+      })
+      this.output.appendLine(`[rag] embedding index failed after ${this.lastRagElapsedMs}ms: ${message}`)
+    }
+  }
+
+  private async saveRagIndex(root: vscode.WorkspaceFolder, index: RagVectorIndex) {
+    const dir = this.ragDir(root)
+    const shardsDir = vscode.Uri.joinPath(dir, "shards")
+    await vscode.workspace.fs.createDirectory(shardsDir)
+    const manifest = createRagSerializedManifest(index)
+    for (const shard of splitRagVectorIndex(index)) {
+      const metadata: RagSerializedShardMetadata = {
+        version: 1,
+        key: shard.key,
+        dimension: index.dimension,
+        chunks: shard.chunks,
+      }
+      await vscode.workspace.fs.writeFile(vscode.Uri.joinPath(shardsDir, `${shard.key}.json`), encodeJson(metadata))
+      await vscode.workspace.fs.writeFile(vscode.Uri.joinPath(shardsDir, `${shard.key}.f32`), encodeRaw(encodeRagShardVectors(shard.vectors, index.dimension)))
+    }
+    await vscode.workspace.fs.writeFile(this.ragManifestUri(root), encodeJson(manifest))
+  }
+
+  private async loadRagIndex(root: vscode.WorkspaceFolder) {
+    try {
+      const manifestBytes = await vscode.workspace.fs.readFile(this.ragManifestUri(root))
+      const manifest = JSON.parse(new TextDecoder().decode(manifestBytes)) as RagSerializedManifest
+      if (manifest.version !== 1 || manifest.rootPath !== root.uri.fsPath) return
+      const chunks: RagVectorIndex["chunks"] = []
+      const vectors: RagVectorIndex["vectors"] = []
+      const shardsDir = vscode.Uri.joinPath(this.ragDir(root), "shards")
+      for (const shard of manifest.shards) {
+        const metadataBytes = await vscode.workspace.fs.readFile(vscode.Uri.joinPath(shardsDir, `${shard.key}.json`))
+        const metadata = JSON.parse(new TextDecoder().decode(metadataBytes)) as RagSerializedShardMetadata
+        const vectorBytes = await vscode.workspace.fs.readFile(vscode.Uri.joinPath(shardsDir, `${shard.key}.f32`))
+        chunks.push(...metadata.chunks)
+        vectors.push(...decodeRagShardVectors(vectorBytes, manifest.dimension))
+      }
+      this.ragIndex = {
+        version: 1,
+        rootPath: manifest.rootPath,
+        updatedAt: manifest.updatedAt,
+        provider: manifest.provider,
+        model: manifest.model,
+        dimension: manifest.dimension,
+        chunks,
+        vectors,
+      }
+      this.setRagStatus({
+        enabled: true,
+        embeddingEnabled: this.getSettings().rag.embedding.enabled,
+        rerankEnabled: this.getSettings().rag.rerank.enabled,
+        endpointKind: this.getSettings().rag.embedding.enabled
+          ? checkRagEndpoint(this.getSettings().rag.embedding.endpoint, this.getSettings().rag.allowedHosts).kind
+          : "disabled",
+        chunks: chunks.length,
+        embeddedChunks: vectors.length,
+        vectorShards: manifest.shards.length,
+        embeddingProvider: manifest.provider,
+        dimension: manifest.dimension,
+        updatedAt: manifest.updatedAt,
+      })
+    } catch {
+      this.ragIndex = undefined
+      this.setRagStatus(disabledRagStatus("no stored RAG vector index"))
+    }
+  }
+
+  private setRagStatus(status: RagStatus) {
+    this.ragStatusValue = status
+    this.statusValue = { ...this.statusValue, rag: status, metrics: this.metrics() }
+    this.onStatusChanged()
+  }
+
   private isLazyManifestIndex() {
     return Boolean(
       this.shardedManifest
@@ -1013,6 +1233,14 @@ export class LocalCodeGraphService implements vscode.Disposable {
 
   private checkpointUri(root: vscode.WorkspaceFolder) {
     return vscode.Uri.joinPath(this.indexDir(root), "checkpoint.json")
+  }
+
+  private ragDir(root: vscode.WorkspaceFolder) {
+    return vscode.Uri.joinPath(this.indexDir(root), "rag")
+  }
+
+  private ragManifestUri(root: vscode.WorkspaceFolder) {
+    return vscode.Uri.joinPath(this.ragDir(root), "manifest.json")
   }
 
   private async saveJobCheckpoint(job: LocalAnalysisJob) {
@@ -1077,6 +1305,7 @@ export class LocalCodeGraphService implements vscode.Disposable {
       skippedFiles: stats?.skippedFiles,
       largeRepoMode: Boolean(stats && (stats.files >= 10000 || stats.bytes >= 50 * 1024 * 1024)),
       metrics: this.metrics(),
+      rag: this.ragStatusValue,
       ...this.analyzerStatusFields(),
     })
   }
@@ -1103,6 +1332,7 @@ export class LocalCodeGraphService implements vscode.Disposable {
       skippedFiles: stats?.skippedFiles,
       errorCount: this.errorCount,
       metrics: this.metrics(),
+      rag: this.ragStatusValue,
     })
   }
 
@@ -1119,6 +1349,7 @@ export class LocalCodeGraphService implements vscode.Disposable {
       lastTransitionAt: transitions[transitions.length - 1]?.at,
       transitions: [...transitions],
       metrics: status.metrics ?? this.metrics(),
+      rag: status.rag ?? this.ragStatusValue,
     }
     this.onStatusChanged()
   }
@@ -1361,6 +1592,20 @@ function disabledStatus(detail = "Local code graph is disabled."): CodeGraphStat
     indexedFunctions: 0,
     indexedMacros: 0,
     truncated: false,
+    rag: disabledRagStatus(),
+  }
+}
+
+function disabledRagStatus(fallbackReason = "embedding disabled; BM25/graph/state-machine fallback active"): RagStatus {
+  return {
+    enabled: false,
+    embeddingEnabled: false,
+    rerankEnabled: false,
+    endpointKind: "disabled",
+    chunks: 0,
+    embeddedChunks: 0,
+    vectorShards: 0,
+    fallbackReason,
   }
 }
 
@@ -1418,6 +1663,10 @@ function isSupportedStoredIndexVersion(version: number) {
 
 function encodeJson(value: unknown) {
   return new TextEncoder().encode(JSON.stringify(value))
+}
+
+function encodeRaw(value: Uint8Array) {
+  return value
 }
 
 function formatBytes(value: number) {

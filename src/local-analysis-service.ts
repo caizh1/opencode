@@ -166,6 +166,10 @@ export class LocalAnalysisJobQueue {
     memoryDegraded?: boolean
     memoryLimitBytes?: number
     heapUsedBytes?: number
+    ragChunks?: number
+    ragEmbeddedChunks?: number
+    ragVectorShards?: number
+    lastRagElapsedMs?: number
   }): CodeGraphServiceMetrics {
     return {
       serviceMode: input.serviceMode ?? "extension-host-worker",
@@ -185,6 +189,10 @@ export class LocalAnalysisJobQueue {
       heapUsedBytes: input.heapUsedBytes,
       lastJobElapsedMs: this.lastJobElapsedMsValue,
       lastRecoveryElapsedMs: this.lastRecoveryElapsedMsValue,
+      ragChunks: input.ragChunks,
+      ragEmbeddedChunks: input.ragEmbeddedChunks,
+      ragVectorShards: input.ragVectorShards,
+      lastRagElapsedMs: input.lastRagElapsedMs,
     }
   }
 

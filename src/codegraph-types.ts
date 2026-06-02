@@ -215,6 +215,11 @@ export type CodeGraphRetrievalResult = {
   omittedCandidates: number
   truncated: boolean
   elapsedMs: number
+  trace?: {
+    label: string
+    detail: string
+    elapsedMs: number
+  }[]
 }
 
 export type CodeGraphQueryMetrics = {

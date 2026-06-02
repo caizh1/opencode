@@ -1,12 +1,23 @@
 import * as vscode from "vscode"
-import type { CodeGraphAnalysisMode, CompletionLogLevel, RemoteSettings } from "./types"
+import type { CodeGraphAnalysisMode, CompletionLogLevel, CompletionProvider, RemoteSettings } from "./types"
 
 export const PASSWORD_SECRET_KEY = "opencode.remote.password"
+export const COMPLETION_API_KEY_SECRET_KEY = "opencode.remote.completion.apiKey"
 
 export type ConnectionSettingsInput = {
   serverUrl: string
   username: string
   password: string | undefined
+}
+
+export type CompletionSettingsInput = {
+  enabled: boolean
+  provider: CompletionProvider
+  apiBaseUrl: string
+  model: string
+  maxTokens: number
+  temperature: number
+  topP: number
 }
 
 export function readRemoteSettings(): RemoteSettings {
@@ -27,6 +38,12 @@ export function readRemoteSettings(): RemoteSettings {
     },
     completion: {
       enabled: config.get<boolean>("completion.enabled", false),
+      provider: readCompletionProvider(config.get<string>("completion.provider", "opencode")),
+      apiBaseUrl: normalizeServerUrl(config.get<string>("completion.apiBaseUrl", "")),
+      model: config.get<string>("completion.model", "").trim(),
+      maxTokens: Math.max(1, Math.min(4096, config.get<number>("completion.maxTokens", 128))),
+      temperature: Math.max(0, Math.min(2, config.get<number>("completion.temperature", 0.2))),
+      topP: Math.max(0, Math.min(1, config.get<number>("completion.topP", 0.8))),
       debounceMs: Math.max(0, config.get<number>("completion.debounceMs", 350)),
       logLevel: readCompletionLogLevel(config.get<string>("completion.logLevel", "info")),
     },
@@ -58,6 +75,23 @@ export function readRemoteSettings(): RemoteSettings {
       maxGraphEdges: Math.max(10, Math.min(1000, config.get<number>("analysis.maxGraphEdges", 120))),
       maxPaths: Math.max(1, Math.min(50, config.get<number>("analysis.maxPaths", 10))),
     },
+    rag: {
+      embedding: {
+        enabled: config.get<boolean>("rag.embedding.enabled", false),
+        endpoint: normalizeServerUrl(config.get<string>("rag.embedding.endpoint", "")),
+        model: config.get<string>("rag.embedding.model", "").trim(),
+        batchSize: Math.max(1, Math.min(256, config.get<number>("rag.embedding.batchSize", 32))),
+        timeoutMs: Math.max(250, Math.min(120000, config.get<number>("rag.embedding.timeoutMs", 30000))),
+      },
+      rerank: {
+        enabled: config.get<boolean>("rag.rerank.enabled", false),
+        endpoint: normalizeServerUrl(config.get<string>("rag.rerank.endpoint", "")),
+        model: config.get<string>("rag.rerank.model", "").trim(),
+      },
+      allowedHosts: readStringArray(config.get<unknown>("rag.allowedHosts", [])),
+      vectorTopK: Math.max(0, Math.min(200, config.get<number>("rag.vectorTopK", 24))),
+      rerankTopK: Math.max(0, Math.min(200, config.get<number>("rag.rerankTopK", 16))),
+    },
   }
 }
 
@@ -71,6 +105,31 @@ export async function writeRemotePassword(context: vscode.ExtensionContext, pass
     return
   }
   await context.secrets.delete(PASSWORD_SECRET_KEY)
+}
+
+export async function readCompletionApiKey(context: vscode.ExtensionContext) {
+  return context.secrets.get(COMPLETION_API_KEY_SECRET_KEY)
+}
+
+export async function writeCompletionApiKey(context: vscode.ExtensionContext, apiKey: string | undefined) {
+  const value = apiKey?.trim()
+  if (value) {
+    await context.secrets.store(COMPLETION_API_KEY_SECRET_KEY, value)
+    return
+  }
+  await context.secrets.delete(COMPLETION_API_KEY_SECRET_KEY)
+}
+
+export async function promptAndSaveCompletionApiKey(context: vscode.ExtensionContext) {
+  const apiKey = await vscode.window.showInputBox({
+    title: "Inline completion API key",
+    prompt: "Bearer token for the direct completion model API. Leave empty to clear it.",
+    password: true,
+    ignoreFocusOut: true,
+  })
+  if (apiKey === undefined) return false
+  await writeCompletionApiKey(context, apiKey || undefined)
+  return true
 }
 
 export async function promptAndSaveConnectionSettings(context: vscode.ExtensionContext) {
@@ -112,6 +171,17 @@ export async function saveConnectionSettings(context: vscode.ExtensionContext, i
   await writeRemotePassword(context, input.password?.trim() || undefined)
 }
 
+export async function saveCompletionSettings(input: CompletionSettingsInput) {
+  const config = vscode.workspace.getConfiguration("opencode.remote")
+  await config.update("completion.enabled", input.enabled, vscode.ConfigurationTarget.Global)
+  await config.update("completion.provider", input.provider, vscode.ConfigurationTarget.Global)
+  await config.update("completion.apiBaseUrl", normalizeServerUrl(input.apiBaseUrl), vscode.ConfigurationTarget.Global)
+  await config.update("completion.model", input.model.trim(), vscode.ConfigurationTarget.Global)
+  await config.update("completion.maxTokens", Math.max(1, Math.min(4096, Math.floor(input.maxTokens))), vscode.ConfigurationTarget.Global)
+  await config.update("completion.temperature", Math.max(0, Math.min(2, input.temperature)), vscode.ConfigurationTarget.Global)
+  await config.update("completion.topP", Math.max(0, Math.min(1, input.topP)), vscode.ConfigurationTarget.Global)
+}
+
 export function settingsFromConnectionInput(input: ConnectionSettingsInput): RemoteSettings {
   const serverUrl = normalizeServerUrl(input.serverUrl)
   if (!serverUrl) throw new Error("Remote OpenCode server URL is required.")
@@ -131,6 +201,11 @@ export function normalizeServerUrl(input: string) {
 function readCompletionLogLevel(input: string): CompletionLogLevel {
   if (input === "off" || input === "info" || input === "debug") return input
   return "info"
+}
+
+function readCompletionProvider(input: string): CompletionProvider {
+  if (input === "opencode" || input === "openai-compatible") return input
+  return "opencode"
 }
 
 function readCodeGraphAnalysisMode(input: string): CodeGraphAnalysisMode {

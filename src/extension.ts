@@ -9,7 +9,9 @@ import { EditorContextTracker } from "./editor-context"
 import { registerLocalTerminalCommands } from "./local-terminal"
 import { RemoteOpenCodeAuthError, RemoteOpenCodeClient } from "./remote-client"
 import {
+  promptAndSaveCompletionApiKey,
   promptAndSaveConnectionSettings,
+  readCompletionApiKey,
   readRemotePassword,
   readRemoteSettings,
   saveConnectionSettings,
@@ -124,6 +126,12 @@ export async function activate(context: vscode.ExtensionContext) {
     getClient,
     getSettings,
     getEditorContext: () => editorContextTracker.snapshot(),
+    getCompletionApiKey: () => readCompletionApiKey(context),
+    promptCompletionApiKey: async () => {
+      const saved = await promptAndSaveCompletionApiKey(context)
+      if (saved) vscode.window.setStatusBarMessage("Inline completion API key saved", 2000)
+      return saved
+    },
     connectWithSettings,
     testWithSettings,
     setConnectionState,
@@ -142,6 +150,13 @@ export async function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand("opencode.remote.testConnection", async () => {
       const next = await createClient()
       await testClientOnly(next)
+    }),
+    vscode.commands.registerCommand("opencode.remote.completion.setApiKey", async () => {
+      const saved = await promptAndSaveCompletionApiKey(context)
+      if (saved) {
+        vscode.window.setStatusBarMessage("Inline completion API key saved", 2000)
+        chatProvider.refreshState()
+      }
     }),
     vscode.commands.registerCommand("opencode.remote.openChat", async () => {
       await chatProvider.reveal()
@@ -226,7 +241,7 @@ export async function activate(context: vscode.ExtensionContext) {
     context.subscriptions.push(
       vscode.languages.registerInlineCompletionItemProvider(
         { scheme: "file" },
-        new RemoteCompletionProvider({ getClient, getSettings, output }),
+        new RemoteCompletionProvider({ getClient, getCompletionApiKey: () => readCompletionApiKey(context), getSettings, output }),
       ),
     )
   } catch (error) {

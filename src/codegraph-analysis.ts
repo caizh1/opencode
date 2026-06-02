@@ -1,5 +1,5 @@
 import { ensureDerivedIndex, moduleKey } from "./codegraph-index"
-import { classifyQuestion, retrieveEvidence } from "./codegraph-query"
+import { classifyQuestion, retrieveEvidence, retrieveHybridEvidence } from "./codegraph-query"
 import type {
   CodeGraphEvidence,
   CodeGraphFile,
@@ -31,6 +31,8 @@ import {
   type SubsystemSummary,
 } from "./analysis-types"
 import { extractStateMachines, findStatePath, stateMachineToTransitionTable } from "./state-machine-extractor"
+import type { HybridRetrievalOptions } from "./rag-types"
+import type { RagStatus } from "./types"
 
 export const DEFAULT_ANALYSIS_BUDGET: AnalysisBudget = {
   maxEvidenceItems: 40,
@@ -67,6 +69,7 @@ export type RunAnalysisToolInput = {
   budget?: Partial<AnalysisBudget>
   policy?: Partial<AnalysisToolPolicy>
   readFileSlice?: (input: { path: string; startLine?: number; endLine?: number; maxBytes: number }) => Promise<string>
+  hybrid?: HybridRetrievalOptions
 }
 
 type GraphMaps = {
@@ -78,11 +81,14 @@ type GraphMaps = {
   fileByPath: Map<string, CodeGraphFile>
 }
 
-export function buildCodeIntelligenceSnapshot(index: CodeGraphIndex, lastTrace?: AnalysisQueryTrace, lastAudit: AnalysisToolAuditEntry[] = []): CodeIntelligenceSnapshot {
+export function buildCodeIntelligenceSnapshot(index: CodeGraphIndex, lastTrace?: AnalysisQueryTrace, lastAudit: AnalysisToolAuditEntry[] = [], rag?: RagStatus): CodeIntelligenceSnapshot {
   const stateMachines = extractStateMachines(index)
   const summaries = buildAnalysisSummaries(index, stateMachines)
+  const ragStatus = rag?.embeddingEnabled
+    ? `, RAG ${rag.embeddedChunks}/${rag.chunks} chunk(s), ${rag.vectorShards} vector shard(s)${rag.fallbackReason ? `, fallback ${rag.fallbackReason}` : ""}`
+    : ", RAG fallback BM25/graph/state-machine"
   return {
-    status: `ready: ${Object.keys(index.files).length} file(s), ${summaries.functions.length} function(s), ${stateMachines.length} state machine(s)`,
+    status: `ready: ${Object.keys(index.files).length} file(s), ${summaries.functions.length} function(s), ${stateMachines.length} state machine(s)${ragStatus}`,
     modules: summaries.modules,
     files: summaries.files,
     functions: summaries.functions,
@@ -257,7 +263,9 @@ export async function runAnalysisTool(input: RunAnalysisToolInput): Promise<Anal
       }
       case "queryEvidence": {
         const question = requiredString(args, "question")
-        const result = queryEvidence(input.index, question, budget)
+        const result = input.hybrid
+          ? await queryEvidenceAsync(input.index, question, budget, input.hybrid)
+          : queryEvidence(input.index, question, budget)
         return toolResult({
           ok: result.answerPolicy.allowed,
           traceId,
@@ -302,6 +310,67 @@ export function queryEvidence(index: CodeGraphIndex, question: string, budget: A
     maxFanout: Math.min(80, budget.maxGraphEdges),
   })
   steps.push({ label: "retrieval", detail: `${retrieval?.evidence.length ?? 0} evidence item(s)`, elapsedMs: Date.now() - retrievalStarted })
+
+  const smStarted = Date.now()
+  const stateMachines = selectRelevantStateMachines(extractStateMachines(index, { maxTransitions: budget.maxGraphEdges }), question)
+  steps.push({ label: "state-machine", detail: `${stateMachines.length} machine(s)`, elapsedMs: Date.now() - smStarted })
+
+  const summaryStarted = Date.now()
+  const summaries = buildAnalysisSummaries(index, stateMachines)
+  steps.push({ label: "summaries", detail: `${summaries.modules.length} module summary item(s)`, elapsedMs: Date.now() - summaryStarted })
+
+  const evidence = [
+    ...(retrieval?.evidence.map(evidenceFromCodeGraph) ?? []),
+    ...stateMachines.flatMap((machine) => machine.evidence),
+    ...selectedSummaryEvidence(summaries, question),
+  ]
+  const evidencePack = packEvidenceRefs(evidence, budget, evidence.length === 0 ? ["No local code evidence matched the question."] : [])
+  const answerPolicy = evaluateAnswerPolicy(question, evidencePack)
+  const trace: AnalysisQueryTrace = {
+    traceId,
+    question,
+    intent: mode,
+    steps: [...steps, { label: "evidence-pack", detail: `${evidencePack.evidence.length} packed item(s)`, elapsedMs: Date.now() - started }],
+    evidence: evidencePack.evidence,
+    missingEvidence: evidencePack.missingEvidence,
+  }
+  return {
+    retrieval,
+    stateMachines,
+    summaries,
+    evidencePack,
+    trace,
+    answerPolicy,
+    suggestedAnswer: buildSuggestedAnswer(question, retrieval?.mode, summaries, stateMachines, evidencePack, answerPolicy),
+  }
+}
+
+export async function queryEvidenceAsync(
+  index: CodeGraphIndex,
+  question: string,
+  budget: AnalysisBudget = DEFAULT_ANALYSIS_BUDGET,
+  hybrid?: HybridRetrievalOptions,
+): Promise<QueryEvidenceResult> {
+  if (!hybrid) return queryEvidence(index, question, budget)
+  const traceId = createTraceId()
+  const steps: AnalysisQueryTraceStep[] = []
+  const started = Date.now()
+  const mode = queryIntent(question)
+  steps.push({ label: "intent", detail: mode, elapsedMs: 0 })
+
+  const retrievalStarted = Date.now()
+  const retrieval = await retrieveHybridEvidence({
+    index,
+    question,
+    maxBytes: budget.maxEvidenceBytes,
+    maxDepth: 4,
+    maxFanout: Math.min(80, budget.maxGraphEdges),
+    hybrid,
+  })
+  steps.push({ label: "hybrid-retrieval", detail: `${retrieval?.evidence.length ?? 0} evidence item(s)`, elapsedMs: Date.now() - retrievalStarted })
+  for (const step of retrieval?.trace ?? []) {
+    steps.push({ label: step.label, detail: step.detail, elapsedMs: step.elapsedMs })
+  }
 
   const smStarted = Date.now()
   const stateMachines = selectRelevantStateMachines(extractStateMachines(index, { maxTransitions: budget.maxGraphEdges }), question)

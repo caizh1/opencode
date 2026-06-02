@@ -1,4 +1,5 @@
 import { ensureDerivedIndex, moduleKey } from "./codegraph-index"
+import { evidenceFromRagHit, searchRagVectorIndex } from "./rag-index"
 import type {
   CodeGraphDerivedIndex,
   CodeGraphEvidence,
@@ -12,6 +13,7 @@ import type {
   CodeGraphRetrievalResult,
   CodeGraphSymbol,
 } from "./codegraph-types"
+import type { HybridRetrievalOptions, HybridRetrievalTrace, RerankProvider } from "./rag-types"
 
 type GraphMaps = {
   files: CodeGraphFile[]
@@ -69,6 +71,27 @@ export function buildCodeGraphContext(input: {
   maxFanout?: number
 }): CodeGraphPromptContext | undefined {
   const result = retrieveEvidence(input)
+  if (!result) return undefined
+  const text = formatRetrievalResult(result, input.index, input.maxBytes)
+  return {
+    text: text.text,
+    mode: result.mode,
+    symbols: result.symbols,
+    truncated: result.truncated || text.truncated,
+    metrics: metricsForResult(result, text.truncated),
+  }
+}
+
+export async function buildHybridCodeGraphContext(input: {
+  index: CodeGraphIndex
+  question: string
+  relatedPaths?: string[]
+  maxBytes: number
+  maxDepth?: number
+  maxFanout?: number
+  hybrid?: HybridRetrievalOptions
+}): Promise<CodeGraphPromptContext | undefined> {
+  const result = await retrieveHybridEvidence(input)
   if (!result) return undefined
   const text = formatRetrievalResult(result, input.index, input.maxBytes)
   return {
@@ -145,6 +168,88 @@ export function retrieveEvidence(input: {
     omittedCandidates: ranked.length - packed.evidence.length,
     truncated,
     elapsedMs: Date.now() - startedAt,
+  }
+}
+
+export async function retrieveHybridEvidence(input: {
+  index: CodeGraphIndex
+  question: string
+  relatedPaths?: string[]
+  maxBytes?: number
+  maxDepth?: number
+  maxFanout?: number
+  hybrid?: HybridRetrievalOptions
+}): Promise<CodeGraphRetrievalResult | undefined> {
+  const startedAt = Date.now()
+  const baseStarted = Date.now()
+  const base = retrieveEvidence(input)
+  if (!base) return undefined
+
+  const trace: HybridRetrievalTrace = {
+    enabled: Boolean(input.hybrid?.settings.embedding.enabled || input.hybrid?.settings.rerank.enabled),
+    provider: input.hybrid?.embeddingProvider?.id,
+    rerankProvider: input.hybrid?.rerankProvider?.id,
+    vectorCandidates: 0,
+    rerankedCandidates: 0,
+    steps: [{ label: "bm25", detail: `${base.evidence.length} fallback evidence item(s)`, elapsedMs: Date.now() - baseStarted }],
+  }
+
+  const evidence = new EvidenceCollector()
+  for (const item of base.evidence) evidence.add(item)
+
+  const hybrid = input.hybrid
+  if (hybrid?.settings.embedding.enabled && hybrid.settings.vectorTopK > 0) {
+    const vectorStarted = Date.now()
+    try {
+      if (!hybrid.embeddingProvider) throw new Error("embedding provider is not configured")
+      if (!hybrid.vectorIndex || hybrid.vectorIndex.chunks.length === 0) throw new Error("local vector index is empty")
+      const queryVector = (await hybrid.embeddingProvider.embed([input.question], hybrid.signal))[0]
+      if (!queryVector) throw new Error("embedding provider returned no query vector")
+      const hits = searchRagVectorIndex(hybrid.vectorIndex, queryVector, hybrid.settings.vectorTopK)
+      trace.vectorCandidates = hits.length
+      for (const hit of hits) evidence.add(evidenceFromRagHit(hit))
+      trace.steps.push({ label: "vector", detail: `${hits.length} vector candidate(s)`, elapsedMs: Date.now() - vectorStarted })
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error)
+      trace.fallbackReason = reason
+      trace.steps.push({ label: "fallback", detail: `vector disabled: ${reason}`, elapsedMs: Date.now() - vectorStarted })
+    }
+  } else {
+    trace.steps.push({ label: "fallback", detail: "vector disabled by settings or topK=0", elapsedMs: 0 })
+  }
+
+  let ranked = evidence.ranked()
+  if (hybrid?.settings.rerank.enabled && hybrid.rerankProvider && hybrid.settings.rerankTopK > 0) {
+    const rerankStarted = Date.now()
+    try {
+      ranked = await rerankEvidence({
+        question: input.question,
+        evidence: ranked,
+        provider: hybrid.rerankProvider,
+        topK: hybrid.settings.rerankTopK,
+        signal: hybrid.signal,
+      })
+      trace.rerankedCandidates = Math.min(hybrid.settings.rerankTopK, ranked.length)
+      trace.steps.push({ label: "rerank", detail: `${trace.rerankedCandidates} candidate(s) reranked`, elapsedMs: Date.now() - rerankStarted })
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error)
+      trace.fallbackReason = trace.fallbackReason ?? reason
+      trace.steps.push({ label: "fallback", detail: `rerank disabled: ${reason}`, elapsedMs: Date.now() - rerankStarted })
+    }
+  } else if (hybrid?.settings.rerank.enabled) {
+    trace.steps.push({ label: "fallback", detail: "rerank provider is not configured", elapsedMs: 0 })
+  }
+
+  const packed = packEvidence(ranked, input.maxBytes ?? 60_000)
+  return {
+    ...base,
+    evidence: packed.evidence,
+    candidateCount: ranked.length,
+    packedBytes: packed.bytes,
+    omittedCandidates: ranked.length - packed.evidence.length,
+    truncated: input.index.truncated || packed.truncated,
+    elapsedMs: Date.now() - startedAt,
+    trace: trace.steps.map((step) => ({ label: step.label, detail: step.detail, elapsedMs: step.elapsedMs })),
   }
 }
 
@@ -457,6 +562,7 @@ function formatRetrievalResult(result: CodeGraphRetrievalResult, index: CodeGrap
   const sections = [
     `<local-code-graph mode="${xmlAttr(result.mode)}" indexedFiles="${Object.keys(index.files).length}" indexedFunctions="${countFunctions(index)}" truncated="${index.truncated ? "true" : "false"}" candidates="${result.candidateCount}" evidenceCount="${result.evidence.length}" omittedCandidates="${result.omittedCandidates}" packedBytes="${result.packedBytes}" elapsedMs="${result.elapsedMs}">`,
     `<query-plan mode="${xmlAttr(result.mode)}" tokens="${xmlAttr(result.tokens.join(", "))}" seedSymbols="${xmlAttr(result.symbols.join(", "))}" />`,
+    result.trace?.length ? `<hybrid-trace>\n${xmlText(result.trace.map((step) => `- ${step.label}: ${step.detail} (${step.elapsedMs}ms)`).join("\n"))}\n</hybrid-trace>` : "",
     "<answer-rules>Answer only from the evidence below for local code questions. Cite file paths and line ranges. If the evidence is insufficient, state the missing evidence instead of guessing.</answer-rules>",
     "<evidence-list>",
     ...result.evidence.map(formatEvidenceItem),
@@ -484,6 +590,40 @@ function metricsForResult(result: CodeGraphRetrievalResult, contextTruncated: bo
 
 function formatEvidenceItem(item: CodeGraphEvidence) {
   return `<evidence kind="${xmlAttr(item.kind)}" path="${xmlAttr(item.path)}" lines="${item.startLine}-${item.endLine}" score="${Math.round(item.score)}" reason="${xmlAttr(item.reason)}">\n${xmlText(item.snippet)}\n</evidence>`
+}
+
+async function rerankEvidence(input: {
+  question: string
+  evidence: CodeGraphEvidence[]
+  provider: RerankProvider
+  topK: number
+  signal?: AbortSignal
+}) {
+  const strong = input.evidence.filter(isStrongEvidence)
+  const ordinary = input.evidence.filter((item) => !isStrongEvidence(item))
+  const selected = ordinary.slice(0, input.topK)
+  if (selected.length === 0) return input.evidence
+  const scores = await input.provider.rerank({
+    query: input.question,
+    documents: selected.map((item) => item.snippet),
+    topN: selected.length,
+    signal: input.signal,
+  })
+  const byIndex = new Map(scores.map((item) => [item.index, item.score]))
+  const reranked = selected
+    .map((item, index) => {
+      const score = byIndex.get(index)
+      return score === undefined
+        ? item
+        : { ...item, score: item.score + score * 100, reason: `${item.reason}, rerank:${score.toFixed(3)}` }
+    })
+    .sort((left, right) => right.score - left.score || left.path.localeCompare(right.path) || left.startLine - right.startLine)
+  const unselected = ordinary.slice(input.topK)
+  return [...strong.sort((left, right) => right.score - left.score), ...reranked, ...unselected]
+}
+
+function isStrongEvidence(item: CodeGraphEvidence) {
+  return /exact symbol match|related file context|symbol in related file|state-machine|call-chain step/.test(item.reason)
 }
 
 function extractSearchTerms(question: string, symbols: string[]) {

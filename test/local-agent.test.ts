@@ -93,6 +93,12 @@ function settings(input: { localOnlyMode: boolean; defaultAgent?: string }): Rem
     },
     completion: {
       enabled: false,
+      provider: "opencode",
+      apiBaseUrl: "",
+      model: "",
+      maxTokens: 128,
+      temperature: 0.2,
+      topP: 0.8,
       debounceMs: 350,
       logLevel: "info",
     },
@@ -115,6 +121,31 @@ function settings(input: { localOnlyMode: boolean; defaultAgent?: string }): Rem
       clangdPath: "",
       scipClangPath: "",
       excludeGlobs: [],
+    },
+    analysis: {
+      bridgeEnabled: true,
+      maxEvidenceItems: 40,
+      maxEvidenceBytes: 60000,
+      maxFileSliceBytes: 16000,
+      maxGraphEdges: 120,
+      maxPaths: 10,
+    },
+    rag: {
+      embedding: {
+        enabled: false,
+        endpoint: "",
+        model: "",
+        batchSize: 32,
+        timeoutMs: 30000,
+      },
+      rerank: {
+        enabled: false,
+        endpoint: "",
+        model: "",
+      },
+      allowedHosts: [],
+      vectorTopK: 24,
+      rerankTopK: 16,
     },
   }
 }

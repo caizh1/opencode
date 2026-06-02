@@ -129,6 +129,7 @@ export async function buildCompletionPrompt(input: {
   document: vscode.TextDocument
   position: vscode.Position
   settings: RemoteSettings
+  transport?: "opencode" | "openai-compatible"
 }) {
   const before = Math.max(0, input.position.line - 80)
   const after = Math.min(input.document.lineCount - 1, input.position.line + 60)
@@ -141,6 +142,10 @@ export async function buildCompletionPrompt(input: {
     "You are an inline code completion engine.",
     "Return only the exact text to insert at the cursor. Do not use Markdown. Do not explain.",
     "Preserve required leading newlines and indentation. If the cursor is after a block-opening line, begin with a newline and the correct next-line indentation.",
+    "When completing a non-empty current line, do not begin with blank lines. If you cannot continue or replace the cursor context, return empty.",
+    input.transport === "openai-compatible"
+      ? "Direct model API contract: if you produce <think> reasoning, put all reasoning inside <think>...</think>; after </think>, output only the exact insertion text."
+      : "",
     completionLanguageRules(input.document.languageId),
     "",
     `<file path="${relativePath(input.document.uri)}" language="${input.document.languageId}">`,

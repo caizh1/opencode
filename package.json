@@ -2,7 +2,7 @@
   "name": "opencode-remote",
   "displayName": "OpenCode Remote",
   "description": "Remote opencode serve client for VS Code",
-  "version": "0.0.57",
+  "version": "0.0.61",
   "publisher": "local",
   "repository": {
     "type": "git",
@@ -39,7 +39,8 @@
     "onCommand:opencode.remote.codeGraph.resume",
     "onCommand:opencode.remote.codeGraph.cancel",
     "onCommand:opencode.remote.codeGraph.benchmark",
-    "onCommand:opencode.remote.codeGraph.status"
+    "onCommand:opencode.remote.codeGraph.status",
+    "onCommand:opencode.remote.completion.setApiKey"
   ],
   "main": "./dist/extension.js",
   "contributes": {
@@ -72,6 +73,11 @@
       {
         "command": "opencode.remote.testConnection",
         "title": "Test Remote OpenCode Connection",
+        "category": "OpenCode Remote"
+      },
+      {
+        "command": "opencode.remote.completion.setApiKey",
+        "title": "Set Inline Completion API Key",
         "category": "OpenCode Remote"
       },
       {
@@ -205,6 +211,46 @@
           "type": "boolean",
           "default": false,
           "description": "Enable remote OpenCode inline completions."
+        },
+        "opencode.remote.completion.provider": {
+          "type": "string",
+          "enum": [
+            "opencode",
+            "openai-compatible"
+          ],
+          "default": "opencode",
+          "description": "Provider for inline completions. OpenCode uses the remote opencode serve session; OpenAI-compatible calls a direct model API for completion only."
+        },
+        "opencode.remote.completion.apiBaseUrl": {
+          "type": "string",
+          "default": "",
+          "description": "OpenAI-compatible base URL for direct inline completions, for example http://localhost:8000/v1."
+        },
+        "opencode.remote.completion.model": {
+          "type": "string",
+          "default": "",
+          "description": "Optional direct inline completion model. Falls back to opencode.remote.defaultModel when empty."
+        },
+        "opencode.remote.completion.maxTokens": {
+          "type": "number",
+          "default": 128,
+          "minimum": 1,
+          "maximum": 4096,
+          "description": "Maximum generated tokens for direct inline completions."
+        },
+        "opencode.remote.completion.temperature": {
+          "type": "number",
+          "default": 0.2,
+          "minimum": 0,
+          "maximum": 2,
+          "description": "Temperature for direct inline completions."
+        },
+        "opencode.remote.completion.topP": {
+          "type": "number",
+          "default": 0.8,
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Top-p nucleus sampling value for direct inline completions."
         },
         "opencode.remote.completion.debounceMs": {
           "type": "number",
@@ -382,6 +428,72 @@
           "minimum": 1,
           "maximum": 50,
           "description": "Maximum state-machine or call-chain paths returned by local analysis tools."
+        },
+        "opencode.remote.rag.embedding.enabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enable offline RAG vector indexing through a localhost or intranet embedding HTTP service."
+        },
+        "opencode.remote.rag.embedding.endpoint": {
+          "type": "string",
+          "default": "",
+          "description": "Full localhost or intranet embedding endpoint. OpenAI-compatible /v1/embeddings responses are expected."
+        },
+        "opencode.remote.rag.embedding.model": {
+          "type": "string",
+          "default": "",
+          "description": "Embedding model name sent to the local or intranet embedding endpoint."
+        },
+        "opencode.remote.rag.embedding.batchSize": {
+          "type": "number",
+          "default": 32,
+          "minimum": 1,
+          "maximum": 256,
+          "description": "Number of RAG chunks embedded per HTTP request."
+        },
+        "opencode.remote.rag.embedding.timeoutMs": {
+          "type": "number",
+          "default": 30000,
+          "minimum": 250,
+          "maximum": 120000,
+          "description": "Timeout for one embedding HTTP request."
+        },
+        "opencode.remote.rag.rerank.enabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enable optional offline rerank for hybrid RAG candidates through a localhost or intranet HTTP service."
+        },
+        "opencode.remote.rag.rerank.endpoint": {
+          "type": "string",
+          "default": "",
+          "description": "Full localhost or intranet rerank endpoint accepting query, documents, and top_n."
+        },
+        "opencode.remote.rag.rerank.model": {
+          "type": "string",
+          "default": "",
+          "description": "Rerank model name sent to the local or intranet rerank endpoint."
+        },
+        "opencode.remote.rag.allowedHosts": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "description": "Additional intranet hostnames allowed for embedding and rerank endpoints. Localhost and private IPs are allowed automatically."
+        },
+        "opencode.remote.rag.vectorTopK": {
+          "type": "number",
+          "default": 24,
+          "minimum": 0,
+          "maximum": 200,
+          "description": "Maximum vector candidates added to each hybrid RAG query."
+        },
+        "opencode.remote.rag.rerankTopK": {
+          "type": "number",
+          "default": 16,
+          "minimum": 0,
+          "maximum": 200,
+          "description": "Maximum non-strong evidence candidates sent to the optional rerank service."
         }
       }
     },

@@ -16,6 +16,7 @@ import { CHAT_SESSION_TITLE, isPluginChatMessage, isPluginChatSession } from "./
 import { applyOpenCodeEventToMessages, normalizeOpenCodeEvent } from "./chat-stream"
 import type { CodeGraphContextProvider } from "./codegraph-types"
 import type { CodeIntelligenceSnapshot } from "./analysis-types"
+import { CompletionModelClient, completionModel } from "./completion-model-client"
 import { isInlineCompletionMessage, isInlineCompletionSession } from "./completion-session"
 import {
   addPickedFilesToContext,
@@ -52,7 +53,7 @@ import type {
   RenderedUsage,
   RemoteSettings,
 } from "./types"
-import type { ConnectionSettingsInput } from "./settings"
+import { saveCompletionSettings, type CompletionSettingsInput, type ConnectionSettingsInput } from "./settings"
 
 const SESSION_MESSAGE_LIMIT = 100
 const MODEL_REFRESH_TIMEOUT_MS = 8000
@@ -98,6 +99,11 @@ type ChatViewMessage =
       username: string
       password?: string
     }
+  | {
+      type: "saveCompletionSettings" | "testCompletionApi"
+      settings: CompletionSettingsInput
+    }
+  | { type: "setCompletionApiKey" }
   | {
       type: "sendMessage"
       text: string
@@ -150,6 +156,8 @@ type RemoteChatViewProviderDeps = {
   codeGraph?: CodeGraphContextProvider
   getClient: () => RemoteOpenCodeClient | undefined
   getSettings: () => RemoteSettings
+  getCompletionApiKey: () => Promise<string | undefined>
+  promptCompletionApiKey: () => Promise<boolean>
   getEditorContext: () => TrackedEditorContext | undefined
   connectWithSettings: (input: ConnectionSettingsInput) => Promise<void>
   testWithSettings: (input: ConnectionSettingsInput) => Promise<void>
@@ -569,6 +577,10 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
     }
   }
 
+  refreshState() {
+    this.postState()
+  }
+
   async sendQuickQuestion(text: string, options: Partial<ChatContextOptions>) {
     await this.reveal()
     await this.sendMessage(text, this.contextOptions(options), [])
@@ -653,6 +665,15 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
             username: message.username,
             password: message.password,
           })
+          break
+        case "saveCompletionSettings":
+          await this.saveCompletionSettings(message.settings)
+          break
+        case "setCompletionApiKey":
+          await this.setCompletionApiKey()
+          break
+        case "testCompletionApi":
+          await this.testCompletionApi(message.settings)
           break
         case "sendMessage":
           await this.handleSendMessage(
@@ -748,6 +769,45 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
       username: input.username,
       password: input.password,
     })
+  }
+
+  private async saveCompletionSettings(input: CompletionSettingsInput) {
+    await saveCompletionSettings(input)
+    this.postCompletionStatus("Inline completion settings saved.")
+    this.postState()
+  }
+
+  private async setCompletionApiKey() {
+    const saved = await this.deps.promptCompletionApiKey()
+    this.postCompletionStatus(saved ? "Inline completion API key saved." : "Inline completion API key unchanged.")
+    this.postState()
+  }
+
+  private async testCompletionApi(input: CompletionSettingsInput) {
+    await saveCompletionSettings(input)
+    const settings = this.deps.getSettings()
+    const model = completionModel(settings)
+    if (!settings.completion.apiBaseUrl || !model) {
+      this.postCompletionStatus("Direct completion API URL and model are required.", "error")
+      this.postState()
+      return
+    }
+
+    try {
+      const client = new CompletionModelClient(settings, await this.deps.getCompletionApiKey())
+      await client.complete({
+        prompt: [
+          "You are testing an inline completion endpoint.",
+          "Return only this exact text:",
+          "ok",
+        ].join("\n"),
+      })
+      this.postCompletionStatus(`Direct completion API test succeeded for ${model}.`)
+    } catch (error) {
+      this.postCompletionStatus(`Direct completion API test failed: ${formatErrorMessage(error)}`, "error")
+    } finally {
+      this.postState()
+    }
   }
 
   private async addFile() {
@@ -1341,6 +1401,14 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
     })
   }
 
+  private postCompletionStatus(message: string, status = "info") {
+    this.view?.webview.postMessage({
+      type: "completionStatus",
+      message,
+      status,
+    })
+  }
+
   private postState() {
     const settings = this.deps.getSettings()
     const agentSelection = this.agentForSettings(settings)
@@ -1355,6 +1423,7 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
           includeDiagnostics: settings.context.includeDiagnostics,
           includeGitDiff: settings.context.includeGitDiff,
         },
+        completion: settings.completion,
         localOnlyMode: settings.context.localOnlyMode,
         localOnlyAgent: settings.localOnlyAgent,
         strictLocalOnlyAgent: settings.context.strictLocalOnlyAgent,

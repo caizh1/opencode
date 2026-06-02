@@ -227,6 +227,70 @@ describe("language-aware completion edits", () => {
     })
   })
 
+  test("rejects leading-newline completions that do not continue the current C line", () => {
+    const prefix = "void test"
+    expect(editResult({
+      text: "\n\n_epr_ppn_raw_write_with_cb_dfx(void);",
+      languageId: "c",
+      linePrefix: prefix,
+      character: prefix.length,
+      currentWord: "test",
+    })).toEqual({
+      reason: "misaligned-leading-newline",
+    })
+  })
+
+  test("strips leading-newline full-line overlaps before rejecting them", () => {
+    const prefix = "void test"
+    expect(edit({
+      text: "\nvoid test_case(void);",
+      languageId: "c",
+      linePrefix: prefix,
+      character: prefix.length,
+      currentWord: "test",
+    })).toMatchObject({
+      insertText: "_case(void);",
+      replaceRange: {
+        startLine: 0,
+        startCharacter: prefix.length,
+        endLine: 0,
+        endCharacter: prefix.length,
+      },
+      filterText: "_case(void);",
+      normalized: "prefix-overlap",
+    })
+  })
+
+  test("allows leading-newline current-word replacements that still match the cursor word", () => {
+    const prefix = "void test"
+    expect(edit({
+      text: "\ntest_case(void);",
+      languageId: "c",
+      linePrefix: prefix,
+      character: prefix.length,
+      currentWord: "test",
+    })).toMatchObject({
+      insertText: "test_case(void);",
+      replaceRange: {
+        startLine: 0,
+        startCharacter: "void ".length,
+        endLine: 0,
+        endCharacter: prefix.length,
+      },
+      filterText: "test_case(void);",
+    })
+  })
+
+  test("allows leading newlines after C block openers", () => {
+    const prefix = "int f() {"
+    expect(edit({
+      text: "\nreturn;",
+      languageId: "c",
+      linePrefix: prefix,
+      character: prefix.length,
+    })?.insertText).toBe("\n    return;")
+  })
+
   test("uses explicit zero-width ranges for ordinary suffix insertions", () => {
     const prefix = "const na"
     expect(edit({
@@ -309,9 +373,20 @@ function edit(input: {
   lineSuffix?: string
   currentWord?: string
 }) {
+  return editResult(input).edit
+}
+
+function editResult(input: {
+  text: string
+  languageId: string
+  linePrefix: string
+  character: number
+  lineSuffix?: string
+  currentWord?: string
+}) {
   const currentWord = input.currentWord
   const startCharacter = currentWord ? input.character - currentWord.length : input.character
-  return buildCompletionEdit({
+  return buildCompletionEditResult({
     text: input.text,
     languageId: input.languageId,
     linePrefix: input.linePrefix,

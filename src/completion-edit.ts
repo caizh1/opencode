@@ -32,7 +32,11 @@ export type CompletionEdit = {
   normalized?: "prefix-overlap"
 }
 
-export type CompletionEditRejectReason = "empty-model-text" | "unsafe-colon-context" | "no-insert-text"
+export type CompletionEditRejectReason =
+  | "empty-model-text"
+  | "unsafe-colon-context"
+  | "no-insert-text"
+  | "misaligned-leading-newline"
 
 export type CompletionEditResult =
   | { edit: CompletionEdit; reason?: never }
@@ -71,6 +75,10 @@ export function buildCompletionEditResult(input: CompletionEditInput): Completio
 
   if (isBraceLanguage(input.languageId) && input.linePrefix.trimEnd().endsWith(":")) {
     return { reason: "unsafe-colon-context" }
+  }
+
+  if (isMisalignedLeadingNewline(input)) {
+    return { reason: "misaligned-leading-newline" }
   }
 
   const insertText = formatCompletionInsertText({
@@ -148,6 +156,23 @@ function controlFlowFallback(input: CompletionEditInput): CompletionEdit | undef
     filterText: insertText,
     formatRange: formatRangeAfterInsert(input.position.line, input.currentWordRange.startCharacter, insertText),
   }
+}
+
+function isMisalignedLeadingNewline(input: CompletionEditInput) {
+  if (!hasLeadingLineBreak(input.text)) return false
+  if (!input.linePrefix.trim()) return false
+  if (startsBlockCompletionContext(input.linePrefix)) return false
+  return true
+}
+
+function hasLeadingLineBreak(text: string) {
+  return /^[ \t]*\r?\n/.test(text)
+}
+
+function startsBlockCompletionContext(linePrefix: string) {
+  const trimmed = linePrefix.trimEnd()
+  if (!trimmed) return false
+  return /(?:[:{]|=>)$/.test(trimmed)
 }
 
 function zeroWidthInsertion(input: CompletionEditInput, insertText: string, normalized?: "prefix-overlap"): CompletionEdit {

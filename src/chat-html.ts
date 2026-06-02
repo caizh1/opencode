@@ -138,7 +138,7 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
     .sectionMeta { min-width: 0; color: var(--vscode-descriptionForeground); font-size: 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .settingsGrid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 7px; }
     .field { display: grid; gap: 3px; color: var(--vscode-descriptionForeground); font-size: 10px; }
-    .field input {
+    .field input, .field select {
       width: 100%;
       min-width: 0;
       color: var(--vscode-input-foreground);
@@ -147,6 +147,9 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       border-radius: 5px;
       padding: 5px 7px;
     }
+    .field.checkbox { display: flex; align-items: center; gap: 6px; }
+    .field.checkbox input { width: auto; }
+    .completionDirectFields.hidden { display: none; }
     .settingsActions { justify-content: space-between; align-items: flex-start; min-width: 0; }
     .settingsActions .row { min-width: 0; }
     .detail {
@@ -1468,9 +1471,35 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
           <button id="refresh" class="secondary" title="Refresh chat state">Refresh</button>
           <button id="openOutput" class="secondary" title="Open output log">Output</button>
         </div>
-      </div>
-      <div id="connectionDetail" class="detail visible">If this message does not change, the Webview script did not start.</div>
-    </section>
+	      </div>
+	      <div id="connectionDetail" class="detail visible">If this message does not change, the Webview script did not start.</div>
+	      <div class="settingsHeader">
+	        <div class="sectionTitle">Inline Completion</div>
+	        <div class="sectionMeta">Completion model</div>
+	      </div>
+	      <div class="settingsGrid">
+	        <label class="field checkbox"><input id="completionEnabled" type="checkbox"><span>Enable inline completion</span></label>
+	        <label class="field">Provider<select id="completionProvider">
+	          <option value="opencode">OpenCode</option>
+	          <option value="openai-compatible">Direct Model API</option>
+	        </select></label>
+	        <div id="completionDirectFields" class="completionDirectFields hidden">
+	          <label class="field">API Base URL<input id="completionApiBaseUrl" type="url" spellcheck="false" placeholder="http://localhost:8000/v1"></label>
+	          <label class="field">Model<input id="completionModel" type="text" spellcheck="false" placeholder="Qwen/Qwen3.6-27B-FP8"></label>
+	          <label class="field">Max tokens<input id="completionMaxTokens" type="number" min="1" max="4096" step="1"></label>
+	          <label class="field">Temperature<input id="completionTemperature" type="number" min="0" max="2" step="0.1"></label>
+	          <label class="field">Top P<input id="completionTopP" type="number" min="0" max="1" step="0.05"></label>
+	        </div>
+	      </div>
+	      <div class="row settingsActions">
+	        <div class="row">
+	          <button id="saveCompletionSettings" class="secondary">Save completion</button>
+	          <button id="testCompletionApi" class="secondary">Test completion API</button>
+	        </div>
+	        <button id="setCompletionApiKey" class="secondary">Set API key</button>
+	      </div>
+	      <div id="completionDetail" class="detail"></div>
+	    </section>
     <div class="body">
       <button id="historyBackdrop" class="historyBackdrop" title="Close history"></button>
       <aside id="historyPane" class="historyPane">
@@ -1564,9 +1593,10 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
     const vscode = acquireVsCodeApi();
     const el = (id) => document.getElementById(id);
     let state = {};
-    let pendingAction = "";
-    let settingsOpen = true;
-    let userEditedConnection = false;
+	    let pendingAction = "";
+	    let settingsOpen = true;
+	    let userEditedConnection = false;
+	    let userEditedCompletionSettings = false;
     let historyTouched = false;
     let historyOpen = false;
     let userNearBottom = true;
@@ -1596,11 +1626,21 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
     el("connectionDetail").className = "detail";
     el("connectionDetail").textContent = "";
 
-    for (const id of ["serverUrl", "username", "password"]) {
-      el(id).addEventListener("input", () => {
-        userEditedConnection = true;
-      });
-    }
+	    for (const id of ["serverUrl", "username", "password"]) {
+	      el(id).addEventListener("input", () => {
+	        userEditedConnection = true;
+	      });
+	    }
+	    for (const id of ["completionEnabled", "completionProvider", "completionApiBaseUrl", "completionModel", "completionMaxTokens", "completionTemperature", "completionTopP"]) {
+	      el(id).addEventListener("input", () => {
+	        userEditedCompletionSettings = true;
+	        renderCompletionSettings();
+	      });
+	      el(id).addEventListener("change", () => {
+	        userEditedCompletionSettings = true;
+	        renderCompletionSettings();
+	      });
+	    }
 
     el("messages").addEventListener("scroll", () => {
       userNearBottom = isNearBottom(el("messages"));
@@ -1630,8 +1670,11 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       settingsOpen = !settingsOpen;
       renderSettings();
     });
-    el("connect").addEventListener("click", () => connectOrTest("connectWithSettings"));
-    el("test").addEventListener("click", () => connectOrTest("testWithSettings"));
+	    el("connect").addEventListener("click", () => connectOrTest("connectWithSettings"));
+	    el("test").addEventListener("click", () => connectOrTest("testWithSettings"));
+	    el("saveCompletionSettings").addEventListener("click", saveCompletionSettings);
+	    el("setCompletionApiKey").addEventListener("click", () => vscode.postMessage({ type: "setCompletionApiKey" }));
+	    el("testCompletionApi").addEventListener("click", testCompletionApi);
     el("refresh").addEventListener("click", () => vscode.postMessage({ type: "refresh" }));
     el("openOutput").addEventListener("click", () => vscode.postMessage({ type: "openOutput" }));
     el("newSession").addEventListener("click", () => vscode.postMessage({ type: "newSession" }));
@@ -1739,23 +1782,60 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
         renderSuggestions();
         return;
       }
-      if (event.data.type === "exportStatus") {
-        setNotice(event.data.message || "");
-      }
-    });
+	      if (event.data.type === "exportStatus") {
+	        setNotice(event.data.message || "");
+	      }
+	      if (event.data.type === "completionStatus") {
+	        renderCompletionStatus(event.data.message || "", event.data.status || "info");
+	      }
+	    });
 
-    function connectOrTest(type) {
-      pendingAction = type === "testWithSettings" ? "test" : "connect";
-      renderConnectionButtons();
-      vscode.postMessage({
-        type,
+	    function connectOrTest(type) {
+	      pendingAction = type === "testWithSettings" ? "test" : "connect";
+	      renderConnectionButtons();
+	      vscode.postMessage({
+	        type,
         serverUrl: el("serverUrl").value,
         username: el("username").value,
         password: el("password").value
-      });
-    }
+	      });
+	    }
 
-    function toggleComposerPanel() {
+	    function saveCompletionSettings() {
+	      userEditedCompletionSettings = false;
+	      vscode.postMessage({
+	        type: "saveCompletionSettings",
+	        settings: completionSettingsPayload()
+	      });
+	    }
+
+	    function testCompletionApi() {
+	      userEditedCompletionSettings = false;
+	      renderCompletionStatus("Testing direct completion API...", "info");
+	      vscode.postMessage({
+	        type: "testCompletionApi",
+	        settings: completionSettingsPayload()
+	      });
+	    }
+
+	    function completionSettingsPayload() {
+	      return {
+	        enabled: el("completionEnabled").checked,
+	        provider: el("completionProvider").value,
+	        apiBaseUrl: el("completionApiBaseUrl").value,
+	        model: el("completionModel").value,
+	        maxTokens: numberInputValue("completionMaxTokens", 128),
+	        temperature: numberInputValue("completionTemperature", 0.2),
+	        topP: numberInputValue("completionTopP", 0.8)
+	      };
+	    }
+
+	    function numberInputValue(id, fallback) {
+	      const value = Number(el(id).value);
+	      return Number.isFinite(value) ? value : fallback;
+	    }
+
+	    function toggleComposerPanel() {
       composerCollapsed = !composerCollapsed;
       if (composerCollapsed) {
         closeComposerPopups();
@@ -1957,9 +2037,10 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       renderSessions();
       renderMessages();
       renderCodeIntelligence();
-      renderModelSelector();
-      renderAgentSelector();
-      renderConnectionButtons();
+	      renderModelSelector();
+	      renderAgentSelector();
+	      renderCompletionSettings();
+	      renderConnectionButtons();
       el("diag").checked = Boolean(state.defaults && state.defaults.includeDiagnostics);
       el("diff").checked = Boolean(state.defaults && state.defaults.includeGitDiff);
       renderSendButton();
@@ -1977,10 +2058,10 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       el("app").className = "app " + (historyOpen ? "history-open" : "history-closed") + " " + widthClass;
     }
 
-    function renderConnection() {
-      const stateName = state.connectionState || "disconnected";
-      const dot = el("statusDot");
-      dot.className = "dot " + stateName;
+	    function renderConnection() {
+	      const stateName = state.connectionState || "disconnected";
+	      const dot = el("statusDot");
+	      dot.className = "dot " + stateName;
       const statusText = state.serverUrl ? stateName + " - " + state.serverUrl : stateName;
       el("server").textContent = statusText;
       el("server").title = statusText;
@@ -1994,10 +2075,32 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       }
       const detail = el("connectionDetail");
       detail.className = "detail " + stateName + (state.connectionDetail ? " visible" : "");
-      detail.textContent = state.connectionDetail || "";
-    }
+	      detail.textContent = state.connectionDetail || "";
+	    }
 
-    function renderSettings() {
+	    function renderCompletionSettings() {
+	      const completion = state.completion || {};
+	      if (!userEditedCompletionSettings) {
+	        el("completionEnabled").checked = Boolean(completion.enabled);
+	        el("completionProvider").value = completion.provider || "opencode";
+	        el("completionApiBaseUrl").value = completion.apiBaseUrl || "";
+	        el("completionModel").value = completion.model || "";
+	        el("completionMaxTokens").value = String(completion.maxTokens || 128);
+	        el("completionTemperature").value = String(completion.temperature ?? 0.2);
+	        el("completionTopP").value = String(completion.topP ?? 0.8);
+	      }
+	      const direct = el("completionProvider").value === "openai-compatible";
+	      el("completionDirectFields").className = "completionDirectFields" + (direct ? "" : " hidden");
+	      el("testCompletionApi").disabled = !direct;
+	    }
+
+	    function renderCompletionStatus(message, status) {
+	      const detail = el("completionDetail");
+	      detail.className = "detail " + (status === "error" ? "error " : "") + (message ? "visible" : "");
+	      detail.textContent = message || "";
+	    }
+
+	    function renderSettings() {
       el("settings").className = "settings " + (settingsOpen || state.connectionState !== "connected" ? "open" : "");
     }
 

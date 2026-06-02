@@ -26,6 +26,23 @@ describe("accepted completion formatting command wiring", () => {
     expect(completionSource).toContain("editor.action.inlineSuggest.trigger")
   })
 
+  test("completion provider retries once after misaligned leading-newline edits", () => {
+    expect(completionSource).toContain('initial.reason !== "misaligned-leading-newline"')
+    expect(completionSource).toContain("completionRetryPrompt(input.prompt, input.editInput)")
+    expect(completionSource).toContain("retry-sent reason=${initial.reason}")
+    expect(completionSource).toContain("retry-received reason=${initial.reason}")
+    expect(completionSource).toContain("retry-edit-ready ${editDetails(edit)}")
+    expect(completionSource).toContain("retry-edit-rejected reason=${result.reason}")
+  })
+
+  test("completion provider can route inline completions to a direct model API", () => {
+    expect(completionSource).toContain('settings.completion.provider === "openai-compatible"')
+    expect(completionSource).toContain("new CompletionModelClient(input.settings, apiKey)")
+    expect(completionSource).toContain('transport: "openai-compatible"')
+    expect(completionSource).toContain("document.version")
+    expect(completionSource).toContain("client.complete({ prompt: promptText, signal: input.signal })")
+  })
+
   test("accepted formatting command formats only the accepted range", () => {
     expect(commandSource).toContain("FORMAT_ACCEPTED_COMPLETION_COMMAND")
     expect(commandSource).toContain("vscode.executeFormatRangeProvider")

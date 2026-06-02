@@ -7,7 +7,7 @@ import type { StateMachine } from "../src/analysis-types"
 describe("code graph storage schema", () => {
   test("defines sqlite-compatible tables for large-repo persistent analysis", () => {
     const ddl = CODEGRAPH_SQLITE_SCHEMA.join("\n")
-    for (const table of ["files", "symbols", "edges", "postings", "modules", "state_machines", "summaries", "snapshots", "schema_version"]) {
+    for (const table of ["files", "symbols", "edges", "postings", "modules", "state_machines", "summaries", "rag_chunks", "rag_vectors", "rag_runs", "rerank_cache", "snapshots", "schema_version"]) {
       expect(ddl).toContain(`CREATE TABLE IF NOT EXISTS ${table}`)
     }
   })

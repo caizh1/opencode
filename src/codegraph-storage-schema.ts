@@ -13,6 +13,10 @@ export type CodeGraphSchemaTable =
   | "modules"
   | "state_machines"
   | "summaries"
+  | "rag_chunks"
+  | "rag_vectors"
+  | "rag_runs"
+  | "rerank_cache"
   | "snapshots"
   | "schema_version"
 
@@ -49,6 +53,10 @@ export const CODEGRAPH_SQLITE_SCHEMA: string[] = [
   "CREATE TABLE IF NOT EXISTS modules (module TEXT PRIMARY KEY, files INTEGER NOT NULL, functions INTEGER NOT NULL, macros INTEGER NOT NULL, types INTEGER NOT NULL, globals INTEGER NOT NULL, bytes INTEGER NOT NULL, external_callers INTEGER NOT NULL DEFAULT 0)",
   "CREATE TABLE IF NOT EXISTS state_machines (machine_id TEXT PRIMARY KEY, name TEXT NOT NULL, module TEXT NOT NULL, state_var TEXT NOT NULL, language TEXT NOT NULL, confidence REAL NOT NULL)",
   "CREATE TABLE IF NOT EXISTS summaries (summary_id TEXT PRIMARY KEY, summary_kind TEXT NOT NULL, subject TEXT NOT NULL, text TEXT NOT NULL, evidence_refs TEXT NOT NULL, stale INTEGER NOT NULL DEFAULT 0)",
+  "CREATE TABLE IF NOT EXISTS rag_chunks (chunk_id TEXT PRIMARY KEY, chunk_kind TEXT NOT NULL, file TEXT NOT NULL, module TEXT NOT NULL, shard TEXT NOT NULL, start_line INTEGER NOT NULL, end_line INTEGER NOT NULL, source_hash TEXT NOT NULL, text TEXT NOT NULL)",
+  "CREATE TABLE IF NOT EXISTS rag_vectors (chunk_id TEXT PRIMARY KEY, provider TEXT NOT NULL, model TEXT NOT NULL, dimension INTEGER NOT NULL, vector BLOB NOT NULL, updated_at INTEGER NOT NULL)",
+  "CREATE TABLE IF NOT EXISTS rag_runs (run_id TEXT PRIMARY KEY, provider TEXT NOT NULL, model TEXT NOT NULL, chunks INTEGER NOT NULL, embedded_chunks INTEGER NOT NULL, elapsed_ms INTEGER NOT NULL, created_at INTEGER NOT NULL, fallback_reason TEXT)",
+  "CREATE TABLE IF NOT EXISTS rerank_cache (cache_key TEXT PRIMARY KEY, provider TEXT NOT NULL, model TEXT NOT NULL, scores TEXT NOT NULL, updated_at INTEGER NOT NULL)",
 ]
 
 const TABLES: CodeGraphSchemaTable[] = [
@@ -59,6 +67,10 @@ const TABLES: CodeGraphSchemaTable[] = [
   "modules",
   "state_machines",
   "summaries",
+  "rag_chunks",
+  "rag_vectors",
+  "rag_runs",
+  "rerank_cache",
   "snapshots",
   "schema_version",
 ]
@@ -85,6 +97,10 @@ export function createCodeGraphStorageManifest(index: CodeGraphIndex, stateMachi
       modules: moduleCount,
       state_machines: stateMachines.length,
       summaries: files.length + Object.keys(derived.moduleStats).length,
+      rag_chunks: 0,
+      rag_vectors: 0,
+      rag_runs: 0,
+      rerank_cache: 0,
       schema_version: 1,
     },
   }

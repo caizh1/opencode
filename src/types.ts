@@ -1,6 +1,43 @@
 export type ConnectionState = "disconnected" | "connecting" | "connected" | "authFailed" | "error"
 export type CompletionLogLevel = "off" | "info" | "debug"
+export type CompletionProvider = "opencode" | "openai-compatible"
 export type CodeGraphAnalysisMode = "auto" | "fast" | "ast" | "semantic"
+
+export type RagEndpointKind = "disabled" | "localhost" | "private-lan" | "approved-host" | "blocked" | "error"
+
+export type RagSettings = {
+  embedding: {
+    enabled: boolean
+    endpoint: string
+    model: string
+    batchSize: number
+    timeoutMs: number
+  }
+  rerank: {
+    enabled: boolean
+    endpoint: string
+    model: string
+  }
+  allowedHosts: string[]
+  vectorTopK: number
+  rerankTopK: number
+}
+
+export type RagStatus = {
+  enabled: boolean
+  embeddingEnabled: boolean
+  rerankEnabled: boolean
+  endpointKind: RagEndpointKind
+  chunks: number
+  embeddedChunks: number
+  vectorShards: number
+  embeddingProvider?: string
+  rerankProvider?: string
+  dimension?: number
+  updatedAt?: number
+  lastError?: string
+  fallbackReason?: string
+}
 
 export type RemoteSettings = {
   serverUrl: string
@@ -18,6 +55,12 @@ export type RemoteSettings = {
   }
   completion: {
     enabled: boolean
+    provider: CompletionProvider
+    apiBaseUrl: string
+    model: string
+    maxTokens: number
+    temperature: number
+    topP: number
     debounceMs: number
     logLevel: CompletionLogLevel
   }
@@ -49,6 +92,7 @@ export type RemoteSettings = {
     maxGraphEdges: number
     maxPaths: number
   }
+  rag: RagSettings
 }
 
 export type HealthResponse = {
@@ -257,7 +301,7 @@ export type CodeGraphStateTransition = {
 
 export type CodeGraphQueueStatus = {
   activeJobId?: string
-  activeJobKind?: "full-index" | "incremental-index" | "recovery" | "query" | "benchmark"
+  activeJobKind?: "full-index" | "incremental-index" | "recovery" | "query" | "benchmark" | "embedding-index"
   pendingJobs: number
   paused: boolean
   cancelRequested: boolean
@@ -281,6 +325,10 @@ export type CodeGraphServiceMetrics = {
   heapUsedBytes?: number
   lastJobElapsedMs?: number
   lastRecoveryElapsedMs?: number
+  ragChunks?: number
+  ragEmbeddedChunks?: number
+  ragVectorShards?: number
+  lastRagElapsedMs?: number
 }
 
 export type CodeGraphStatus = {
@@ -313,6 +361,7 @@ export type CodeGraphStatus = {
   lastTransitionAt?: number
   transitions?: CodeGraphStateTransition[]
   metrics?: CodeGraphServiceMetrics
+  rag?: RagStatus
   progress?: {
     completed: number
     total: number

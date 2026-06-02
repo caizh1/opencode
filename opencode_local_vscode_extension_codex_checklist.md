@@ -343,11 +343,11 @@ UI idle
 - [x] M6-02：建立文件级摘要，包含核心符号、输入输出、依赖、状态机、风险点。证据：`FileSummary`、`fileSummary()`；测试：`test/analysis-tool.test.ts`。
 - [x] M6-03：建立目录/模块级摘要，支持模块职责、子模块划分、关键流程、调用入口。证据：`ModuleSummary`、`moduleSummaries()`；测试：`test/analysis-tool.test.ts`。
 - [x] M6-04：建立子系统级摘要，支持跨模块流程说明。证据：`SubsystemSummary`、`subsystemSummaries()`；测试：`test/analysis-tool.test.ts`。
-- [ ] M6-05：实现 hybrid retrieval：exact path + symbol table + BM25 + vector optional + graph expansion + state-machine index。
+- [x] M6-05：实现 hybrid retrieval：exact path + symbol table + BM25 + vector optional + graph expansion + state-machine index。证据：`retrieveHybridEvidence()`、`buildHybridCodeGraphContext()`、`queryEvidenceAsync()`、RAG chunk/vector sidecar；测试：`bun test`（224 pass）。
 - [x] M6-06：实现 evidence packer：dedupe、line range、confidence、byte/token budget、missing evidence notes。证据：`packEvidenceRefs()`、`EvidencePack`；测试：`test/analysis-tool.test.ts`。
 - [x] M6-07：实现 answer policy：只基于 evidence 回答，必须引用 file:line，无证据时拒答或提示缺失。证据：`evaluateAnswerPolicy()`、`buildSuggestedAnswer()`、`Local Context Contract`；测试：`test/analysis-tool.test.ts`。
-- [ ] M6-08：embedding/rerank 优先通过内网 OpenCode Server 或内网模型服务提供；VS Code 扩展不直接访问公网。
-- [ ] M6-09：支持无 embedding 的纯 BM25 + graph + state-machine fallback。
+- [x] M6-08：embedding/rerank 优先通过内网 OpenCode Server 或内网模型服务提供；VS Code 扩展不直接访问公网。证据：`checkRagEndpoint()` hard block public endpoint、HTTP embedding/rerank provider 只允许 localhost/private LAN/allowlist；测试：`test/rag-provider.test.ts`、`bun test`（224 pass）。
+- [x] M6-09：支持无 embedding 的纯 BM25 + graph + state-machine fallback。证据：`retrieveHybridEvidence()` fallback trace、`queryEvidenceAsync()` 在 embedding disabled/provider missing 时继续返回 evidence；测试：`test/codegraph-hybrid-rag.test.ts`、`bun test`（224 pass）。
 - [x] M6-10：验收：用户可问“某模块某功能流程”，答案包含结构化流程、调用链、状态机和证据行。证据：`queryEvidence()` 输出 module summaries/call-chain retrieval/stateMachines/evidencePack/suggested grounded answer plan；测试：`test/analysis-tool.test.ts`；package/vsix：`opencode-remote-0.0.41.vsix`。
 
 ### M7：百万级规模化
@@ -504,11 +504,11 @@ UI idle
 - [ ] P1-03a：intent classifier 支持 overview、module logic、submodule logic、callers、callees、call-chain、impact、state-machine、code search。
 - [x] P1-03b：path/symbol extraction。证据：`extractSymbols()`、`relatedPaths`、`planShardKeysForQuery()`；测试：`test/codegraph-query.test.ts`、`test/codegraph-shard-planner.test.ts`。
 - [ ] P1-03c：module scope inference。
-- [ ] P1-03d：BM25 检索。
-- [ ] P1-03e：向量检索 optional，来源必须是内网模型服务或 OpenCode Server，不允许公网。
+- [x] P1-03d：BM25 检索。证据：`addPostingEvidence()` idf/posting-weight 检索继续作为 hybrid fallback 阶段；测试：`test/codegraph-query.test.ts`、`test/codegraph-hybrid-rag.test.ts`。
+- [x] P1-03e：向量检索 optional，来源必须是内网模型服务或 OpenCode Server，不允许公网。证据：`RagVectorIndex`、`buildRagVectorIndex()`、`searchRagVectorIndex()`、`createHttpEmbeddingProvider()`、endpoint guard；测试：`test/rag-index.test.ts`、`test/rag-provider.test.ts`。
 - [x] P1-03f：图扩展。证据：callers/callees/call-chain/impact retrieval；测试：`test/codegraph-recall-fixture.test.ts`。
 - [x] P1-03g：状态机索引扩展。证据：`extractStateMachines()` 接入 `queryEvidence()`；测试：`test/analysis-tool.test.ts`。
-- [ ] P1-03h：rerank optional，来源必须是内网服务。
+- [x] P1-03h：rerank optional，来源必须是内网服务。证据：`createHttpRerankProvider()`、`rerankEvidence()`、public endpoint hard block；测试：`test/codegraph-hybrid-rag.test.ts`、`test/rag-provider.test.ts`。
 - [x] P1-03i：evidence pack。证据：`packEvidenceRefs()`、`EvidencePack`；测试：`test/analysis-tool.test.ts`。
 - [x] P1-03j：query trace UI。证据：`Code Intelligence` 的 `Query Trace` 渲染；测试：`test/chat-html.test.ts`。
 
@@ -827,4 +827,4 @@ UI idle
 
 - [x] RECORD-01：批次编号：`2026-05-31-01`；完成任务：`M3-01/02/03/05/06/07/08/09, M5-01..16, M6-01/02/03/04/06/07/10`；commit/PR：`n/a local worktree`；测试：`cmd /c npx -y bun@1.3.14 test`（188 pass）、`cmd /c npx -y bun@1.3.14 run package`（pass）、`cmd /c npx -y bun@1.3.14 run vsix`（生成 `opencode-remote-0.0.41.vsix`）；OpenCode Server：`custom tool mode via localhost Analysis Bridge generated at .opencode/tools/opencode_local_analysis.ts`；网络策略：`127.0.0.1 token bridge, only analysis tools allowed, webfetch/websearch/edit/bash deny in generated vscode-local policy template`；备注：`M3-04/M6-05/M6-08/M6-09 未包含在本次用户点名范围内，保持未勾选。`
 - [x] RECORD-02：批次编号：`2026-05-31-02`；完成任务：`STATE-IDX-01..05, M2-01..09/11/12/13/14, M7-01..10, SCALE-01..13/16/17/18/19/21/22, TEST-Perf-01..08`；commit/PR：`n/a local worktree`；测试：`cmd /c npx -y bun@1.3.14 test`（198 pass）、`cmd /c npx -y bun@1.3.14 run compile`（pass）、`cmd /c npx -y bun@1.3.14 run package`（pass）、`cmd /c npx -y bun@1.3.14 run vsix`（生成 `opencode-remote-0.0.44.vsix`）；benchmark：`bun run benchmark:codegraph -- --files=10000`（P95=94ms）、`--files=100000`（P95=1400ms）、`--files=250000`（mode=streaming-sharded, P95=5ms, peakHeapBytes=30594699）、`--files=1000000`（mode=streaming-sharded, P50/P95/P99=2/13/13ms, peakHeapBytes=68768088, indexBytes=466444450, recoveryMs=58）；OpenCode Server：`n/a，本批聚焦本地百万级 code graph 能力，未新增公网访问`；网络策略：`沿用 localhost Analysis Bridge 与 local-only 策略，未引入 embedding/vector/RAG 外部依赖`；备注：`严格 SQLite runtime/FTS-BM25、postings/graph edge 物理分片、OpenCode 首 token latency 与服务端主动 E2E 仍留给后续批次。`
-- [ ] RECORD-03：批次编号：`YYYY-MM-DD-03`；完成任务：`...`；commit/PR：`...`；测试：`...`；OpenCode Server：`...`；网络策略：`...`；备注：`...`
+- [x] RECORD-03：批次编号：`2026-06-02-03`；完成任务：`M6-05/08/09, P1-03d/e/h`；commit/PR：`n/a local worktree`；测试：`bun test`（224 pass）、`bun run compile`（pass）、`bun run package`（pass）、`bun run vsix`（生成 `opencode-remote-0.0.60.vsix`）；OpenCode Server：`n/a，本批实现 VS Code 扩展内 RAG 编排、向量 sidecar 与本机/内网 HTTP provider，不打包模型权重或 OpenCode Server`；网络策略：`embedding/rerank endpoint 仅允许 localhost/private LAN/allowedHosts，公网 endpoint fetch 前 hard block；无 embedding/rerank 自动 fallback 到 BM25 + graph + state-machine`；备注：`VSIX 内包含 RAG planner/provider/index/status/trace，模型服务由离线环境外部提供。`

@@ -50,6 +50,23 @@ describe("extension manifest", () => {
     })
   })
 
+  test("contributes direct inline completion settings and API key command", () => {
+    const properties = manifest.contributes?.configuration?.properties ?? {}
+    expect(properties["opencode.remote.completion.provider"]).toMatchObject({
+      type: "string",
+      enum: ["opencode", "openai-compatible"],
+      default: "opencode",
+    })
+    expect(properties["opencode.remote.completion.apiBaseUrl"]?.default).toBe("")
+    expect(properties["opencode.remote.completion.model"]?.default).toBe("")
+    expect(properties["opencode.remote.completion.maxTokens"]?.default).toBe(128)
+    expect(properties["opencode.remote.completion.temperature"]?.default).toBe(0.2)
+    expect(properties["opencode.remote.completion.topP"]?.default).toBe(0.8)
+    expect(manifest.contributes?.commands).toContainEqual(expect.objectContaining({
+      command: "opencode.remote.completion.setApiKey",
+    }))
+  })
+
   test("contributes local code graph settings", () => {
     const properties = manifest.contributes?.configuration?.properties ?? {}
     expect(properties["opencode.remote.codeGraph.enabled"]?.default).toBe(true)
@@ -85,6 +102,21 @@ describe("extension manifest", () => {
     expect(properties["opencode.remote.analysis.maxFileSliceBytes"]?.default).toBe(16000)
     expect(properties["opencode.remote.analysis.maxGraphEdges"]?.default).toBe(120)
     expect(properties["opencode.remote.analysis.maxPaths"]?.default).toBe(10)
+  })
+
+  test("contributes offline RAG embedding and rerank settings", () => {
+    const properties = manifest.contributes?.configuration?.properties ?? {}
+    expect(properties["opencode.remote.rag.embedding.enabled"]?.default).toBe(false)
+    expect(properties["opencode.remote.rag.embedding.endpoint"]?.type).toBe("string")
+    expect(properties["opencode.remote.rag.embedding.model"]?.type).toBe("string")
+    expect(properties["opencode.remote.rag.embedding.batchSize"]?.default).toBe(32)
+    expect(properties["opencode.remote.rag.embedding.timeoutMs"]?.default).toBe(30000)
+    expect(properties["opencode.remote.rag.rerank.enabled"]?.default).toBe(false)
+    expect(properties["opencode.remote.rag.rerank.endpoint"]?.type).toBe("string")
+    expect(properties["opencode.remote.rag.rerank.model"]?.type).toBe("string")
+    expect(properties["opencode.remote.rag.allowedHosts"]?.type).toBe("array")
+    expect(properties["opencode.remote.rag.vectorTopK"]?.default).toBe(24)
+    expect(properties["opencode.remote.rag.rerankTopK"]?.default).toBe(16)
   })
 
   test("contributes a dedicated OpenCode activity bar container", () => {

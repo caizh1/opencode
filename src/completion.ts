@@ -2,16 +2,18 @@ import * as vscode from "vscode"
 import { buildCompletionEditResult, type CompletionEdit, type CompletionEditInput, type CompletionRange } from "./completion-edit"
 import { completionFormatCommand } from "./completion-format-command"
 import { inferCompletionIndent } from "./completion-indent"
+import { CompletionModelClient, completionModel } from "./completion-model-client"
 import { CompletionRequestCoordinator, type CompletionRequestOutcome } from "./completion-request-coordinator"
 import { INLINE_COMPLETION_SESSION_TITLE } from "./completion-session"
 import { completionInsertText } from "./completion-text"
 import { buildCompletionPrompt, relativePath } from "./context"
 import { resolveRequestAgent } from "./local-agent"
 import { isSessionNotFoundError, parseModel, RemoteOpenCodeClient } from "./remote-client"
-import type { RemoteSettings } from "./types"
+import type { OpenCodeMessage, RemoteSettings } from "./types"
 
 type CompletionDeps = {
   getClient: () => RemoteOpenCodeClient | undefined
+  getCompletionApiKey?: () => Promise<string | undefined>
   getSettings: () => RemoteSettings
   output: vscode.OutputChannel
 }
@@ -42,12 +44,6 @@ export class RemoteCompletionProvider implements vscode.InlineCompletionItemProv
       return
     }
 
-    const client = this.deps.getClient()
-    if (!client) {
-      this.logDebug(settings, `skip: no active remote client ${requestDetails(document, position, settings)}`)
-      return
-    }
-
     const lineText = document.lineAt(position.line).text
     const line = lineText.slice(0, position.character)
     const lineSuffix = lineText.slice(position.character)
@@ -59,6 +55,22 @@ export class RemoteCompletionProvider implements vscode.InlineCompletionItemProv
 
     const started = Date.now()
     const details = requestDetails(document, position, settings)
+    const client = this.deps.getClient()
+    if (settings.completion.provider === "opencode" && !client) {
+      this.logDebug(settings, `skip: no active remote client ${details}`)
+      return
+    }
+    if (settings.completion.provider === "openai-compatible") {
+      if (!settings.completion.apiBaseUrl) {
+        this.logDebug(settings, `skip: direct completion API base URL is not configured ${details}`)
+        return
+      }
+      if (!completionModel(settings)) {
+        this.logDebug(settings, `skip: direct completion model is not configured ${details}`)
+        return
+      }
+    }
+
     this.logInfo(settings, `triggered ${details}`)
     const indent = inferCompletionIndent({
       lines: documentLines(document),
@@ -77,21 +89,31 @@ export class RemoteCompletionProvider implements vscode.InlineCompletionItemProv
     }
     const localFallback = buildCompletionEditResult({ text: "", ...editInput }).edit
     const start = this.requests.request({
-      key: completionRequestKey(document, position, lineText),
+      key: completionRequestKey(document, position, lineText, settings),
       details,
       debounceMs: settings.completion.debounceMs,
       localFallback,
       runRemote: (signal) =>
-        this.remoteCompletionOutcome({
-          client,
-          document,
-          position,
-          settings,
-          details,
-          started,
-          signal,
-          editInput,
-        }),
+        settings.completion.provider === "openai-compatible"
+          ? this.directCompletionOutcome({
+              document,
+              position,
+              settings,
+              details,
+              started,
+              signal,
+              editInput,
+            })
+          : this.remoteCompletionOutcome({
+              client: client!,
+              document,
+              position,
+              settings,
+              details,
+              started,
+              signal,
+              editInput,
+            }),
       onRemoteReady: () => this.triggerInlineSuggestRefresh(document, position, settings, details),
     })
 
@@ -129,35 +151,14 @@ export class RemoteCompletionProvider implements vscode.InlineCompletionItemProv
         position: input.position,
         settings: input.settings,
       })
-      this.logInfo(input.settings, `sent ${input.details}`)
-      const response = await this.sendCompletion(input.client, prompt, input.settings, input.signal)
-      this.logInfo(input.settings, `received ${input.details} elapsedMs=${elapsedMs(input.started)}`)
-
-      const visibleText = completionInsertText(response)
-      if (!visibleText) {
-        this.logInfo(
-          input.settings,
-          `empty reason=filtered-or-no-visible-text ${input.details} elapsedMs=${elapsedMs(input.started)}`,
-        )
-        return { reason: "filtered-or-no-visible-text", source: "remote" }
-      }
-
-      const result = buildCompletionEditResult({
-        text: visibleText,
-        ...input.editInput,
+      return await this.completionOutcomeWithRetry({
+        prompt,
+        settings: input.settings,
+        details: input.details,
+        started: input.started,
+        editInput: input.editInput,
+        sendPrompt: (promptText) => this.sendCompletion(input.client, promptText, input.settings, input.signal),
       })
-      const edit = result.edit
-      if (!edit) {
-        this.logInfo(
-          input.settings,
-          `edit-rejected reason=${result.reason} ${input.details} elapsedMs=${elapsedMs(input.started)}`,
-        )
-        return { reason: result.reason, source: "remote" }
-      }
-
-      this.logInfo(input.settings, `edit-ready ${editDetails(edit)} ${input.details} elapsedMs=${elapsedMs(input.started)} chars=${edit.insertText.length}`)
-      this.logDebug(input.settings, `edit ${editDetails(edit)} visibleChars=${visibleText.length} ${input.details}`)
-      return { edit, source: "remote" }
     } catch (error) {
       if (input.signal.aborted) {
         return { reason: "cancelled", source: "remote" }
@@ -168,6 +169,133 @@ export class RemoteCompletionProvider implements vscode.InlineCompletionItemProv
       )
       return { reason: "remote-error", source: "remote" }
     }
+  }
+
+  private async directCompletionOutcome(input: {
+    document: vscode.TextDocument
+    position: vscode.Position
+    settings: RemoteSettings
+    details: string
+    started: number
+    signal: AbortSignal
+    editInput: Omit<CompletionEditInput, "text">
+  }): Promise<CompletionRequestOutcome> {
+    try {
+      const prompt = await buildCompletionPrompt({
+        document: input.document,
+        position: input.position,
+        settings: input.settings,
+        transport: "openai-compatible",
+      })
+      const apiKey = await this.deps.getCompletionApiKey?.()
+      const client = new CompletionModelClient(input.settings, apiKey)
+      return await this.completionOutcomeWithRetry({
+        prompt,
+        settings: input.settings,
+        details: input.details,
+        started: input.started,
+        editInput: input.editInput,
+        sendPrompt: (promptText) => client.complete({ prompt: promptText, signal: input.signal }),
+      })
+    } catch (error) {
+      if (input.signal.aborted) {
+        return { reason: "cancelled", source: "remote" }
+      }
+      this.logInfo(
+        input.settings,
+        `Completion failed: ${formatError(error)} ${input.details} elapsedMs=${elapsedMs(input.started)}`,
+      )
+      return { reason: "remote-error", source: "remote" }
+    }
+  }
+
+  private async completionOutcomeWithRetry(input: {
+    prompt: string
+    settings: RemoteSettings
+    details: string
+    started: number
+    editInput: Omit<CompletionEditInput, "text">
+    sendPrompt: (prompt: string) => Promise<OpenCodeMessage | undefined>
+  }): Promise<CompletionRequestOutcome> {
+    this.logInfo(input.settings, `sent ${input.details}`)
+    const response = await input.sendPrompt(input.prompt)
+    this.logInfo(input.settings, `received ${input.details} elapsedMs=${elapsedMs(input.started)}`)
+
+    const initial = this.completionOutcomeFromResponse({
+      response,
+      settings: input.settings,
+      details: input.details,
+      started: input.started,
+      editInput: input.editInput,
+      attempt: "initial",
+    })
+    if (initial.edit || initial.reason !== "misaligned-leading-newline") return initial
+
+    const retryPrompt = completionRetryPrompt(input.prompt, input.editInput)
+    this.logInfo(input.settings, `retry-sent reason=${initial.reason} ${input.details}`)
+    const retryResponse = await input.sendPrompt(retryPrompt)
+    this.logInfo(input.settings, `retry-received reason=${initial.reason} ${input.details} elapsedMs=${elapsedMs(input.started)}`)
+    return this.completionOutcomeFromResponse({
+      response: retryResponse,
+      settings: input.settings,
+      details: input.details,
+      started: input.started,
+      editInput: input.editInput,
+      attempt: "retry",
+    })
+  }
+
+  private completionOutcomeFromResponse(input: {
+    response: OpenCodeMessage | undefined
+    settings: RemoteSettings
+    details: string
+    started: number
+    editInput: Omit<CompletionEditInput, "text">
+    attempt: "initial" | "retry"
+  }): CompletionRequestOutcome {
+    const visibleText = completionInsertText(input.response)
+    if (!visibleText) {
+      if (input.attempt === "retry") {
+        this.logInfo(
+          input.settings,
+          `retry-edit-rejected reason=filtered-or-no-visible-text ${input.details} elapsedMs=${elapsedMs(input.started)}`,
+        )
+      } else {
+        this.logInfo(
+          input.settings,
+          `empty reason=filtered-or-no-visible-text ${input.details} elapsedMs=${elapsedMs(input.started)}`,
+        )
+      }
+      return { reason: "filtered-or-no-visible-text", source: "remote" }
+    }
+
+    const result = buildCompletionEditResult({
+      text: visibleText,
+      ...input.editInput,
+    })
+    const edit = result.edit
+    if (!edit) {
+      if (input.attempt === "retry") {
+        this.logInfo(
+          input.settings,
+          `retry-edit-rejected reason=${result.reason} ${input.details} elapsedMs=${elapsedMs(input.started)}`,
+        )
+      } else {
+        this.logInfo(
+          input.settings,
+          `edit-rejected reason=${result.reason} ${input.details} elapsedMs=${elapsedMs(input.started)}`,
+        )
+      }
+      return { reason: result.reason, source: "remote" }
+    }
+
+    if (input.attempt === "retry") {
+      this.logInfo(input.settings, `retry-edit-ready ${editDetails(edit)} ${input.details} elapsedMs=${elapsedMs(input.started)} chars=${edit.insertText.length}`)
+    } else {
+      this.logInfo(input.settings, `edit-ready ${editDetails(edit)} ${input.details} elapsedMs=${elapsedMs(input.started)} chars=${edit.insertText.length}`)
+    }
+    this.logDebug(input.settings, `edit ${editDetails(edit)} visibleChars=${visibleText.length} ${input.details}`)
+    return { edit, source: "remote" }
   }
 
   private async getSession(client: RemoteOpenCodeClient, signal: AbortSignal) {
@@ -263,8 +391,30 @@ export class RemoteCompletionProvider implements vscode.InlineCompletionItemProv
   }
 }
 
-function completionRequestKey(document: vscode.TextDocument, position: vscode.Position, lineText: string) {
-  return [document.uri.toString(), document.languageId, position.line, position.character, lineText].join("\u0000")
+function completionRetryPrompt(prompt: string, editInput: Omit<CompletionEditInput, "text">) {
+  const currentLine = truncateFeedback(`${editInput.linePrefix}${editInput.lineSuffix}`)
+  const cursorPrefix = truncateFeedback(editInput.linePrefix)
+  return [
+    prompt,
+    "",
+    "<completion-feedback>",
+    `Previous completion was rejected because it began with blank lines and did not continue the current line "${quoteLogValue(currentLine)}".`,
+    `The cursor is after the prefix "${quoteLogValue(cursorPrefix)}".`,
+    "Return only text that continues or replaces the cursor context, or return empty.",
+    "</completion-feedback>",
+  ].join("\n")
+}
+
+function completionRequestKey(document: vscode.TextDocument, position: vscode.Position, lineText: string, settings: RemoteSettings) {
+  return [
+    document.uri.toString(),
+    document.languageId,
+    settings.completion.provider,
+    settings.completion.provider === "openai-compatible" ? document.version : "",
+    position.line,
+    position.character,
+    lineText,
+  ].join("\u0000")
 }
 
 function waitForOutcome(
@@ -292,11 +442,14 @@ function waitForOutcome(
 }
 
 function requestDetails(document: vscode.TextDocument, position: vscode.Position, settings: RemoteSettings) {
-  const model = settings.defaultModel.trim() || "server-default"
+  const model = settings.completion.provider === "openai-compatible"
+    ? completionModel(settings) || "direct-model-missing"
+    : settings.defaultModel.trim() || "server-default"
   return [
     `path="${quoteLogValue(relativePath(document.uri))}"`,
     `line=${position.line + 1}`,
     `character=${position.character + 1}`,
+    `provider=${settings.completion.provider}`,
     `model="${quoteLogValue(model)}"`,
     `debounceMs=${settings.completion.debounceMs}`,
   ].join(" ")
@@ -372,4 +525,9 @@ function rangeLogValue(range: CompletionRange) {
 function truncateLine(input: string) {
   if (input.length <= 80) return input
   return `${input.slice(0, 77)}...`
+}
+
+function truncateFeedback(input: string) {
+  if (input.length <= 160) return input
+  return `${input.slice(0, 157)}...`
 }
