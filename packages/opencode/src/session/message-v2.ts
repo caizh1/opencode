@@ -27,6 +27,7 @@ import { NonNegativeInt } from "@opencode-ai/core/schema"
 import * as EffectLogger from "@opencode-ai/core/effect/logger"
 import { MessageError } from "./message-error"
 import { AuthError, OutputLengthError } from "./message-error"
+import { LLMError } from "@opencode-ai/llm"
 export { AuthError, OutputLengthError } from "./message-error"
 
 /** Error shape thrown by Bun's fetch() when gzip/br decompression fails mid-stream */
@@ -1101,6 +1102,55 @@ export function latest(msgs: WithParts[]) {
   return { user, assistant, finished, tasks }
 }
 
+function stringRecord(input: Record<string, unknown>) {
+  return Object.fromEntries(
+    Object.entries(input).filter((entry): entry is [string, string] => typeof entry[1] === "string"),
+  )
+}
+
+function llmHttp(e: LLMError) {
+  return "http" in e.reason ? e.reason.http : undefined
+}
+
+function llmStatus(e: LLMError) {
+  return "status" in e.reason && typeof e.reason.status === "number" && e.reason.status >= 0
+    ? e.reason.status
+    : undefined
+}
+
+function llmTimeoutSource(e: LLMError) {
+  if (e.reason._tag === "Transport" && e.reason.kind === "Timeout") return "native_transport_timeout"
+  const status = llmStatus(e)
+  if (status === 504) return "gateway_timeout"
+  if (status === 408) return "upstream_request_timeout"
+  if (/gateway time[- ]?out/i.test(e.reason.message)) return "gateway_timeout"
+  if (/timed?\s*out|timeout/i.test(e.reason.message)) return "provider_timeout"
+  return undefined
+}
+
+function fromLLMError(e: LLMError) {
+  const http = llmHttp(e)
+  return new APIError(
+    {
+      message: e.reason.message,
+      statusCode: llmStatus(e),
+      isRetryable: e.retryable,
+      responseHeaders: http?.response?.headers,
+      responseBody: http?.body,
+      metadata: stringRecord({
+        layer: "native",
+        module: e.module,
+        method: e.method,
+        reason: e.reason._tag,
+        timeoutSource: llmTimeoutSource(e),
+        url: e.reason._tag === "Transport" ? e.reason.url : http?.request.url,
+        requestId: http?.requestId,
+      }),
+    },
+    { cause: e },
+  ).toObject()
+}
+
 export function fromError(
   e: unknown,
   ctx: { providerID: ProviderID; aborted?: boolean },
@@ -1112,6 +1162,19 @@ export function fromError(
         {
           cause: e,
         },
+      ).toObject()
+    case e instanceof DOMException && e.name === "TimeoutError":
+      return new APIError(
+        {
+          message: e.message,
+          isRetryable: true,
+          metadata: {
+            code: e.name,
+            layer: "provider",
+            timeoutSource: "request_timeout",
+          },
+        },
+        { cause: e },
       ).toObject()
     case OutputLengthError.isInstance(e):
       return e
@@ -1151,6 +1214,19 @@ export function fromError(
         },
         { cause: e },
       ).toObject()
+    case e instanceof Error && e.message === "SSE read timed out":
+      return new APIError(
+        {
+          message: e.message,
+          isRetryable: true,
+          metadata: {
+            code: e.name,
+            layer: "provider",
+            timeoutSource: "sse_chunk_timeout",
+          },
+        },
+        { cause: e },
+      ).toObject()
     case e instanceof ProviderError.HeaderTimeoutError:
       return new APIError(
         {
@@ -1159,10 +1235,14 @@ export function fromError(
           metadata: {
             code: e.name,
             timeoutMs: String(e.ms),
+            layer: "provider",
+            timeoutSource: "header_timeout",
           },
         },
         { cause: e },
       ).toObject()
+    case e instanceof LLMError:
+      return fromLLMError(e)
     case APICallError.isInstance(e):
       const parsed = ProviderError.parseAPICallError({
         providerID: ctx.providerID,

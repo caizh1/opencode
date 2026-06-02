@@ -61,6 +61,24 @@ type Input = {
   model: Provider.Model
 }
 
+function stringField(value: unknown) {
+  return typeof value === "string" ? value : undefined
+}
+
+function retryLogFields(error: SessionRetry.Err) {
+  const data = isRecord(error.data) ? error.data : {}
+  const metadata = isRecord(data.metadata) ? data.metadata : {}
+  return {
+    errorName: error.name,
+    statusCode: typeof data.statusCode === "number" ? data.statusCode : undefined,
+    layer: stringField(metadata.layer),
+    timeoutSource: stringField(metadata.timeoutSource),
+    url: stringField(metadata.url),
+    requestId: stringField(metadata.requestId),
+    message: stringField(data.message),
+  }
+}
+
 type NormalizedAttachment = { attachment: MessageV2.FilePart } | { warning: string } | { failed: true }
 
 export interface Interface {
@@ -847,6 +865,12 @@ export const layer = Layer.effect(
                 provider: input.model.providerID,
                 parse,
                 set: (info) => {
+                  slog.warn("session.retry_scheduled", {
+                    attempt: info.attempt,
+                    delayMs: info.delayMs,
+                    next: info.next,
+                    ...retryLogFields(info.error),
+                  })
                   // TODO(v2): Temporary dual-write while migrating session messages to v2 events.
                   const event = flags.experimentalEventSystem
                     ? events.publish(SessionEvent.Retried, {

@@ -339,15 +339,65 @@ const retryDelay = (error: LLMError, attempt: number) => {
   ).pipe(Effect.map((delay) => Math.round(delay)))
 }
 
+const errorHttp = (error: LLMError) => ("http" in error.reason ? error.reason.http : undefined)
+
+const errorStatus = (error: LLMError) =>
+  "status" in error.reason && typeof error.reason.status === "number" ? error.reason.status : undefined
+
+const errorTimeoutSource = (error: LLMError) => {
+  if (error.reason._tag === "Transport" && error.reason.kind === "Timeout") return "native_transport_timeout"
+  const status = errorStatus(error)
+  if (status === 504) return "gateway_timeout"
+  if (status === 408) return "upstream_request_timeout"
+  if (/gateway time[- ]?out/i.test(error.reason.message)) return "gateway_timeout"
+  if (/timed?\s*out|timeout/i.test(error.reason.message)) return "provider_timeout"
+  return undefined
+}
+
+const errorLogFields = (error: LLMError) => {
+  const http = errorHttp(error)
+  return {
+    module: error.module,
+    method: error.method,
+    reason: error.reason._tag,
+    statusCode: errorStatus(error),
+    retryable: error.retryable,
+    retryAfterMs: error.retryAfterMs,
+    timeoutSource: errorTimeoutSource(error),
+    requestId: http?.requestId,
+    requestMethod: http?.request.method,
+    url: error.reason._tag === "Transport" ? error.reason.url : http?.request.url,
+  }
+}
+
 const retryStatusFailures = <A, R>(
   effect: Effect.Effect<A, LLMError, R>,
   retries = MAX_RETRIES,
   attempt = 0,
 ): Effect.Effect<A, LLMError, R> =>
   Effect.catchTag(effect, "LLM.Error", (error): Effect.Effect<A, LLMError, R> => {
-    if (!error.retryable || retries <= 0) return Effect.fail(error)
+    if (!error.retryable || retries <= 0) {
+      return Effect.logError("native.request_executor.failed").pipe(
+        Effect.annotateLogs({
+          ...errorLogFields(error),
+          attempt: attempt + 1,
+          retriesRemaining: retries,
+        }),
+        Effect.andThen(Effect.fail(error)),
+      )
+    }
     return retryDelay(error, attempt).pipe(
-      Effect.flatMap((delay) => Effect.sleep(delay)),
+      Effect.flatMap((delay) =>
+        Effect.logWarning("native.request_executor.retry").pipe(
+          Effect.annotateLogs({
+            ...errorLogFields(error),
+            attempt: attempt + 1,
+            retriesRemaining: retries,
+            delayMs: delay,
+          }),
+          Effect.andThen(Effect.sleep(delay)),
+        ),
+      ),
       Effect.flatMap(() => retryStatusFailures(effect, retries - 1, attempt + 1)),
     )
   })

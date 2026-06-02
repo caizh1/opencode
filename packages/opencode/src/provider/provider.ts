@@ -32,13 +32,142 @@ import { ProviderError } from "./error"
 
 const log = Log.create({ service: "provider" })
 const OPENAI_HEADER_TIMEOUT_DEFAULT = 10_000
+const REDACTED = "<redacted>"
+const SENSITIVE_NAME =
+  /authorization|api[-_]?key|access[-_]?token|refresh[-_]?token|id[-_]?token|token|secret|credential|signature|x-amz-signature/i
+const SHORT_QUERY_NAME = /^(key|sig)$/i
+
 function shouldUseCopilotResponsesApi(modelID: string): boolean {
   const match = /^gpt-(\d+)/.exec(modelID)
   if (!match) return false
   return Number(match[1]) >= 5 && !modelID.startsWith("gpt-5-mini")
 }
 
-function wrapSSE(res: Response, ms: number, ctl: AbortController) {
+type ProviderRequestDiagnostics = {
+  providerID: ProviderID
+  modelID: ModelID
+  sessionID?: string
+  requestID?: string
+  method: string
+  url: string
+  timeoutMs?: number
+  headerTimeoutMs?: number
+  chunkTimeoutMs?: number
+}
+
+function redactUrl(value: string) {
+  if (!URL.canParse(value)) return REDACTED
+  const url = new URL(value)
+  url.searchParams.forEach((_, key) => {
+    if (SENSITIVE_NAME.test(key) || SHORT_QUERY_NAME.test(key)) url.searchParams.set(key, REDACTED)
+  })
+  return url.toString()
+}
+
+function requestUrl(input: unknown) {
+  if (input instanceof Request) return input.url
+  if (input instanceof URL) return input.toString()
+  if (typeof input === "string") return input
+  return String(input)
+}
+
+function requestMethod(input: unknown, init: BunFetchRequestInit) {
+  if (init.method) return init.method
+  if (input instanceof Request) return input.method
+  return "GET"
+}
+
+function collectHeaders(...items: unknown[]) {
+  const result = new Headers()
+  for (const item of items) {
+    if (!item) continue
+    new Headers(item as HeadersInit).forEach((value, key) => result.set(key, value))
+  }
+  return result
+}
+
+function requestDiagnostics(input: {
+  model: Model
+  request: unknown
+  init: BunFetchRequestInit
+  providerHeaders: unknown
+  timeoutMs?: number
+  headerTimeoutMs?: number
+  chunkTimeoutMs?: number
+}): ProviderRequestDiagnostics {
+  const headers = collectHeaders(
+    input.providerHeaders,
+    input.request instanceof Request ? input.request.headers : undefined,
+    input.init.headers,
+  )
+  return {
+    providerID: input.model.providerID,
+    modelID: input.model.id,
+    sessionID: headers.get("x-opencode-session") ?? headers.get("x-session-affinity") ?? undefined,
+    requestID: headers.get("x-opencode-request") ?? undefined,
+    method: requestMethod(input.request, input.init),
+    url: redactUrl(requestUrl(input.request)),
+    timeoutMs: input.timeoutMs,
+    headerTimeoutMs: input.headerTimeoutMs,
+    chunkTimeoutMs: input.chunkTimeoutMs,
+  }
+}
+
+function upstreamRequestID(headers: Headers) {
+  return (
+    headers.get("x-request-id") ??
+    headers.get("request-id") ??
+    headers.get("x-amzn-requestid") ??
+    headers.get("x-amz-request-id") ??
+    headers.get("x-goog-request-id") ??
+    headers.get("cf-ray") ??
+    undefined
+  )
+}
+
+function abortReason(reason: unknown) {
+  if (reason instanceof Error) {
+    return {
+      abortReasonName: reason.name,
+      abortReasonMessage: reason.message,
+    }
+  }
+  if (reason === undefined || reason === null) return {}
+  return {
+    abortReasonName: typeof reason,
+    abortReasonMessage: String(reason),
+  }
+}
+
+function logProviderEvent(event: string, base: ProviderRequestDiagnostics, extra?: Record<string, unknown>) {
+  log.warn(event, {
+    ...base,
+    ...extra,
+  })
+}
+
+function timeoutEvent(input: {
+  error: unknown
+  callerSignal?: AbortSignal
+  requestTimeoutSignal?: AbortSignal
+  headerTimeoutSignal?: AbortSignal
+  chunkTimeoutSignal?: AbortSignal
+}) {
+  if (input.headerTimeoutSignal?.aborted) return "provider.header_timeout"
+  if (input.requestTimeoutSignal?.aborted) return "provider.request_timeout"
+  if (input.chunkTimeoutSignal?.aborted) return "provider.sse_chunk_timeout"
+  if (input.callerSignal?.aborted) return "caller.abort"
+  if (input.error instanceof ProviderError.HeaderTimeoutError) return "provider.header_timeout"
+  if (input.error instanceof Error && input.error.message === "SSE read timed out") return "provider.sse_chunk_timeout"
+  if (input.error instanceof DOMException && input.error.name === "TimeoutError") return "provider.request_timeout"
+  return "provider.fetch_error"
+}
+
+function retryableStatus(status: number) {
+  return status === 408 || status === 504 || status >= 500
+}
+
+function wrapSSE(res: Response, ms: number, ctl: AbortController, base: ProviderRequestDiagnostics, signal?: AbortSignal) {
   if (typeof ms !== "number" || ms <= 0) return res
   if (!res.body) return res
   if (!res.headers.get("content-type")?.includes("text/event-stream")) return res
@@ -46,9 +175,16 @@ function wrapSSE(res: Response, ms: number, ctl: AbortController) {
   const reader = res.body.getReader()
   const body = new ReadableStream<Uint8Array>({
     async pull(ctrl) {
+      const started = Date.now()
       const part = await new Promise<Awaited<ReturnType<typeof reader.read>>>((resolve, reject) => {
         const id = setTimeout(() => {
           const err = new Error("SSE read timed out")
+          logProviderEvent("provider.sse_chunk_timeout", base, {
+            statusCode: res.status,
+            requestId: upstreamRequestID(res.headers),
+            elapsedMs: Date.now() - started,
+            ...abortReason(err),
+          })
           ctl.abort(err)
           void reader.cancel(err)
           reject(err)
@@ -74,6 +210,13 @@ function wrapSSE(res: Response, ms: number, ctl: AbortController) {
       ctrl.enqueue(part.value)
     },
     async cancel(reason) {
+      if (signal?.aborted && !(reason instanceof Error && reason.message === "SSE read timed out")) {
+        logProviderEvent("caller.abort", base, {
+          statusCode: res.status,
+          requestId: upstreamRequestID(res.headers),
+          ...abortReason(signal.reason ?? reason),
+        })
+      }
       ctl.abort(reason)
       await reader.cancel(reason)
     },
@@ -1663,16 +1806,33 @@ export const layer = Layer.effect(
         options["fetch"] = async (input: any, init?: BunFetchRequestInit) => {
           const fetchFn = customFetch ?? fetch
           const opts = init ?? {}
+          const started = Date.now()
+          const timeoutMs =
+            typeof options["timeout"] === "number" && options["timeout"] > 0 ? options["timeout"] : undefined
+          const chunkTimeoutMs = typeof chunkTimeout === "number" && chunkTimeout > 0 ? chunkTimeout : undefined
           const chunkAbortCtl = typeof chunkTimeout === "number" && chunkTimeout > 0 ? new AbortController() : undefined
           const headerTimeoutMs = headerTimeout === false ? undefined : headerTimeout
           const headerTimeoutCtl = typeof headerTimeoutMs === "number" ? timeoutController(headerTimeoutMs) : undefined
+          const requestTimeoutSignal =
+            options["timeout"] !== undefined && options["timeout"] !== null && options["timeout"] !== false
+              ? AbortSignal.timeout(options["timeout"])
+              : undefined
+          const callerSignal = opts.signal ?? undefined
           const signals: AbortSignal[] = []
+          const diagnostics = requestDiagnostics({
+            model,
+            request: input,
+            init: opts,
+            providerHeaders: options["headers"],
+            timeoutMs,
+            headerTimeoutMs,
+            chunkTimeoutMs,
+          })
 
-          if (opts.signal) signals.push(opts.signal)
+          if (callerSignal) signals.push(callerSignal)
           if (chunkAbortCtl) signals.push(chunkAbortCtl.signal)
           if (headerTimeoutCtl) signals.push(headerTimeoutCtl.signal)
-          if (options["timeout"] !== undefined && options["timeout"] !== null && options["timeout"] !== false)
-            signals.push(AbortSignal.timeout(options["timeout"]))
+          if (requestTimeoutSignal) signals.push(requestTimeoutSignal)
 
           const combined = signals.length === 0 ? null : signals.length === 1 ? signals[0] : AbortSignal.any(signals)
           if (combined) opts.signal = combined
@@ -1699,10 +1859,52 @@ export const layer = Layer.effect(
             ...opts,
             // @ts-ignore see here: https://github.com/oven-sh/bun/issues/16682
             timeout: false,
-          }).finally(() => headerTimeoutCtl?.clear())
+          })
+            .then(
+              (res: Response) => {
+                if (retryableStatus(res.status)) {
+                  logProviderEvent("provider.http_status", diagnostics, {
+                    statusCode: res.status,
+                    requestId: upstreamRequestID(res.headers),
+                    elapsedMs: Date.now() - started,
+                    retryable: res.status >= 500,
+                  })
+                }
+                return res
+              },
+              (error: unknown) => {
+                const signal =
+                  headerTimeoutCtl?.signal.aborted === true
+                    ? headerTimeoutCtl.signal
+                    : requestTimeoutSignal?.aborted === true
+                      ? requestTimeoutSignal
+                      : chunkAbortCtl?.signal.aborted === true
+                        ? chunkAbortCtl.signal
+                        : callerSignal?.aborted === true
+                          ? callerSignal
+                          : undefined
+                logProviderEvent(
+                  timeoutEvent({
+                    error,
+                    callerSignal,
+                    requestTimeoutSignal,
+                    headerTimeoutSignal: headerTimeoutCtl?.signal,
+                    chunkTimeoutSignal: chunkAbortCtl?.signal,
+                  }),
+                  diagnostics,
+                  {
+                    elapsedMs: Date.now() - started,
+                    retryable: signal !== callerSignal,
+                    ...abortReason(signal?.reason ?? error),
+                  },
+                )
+                throw error
+              },
+            )
+            .finally(() => headerTimeoutCtl?.clear())
 
           if (!chunkAbortCtl) return res
-          return wrapSSE(res, chunkTimeout, chunkAbortCtl)
+          return wrapSSE(res, chunkTimeout, chunkAbortCtl, diagnostics, callerSignal)
         }
 
         const bundledLoader = BUNDLED_PROVIDERS[model.api.npm]

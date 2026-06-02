@@ -235,6 +235,10 @@ describe("RequestExecutor", () => {
           expectLLMError(error)
           expect(error.reason).toMatchObject({ _tag: "ProviderInternal", status })
           expect(error.retryable).toBe(true)
+          expect(errorHttp(error)?.requestId).toBe(`req_${status}`)
+          expect(errorHttp(error)?.request.url).toBe(
+            "https://provider.test/v1/chat?api_key=%3Credacted%3E&key=%3Credacted%3E&debug=1",
+          )
         }).pipe(
           Effect.provide(
             responsesLayer(
@@ -243,7 +247,7 @@ describe("RequestExecutor", () => {
                 () =>
                   new Response("retry", {
                     status,
-                    headers: { "retry-after-ms": "0" },
+                    headers: { "retry-after-ms": "0", "x-request-id": `req_${status}` },
                   }),
               ),
             ),

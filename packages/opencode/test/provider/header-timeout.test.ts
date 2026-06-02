@@ -3,9 +3,8 @@ import { createServer, type Server } from "node:http"
 import { streamText } from "ai"
 import { Effect, Layer } from "effect"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
-import { disposeAllInstances, provideTmpdirInstance, provideTmpdirServer } from "../fixture/fixture"
+import { disposeAllInstances, provideTmpdirInstance } from "../fixture/fixture"
 import { testEffect } from "../lib/effect"
-import { reply, TestLLMServer } from "../lib/llm-server"
 import { testProviderConfig } from "../lib/test-provider"
 import { Env } from "@/env"
 import { Plugin } from "@/plugin"
@@ -17,45 +16,32 @@ afterEach(async () => {
 })
 
 const it = testEffect(
-  Layer.mergeAll(
-    Provider.defaultLayer,
-    Env.defaultLayer,
-    Plugin.defaultLayer,
-    TestLLMServer.layer,
-    CrossSpawnSpawner.defaultLayer,
-  ),
+  Layer.mergeAll(Provider.defaultLayer, Env.defaultLayer, Plugin.defaultLayer, CrossSpawnSpawner.defaultLayer),
 )
 
 it.live("headerTimeout does not abort delayed SSE body after headers arrive", () =>
-  provideTmpdirServer(
-    ({ llm }) =>
-      Effect.gen(function* () {
-        yield* llm.push(reply().wait(Bun.sleep(250)).text("late").stop())
+  Effect.gen(function* () {
+    const server = yield* Effect.acquireRelease(
+      Effect.promise(() => delayedContentServer(250)),
+      (server) => Effect.sync(() => server.server.close()),
+    )
 
-        const provider = yield* Provider.Service
-        const model = yield* provider.getModel(ProviderID.make("test"), ModelID.make("test-model"))
-        const result = streamText({
-          model: yield* provider.getLanguage(model),
-          messages: [{ role: "user", content: "hello" }],
-        })
+    yield* provideTmpdirInstance(
+      () =>
+        Effect.gen(function* () {
+          const provider = yield* Provider.Service
+          const model = yield* provider.getModel(ProviderID.make("test"), ModelID.make("test-model"))
+          const result = streamText({
+            model: yield* provider.getLanguage(model),
+            messages: [{ role: "user", content: "hello" }],
+          })
 
-        expect(yield* Effect.promise(() => result.text)).toBe("late")
-      }),
-    {
-      config: (url) => {
-        const config = testProviderConfig(url)
-        return {
-          ...config,
-          provider: {
-            test: {
-              ...config.provider.test,
-              options: { ...config.provider.test.options, headerTimeout: 50 },
-            },
-          },
-        }
-      },
-    },
-  ),
+          expect(yield* Effect.promise(() => result.text)).toBe("late")
+        }),
+      { config: providerConfig(server.url, { headerTimeout: 500 }) },
+    )
+  }),
+  15_000,
 )
 
 it.live("headerTimeout aborts when response headers do not arrive", () =>
@@ -86,6 +72,72 @@ it.live("headerTimeout aborts when response headers do not arrive", () =>
           expect(errors.join("\n")).toContain("response headers timed out")
         }),
       { config: providerConfig(server.url, { headerTimeout: 50 }) },
+    )
+  }),
+)
+
+it.live("request timeout aborts the full provider request", () =>
+  Effect.gen(function* () {
+    const server = yield* Effect.acquireRelease(
+      Effect.promise(() => delayedHeaderServer(250)),
+      (server) => Effect.sync(() => server.server.close()),
+    )
+
+    yield* provideTmpdirInstance(
+      () =>
+        Effect.gen(function* () {
+          const provider = yield* Provider.Service
+          const model = yield* provider.getModel(ProviderID.make("test"), ModelID.make("test-model"))
+          const result = streamText({
+            model: yield* provider.getLanguage(model),
+            onError() {},
+            messages: [{ role: "user", content: "hello" }],
+          })
+
+          const errors = yield* Effect.promise(async () => {
+            const errors: string[] = []
+            for await (const part of result.fullStream) {
+              if (part.type === "error") errors.push(String(part.error))
+            }
+            return errors
+          })
+          expect(errors.join("\n").toLowerCase()).toContain("tim")
+        }),
+      { config: providerConfig(server.url, { headerTimeout: false, timeout: 50 }) },
+    )
+  }),
+)
+
+it.live("chunkTimeout aborts when streamed SSE chunks stop arriving", () =>
+  Effect.gen(function* () {
+    const server = yield* Effect.acquireRelease(
+      Effect.promise(() => delayedChunkServer(250)),
+      (server) => Effect.sync(() => server.server.close()),
+    )
+
+    yield* provideTmpdirInstance(
+      () =>
+        Effect.gen(function* () {
+          const provider = yield* Provider.Service
+          const model = yield* provider.getModel(ProviderID.make("test"), ModelID.make("test-model"))
+          const result = streamText({
+            model: yield* provider.getLanguage(model),
+            onError() {},
+            messages: [{ role: "user", content: "hello" }],
+          })
+
+          const error = yield* Effect.promise(async () => {
+            try {
+              for await (const _ of result.fullStream) {
+              }
+              return undefined
+            } catch (error) {
+              return error
+            }
+          })
+          expect(String(error)).toContain("SSE read timed out")
+        }),
+      { config: providerConfig(server.url, { chunkTimeout: 50, headerTimeout: false }) },
     )
   }),
 )
@@ -167,6 +219,34 @@ async function delayedHeaderServer(delay: number): Promise<{ server: Server; url
     setTimeout(() => {
       res.writeHead(200, { "content-type": "text/event-stream" })
       res.end('data: {"choices":[{"delta":{"content":"ok"}}]}\n\ndata: [DONE]\n\n')
+    }, delay)
+  })
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve))
+  const address = server.address()
+  if (!address || typeof address === "string") throw new Error("server did not bind to a TCP port")
+  return { server, url: `http://127.0.0.1:${address.port}` }
+}
+
+async function delayedChunkServer(delay: number): Promise<{ server: Server; url: string }> {
+  const server = createServer((_, res) => {
+    res.writeHead(200, { "content-type": "text/event-stream" })
+    res.flushHeaders()
+    setTimeout(() => {
+      res.end('data: {"choices":[{"delta":{"content":"late"}}]}\n\ndata: [DONE]\n\n')
+    }, delay)
+  })
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve))
+  const address = server.address()
+  if (!address || typeof address === "string") throw new Error("server did not bind to a TCP port")
+  return { server, url: `http://127.0.0.1:${address.port}` }
+}
+
+async function delayedContentServer(delay: number): Promise<{ server: Server; url: string }> {
+  const server = createServer((_, res) => {
+    res.writeHead(200, { "content-type": "text/event-stream" })
+    res.write('data: {"choices":[{"delta":{"role":"assistant"}}]}\n\n')
+    setTimeout(() => {
+      res.end('data: {"choices":[{"delta":{"content":"late"}}]}\n\ndata: [DONE]\n\n')
     }, delay)
   })
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve))

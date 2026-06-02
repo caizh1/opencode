@@ -4,6 +4,7 @@ import { APICallError } from "ai"
 import { setTimeout as sleep } from "node:timers/promises"
 import { Effect, Layer, Schedule, Schema } from "effect"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
+import { HttpContext, HttpRequestDetails, HttpResponseDetails, LLMError, ProviderInternalReason } from "@opencode-ai/llm"
 import { SessionRetry } from "../../src/session/retry"
 import { MessageV2 } from "../../src/session/message-v2"
 import { ProviderID } from "../../src/provider/schema"
@@ -169,6 +170,95 @@ describe("session.retry.retryable", () => {
     expect(MessageV2.APIError.isInstance(request)).toBe(true)
     expect(SessionRetry.retryable(request, retryProvider)).toEqual({
       message: "Provider response headers timed out after 10000ms",
+    })
+  })
+
+  test("records provider timeout diagnostics by source", () => {
+    const cases = [
+      {
+        error: new ProviderError.HeaderTimeoutError(10000),
+        source: "header_timeout",
+      },
+      {
+        error: new DOMException("The operation timed out.", "TimeoutError"),
+        source: "request_timeout",
+      },
+      {
+        error: new Error("SSE read timed out"),
+        source: "sse_chunk_timeout",
+      },
+    ]
+
+    for (const item of cases) {
+      const result = MessageV2.fromError(item.error, { providerID })
+      expect(MessageV2.APIError.isInstance(result)).toBe(true)
+      if (!MessageV2.APIError.isInstance(result)) throw new Error("expected APIError")
+      expect(result.data.metadata?.layer).toBe("provider")
+      expect(result.data.metadata?.timeoutSource).toBe(item.source)
+    }
+  })
+
+  test("records 504 gateway timeout as upstream HTTP status", () => {
+    const result = MessageV2.fromError(
+      new APICallError({
+        message: "Gateway Time-out",
+        url: "https://provider.test/v1/chat/completions",
+        requestBodyValues: {},
+        statusCode: 504,
+        responseHeaders: { "x-request-id": "req_504" },
+        responseBody: "Gateway Time-out",
+        isRetryable: false,
+      }),
+      { providerID },
+    )
+
+    expect(MessageV2.APIError.isInstance(result)).toBe(true)
+    if (!MessageV2.APIError.isInstance(result)) throw new Error("expected APIError")
+    expect(result.data.statusCode).toBe(504)
+    expect(result.data.metadata).toMatchObject({
+      layer: "ai-sdk",
+      timeoutSource: "gateway_timeout",
+      requestId: "req_504",
+    })
+    expect(SessionRetry.retryable(result, retryProvider)).toEqual({ message: "Gateway Time-out" })
+  })
+
+  test("preserves native LLM HTTP diagnostics", () => {
+    const result = MessageV2.fromError(
+      new LLMError({
+        module: "RequestExecutor",
+        method: "execute",
+        reason: new ProviderInternalReason({
+          message: "Provider request failed with HTTP 504",
+          status: 504,
+          http: new HttpContext({
+            request: new HttpRequestDetails({
+              method: "POST",
+              url: "https://provider.test/v1/responses",
+              headers: {},
+            }),
+            response: new HttpResponseDetails({
+              status: 504,
+              headers: { "x-request-id": "req_native" },
+            }),
+            requestId: "req_native",
+            body: "Gateway Time-out",
+          }),
+        }),
+      }),
+      { providerID },
+    )
+
+    expect(MessageV2.APIError.isInstance(result)).toBe(true)
+    if (!MessageV2.APIError.isInstance(result)) throw new Error("expected APIError")
+    expect(result.data.statusCode).toBe(504)
+    expect(result.data.responseBody).toBe("Gateway Time-out")
+    expect(result.data.responseHeaders?.["x-request-id"]).toBe("req_native")
+    expect(result.data.metadata).toMatchObject({
+      layer: "native",
+      reason: "ProviderInternal",
+      timeoutSource: "gateway_timeout",
+      requestId: "req_native",
     })
   })
 

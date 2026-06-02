@@ -82,6 +82,7 @@ const DraggableSessionItem = (props: SessionItemProps): JSX.Element => {
     <div
       // @ts-ignore
       use:draggable
+      onPointerDown={(event) => event.stopPropagation()}
       classList={{ "opacity-30": draggable.isActiveDraggable }}
     >
       <SessionItem {...props} />

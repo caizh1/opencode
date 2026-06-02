@@ -47,6 +47,7 @@ test.describe("smoke: session timeline", () => {
     const expectedPartIDs = fixture.expected.targetPartIDs
     const expectedMessageIDs = fixture.expected.targetMessageIDs
     await expectSessionTimelineReady(page, expectedPartIDs, expectedMessageIDs, errors)
+    await expectTimelineTextSelectable(page)
     await expectCanScrollToStart(page, expectedPartIDs, expectedMessageIDs, errors)
   })
 })
@@ -385,6 +386,63 @@ async function expectSessionTimelineReady(
   expectOrderedIDs(expectedPartIDs, currentState.visibleIds, "visible part")
   expectOrderedIDs(expectedMessageIDs, unique(currentState.messageIds), "mounted message")
   expectOrderedIDs(expectedMessageIDs, unique(currentState.visibleMessageIds), "visible message")
+}
+
+async function expectTimelineTextSelectable(page: Page) {
+  const target = await page.evaluate(() => {
+    const normalize = (text: string) => text.replace(/\s+/g, " ").trim()
+    const textNode = (root: HTMLElement) => {
+      const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+        acceptNode: (node) =>
+          normalize(node.nodeValue ?? "").length >= 12 ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT,
+      })
+      const node = walker.nextNode()
+      return node instanceof Text ? node : undefined
+    }
+    const scroller = [...document.querySelectorAll<HTMLElement>(".scroll-view__viewport")].find((el) =>
+      el.querySelector("[data-timeline-row]"),
+    )
+    const scrollerRect = scroller?.getBoundingClientRect()
+
+    for (const markdown of document.querySelectorAll<HTMLElement>('[data-component="markdown"]')) {
+      const markdownRect = markdown.getBoundingClientRect()
+      if (scrollerRect && (markdownRect.bottom < scrollerRect.top || markdownRect.top > scrollerRect.bottom)) continue
+
+      const node = textNode(markdown)
+      const text = node?.nodeValue ?? ""
+      const start = text.search(/\S/)
+      if (!node || start < 0) continue
+
+      const end = Math.min(text.length, start + 36)
+      const range = document.createRange()
+      range.setStart(node, start)
+      range.setEnd(node, end)
+      const rect = [...range.getClientRects()].find((rect) => rect.width > 16 && rect.height > 0)
+      const expected = normalize(text.slice(start, end))
+      range.detach()
+      if (!rect || !expected) continue
+
+      return {
+        startX: rect.left + 1,
+        endX: rect.right - 1,
+        y: rect.top + rect.height / 2,
+        expected,
+      }
+    }
+  })
+  expect(target, "timeline should have visible fixture markdown text to select").toBeDefined()
+  if (!target) return
+
+  await page.evaluate(() => window.getSelection()?.removeAllRanges())
+  await page.mouse.move(target.startX, target.y)
+  await page.mouse.down()
+  await page.mouse.move(target.endX, target.y, { steps: 8 })
+  await page.mouse.up()
+
+  const selected = await page.evaluate(() => (window.getSelection()?.toString() ?? "").replace(/\s+/g, " ").trim())
+  expect(selected.length, `selected text: ${selected}`).toBeGreaterThan(0)
+  expect(target.expected, `selection should come from fixture text: ${selected}`).toContain(selected)
+  await expect(page.locator(".scroll-view__thumb").first()).toHaveCSS("user-select", "none")
 }
 
 function expectCompleteScroll(

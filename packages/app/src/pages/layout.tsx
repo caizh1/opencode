@@ -2397,7 +2397,7 @@ export default function Layout(props: ParentProps) {
 
   if (USE_NEW_DESIGN) {
     return (
-      <div class="relative bg-v2-background-bg-deep flex-1 min-h-0 min-w-0 flex flex-col select-none [&_input]:select-text [&_textarea]:select-text [&_[contenteditable]]:select-text">
+      <div class="relative bg-v2-background-bg-deep flex-1 min-h-0 min-w-0 flex flex-col">
         {autoselecting() ?? ""}
         <Titlebar update={titlebarUpdate} />
         <main
@@ -2417,7 +2417,7 @@ export default function Layout(props: ParentProps) {
   }
 
   return (
-    <div class="relative bg-background-base flex-1 min-h-0 min-w-0 flex flex-col select-none [&_input]:select-text [&_textarea]:select-text [&_[contenteditable]]:select-text">
+    <div class="relative bg-background-base flex-1 min-h-0 min-w-0 flex flex-col">
       {autoselecting() ?? ""}
       <Titlebar update={titlebarUpdate} />
       <Show when={updateVersion() !== undefined}>

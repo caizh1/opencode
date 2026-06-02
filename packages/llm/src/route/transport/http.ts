@@ -85,6 +85,12 @@ export const httpJson = <Body, Frame>(input: HttpJsonInput<Body, Frame>): HttpJs
       runtime.http
         .execute(prepared.request)
         .pipe(
+          Effect.annotateLogs({
+            "llm.provider": request.model.provider,
+            "llm.model": request.model.id,
+            "llm.route": request.model.route.id,
+            "llm.protocol": request.model.route.protocol,
+          }),
           Effect.map((response) =>
             prepared.framing.frame(
               response.stream.pipe(

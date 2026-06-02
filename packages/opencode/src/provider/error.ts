@@ -110,6 +110,38 @@ function json(input: unknown) {
   return undefined
 }
 
+function requestID(headers: Record<string, string> | undefined) {
+  if (!headers) return undefined
+  return (
+    headers["x-request-id"] ??
+    headers["request-id"] ??
+    headers["x-amzn-requestid"] ??
+    headers["x-amz-request-id"] ??
+    headers["x-goog-request-id"] ??
+    headers["cf-ray"]
+  )
+}
+
+function timeoutSource(status: number | undefined, message: string) {
+  if (status === 504) return "gateway_timeout"
+  if (status === 408) return "upstream_request_timeout"
+  if (/gateway time[- ]?out/i.test(message)) return "gateway_timeout"
+  if (/timed?\s*out|timeout/i.test(message)) return "provider_timeout"
+  return undefined
+}
+
+function metadata(input: { error: APICallError; message: string }) {
+  const result = {
+    layer: "ai-sdk",
+    url: input.error.url,
+    requestId: requestID(input.error.responseHeaders),
+    timeoutSource: timeoutSource(input.error.statusCode, input.message),
+  }
+  return Object.fromEntries(
+    Object.entries(result).filter((entry): entry is [string, string] => typeof entry[1] === "string"),
+  )
+}
+
 export type ParsedStreamError =
   | {
       type: "context_overflow"
@@ -197,7 +229,7 @@ export function parseAPICallError(input: { providerID: ProviderID; error: APICal
     }
   }
 
-  const metadata = input.error.url ? { url: input.error.url } : undefined
+  const extra = metadata({ error: input.error, message: m })
   return {
     type: "api_error",
     message: m,
@@ -205,7 +237,7 @@ export function parseAPICallError(input: { providerID: ProviderID; error: APICal
     isRetryable: input.providerID.startsWith("openai") ? isOpenAiErrorRetryable(input.error) : input.error.isRetryable,
     responseHeaders: input.error.responseHeaders,
     responseBody: input.error.responseBody,
-    metadata,
+    metadata: Object.keys(extra).length === 0 ? undefined : extra,
   }
 }
 
