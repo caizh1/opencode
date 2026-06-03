@@ -6,10 +6,18 @@ import type { StateMachine } from "./analysis-types"
 import type { EmbeddingProvider, RagChunk, RagVectorIndex, RagVectorSearchHit, RagVectorShard } from "./rag-types"
 import type { RagIndexPausedReason, RagResumeReason } from "./types"
 
+export class RagIndexAbortError extends Error {
+  constructor(message = "RAG vector index build aborted.") {
+    super(message)
+    this.name = "RagIndexAbortError"
+  }
+}
+
 export type RagSerializedManifest = {
   version: 1
   rootPath: string
   updatedAt: number
+  sourceIndexUpdatedAt?: number
   provider: string
   model: string
   dimension: number
@@ -67,6 +75,7 @@ export async function buildRagVectorIndex(input: {
   stateMachines?: StateMachine[]
   previous?: RagVectorIndex
   changedPaths?: string[]
+  sourceIndexUpdatedAt?: number
   signal?: AbortSignal
   batchSize?: number
   requestDelayMs?: number
@@ -78,6 +87,7 @@ export async function buildRagVectorIndex(input: {
   onProgress?: (event: RagIndexBuildProgress) => void
   onIndexUpdate?: (index: RagVectorIndex) => Promise<void>
 }): Promise<RagVectorIndex> {
+  throwIfAborted(input.signal)
   const chunks = buildRagChunks(input.index, input.stateMachines ?? [])
   const changed = input.changedPaths ? new Set(input.changedPaths.map(normalizePath)) : undefined
   const resumeMissing = input.resumeMissing ?? true
@@ -117,6 +127,7 @@ export async function buildRagVectorIndex(input: {
 
   if (pending.length > 0) {
     for (let offset = 0; offset < pending.length; offset += batchSize) {
+      throwIfAborted(input.signal)
       if (requestLimit > 0 && requestsUsed >= requestLimit) {
         pausedReason = "request-budget"
         input.onProgress?.({
@@ -154,6 +165,7 @@ export async function buildRagVectorIndex(input: {
         },
         onRateLimit: (event) => input.onProgress?.(event),
       })
+      throwIfAborted(input.signal)
 
       if (embedded.pausedReason) {
         pausedReason = embedded.pausedReason
@@ -181,13 +193,16 @@ export async function buildRagVectorIndex(input: {
         })
         break
       }
+      throwIfAborted(input.signal)
       for (let index = 0; index < batch.length; index++) {
         nextChunks.push(batch[index])
         vectors.push(normalizeVector(embedded.vectors[index]))
       }
+      throwIfAborted(input.signal)
       await input.onIndexUpdate?.(createVectorIndex({
         rootPath: input.index.rootPath,
         provider: input.provider,
+        sourceIndexUpdatedAt: input.sourceIndexUpdatedAt ?? input.index.updatedAt,
         chunks,
         nextChunks,
         vectors,
@@ -200,16 +215,18 @@ export async function buildRagVectorIndex(input: {
       const hasMore = offset + batchSize < pending.length
       if (hasMore && requestDelayMs > 0 && (requestLimit <= 0 || requestsUsed < requestLimit)) {
         input.onProgress?.({ phase: "delay", delayMs: requestDelayMs })
-        await sleep(requestDelayMs)
+        await sleepWithAbort(requestDelayMs, input.signal, sleep)
       }
     }
   }
 
+  throwIfAborted(input.signal)
   const dimension = vectors[0]?.length ?? 0
   if (dimension > 0 && vectors.some((vector) => vector.length !== dimension)) throw new Error("RAG vectors have inconsistent dimensions")
   return createVectorIndex({
     rootPath: input.index.rootPath,
     provider: input.provider,
+    sourceIndexUpdatedAt: input.sourceIndexUpdatedAt ?? input.index.updatedAt,
     chunks,
     nextChunks,
     vectors,
@@ -273,6 +290,7 @@ export function createRagSerializedManifest(index: RagVectorIndex): RagSerialize
     version: 1,
     rootPath: index.rootPath,
     updatedAt: index.updatedAt,
+    sourceIndexUpdatedAt: index.sourceIndexUpdatedAt,
     provider: index.provider,
     model: index.model,
     dimension: index.dimension,
@@ -318,6 +336,7 @@ export function decodeRagShardVectors(bytes: Uint8Array, dimension: number): num
 function createVectorIndex(input: {
   rootPath: string
   provider: EmbeddingProvider
+  sourceIndexUpdatedAt?: number
   chunks: RagChunk[]
   nextChunks: RagChunk[]
   vectors: number[][]
@@ -331,6 +350,7 @@ function createVectorIndex(input: {
     version: 1,
     rootPath: input.rootPath,
     updatedAt: Date.now(),
+    sourceIndexUpdatedAt: input.sourceIndexUpdatedAt,
     provider: input.provider.id,
     model: input.provider.model,
     dimension,
@@ -358,12 +378,16 @@ async function embedBatchWithRetry(input: {
   onRateLimit: (event: Extract<RagIndexBuildProgress, { phase: "rate-limit" }>) => void
 }): Promise<{ vectors: number[][]; pausedReason?: RagIndexPausedReason; lastError?: string; resumeDelayMs?: number }> {
   for (let retry = 0; retry <= input.maxRetries; retry++) {
+    throwIfAborted(input.signal)
     if (!input.onBeforeRequest()) {
       return { vectors: [], pausedReason: "request-budget", lastError: "request budget reached" }
     }
     try {
-      return { vectors: await input.provider.embed(input.batch.map((chunk) => chunk.text), input.signal) }
+      const vectors = await input.provider.embed(input.batch.map((chunk) => chunk.text), input.signal)
+      throwIfAborted(input.signal)
+      return { vectors }
     } catch (error) {
+      if (isAbortError(error, input.signal)) throw new RagIndexAbortError()
       const message = error instanceof Error ? error.message : String(error)
       const retryable = retryableRagError(error)
       if (!retryable) return { vectors: [], pausedReason: "provider-error", lastError: message }
@@ -377,10 +401,49 @@ async function embedBatchWithRetry(input: {
         maxRetries: input.maxRetries,
         delayMs,
       })
-      if (delayMs > 0) await input.sleep(delayMs)
+      if (delayMs > 0) await sleepWithAbort(delayMs, input.signal, input.sleep)
     }
   }
   return { vectors: [], pausedReason: "provider-error", lastError: "embedding provider did not return vectors" }
+}
+
+function throwIfAborted(signal?: AbortSignal) {
+  if (signal?.aborted) throw new RagIndexAbortError()
+}
+
+function isAbortError(error: unknown, signal?: AbortSignal) {
+  return Boolean(
+    signal?.aborted
+      || error instanceof RagIndexAbortError
+      || (error instanceof Error && error.name === "AbortError"),
+  )
+}
+
+async function sleepWithAbort(ms: number, signal: AbortSignal | undefined, sleep: (ms: number) => Promise<void>) {
+  throwIfAborted(signal)
+  if (ms <= 0) return
+  if (!signal) {
+    await sleep(ms)
+    return
+  }
+  await new Promise<void>((resolve, reject) => {
+    const onAbort = () => {
+      signal.removeEventListener("abort", onAbort)
+      reject(new RagIndexAbortError())
+    }
+    signal.addEventListener("abort", onAbort, { once: true })
+    sleep(ms).then(
+      () => {
+        signal.removeEventListener("abort", onAbort)
+        resolve()
+      },
+      (error) => {
+        signal.removeEventListener("abort", onAbort)
+        reject(error)
+      },
+    )
+  })
+  throwIfAborted(signal)
 }
 
 function retryableRagError(error: unknown) {

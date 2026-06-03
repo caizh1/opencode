@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import { parseCFile } from "../src/codegraph-c-parser"
 import { RagHttpError } from "../src/rag-provider"
-import { buildRagChunks, buildRagVectorIndex, createRagSerializedManifest, decodeRagShardVectors, encodeRagShardVectors, searchRagVectorIndex, splitRagVectorIndex } from "../src/rag-index"
+import { buildRagChunks, buildRagVectorIndex, createRagSerializedManifest, decodeRagShardVectors, encodeRagShardVectors, RagIndexAbortError, searchRagVectorIndex, splitRagVectorIndex } from "../src/rag-index"
 import type { CodeGraphIndex } from "../src/codegraph-types"
 import type { EmbeddingProvider } from "../src/rag-types"
 
@@ -15,6 +15,7 @@ describe("local RAG vector index", () => {
     const vectorIndex = await buildRagVectorIndex({ index, provider: fakeEmbeddingProvider() })
     expect(vectorIndex.chunks.length).toBe(chunks.length)
     expect(vectorIndex.dimension).toBe(3)
+    expect(vectorIndex.sourceIndexUpdatedAt).toBe(index.updatedAt)
 
     const hits = searchRagVectorIndex(vectorIndex, embedText("flash page read"), 3)
     expect(hits.some((hit) => hit.chunk.text.includes("nand_read_page"))).toBe(true)
@@ -37,6 +38,26 @@ describe("local RAG vector index", () => {
 
     expect(second.chunks.length).toBe(first.chunks.length)
     expect(provider.calls).toBeLessThan(first.chunks.length + second.chunks.length)
+  })
+
+  test("records the source code graph snapshot timestamp in full and partial indexes", async () => {
+    const index = sampleIndex()
+    const partialSourceTimestamps: Array<number | undefined> = []
+    const vectorIndex = await buildRagVectorIndex({
+      index,
+      provider: recordingEmbeddingProvider(),
+      sourceIndexUpdatedAt: 99,
+      batchSize: 1,
+      maxRequestsPerRun: 1,
+      requestDelayMs: 0,
+      onIndexUpdate: async (partial) => {
+        partialSourceTimestamps.push(partial.sourceIndexUpdatedAt)
+      },
+    })
+
+    expect(partialSourceTimestamps).toEqual([99])
+    expect(vectorIndex.sourceIndexUpdatedAt).toBe(99)
+    expect(createRagSerializedManifest(vectorIndex).sourceIndexUpdatedAt).toBe(99)
   })
 
   test("pauses at the embedding request budget and resumes missing chunks", async () => {
@@ -84,6 +105,54 @@ describe("local RAG vector index", () => {
     })
 
     expect(sleeps).toContain(25)
+  })
+
+  test("aborts while waiting between embedding index requests", async () => {
+    const controller = new AbortController()
+    const provider = recordingEmbeddingProvider()
+    const updates: number[] = []
+    await expect(buildRagVectorIndex({
+      index: sampleIndex(),
+      provider,
+      batchSize: 1,
+      requestDelayMs: 25,
+      signal: controller.signal,
+      sleep: async () => {
+        controller.abort()
+      },
+      onIndexUpdate: async (partial) => {
+        updates.push(partial.chunks.length)
+      },
+    })).rejects.toBeInstanceOf(RagIndexAbortError)
+
+    expect(provider.batches).toHaveLength(1)
+    expect(updates).toEqual([1])
+  })
+
+  test("does not publish stale partial updates after aborting a batch", async () => {
+    const controller = new AbortController()
+    const updates: number[] = []
+    const provider: EmbeddingProvider = {
+      id: "abort-after-embed",
+      model: "abort-after-embed",
+      async embed(input) {
+        controller.abort()
+        return input.map(embedText)
+      },
+    }
+
+    await expect(buildRagVectorIndex({
+      index: sampleIndex(),
+      provider,
+      batchSize: 1,
+      requestDelayMs: 0,
+      signal: controller.signal,
+      onIndexUpdate: async (partial) => {
+        updates.push(partial.chunks.length)
+      },
+    })).rejects.toBeInstanceOf(RagIndexAbortError)
+
+    expect(updates).toHaveLength(0)
   })
 
   test("retries rate-limited embedding batches and preserves a paused partial index", async () => {
@@ -144,6 +213,7 @@ describe("local RAG vector index", () => {
     expect(manifest.nextResumeAt).toBe(12345)
     expect(manifest.resumeDelayMs).toBe(60000)
     expect(manifest.resumeReason).toBe("request-budget")
+    expect(manifest.sourceIndexUpdatedAt).toBe(vectorIndex.sourceIndexUpdatedAt)
   })
 })
 

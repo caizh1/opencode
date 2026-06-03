@@ -251,6 +251,7 @@ export type CodeGraphContextProvider = {
   metrics(): NonNullable<CodeGraphStatus["metrics"]>
   waitForReady(): Promise<void>
   showStatus(): Promise<void>
+  applyRagConfiguration(): Promise<void>
   refreshRagConfiguration(): Promise<void>
   testRagConfiguration(): Promise<CodeGraphStatus["rag"]>
   buildContext(input: {

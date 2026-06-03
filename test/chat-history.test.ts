@@ -81,7 +81,7 @@ describe("chat history flow", () => {
     expect(chatViewSource).toContain("private async testRagSettings")
     expect(chatViewSource).toContain("private async setRagApiKey")
     expect(chatViewSource).toContain("await saveRagSettings(input)")
-    expect(chatViewSource).toContain("this.deps.codeGraph?.refreshRagConfiguration()")
+    expect(chatViewSource).toContain("this.deps.codeGraph?.applyRagConfiguration()")
     expect(chatViewSource).toContain("this.deps.codeGraph?.testRagConfiguration()")
     expect(chatViewSource).toContain("[rag-test] testing RAG configuration")
     expect(chatViewSource).toContain("[rag-test] result:")

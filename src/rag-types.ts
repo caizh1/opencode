@@ -19,6 +19,7 @@ export type RagVectorIndex = {
   version: 1
   rootPath: string
   updatedAt: number
+  sourceIndexUpdatedAt?: number
   provider: string
   model: string
   dimension: number

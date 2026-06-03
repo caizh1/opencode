@@ -288,6 +288,7 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
     }
     .detail.visible { display: block; }
     .detail.authFailed, .detail.error { color: var(--vscode-errorForeground); border-left-color: var(--vscode-errorForeground); }
+    .detail.success { color: var(--vscode-testing-iconPassed); border-left-color: var(--vscode-testing-iconPassed); }
     .body {
       position: relative;
       flex: 1;
@@ -2022,6 +2023,7 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
 
 	    function saveCompletionSettings() {
 	      userEditedCompletionSettings = false;
+	      renderCompletionStatus("Saving inline completion settings...", "info");
 	      vscode.postMessage({
 	        type: "saveCompletionSettings",
 	        settings: completionSettingsPayload()
@@ -2039,6 +2041,7 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
 
 	    function saveRagSettings() {
 	      userEditedRagSettings = false;
+	      renderRagStatus("Saving RAG settings...", "info");
 	      vscode.postMessage({
 	        type: "saveRagSettings",
 	        settings: ragSettingsPayload()
@@ -2368,7 +2371,7 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
 
 	    function renderCompletionStatus(message, status) {
 	      const detail = el("completionDetail");
-	      detail.className = "detail " + (status === "error" ? "error " : "") + (message ? "visible" : "");
+	      detail.className = "detail " + detailStatusClass(status) + (message ? "visible" : "");
 	      detail.textContent = message || "";
 	    }
 
@@ -2399,8 +2402,14 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
 
 	    function renderRagStatus(message, status) {
 	      const detail = el("ragDetail");
-	      detail.className = "detail " + (status === "error" ? "error " : "") + (message ? "visible" : "");
+	      detail.className = "detail " + detailStatusClass(status) + (message ? "visible" : "");
 	      detail.textContent = message || "";
+	    }
+
+	    function detailStatusClass(status) {
+	      if (status === "error") return "error ";
+	      if (status === "success") return "success ";
+	      return "";
 	    }
 
 	    function renderSettings() {

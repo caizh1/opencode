@@ -788,9 +788,16 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   private async saveCompletionSettings(input: CompletionSettingsInput) {
-    await saveCompletionSettings(input)
-    this.postCompletionStatus("Inline completion settings saved.")
-    this.postState()
+    try {
+      await saveCompletionSettings(input)
+      this.postState()
+      this.postCompletionStatus("Inline completion settings saved.", "success")
+    } catch (error) {
+      const message = formatErrorMessage(error)
+      this.deps.output.appendLine(`[completion-settings] save failed: ${message}`)
+      this.postState()
+      this.postCompletionStatus(`Inline completion settings save failed: ${message}`, "error")
+    }
   }
 
   private async setCompletionApiKey() {
@@ -836,10 +843,17 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   private async saveRagSettings(input: RagSettingsInput) {
-    await saveRagSettings(input)
-    await this.deps.codeGraph?.refreshRagConfiguration()
-    this.postRagStatus(ragStatusMessage(this.deps.codeGraph?.status().rag, "RAG settings saved."))
-    this.postState()
+    try {
+      await saveRagSettings(input)
+      await this.deps.codeGraph?.applyRagConfiguration()
+      this.postState()
+      this.postRagStatus("RAG settings saved. Re-indexing with the new configuration.", "success")
+    } catch (error) {
+      const message = formatErrorMessage(error)
+      this.deps.output.appendLine(`[rag-settings] save failed: ${message}`)
+      this.postState()
+      this.postRagStatus(`RAG settings save failed: ${message}`, "error")
+    }
   }
 
   private async testRagSettings(input: RagSettingsInput) {
