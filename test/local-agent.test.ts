@@ -137,6 +137,7 @@ function settings(input: { localOnlyMode: boolean; defaultAgent?: string }): Rem
         endpoint: "",
         model: "",
         batchSize: 128,
+        maxTokensPerRequest: 65536,
         timeoutMs: 30000,
         requestDelayMs: 500,
         maxRequestsPerRun: 100,

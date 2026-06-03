@@ -22,6 +22,7 @@ export type CompletionEditInput = {
   indent: CompletionIndentContext
   currentWord?: string
   currentWordRange?: CompletionRange
+  preferCurrentWordReplacement?: boolean
 }
 
 export type CompletionEdit = {
@@ -63,7 +64,9 @@ export function buildCompletionEditResult(input: CompletionEditInput): Completio
     }
   }
 
-  const wordReplacement = currentWordReplacement(input)
+  const wordReplacement = input.preferCurrentWordReplacement
+    ? currentWordLinePrefixReplacement(input) ?? currentWordReplacement(input)
+    : currentWordReplacement(input)
   if (wordReplacement) return { edit: wordReplacement }
 
   const prefixOverlap = linePrefixOverlapResult(input)
@@ -138,6 +141,32 @@ function currentWordReplacement(input: CompletionEditInput): CompletionEdit | un
   const currentIndent = lineIndent(input.linePrefix)
   const insertText = formatCompletionReplacementText(
     input.text,
+    currentIndent,
+    input.indent.indentUnit,
+    input.languageId,
+  )
+  if (!insertText) return
+
+  return {
+    insertText,
+    replaceRange: input.currentWordRange,
+    filterText: insertText,
+    formatRange: formatRangeAfterInsert(input.position.line, input.currentWordRange.startCharacter, insertText),
+  }
+}
+
+function currentWordLinePrefixReplacement(input: CompletionEditInput): CompletionEdit | undefined {
+  if (!input.currentWord || !input.currentWordRange) return
+
+  const beforeWord = input.linePrefix.slice(0, input.currentWordRange.startCharacter)
+  if (!beforeWord || !input.text.startsWith(beforeWord)) return
+
+  const replacementText = input.text.slice(beforeWord.length)
+  if (!startsWithCurrentWord(replacementText, input.currentWord)) return
+
+  const currentIndent = lineIndent(input.linePrefix)
+  const insertText = formatCompletionReplacementText(
+    replacementText,
     currentIndent,
     input.indent.indentUnit,
     input.languageId,

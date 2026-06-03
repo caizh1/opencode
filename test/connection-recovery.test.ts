@@ -26,6 +26,40 @@ describe("connection and stale-session recovery wiring", () => {
     expect(body).not.toContain("chatProvider.refresh")
   })
 
+  test("activation silently restores the saved connection", () => {
+    const start = extensionSource.indexOf("const restoreSavedConnection = async")
+    const end = extensionSource.indexOf("let chatProvider", start)
+    const body = extensionSource.slice(start, end)
+
+    expect(body).toContain("[connect] Restoring saved OpenCode connection")
+    expect(body).toContain("const next = await createClient()")
+    expect(body).toContain("await connectClient(next)")
+    expect(body).not.toContain("promptAndSaveConnectionSettings")
+    expect(extensionSource).toContain("void restoreSavedConnection().catch")
+  })
+
+  test("webview connection reuses saved passwords when password is omitted", () => {
+    const start = extensionSource.indexOf("const connectWithSettings = async")
+    const end = extensionSource.indexOf("const restoreSavedConnection = async", start)
+    const body = extensionSource.slice(start, end)
+
+    expect(body).toContain("connectionInputHasPassword(input) ? input.password?.trim() || undefined : await readRemotePassword(context)")
+    expect(body).toContain("saveConnectionSettings(context, input)")
+    expect(body).toContain("new RemoteOpenCodeClient(settings, password)")
+    expect(chatViewSource).toContain("function connectionSettingsFromMessage")
+    expect(chatViewSource).toContain('Object.prototype.hasOwnProperty.call(message, "password")')
+  })
+
+  test("prompted connect saves connection settings only after a successful probe", () => {
+    const start = extensionSource.indexOf("const connect = async")
+    const end = extensionSource.indexOf("const connectWithSettings = async", start)
+    const body = extensionSource.slice(start, end)
+
+    expect(body).toContain("const input = await promptConnectionSettings()")
+    expect(body).toContain("await connectClient(next, () => saveConnectionSettings(context, input))")
+    expect(body).not.toContain("promptAndSaveConnectionSettings")
+  })
+
   test("remote refresh failures leave connected state and clear the active client", () => {
     expect(extensionSource).toContain("const clearClient = (target: RemoteOpenCodeClient)")
     expect(extensionSource).toContain("if (client === target) client = undefined")

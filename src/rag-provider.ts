@@ -1,5 +1,6 @@
 import * as crypto from "node:crypto"
 import * as net from "node:net"
+import { estimateEmbeddingTokens } from "./rag-token"
 import type { EmbeddingProvider, RagEndpointPolicyResult, RerankProvider, RerankResult } from "./rag-types"
 import type { RagSettings } from "./types"
 
@@ -10,11 +11,12 @@ const RAG_RERANK_PROBE_DOCUMENTS = [
 ]
 
 export type RagHttpDiagnosticEvent = {
-  phase: "request" | "response"
+  phase: "request" | "response" | "normalize"
   kind: "embedding" | "rerank"
   method: "POST"
   endpoint: string
   model?: string
+  estimatedTokens?: number
   timeoutMs: number
   authorizationPresent: boolean
   apiKeyFingerprint?: string
@@ -26,6 +28,9 @@ export type RagHttpDiagnosticEvent = {
   statusText?: string
   ok?: boolean
   elapsedMs?: number
+  responseBytes?: number
+  parseElapsedMs?: number
+  normalizeElapsedMs?: number
   errorPreview?: string
 }
 
@@ -72,23 +77,34 @@ export function createHttpEmbeddingProvider(settings: RagSettings, apiKey?: stri
     id: `http:${policy.kind}:${policy.url.host}`,
     model: settings.embedding.model,
     async embed(input, signal) {
-      const vectors: number[][] = []
+      if (input.length === 0) return []
       const batchSize = Math.max(1, settings.embedding.batchSize)
-      for (let offset = 0; offset < input.length; offset += batchSize) {
-        const batch = input.slice(offset, offset + batchSize)
-        const response = await fetchJsonWithTimeout(policy.url!, {
-          model: settings.embedding.model || undefined,
-          input: batch,
-        }, settings.embedding.timeoutMs, {
-          kind: "embedding",
-          model: settings.embedding.model || undefined,
-          inputCount: batch.length,
-          batchSize,
-        }, signal, apiKey, diagnostics)
-        const embeddings = normalizeEmbeddingResponse(response, batch.length)
-        vectors.push(...embeddings)
+      const estimatedTokens = input.reduce((sum, text) => sum + estimateEmbeddingTokens(text), 0)
+      const requestBody = {
+        model: settings.embedding.model || undefined,
+        input,
       }
-      return vectors
+      const diagnosticBase = {
+        kind: "embedding" as const,
+        model: settings.embedding.model || undefined,
+        inputCount: input.length,
+        batchSize,
+        estimatedTokens,
+      }
+      const response = await fetchJsonWithTimeout(policy.url!, requestBody, settings.embedding.timeoutMs, diagnosticBase, signal, apiKey, diagnostics)
+      const normalizeStarted = Date.now()
+      const embeddings = normalizeEmbeddingResponse(response, input.length)
+      emitRagHttpDiagnostic(diagnostics, {
+        method: "POST",
+        endpoint: policy.url!.toString(),
+        timeoutMs: settings.embedding.timeoutMs,
+        authorizationPresent: Boolean(apiKey?.trim()),
+        apiKeyFingerprint: apiKeyFingerprint(apiKey),
+        ...diagnosticBase,
+        phase: "normalize",
+        normalizeElapsedMs: Date.now() - normalizeStarted,
+      })
+      return embeddings
     },
   }
 }
@@ -170,7 +186,7 @@ async function fetchJsonWithTimeout(
   url: URL,
   body: unknown,
   timeoutMs: number,
-  detail: Pick<RagHttpDiagnosticEvent, "kind" | "model" | "inputCount" | "batchSize" | "documentCount" | "topN">,
+  detail: Pick<RagHttpDiagnosticEvent, "kind" | "model" | "estimatedTokens" | "inputCount" | "batchSize" | "documentCount" | "topN">,
   signal?: AbortSignal,
   apiKey?: string,
   diagnostics?: RagHttpDiagnostics,
@@ -201,6 +217,9 @@ async function fetchJsonWithTimeout(
     const text = await response.text()
     const errorPreview = text.slice(0, 300)
     const retryAfterMs = parseRetryAfterMs(response.headers.get("retry-after"))
+    const parseStarted = Date.now()
+    const parsed = response.ok && text ? JSON.parse(text) : undefined
+    const parseElapsedMs = response.ok && text ? Date.now() - parseStarted : undefined
     emitRagHttpDiagnostic(diagnostics, {
       ...diagnosticBase,
       phase: "response",
@@ -208,10 +227,12 @@ async function fetchJsonWithTimeout(
       statusText: response.statusText,
       ok: response.ok,
       elapsedMs: Date.now() - started,
+      responseBytes: Buffer.byteLength(text),
+      parseElapsedMs,
       errorPreview: response.ok ? undefined : errorPreview,
     })
     if (!response.ok) throw new RagHttpError(`${response.status} ${response.statusText}: ${errorPreview}`, response.status, response.statusText, errorPreview, retryAfterMs)
-    return text ? JSON.parse(text) : undefined
+    return parsed
   } finally {
     clearTimeout(timer)
     signal?.removeEventListener("abort", onAbort)

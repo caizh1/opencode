@@ -43,7 +43,9 @@ describe("accepted completion formatting command wiring", () => {
     expect(completionSource).toContain("new CompletionModelClient(input.settings, apiKey)")
     expect(completionSource).toContain('transport: "openai-compatible"')
     expect(completionSource).toContain("document.version")
-    expect(completionSource).toContain("client.complete({ prompt: promptText, signal: input.signal })")
+    expect(completionSource).toContain("planCompletion")
+    expect(completionSource).toContain("completionMaxTokensForPlan")
+    expect(completionSource).toContain("client.complete({ prompt: promptText, signal: input.signal, maxTokens })")
   })
 
   test("Qwen coder FIM prompt uses the expected token order", () => {

@@ -125,6 +125,11 @@ export type CodeGraphSymbol = {
   snippet: string
 }
 
+export type CodeGraphSymbolCandidate = CodeGraphSymbol & {
+  score: number
+  reason: string
+}
+
 export type CodeGraphPostingKind = CodeGraphFileTokenKind | "function" | "include"
 
 export type CodeGraphPosting = {
@@ -267,4 +272,9 @@ export type CodeGraphContextProvider = {
     args?: Record<string, unknown>
   }): Promise<AnalysisToolResult>
   queryEvidence(question: string): Promise<QueryEvidenceResult | undefined>
+  findSymbols(input: {
+    query: string
+    relatedPath?: string
+    limit?: number
+  }): Promise<CodeGraphSymbolCandidate[]>
 }

@@ -279,6 +279,27 @@ describe("language-aware completion edits", () => {
     })?.insertText).toBe("write_with_cb_dfx")
   })
 
+  test("replaces partial symbols from bare unit-test prompt echoes", () => {
+    const prefix = "unit test for epr_ppn_raw_wr"
+    expect(edit({
+      text: "unit test for epr_ppn_raw_write_with_cb_dfx",
+      languageId: "c",
+      linePrefix: prefix,
+      character: prefix.length,
+      currentWord: "epr_ppn_raw_wr",
+      preferCurrentWordReplacement: true,
+    })).toMatchObject({
+      insertText: "epr_ppn_raw_write_with_cb_dfx",
+      replaceRange: {
+        startLine: 0,
+        startCharacter: "unit test for ".length,
+        endLine: 0,
+        endCharacter: prefix.length,
+      },
+      filterText: "epr_ppn_raw_write_with_cb_dfx",
+    })
+  })
+
   test("keeps code after echoed comment prefixes on the next line", () => {
     const prefix = "// a unittest function to test epr_ppn_raw_"
     expect(edit({
@@ -485,6 +506,7 @@ function edit(input: {
   character: number
   lineSuffix?: string
   currentWord?: string
+  preferCurrentWordReplacement?: boolean
 }) {
   return editResult(input).edit
 }
@@ -496,6 +518,7 @@ function editResult(input: {
   character: number
   lineSuffix?: string
   currentWord?: string
+  preferCurrentWordReplacement?: boolean
 }) {
   const currentWord = input.currentWord
   const startCharacter = currentWord ? input.character - currentWord.length : input.character
@@ -515,5 +538,6 @@ function editResult(input: {
           endCharacter: input.character,
         }
       : undefined,
+    preferCurrentWordReplacement: input.preferCurrentWordReplacement,
   })
 }

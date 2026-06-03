@@ -17,6 +17,7 @@ export type RagIndexProgress = {
   requestNumber?: number
   requestLimit?: number
   inputCount?: number
+  estimatedTokens?: number
   delayMs?: number
   status?: number
   retryAfterMs?: number
@@ -37,6 +38,7 @@ export type RagSettings = {
     endpoint: string
     model: string
     batchSize: number
+    maxTokensPerRequest: number
     configError?: string
     timeoutMs: number
     requestDelayMs: number

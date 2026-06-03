@@ -1,6 +1,7 @@
 import * as crypto from "node:crypto"
 import { moduleKey, shardKeyForPath } from "./codegraph-index"
 import { RagHttpError } from "./rag-provider"
+import { estimateEmbeddingTokens } from "./rag-token"
 import type { CodeGraphFile, CodeGraphIndex } from "./codegraph-types"
 import type { StateMachine } from "./analysis-types"
 import type { EmbeddingProvider, RagChunk, RagVectorIndex, RagVectorSearchHit, RagVectorShard } from "./rag-types"
@@ -48,6 +49,17 @@ type RagIndexBuildProgressCounts = {
 
 type RagRateLimitProgressInput = Omit<Extract<RagIndexBuildProgress, { phase: "rate-limit" }>, keyof RagIndexBuildProgressCounts>
 
+export type RagIndexBatchProfile = RagIndexBuildProgressCounts & {
+  batchIndex: number
+  batchCount: number
+  requestNumber: number
+  inputCount: number
+  estimatedTokens: number
+  embeddingElapsedMs: number
+  vectorNormalizeElapsedMs: number
+  checkpointElapsedMs?: number
+}
+
 export type RagIndexBuildProgress = (
   | {
     phase: "batch"
@@ -56,6 +68,7 @@ export type RagIndexBuildProgress = (
     requestNumber: number
     requestLimit: number
     inputCount: number
+    estimatedTokens: number
   }
   | {
     phase: "delay"
@@ -87,6 +100,7 @@ export async function buildRagVectorIndex(input: {
   sourceIndexUpdatedAt?: number
   signal?: AbortSignal
   batchSize?: number
+  maxTokensPerRequest?: number
   requestDelayMs?: number
   maxRequestsPerRun?: number
   maxRetries?: number
@@ -94,14 +108,24 @@ export async function buildRagVectorIndex(input: {
   resumeMissing?: boolean
   sleep?: (ms: number) => Promise<void>
   onProgress?: (event: RagIndexBuildProgress) => void
+  onBatchProfile?: (event: RagIndexBatchProfile) => void
   onIndexUpdate?: (index: RagVectorIndex) => Promise<void>
+  checkpointChunkInterval?: number
+  checkpointIntervalMs?: number
 }): Promise<RagVectorIndex> {
   throwIfAborted(input.signal)
   const chunks = buildRagChunks(input.index, input.stateMachines ?? [])
   const changed = input.changedPaths ? new Set(input.changedPaths.map(normalizePath)) : undefined
   const resumeMissing = input.resumeMissing ?? true
   const previousById = new Map<string, { chunk: RagChunk; vector: number[] }>()
-  if (input.previous && input.previous.dimension > 0 && input.previous.provider === input.provider.id && input.previous.model === input.provider.model) {
+  const providerDimension = input.provider.dimension && input.provider.dimension > 0 ? input.provider.dimension : undefined
+  if (
+    input.previous
+    && input.previous.dimension > 0
+    && input.previous.provider === input.provider.id
+    && input.previous.model === input.provider.model
+    && (!providerDimension || input.previous.dimension === providerDimension)
+  ) {
     for (let index = 0; index < input.previous.chunks.length; index++) {
       const chunk = input.previous.chunks[index]
       if (!changed || !changed.has(normalizePath(chunk.path))) previousById.set(chunk.id, { chunk, vector: input.previous.vectors[index] })
@@ -131,11 +155,18 @@ export async function buildRagVectorIndex(input: {
   const maxRetries = Math.max(0, Math.floor(input.maxRetries ?? 0))
   const retryBackoffMs = Math.max(0, Math.floor(input.retryBackoffMs ?? 0))
   const requestDelayMs = Math.max(0, Math.floor(input.requestDelayMs ?? 0))
+  const maxTokensPerRequest = Math.max(0, Math.floor(input.maxTokensPerRequest ?? 0))
+  const checkpointChunkInterval = Math.max(0, Math.floor(input.checkpointChunkInterval ?? 0))
+  const checkpointIntervalMs = Math.max(0, Math.floor(input.checkpointIntervalMs ?? 0))
   const sleep = input.sleep ?? delay
-  const batchCount = Math.ceil(pending.length / batchSize)
+  const batches = planEmbeddingBatches(pending, batchSize, maxTokensPerRequest)
+  const batchCount = batches.length
+  let lastCheckpointChunks = nextChunks.length
+  let lastCheckpointAt = Date.now()
+  let hasCheckpointed = false
 
   if (pending.length > 0) {
-    for (let offset = 0; offset < pending.length; offset += batchSize) {
+    for (let batchOffset = 0; batchOffset < batches.length; batchOffset++) {
       throwIfAborted(input.signal)
       if (requestLimit > 0 && requestsUsed >= requestLimit) {
         pausedReason = "request-budget"
@@ -150,8 +181,10 @@ export async function buildRagVectorIndex(input: {
         break
       }
 
-      const batch = pending.slice(offset, offset + batchSize)
-      const batchIndex = Math.floor(offset / batchSize) + 1
+      const plannedBatch = batches[batchOffset]
+      const batch = plannedBatch.chunks
+      const batchIndex = batchOffset + 1
+      let requestNumber = requestsUsed + 1
       const embedded = await embedBatchWithRetry({
         provider: input.provider,
         batch,
@@ -163,6 +196,7 @@ export async function buildRagVectorIndex(input: {
         onBeforeRequest: () => {
           if (requestLimit > 0 && requestsUsed >= requestLimit) return false
           requestsUsed += 1
+          requestNumber = requestsUsed
           input.onProgress?.({
             phase: "batch",
             batchIndex,
@@ -170,6 +204,7 @@ export async function buildRagVectorIndex(input: {
             requestNumber: requestsUsed,
             requestLimit,
             inputCount: batch.length,
+            estimatedTokens: plannedBatch.estimatedTokens,
             ...progressCounts(chunks.length, nextChunks.length),
           })
           return true
@@ -210,25 +245,55 @@ export async function buildRagVectorIndex(input: {
         break
       }
       throwIfAborted(input.signal)
+      const normalizeStarted = Date.now()
       for (let index = 0; index < batch.length; index++) {
         nextChunks.push(batch[index])
         vectors.push(normalizeVector(embedded.vectors[index]))
       }
+      const vectorNormalizeElapsedMs = Date.now() - normalizeStarted
       throwIfAborted(input.signal)
-      await input.onIndexUpdate?.(createVectorIndex({
-        rootPath: input.index.rootPath,
-        provider: input.provider,
-        sourceIndexUpdatedAt: input.sourceIndexUpdatedAt ?? input.index.updatedAt,
-        chunks,
-        nextChunks,
-        vectors,
-        pausedReason,
-        lastError,
-        resumeDelayMs,
-        requestsUsed,
-      }))
+      const checkpoint = shouldCheckpoint({
+        hasCheckpointed,
+        embeddedChunks: nextChunks.length,
+        lastCheckpointChunks,
+        lastCheckpointAt,
+        checkpointChunkInterval,
+        checkpointIntervalMs,
+      })
+      let checkpointElapsedMs: number | undefined
+      if (checkpoint && input.onIndexUpdate) {
+        const checkpointStarted = Date.now()
+        await input.onIndexUpdate(createVectorIndex({
+          rootPath: input.index.rootPath,
+          provider: input.provider,
+          sourceIndexUpdatedAt: input.sourceIndexUpdatedAt ?? input.index.updatedAt,
+          chunks,
+          nextChunks,
+          vectors,
+          pausedReason,
+          lastError,
+          resumeDelayMs,
+          requestsUsed,
+          cloneVectorValues: false,
+        }))
+        checkpointElapsedMs = Date.now() - checkpointStarted
+        lastCheckpointChunks = nextChunks.length
+        lastCheckpointAt = Date.now()
+        hasCheckpointed = true
+      }
+      input.onBatchProfile?.({
+        batchIndex,
+        batchCount,
+        requestNumber,
+        inputCount: batch.length,
+        estimatedTokens: plannedBatch.estimatedTokens,
+        embeddingElapsedMs: embedded.embeddingElapsedMs,
+        vectorNormalizeElapsedMs,
+        checkpointElapsedMs,
+        ...progressCounts(chunks.length, nextChunks.length),
+      })
 
-      const hasMore = offset + batchSize < pending.length
+      const hasMore = batchOffset + 1 < batches.length
       if (hasMore && requestDelayMs > 0 && (requestLimit <= 0 || requestsUsed < requestLimit)) {
         input.onProgress?.({
           phase: "delay",
@@ -254,6 +319,7 @@ export async function buildRagVectorIndex(input: {
     lastError,
     resumeDelayMs,
     requestsUsed,
+    cloneVectorValues: true,
   })
 }
 
@@ -364,6 +430,7 @@ function createVectorIndex(input: {
   lastError?: string
   resumeDelayMs?: number
   requestsUsed: number
+  cloneVectorValues: boolean
 }): RagVectorIndex {
   const dimension = input.vectors[0]?.length ?? 0
   return {
@@ -375,7 +442,7 @@ function createVectorIndex(input: {
     model: input.provider.model,
     dimension,
     chunks: [...input.nextChunks],
-    vectors: input.vectors.map((vector) => [...vector]),
+    vectors: input.cloneVectorValues ? input.vectors.map((vector) => [...vector]) : [...input.vectors],
     totalChunks: input.chunks.length,
     pendingChunkCount: Math.max(0, input.chunks.length - input.nextChunks.length),
     indexPausedReason: input.pausedReason,
@@ -384,6 +451,40 @@ function createVectorIndex(input: {
     resumeDelayMs: input.resumeDelayMs,
     resumeReason: input.pausedReason === "request-budget" || input.pausedReason === "rate-limit" ? input.pausedReason : undefined,
   }
+}
+
+function planEmbeddingBatches(chunks: RagChunk[], maxInputs: number, maxTokensPerRequest: number) {
+  const batches: Array<{ chunks: RagChunk[]; estimatedTokens: number }> = []
+  let current: RagChunk[] = []
+  let currentTokens = 0
+  for (const item of chunks) {
+    const itemTokens = estimateEmbeddingTokens(item.text)
+    const wouldOverflowInputs = current.length + 1 > maxInputs
+    const wouldOverflowTokens = maxTokensPerRequest > 0 && currentTokens + itemTokens > maxTokensPerRequest
+    if (current.length > 0 && (wouldOverflowInputs || wouldOverflowTokens)) {
+      batches.push({ chunks: current, estimatedTokens: currentTokens })
+      current = []
+      currentTokens = 0
+    }
+    current.push(item)
+    currentTokens += itemTokens
+  }
+  if (current.length > 0) batches.push({ chunks: current, estimatedTokens: currentTokens })
+  return batches
+}
+
+function shouldCheckpoint(input: {
+  hasCheckpointed: boolean
+  embeddedChunks: number
+  lastCheckpointChunks: number
+  lastCheckpointAt: number
+  checkpointChunkInterval: number
+  checkpointIntervalMs: number
+}) {
+  if (!input.hasCheckpointed) return true
+  if (input.checkpointChunkInterval > 0 && input.embeddedChunks - input.lastCheckpointChunks >= input.checkpointChunkInterval) return true
+  if (input.checkpointIntervalMs > 0 && Date.now() - input.lastCheckpointAt >= input.checkpointIntervalMs) return true
+  return false
 }
 
 function progressCounts(totalChunks: number, embeddedChunks: number): RagIndexBuildProgressCounts {
@@ -404,22 +505,23 @@ async function embedBatchWithRetry(input: {
   sleep: (ms: number) => Promise<void>
   onBeforeRequest: () => boolean
   onRateLimit: (event: RagRateLimitProgressInput) => void
-}): Promise<{ vectors: number[][]; pausedReason?: RagIndexPausedReason; lastError?: string; resumeDelayMs?: number }> {
+}): Promise<{ vectors: number[][]; embeddingElapsedMs: number; pausedReason?: RagIndexPausedReason; lastError?: string; resumeDelayMs?: number }> {
   for (let retry = 0; retry <= input.maxRetries; retry++) {
     throwIfAborted(input.signal)
     if (!input.onBeforeRequest()) {
-      return { vectors: [], pausedReason: "request-budget", lastError: "request budget reached" }
+      return { vectors: [], embeddingElapsedMs: 0, pausedReason: "request-budget", lastError: "request budget reached" }
     }
     try {
+      const embeddingStarted = Date.now()
       const vectors = await input.provider.embed(input.batch.map((chunk) => chunk.text), input.signal)
       throwIfAborted(input.signal)
-      return { vectors }
+      return { vectors, embeddingElapsedMs: Date.now() - embeddingStarted }
     } catch (error) {
       if (isAbortError(error, input.signal)) throw new RagIndexAbortError()
       const message = error instanceof Error ? error.message : String(error)
       const retryable = retryableRagError(error)
-      if (!retryable) return { vectors: [], pausedReason: "provider-error", lastError: message }
-      if (retry >= input.maxRetries) return { vectors: [], pausedReason: "rate-limit", lastError: message, resumeDelayMs: retryable.retryAfterMs }
+      if (!retryable) return { vectors: [], embeddingElapsedMs: 0, pausedReason: "provider-error", lastError: message }
+      if (retry >= input.maxRetries) return { vectors: [], embeddingElapsedMs: 0, pausedReason: "rate-limit", lastError: message, resumeDelayMs: retryable.retryAfterMs }
       const delayMs = retryable.retryAfterMs ?? input.retryBackoffMs * 2 ** retry
       input.onRateLimit({
         phase: "rate-limit",
@@ -432,7 +534,7 @@ async function embedBatchWithRetry(input: {
       if (delayMs > 0) await sleepWithAbort(delayMs, input.signal, input.sleep)
     }
   }
-  return { vectors: [], pausedReason: "provider-error", lastError: "embedding provider did not return vectors" }
+  return { vectors: [], embeddingElapsedMs: 0, pausedReason: "provider-error", lastError: "embedding provider did not return vectors" }
 }
 
 function throwIfAborted(signal?: AbortSignal) {

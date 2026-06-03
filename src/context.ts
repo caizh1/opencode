@@ -2,6 +2,7 @@ import * as cp from "node:child_process"
 import * as vscode from "vscode"
 import type { CodeGraphContextProvider } from "./codegraph-types"
 import type { TrackedEditorContext } from "./editor-context"
+import type { RetrievedCompletionSnippet } from "./completion-types"
 import type { ChatContextOptions, RemoteSettings } from "./types"
 
 type FileContext = {
@@ -166,6 +167,7 @@ export function buildQwenCoderFimPrompt(input: {
   document: vscode.TextDocument
   position: vscode.Position
   settings: RemoteSettings
+  retrievedSnippets?: RetrievedCompletionSnippet[]
 }) {
   const before = Math.max(0, input.position.line - 80)
   const after = Math.min(input.document.lineCount - 1, input.position.line + 60)
@@ -175,13 +177,43 @@ export function buildQwenCoderFimPrompt(input: {
   )
   const path = relativePath(input.document.uri)
   const repoName = vscode.workspace.getWorkspaceFolder(input.document.uri)?.name || vscode.workspace.workspaceFolders?.[0]?.name || "workspace"
+  const contextBlock = completionContextBlock(input.retrievedSnippets ?? [], input.document.languageId)
   return [
     `<|repo_name|>${repoName}`,
     `<|file_sep|>${path}\n`,
-    `<|fim_prefix|>${limitText(prefix, input.settings.context.maxFileBytes).text}`,
+    `<|fim_prefix|>${contextBlock}${limitText(prefix, input.settings.context.maxFileBytes).text}`,
     `<|fim_suffix|>${limitText(suffix, Math.floor(input.settings.context.maxFileBytes / 2)).text}`,
     "<|fim_middle|>",
   ].join("")
+}
+
+function completionContextBlock(snippets: RetrievedCompletionSnippet[], languageId: string) {
+  if (snippets.length === 0) return ""
+  const rows = snippets
+    .slice(0, 12)
+    .map((snippet) => `${snippet.kind}: ${snippet.path}:${snippet.line} ${snippet.name ? `${snippet.name} ` : ""}${oneLine(snippet.text)}`)
+    .filter(Boolean)
+  if (rows.length === 0) return ""
+
+  if (supportsHashComments(languageId)) {
+    return [
+      "# Relevant project context for completion only.",
+      ...rows.map((row) => `# ${row}`),
+      "# End relevant project context.",
+      "",
+    ].join("\n")
+  }
+
+  return [
+    "/* Relevant project context for completion only.",
+    ...rows,
+    "End relevant project context. */",
+    "",
+  ].join("\n")
+}
+
+function oneLine(input: string) {
+  return input.replace(/\s+/g, " ").trim().slice(0, 600)
 }
 
 function completionLanguageRules(languageId: string) {
@@ -203,6 +235,17 @@ function completionLanguageRules(languageId: string) {
     default:
       return "Language rule: follow the file language syntax exactly. Return real code, not placeholders."
   }
+}
+
+function supportsHashComments(languageId: string) {
+  return new Set([
+    "bash",
+    "python",
+    "shell",
+    "shellscript",
+    "sh",
+    "zsh",
+  ]).has(languageId)
 }
 
 async function buildLocalContext(

@@ -2,7 +2,7 @@
   "name": "opencode-remote",
   "displayName": "OpenCode Remote",
   "description": "Remote opencode serve client for VS Code",
-  "version": "0.0.92",
+  "version": "0.0.97",
   "icon": "media/opencode-icon.png",
   "publisher": "local",
   "repository": {
@@ -258,14 +258,14 @@
         },
         "opencode.remote.completion.temperature": {
           "type": "number",
-          "default": 0.2,
+          "default": 0,
           "minimum": 0,
           "maximum": 2,
           "description": "Temperature for direct inline completions."
         },
         "opencode.remote.completion.topP": {
           "type": "number",
-          "default": 0.8,
+          "default": 1,
           "minimum": 0,
           "maximum": 1,
           "description": "Top-p nucleus sampling value for direct inline completions."
@@ -470,6 +470,13 @@
           "minimum": 32,
           "maximum": 512,
           "description": "Number of RAG chunks embedded per HTTP request. The request timeout is configured automatically from this value."
+        },
+        "opencode.remote.rag.embedding.maxTokensPerRequest": {
+          "type": "number",
+          "default": 65536,
+          "minimum": 1,
+          "maximum": 1000000,
+          "description": "Estimated maximum embedding tokens sent in one RAG embedding HTTP request. This is a lightweight safety cap for large chunks."
         },
         "opencode.remote.rag.embedding.timeoutMs": {
           "type": "number",

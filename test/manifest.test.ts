@@ -88,8 +88,8 @@ describe("extension manifest", () => {
     expect(properties["opencode.remote.completion.apiBaseUrl"]?.default).toBe("")
     expect(properties["opencode.remote.completion.model"]?.default).toBe("")
     expect(properties["opencode.remote.completion.maxTokens"]?.default).toBe(128)
-    expect(properties["opencode.remote.completion.temperature"]?.default).toBe(0.2)
-    expect(properties["opencode.remote.completion.topP"]?.default).toBe(0.8)
+    expect(properties["opencode.remote.completion.temperature"]?.default).toBe(0)
+    expect(properties["opencode.remote.completion.topP"]?.default).toBe(1)
     expect(manifest.contributes?.commands).toContainEqual(expect.objectContaining({
       command: "opencode.remote.completion.setApiKey",
     }))
@@ -140,6 +140,8 @@ describe("extension manifest", () => {
     expect(properties["opencode.remote.rag.embedding.batchSize"]?.default).toBe(128)
     expect(properties["opencode.remote.rag.embedding.batchSize"]?.enum).toEqual([32, 64, 128, 256, 512])
     expect(properties["opencode.remote.rag.embedding.batchSize"]?.maximum).toBe(512)
+    expect(properties["opencode.remote.rag.embedding.dimensions"]).toBeUndefined()
+    expect(properties["opencode.remote.rag.embedding.maxTokensPerRequest"]?.default).toBe(65536)
     expect(properties["opencode.remote.rag.embedding.timeoutMs"]?.default).toBe(30000)
     expect(properties["opencode.remote.rag.embedding.timeoutMs"]?.deprecationMessage).toContain("managed automatically from batch size")
     expect(properties["opencode.remote.rag.embedding.requestDelayMs"]?.default).toBe(500)

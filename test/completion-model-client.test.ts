@@ -92,6 +92,29 @@ describe("direct completion model client", () => {
     expect(completionInsertText(message, "qwen-coder-fim")).toBe("_sum(a, b) {\n    return a + b;\n}")
   })
 
+  test("allows per-request generation parameter overrides", async () => {
+    let captured: Record<string, unknown> = {}
+    const baseUrl = await listen(async (request, response) => {
+      captured = await collectJson(request) as Record<string, unknown>
+      json(response, 200, {
+        choices: [{ text: "ok" }],
+      })
+    })
+
+    await new CompletionModelClient(settings(baseUrl, { profile: "qwen-coder-fim" })).complete({
+      prompt: "<|fim_prefix|>a<|fim_suffix|>b<|fim_middle|>",
+      maxTokens: 48,
+      temperature: 0,
+      topP: 1,
+    })
+
+    expect(captured).toMatchObject({
+      max_tokens: 48,
+      temperature: 0,
+      top_p: 1,
+    })
+  })
+
   test("accepts chat-shaped raw completion responses from compatible servers", async () => {
     const baseUrl = await listen((_request, response) => {
       json(response, 200, {
@@ -192,6 +215,7 @@ function settings(baseUrl: string, input: { completionModel?: string; defaultMod
         endpoint: "",
         model: "",
         batchSize: 128,
+        maxTokensPerRequest: 65536,
         timeoutMs: 30000,
         requestDelayMs: 500,
         maxRequestsPerRun: 100,

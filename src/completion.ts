@@ -1,11 +1,15 @@
 import * as vscode from "vscode"
+import type { CodeGraphContextProvider, CodeGraphSymbolCandidate } from "./codegraph-types"
 import { buildCompletionEditResult, type CompletionEdit, type CompletionEditInput, type CompletionRange } from "./completion-edit"
 import { completionFormatCommand } from "./completion-format-command"
 import { inferCompletionIndent } from "./completion-indent"
 import { CompletionModelClient, completionModel } from "./completion-model-client"
+import { normalizeCompletionText } from "./completion-normalize"
+import { planCompletion } from "./completion-plan"
 import { CompletionRequestCoordinator, type CompletionRequestOutcome } from "./completion-request-coordinator"
 import { INLINE_COMPLETION_SESSION_TITLE } from "./completion-session"
 import { completionInsertText } from "./completion-text"
+import type { CompletionPlan, RetrievedCompletionSnippet } from "./completion-types"
 import { buildCompletionPrompt, buildQwenCoderFimPrompt, relativePath } from "./context"
 import { resolveRequestAgent } from "./local-agent"
 import { isSessionNotFoundError, parseModel, RemoteOpenCodeClient } from "./remote-client"
@@ -15,6 +19,7 @@ type CompletionDeps = {
   getClient: () => RemoteOpenCodeClient | undefined
   getCompletionApiKey?: () => Promise<string | undefined>
   getSettings: () => RemoteSettings
+  codeGraph?: CodeGraphContextProvider
   output: vscode.OutputChannel
 }
 
@@ -87,7 +92,17 @@ export class RemoteCompletionProvider implements vscode.InlineCompletionItemProv
       currentWord: currentWord?.text,
       currentWordRange: currentWord?.range,
     }
-    const localFallback = buildCompletionEditResult({ text: "", ...editInput }).edit
+    const plan = planCompletion(editInput)
+    if (plan.kind === "disabled") {
+      this.logDebug(settings, `skip: disabled plan ${details}`)
+      return
+    }
+
+    const localFallback = buildCompletionEditResult({
+      text: "",
+      ...editInput,
+      preferCurrentWordReplacement: plan.replaceCurrentWord,
+    }).edit
     const start = this.requests.request({
       key: completionRequestKey(document, position, lineText, settings),
       details,
@@ -103,6 +118,7 @@ export class RemoteCompletionProvider implements vscode.InlineCompletionItemProv
               started,
               signal,
               editInput,
+              plan,
             })
           : this.remoteCompletionOutcome({
               client: client!,
@@ -113,6 +129,7 @@ export class RemoteCompletionProvider implements vscode.InlineCompletionItemProv
               started,
               signal,
               editInput,
+              plan,
             }),
       onRemoteReady: () => this.triggerInlineSuggestRefresh(document, position, settings, details),
     })
@@ -144,6 +161,7 @@ export class RemoteCompletionProvider implements vscode.InlineCompletionItemProv
     started: number
     signal: AbortSignal
     editInput: Omit<CompletionEditInput, "text">
+    plan: CompletionPlan
   }): Promise<CompletionRequestOutcome> {
     try {
       const prompt = await buildCompletionPrompt({
@@ -157,6 +175,7 @@ export class RemoteCompletionProvider implements vscode.InlineCompletionItemProv
         details: input.details,
         started: input.started,
         editInput: input.editInput,
+        plan: input.plan,
         sendPrompt: (promptText) => this.sendCompletion(input.client, promptText, input.settings, input.signal),
       })
     } catch (error) {
@@ -179,13 +198,25 @@ export class RemoteCompletionProvider implements vscode.InlineCompletionItemProv
     started: number
     signal: AbortSignal
     editInput: Omit<CompletionEditInput, "text">
+    plan: CompletionPlan
   }): Promise<CompletionRequestOutcome> {
     try {
+      const retrievedSnippets = input.settings.completion.profile === "qwen-coder-fim"
+        ? await this.retrieveCompletionSnippets({
+            document: input.document,
+            settings: input.settings,
+            details: input.details,
+            plan: input.plan,
+            editInput: input.editInput,
+          })
+        : []
+      const maxTokens = completionMaxTokensForPlan(input.settings, input.plan)
       const prompt = input.settings.completion.profile === "qwen-coder-fim"
         ? buildQwenCoderFimPrompt({
             document: input.document,
             position: input.position,
             settings: input.settings,
+            retrievedSnippets,
           })
         : await buildCompletionPrompt({
             document: input.document,
@@ -201,7 +232,9 @@ export class RemoteCompletionProvider implements vscode.InlineCompletionItemProv
         details: input.details,
         started: input.started,
         editInput: input.editInput,
-        sendPrompt: (promptText) => client.complete({ prompt: promptText, signal: input.signal }),
+        plan: input.plan,
+        retrievedSnippets,
+        sendPrompt: (promptText) => client.complete({ prompt: promptText, signal: input.signal, maxTokens }),
       })
     } catch (error) {
       if (input.signal.aborted) {
@@ -221,6 +254,8 @@ export class RemoteCompletionProvider implements vscode.InlineCompletionItemProv
     details: string
     started: number
     editInput: Omit<CompletionEditInput, "text">
+    plan: CompletionPlan
+    retrievedSnippets?: RetrievedCompletionSnippet[]
     sendPrompt: (prompt: string) => Promise<OpenCodeMessage | undefined>
   }): Promise<CompletionRequestOutcome> {
     this.logInfo(input.settings, `sent ${input.details}`)
@@ -233,6 +268,8 @@ export class RemoteCompletionProvider implements vscode.InlineCompletionItemProv
       details: input.details,
       started: input.started,
       editInput: input.editInput,
+      plan: input.plan,
+      retrievedSnippets: input.retrievedSnippets ?? [],
       attempt: "initial",
     })
     if (initial.edit || initial.reason !== "misaligned-leading-newline" || completionTextProfile(input.settings) === "qwen-coder-fim") return initial
@@ -247,8 +284,37 @@ export class RemoteCompletionProvider implements vscode.InlineCompletionItemProv
       details: input.details,
       started: input.started,
       editInput: input.editInput,
+      plan: input.plan,
+      retrievedSnippets: input.retrievedSnippets ?? [],
       attempt: "retry",
     })
+  }
+
+  private async retrieveCompletionSnippets(input: {
+    document: vscode.TextDocument
+    settings: RemoteSettings
+    details: string
+    plan: CompletionPlan
+    editInput: Omit<CompletionEditInput, "text">
+  }): Promise<RetrievedCompletionSnippet[]> {
+    if (!this.deps.codeGraph) return []
+    if (!input.plan.needsSymbolRetrieval && !input.plan.needsTestRetrieval) return []
+
+    const query = completionSymbolQuery(input.editInput)
+    if (!query) return []
+
+    try {
+      const symbols = await this.deps.codeGraph.findSymbols({
+        query,
+        relatedPath: relativePath(input.document.uri),
+        limit: input.plan.needsTestRetrieval ? 10 : 8,
+      })
+      this.logDebug(input.settings, `retrieved symbols=${symbols.length} query="${quoteLogValue(query)}" ${input.details}`)
+      return symbols.map(symbolSnippet)
+    } catch (error) {
+      this.logDebug(input.settings, `symbol-retrieval skipped reason="${quoteLogValue(formatError(error))}" ${input.details}`)
+      return []
+    }
   }
 
   private completionOutcomeFromResponse(input: {
@@ -257,10 +323,25 @@ export class RemoteCompletionProvider implements vscode.InlineCompletionItemProv
     details: string
     started: number
     editInput: Omit<CompletionEditInput, "text">
+    plan: CompletionPlan
+    retrievedSnippets: RetrievedCompletionSnippet[]
     attempt: "initial" | "retry"
   }): CompletionRequestOutcome {
-    const visibleText = completionInsertText(input.response, completionTextProfile(input.settings))
-    if (!visibleText) {
+    const rawVisibleText = completionInsertText(input.response, completionTextProfile(input.settings))
+    const visibleText = rawVisibleText
+      ? normalizeCompletionText({
+          rawText: rawVisibleText,
+          linePrefix: input.editInput.linePrefix,
+          lineSuffix: input.editInput.lineSuffix,
+          currentWord: input.editInput.currentWord,
+          fullCurrentLine: `${input.editInput.linePrefix}${input.editInput.lineSuffix}`,
+          planKind: input.plan.kind,
+          preferCurrentWordReplacement: input.plan.replaceCurrentWord,
+        })
+      : ""
+    const fallbackText = fallbackSymbolText(input.plan, input.retrievedSnippets, input.editInput.currentWord)
+    const candidateText = visibleText || fallbackText
+    if (!candidateText) {
       if (input.attempt === "retry") {
         this.logInfo(
           input.settings,
@@ -275,10 +356,18 @@ export class RemoteCompletionProvider implements vscode.InlineCompletionItemProv
       return { reason: "filtered-or-no-visible-text", source: "remote" }
     }
 
-    const result = buildCompletionEditResult({
-      text: visibleText,
+    let result = buildCompletionEditResult({
+      text: candidateText,
       ...input.editInput,
+      preferCurrentWordReplacement: input.plan.replaceCurrentWord,
     })
+    if (!result.edit && fallbackText && fallbackText !== candidateText) {
+      result = buildCompletionEditResult({
+        text: fallbackText,
+        ...input.editInput,
+        preferCurrentWordReplacement: input.plan.replaceCurrentWord,
+      })
+    }
     const edit = result.edit
     if (!edit) {
       if (input.attempt === "retry") {
@@ -300,7 +389,7 @@ export class RemoteCompletionProvider implements vscode.InlineCompletionItemProv
     } else {
       this.logInfo(input.settings, `edit-ready ${editDetails(edit)} ${input.details} elapsedMs=${elapsedMs(input.started)} chars=${edit.insertText.length}`)
     }
-    this.logDebug(input.settings, `edit ${editDetails(edit)} visibleChars=${visibleText.length} ${input.details}`)
+    this.logDebug(input.settings, `edit ${editDetails(edit)} visibleChars=${candidateText.length} ${input.details}`)
     return { edit, source: "remote" }
   }
 
@@ -469,6 +558,45 @@ function elapsedMs(started: number) {
 
 function completionTextProfile(settings: RemoteSettings) {
   return settings.completion.provider === "openai-compatible" ? settings.completion.profile : "generic-chat"
+}
+
+function completionMaxTokensForPlan(settings: RemoteSettings, plan: CompletionPlan) {
+  if (plan.kind === "ordinary-code" || plan.kind === "disabled") return settings.completion.maxTokens
+  return plan.maxTokens
+}
+
+function completionSymbolQuery(input: Omit<CompletionEditInput, "text">) {
+  if (input.currentWord && input.currentWord.length >= 2) return input.currentWord
+  const identifiers = input.linePrefix.match(/\b[A-Za-z_][A-Za-z0-9_]*\b/g) ?? []
+  return identifiers
+    .filter((identifier) => !new Set(["unit", "test", "unittest", "for", "of", "to", "function"]).has(identifier.toLowerCase()))
+    .at(-1)
+}
+
+function symbolSnippet(symbol: CodeGraphSymbolCandidate): RetrievedCompletionSnippet {
+  const kind = /(?:^|[\\/._-])(?:test|tests|spec|mock|fixture)(?:[\\/._-]|$)/i.test(symbol.path) || /test|spec|mock|fixture/i.test(symbol.name)
+    ? "existing test"
+    : symbol.kind
+  return {
+    kind,
+    path: symbol.path,
+    line: symbol.startLine,
+    name: symbol.name,
+    text: symbol.signature || firstNonEmptyLine(symbol.snippet) || symbol.name,
+    score: symbol.score,
+  }
+}
+
+function fallbackSymbolText(plan: CompletionPlan, snippets: RetrievedCompletionSnippet[], currentWord: string | undefined) {
+  if (!plan.replaceCurrentWord || !currentWord) return ""
+  const current = currentWord.toLowerCase()
+  return snippets
+    .map((snippet) => snippet.name ?? "")
+    .find((name) => name.toLowerCase().startsWith(current) && name.length > currentWord.length) ?? ""
+}
+
+function firstNonEmptyLine(input: string) {
+  return input.split(/\r?\n/).map((line) => line.trim()).find(Boolean) ?? ""
 }
 
 function formatError(error: unknown) {

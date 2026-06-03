@@ -14,7 +14,7 @@ import {
   shardInfo,
   shardKeyForPath,
 } from "./codegraph-index"
-import { buildHybridCodeGraphContext } from "./codegraph-query"
+import { buildHybridCodeGraphContext, searchCodeGraphSymbols } from "./codegraph-query"
 import { CodeGraphHotCache, planShardKeysForQuery } from "./codegraph-shard-planner"
 import { buildCodeIntelligenceSnapshot, queryEvidenceAsync, runAnalysisTool } from "./codegraph-analysis"
 import { formatCodeGraphBenchmarkReport, runCodeGraphSyntheticBenchmark } from "./codegraph-benchmark"
@@ -35,6 +35,7 @@ import {
   encodeRagShardVectors,
   RagIndexAbortError,
   splitRagVectorIndex,
+  type RagIndexBatchProfile,
   type RagIndexBuildProgress,
   type RagSerializedManifest,
   type RagSerializedShardMetadata,
@@ -57,6 +58,8 @@ const SOURCE_GLOB = "**/*.{c,h,cc,cpp,cxx,hpp,hxx}"
 const SOURCE_EXTENSIONS = new Set([".c", ".h", ".cc", ".cpp", ".cxx", ".hpp", ".hxx"])
 const LARGE_INDEX_LAZY_FILE_THRESHOLD = 100000
 const JOB_CHECKPOINT_VERSION = 1
+const RAG_INDEX_CHECKPOINT_CHUNK_INTERVAL = 2048
+const RAG_INDEX_CHECKPOINT_INTERVAL_MS = 10000
 const DEFAULT_EXCLUDES = [
   "**/.git/**",
   "**/node_modules/**",
@@ -430,6 +433,25 @@ export class LocalCodeGraphService implements vscode.Disposable {
     }, this.hybridOptions())
     this.lastAnalysisTrace = result.trace
     return result
+  }
+
+  async findSymbols(input: {
+    query: string
+    relatedPath?: string
+    limit?: number
+  }) {
+    if (!this.getSettings().codeGraph.enabled) return []
+    if (!input.query.trim()) return []
+    if (!this.index) await this.ensureIndexLoaded()
+    const relatedPaths = input.relatedPath ? [input.relatedPath] : []
+    const activeIndex = await this.activeIndexForQuestion(input.query, relatedPaths)
+    if (!activeIndex) return []
+    return searchCodeGraphSymbols({
+      index: activeIndex,
+      query: input.query,
+      relatedPath: input.relatedPath,
+      limit: input.limit,
+    })
   }
 
   async runAnalysisTool(input: {
@@ -1242,11 +1264,15 @@ export class LocalCodeGraphService implements vscode.Disposable {
   }
 
   private currentRagIndexMatchesProvider() {
+    const providerDimension = this.ragEmbeddingProvider?.dimension && this.ragEmbeddingProvider.dimension > 0
+      ? this.ragEmbeddingProvider.dimension
+      : undefined
     return Boolean(
       this.ragIndex
         && this.ragEmbeddingProvider
         && this.ragIndex.provider === this.ragEmbeddingProvider.id
         && this.ragIndex.model === this.ragEmbeddingProvider.model
+        && (!providerDimension || this.ragIndex.dimension === providerDimension)
         && this.ragIndex.sourceIndexUpdatedAt === this.index?.updatedAt
         && this.ragIndex.dimension > 0
         && this.ragIndex.vectors.length > 0,
@@ -1712,7 +1738,7 @@ export class LocalCodeGraphService implements vscode.Disposable {
         return
       }
       this.setRagStatus(this.ragStatusForIndexing(policy.kind, rerankProbe))
-      this.output.appendLine(`[rag-index] embedding ${changedPaths ? `${changedPaths.length} changed path(s)` : "full local code graph"} with batchSize=${settings.embedding.batchSize} timeoutMs=${settings.embedding.timeoutMs} requestDelayMs=${settings.embedding.requestDelayMs} maxRequestsPerRun=${settings.embedding.maxRequestsPerRun || "unlimited"} maxRetries=${settings.embedding.maxRetries} retryBackoffMs=${settings.embedding.retryBackoffMs}`)
+      this.output.appendLine(`[rag-index] embedding ${changedPaths ? `${changedPaths.length} changed path(s)` : "full local code graph"} with batchSize=${settings.embedding.batchSize} maxTokensPerRequest=${settings.embedding.maxTokensPerRequest} timeoutMs=${settings.embedding.timeoutMs} requestDelayMs=${settings.embedding.requestDelayMs} maxRequestsPerRun=${settings.embedding.maxRequestsPerRun || "unlimited"} maxRetries=${settings.embedding.maxRetries} retryBackoffMs=${settings.embedding.retryBackoffMs}`)
       const next = await buildRagVectorIndex({
         index: activeIndex,
         provider: this.ragEmbeddingProvider,
@@ -1722,14 +1748,20 @@ export class LocalCodeGraphService implements vscode.Disposable {
         changedPaths,
         stateMachines: extractStateMachines(activeIndex, { maxTransitions: this.getSettings().codeGraph.maxStateTransitions }),
         batchSize: settings.embedding.batchSize,
+        maxTokensPerRequest: settings.embedding.maxTokensPerRequest,
         requestDelayMs: settings.embedding.requestDelayMs,
         maxRequestsPerRun: settings.embedding.maxRequestsPerRun,
         maxRetries: settings.embedding.maxRetries,
         retryBackoffMs: settings.embedding.retryBackoffMs,
         resumeMissing: settings.embedding.resumeAutomatically || !changedPaths,
+        checkpointChunkInterval: RAG_INDEX_CHECKPOINT_CHUNK_INTERVAL,
+        checkpointIntervalMs: RAG_INDEX_CHECKPOINT_INTERVAL_MS,
         onProgress: (event) => {
           this.output.appendLine(formatRagIndexBuildProgress(event))
           this.setRagStatus(this.ragStatusForIndexing(policy.kind, rerankProbe, { progress: event }))
+        },
+        onBatchProfile: (event) => {
+          this.output.appendLine(formatRagIndexBatchProfile(event))
         },
         onIndexUpdate: async (partial) => {
           if (signal?.aborted) return
@@ -2434,6 +2466,7 @@ function formatRagHttpDiagnosticEvent(event: RagHttpDiagnosticEvent) {
     event.model ? `model=${event.model}` : undefined,
     event.inputCount !== undefined ? `inputCount=${event.inputCount}` : undefined,
     event.batchSize !== undefined ? `batchSize=${event.batchSize}` : undefined,
+    event.estimatedTokens !== undefined ? `estimatedTokens=${event.estimatedTokens}` : undefined,
     event.documentCount !== undefined ? `documentCount=${event.documentCount}` : undefined,
     event.topN !== undefined ? `topN=${event.topN}` : undefined,
     `timeoutMs=${event.timeoutMs}`,
@@ -2443,8 +2476,12 @@ function formatRagHttpDiagnosticEvent(event: RagHttpDiagnosticEvent) {
   if (event.phase === "response") {
     common.push(`status=${event.status ?? "unknown"} ${event.statusText ?? ""}`.trim())
     common.push(`ok=${event.ok ? "true" : "false"}`)
-    if (event.elapsedMs !== undefined) common.push(`elapsedMs=${event.elapsedMs}`)
+    if (event.elapsedMs !== undefined) common.push(`requestSec=${formatSeconds(event.elapsedMs)}`)
+    if (event.responseBytes !== undefined) common.push(`responseBytes=${event.responseBytes}`)
+    if (event.parseElapsedMs !== undefined) common.push(`parseSec=${formatSeconds(event.parseElapsedMs)}`)
     if (event.errorPreview) common.push(`errorPreview=${compactLogValue(event.errorPreview)}`)
+  } else if (event.phase === "normalize") {
+    if (event.normalizeElapsedMs !== undefined) common.push(`normalizeSec=${formatSeconds(event.normalizeElapsedMs)}`)
   }
   return common.join(" ")
 }
@@ -2453,7 +2490,8 @@ function formatRagIndexBuildProgress(event: RagIndexBuildProgress) {
   const chunks = ` chunks=${event.embeddedChunks}/${event.chunks} pending=${event.pendingChunkCount}`
   if (event.phase === "batch") {
     const requestLimit = event.requestLimit > 0 ? String(event.requestLimit) : "unlimited"
-    return `[rag-index] embedding batch ${event.batchIndex}/${event.batchCount} request ${event.requestNumber}/${requestLimit} inputCount=${event.inputCount}${chunks}`
+    const estimatedTokens = event.estimatedTokens !== undefined ? ` estimatedTokens=${event.estimatedTokens}` : ""
+    return `[rag-index] embedding batch ${event.batchIndex}/${event.batchCount} request ${event.requestNumber}/${requestLimit} inputCount=${event.inputCount}${estimatedTokens}${chunks}`
   }
   if (event.phase === "delay") return `[rag-index] delay ${event.delayMs}ms before next embedding request${chunks}`
   if (event.phase === "rate-limit") {
@@ -2462,6 +2500,15 @@ function formatRagIndexBuildProgress(event: RagIndexBuildProgress) {
   }
   const requestLimit = event.requestLimit > 0 ? String(event.requestLimit) : "unlimited"
   return `[rag-index] paused: ${ragPausedReasonMessage(event.reason, event.message)} used=${event.requestsUsed} limit=${requestLimit}${chunks}`
+}
+
+function formatRagIndexBatchProfile(event: RagIndexBatchProfile) {
+  const checkpoint = event.checkpointElapsedMs !== undefined ? ` checkpointSec=${formatSeconds(event.checkpointElapsedMs)}` : " checkpoint=skipped"
+  return `[rag-index-profile] batch ${event.batchIndex}/${event.batchCount} request=${event.requestNumber} inputCount=${event.inputCount} estimatedTokens=${event.estimatedTokens} embeddingRequestSec=${formatSeconds(event.embeddingElapsedMs)} vectorNormalizeSec=${formatSeconds(event.vectorNormalizeElapsedMs)}${checkpoint} chunks=${event.embeddedChunks}/${event.chunks} pending=${event.pendingChunkCount}`
+}
+
+function formatSeconds(ms: number) {
+  return (Math.max(0, ms) / 1000).toFixed(2)
 }
 
 function ragPausedReasonMessage(reason?: RagStatus["indexPausedReason"], detail?: string) {

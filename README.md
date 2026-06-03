@@ -133,10 +133,10 @@ opencode serve
 1. 打开 OpenCode Activity Bar 视图，或运行命令 `OpenCode Remote: Connect to Remote OpenCode`。
 2. 输入远端服务地址，例如 `http://localhost:4096` 或 `https://opencode.example.com`。
 3. 输入 Basic Auth 用户名。
-4. 输入 Basic Auth 密码。密码会保存在 VS Code SecretStorage 中。
+4. 输入 Basic Auth 密码。密码会保存在 VS Code SecretStorage 中，扩展重启后会用它静默恢复连接；侧边栏密码框为空时点击 Connect/Test 会复用已保存密码。
 5. 使用 `OpenCode Remote: Test Remote OpenCode Connection` 检查连接状态。
 
-连接成功后，状态栏会显示 `OpenCode: Connected`，聊天视图会从远端加载可用 session、provider/model 和 agent 信息。
+连接成功后，状态栏会显示 `OpenCode: Connected`，聊天视图会从远端加载可用 session、provider/model 和 agent 信息。密码框不会回填 SecretStorage 中的密码；如果需要替换密码，在侧边栏输入新密码后点击 Connect，或重新运行连接命令。
 
 ## 聊天使用
 
@@ -177,8 +177,8 @@ inline completion 默认关闭。开启后，扩展会在编辑器中注册 VS C
   "opencode.remote.completion.apiBaseUrl": "http://localhost:8000/v1",
   "opencode.remote.completion.model": "Qwen/Qwen3.6-27B-FP8",
   "opencode.remote.completion.maxTokens": 128,
-  "opencode.remote.completion.temperature": 0.2,
-  "opencode.remote.completion.topP": 0.8
+  "opencode.remote.completion.temperature": 0,
+  "opencode.remote.completion.topP": 1
 }
 ```
 
@@ -192,8 +192,8 @@ Qwen Coder FIM 示例：
   "opencode.remote.completion.apiBaseUrl": "http://localhost:8000/v1",
   "opencode.remote.completion.model": "qwen-coder-30b",
   "opencode.remote.completion.maxTokens": 128,
-  "opencode.remote.completion.temperature": 0.2,
-  "opencode.remote.completion.topP": 0.8
+  "opencode.remote.completion.temperature": 0,
+  "opencode.remote.completion.topP": 1
 }
 ```
 
@@ -250,8 +250,8 @@ Qwen Coder FIM 示例：
 | `opencode.remote.completion.apiBaseUrl` | `""` | OpenAI-compatible direct completion base URL，例如 `http://localhost:8000/v1`。 |
 | `opencode.remote.completion.model` | `""` | direct completion 模型名；为空时回退到 `opencode.remote.defaultModel`。 |
 | `opencode.remote.completion.maxTokens` | `128` | direct completion 最大输出 token 数。 |
-| `opencode.remote.completion.temperature` | `0.2` | direct completion temperature。 |
-| `opencode.remote.completion.topP` | `0.8` | direct completion top-p。 |
+| `opencode.remote.completion.temperature` | `0` | direct completion temperature。 |
+| `opencode.remote.completion.topP` | `1` | direct completion top-p。 |
 | `opencode.remote.completion.debounceMs` | `350` | 请求 inline completion 前的 debounce 时间，单位毫秒。 |
 | `opencode.remote.completion.logLevel` | `info` | 补全日志等级，可选 `off`、`info`、`debug`。 |
 | `opencode.remote.codeGraph.enabled` | `true` | 是否自动启用本地 C/C++ code graph。关闭后不会自动索引。 |
@@ -398,7 +398,7 @@ code --install-extension opencode-remote-<version>.vsix
 
 ### 认证失败
 
-确认 `opencode.remote.username` 和保存到 VS Code SecretStorage 的密码正确。可以重新运行 `OpenCode Remote: Connect to Remote OpenCode` 覆盖连接配置。
+确认 `opencode.remote.username` 和保存到 VS Code SecretStorage 的密码正确。可以在侧边栏输入新密码后点击 Connect，或重新运行 `OpenCode Remote: Connect to Remote OpenCode` 覆盖连接配置；命令流程里留空密码会清除已保存密码。
 
 ### 聊天提示没有捕获当前文件
 

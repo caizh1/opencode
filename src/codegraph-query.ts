@@ -12,6 +12,7 @@ import type {
   CodeGraphQueryMode,
   CodeGraphRetrievalResult,
   CodeGraphSymbol,
+  CodeGraphSymbolCandidate,
 } from "./codegraph-types"
 import type { HybridRetrievalOptions, HybridRetrievalTrace, RerankProvider } from "./rag-types"
 
@@ -169,6 +170,37 @@ export function retrieveEvidence(input: {
     truncated,
     elapsedMs: Date.now() - startedAt,
   }
+}
+
+export function searchCodeGraphSymbols(input: {
+  index: CodeGraphIndex
+  query: string
+  relatedPath?: string
+  limit?: number
+}): CodeGraphSymbolCandidate[] {
+  const query = input.query.trim()
+  if (query.length < 2 || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(query)) return []
+
+  const relatedPath = input.relatedPath ? normalizePath(input.relatedPath) : undefined
+  const relatedModule = relatedPath ? moduleKey(relatedPath) : undefined
+  const derived = ensureDerivedIndex(input.index)
+  const symbols = Object.values(derived.symbolsByName).flatMap((values) => (Array.isArray(values) ? values : []))
+  const lowerQuery = query.toLowerCase()
+  const candidates = new Map<string, CodeGraphSymbolCandidate>()
+
+  for (const symbol of symbols) {
+    const score = symbolCompletionScore(symbol, lowerQuery, relatedPath, relatedModule)
+    if (score <= 0) continue
+    candidates.set(symbol.id, {
+      ...symbol,
+      score,
+      reason: symbolCompletionReason(symbol, lowerQuery, relatedPath),
+    })
+  }
+
+  return [...candidates.values()]
+    .sort((left, right) => right.score - left.score || kindRank(right.kind) - kindRank(left.kind) || left.path.localeCompare(right.path) || left.startLine - right.startLine)
+    .slice(0, Math.max(1, Math.min(50, input.limit ?? 8)))
 }
 
 export async function retrieveHybridEvidence(input: {
@@ -655,6 +687,56 @@ function medianLine(lines: number[]) {
 
 function relatedBoost(path: string, relatedPaths: Set<string>) {
   return relatedPaths.has(normalizePath(path)) ? 60 : 0
+}
+
+function symbolCompletionScore(symbol: CodeGraphSymbol, lowerQuery: string, relatedPath: string | undefined, relatedModule: string | undefined) {
+  const lowerName = symbol.name.toLowerCase()
+  let score = 0
+
+  if (lowerName === lowerQuery) score += 400
+  else if (lowerName.startsWith(lowerQuery)) score += 260
+  else if (snakeCasePrefixMatch(lowerName, lowerQuery)) score += 210
+  else if (lowerName.includes(lowerQuery)) score += 80
+  else return 0
+
+  score += kindRank(symbol.kind) * 15
+  if (relatedPath && normalizePath(symbol.path) === relatedPath) score += 70
+  if (relatedModule && moduleKey(symbol.path) === relatedModule) score += 45
+  if (/test|spec|mock|fixture/i.test(symbol.path) || /test|spec|mock|fixture/i.test(symbol.name)) score += 10
+  return score
+}
+
+function symbolCompletionReason(symbol: CodeGraphSymbol, lowerQuery: string, relatedPath: string | undefined) {
+  const lowerName = symbol.name.toLowerCase()
+  const reasons: string[] = []
+  if (lowerName === lowerQuery) reasons.push("exact")
+  else if (lowerName.startsWith(lowerQuery)) reasons.push("prefix")
+  else if (snakeCasePrefixMatch(lowerName, lowerQuery)) reasons.push("snake-prefix")
+  else if (lowerName.includes(lowerQuery)) reasons.push("contains")
+  if (relatedPath && normalizePath(symbol.path) === relatedPath) reasons.push("same-file")
+  return reasons.join(",")
+}
+
+function snakeCasePrefixMatch(lowerName: string, lowerQuery: string) {
+  const nameParts = lowerName.split("_").filter(Boolean)
+  const queryParts = lowerQuery.split("_").filter(Boolean)
+  if (queryParts.length < 2 || queryParts.length > nameParts.length) return false
+  return queryParts.every((part, index) => nameParts[index]?.startsWith(part))
+}
+
+function kindRank(kind: CodeGraphSymbol["kind"]) {
+  switch (kind) {
+    case "function":
+      return 5
+    case "macro":
+      return 4
+    case "type":
+      return 3
+    case "global":
+      return 2
+    case "file":
+      return 1
+  }
 }
 
 function countFunctions(index: CodeGraphIndex) {

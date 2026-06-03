@@ -112,6 +112,7 @@ function settings(input: { embedding: boolean; rerank?: boolean }): RagSettings 
       endpoint: input.embedding ? "http://127.0.0.1:8000/v1/embeddings" : "",
       model: "fake",
       batchSize: 16,
+      maxTokensPerRequest: 65536,
       timeoutMs: 1000,
       requestDelayMs: 500,
       maxRequestsPerRun: 100,

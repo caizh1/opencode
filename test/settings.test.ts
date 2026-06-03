@@ -7,12 +7,17 @@ type ConfigUpdate = {
 
 let configValues = new Map<string, unknown>()
 let configUpdates: ConfigUpdate[] = []
+let updateFailures = new Map<string, Error>()
+let secretStores: ConfigUpdate[] = []
+let secretDeletes: string[] = []
 
 mock.module("vscode", () => ({
   workspace: {
     getConfiguration: () => ({
       get: <T>(key: string, fallback: T) => configValues.has(key) ? configValues.get(key) as T : fallback,
       update: async (key: string, value: unknown) => {
+        const failure = updateFailures.get(key)
+        if (failure) throw failure
         configUpdates.push({ key, value })
       },
     }),
@@ -29,9 +34,12 @@ const {
   RAG_EMBEDDING_BATCH_SIZE_OPTIONS,
   RAG_EMBEDDING_TIMEOUT_DEFAULT_MS,
   RAG_EMBEDDING_TIMEOUT_LARGE_BATCH_MS,
+  PASSWORD_SECRET_KEY,
+  connectionInputHasPassword,
   ragEmbeddingTimeoutMsForBatchSize,
   ragSettingsUpdates,
   readRemoteSettings,
+  saveConnectionSettings,
   saveRagSettings,
   validateRagEmbeddingBatchSize,
 } = await import("../src/settings")
@@ -39,6 +47,41 @@ const {
 beforeEach(() => {
   configValues = new Map<string, unknown>()
   configUpdates = []
+  updateFailures = new Map<string, Error>()
+  secretStores = []
+  secretDeletes = []
+})
+
+describe("connection settings", () => {
+  test("does not update the saved password when password is omitted", async () => {
+    const input = { serverUrl: "http://localhost:4096/", username: "opencode" }
+
+    expect(connectionInputHasPassword(input)).toBe(false)
+    await saveConnectionSettings(secretContext(), input)
+
+    expect(configUpdates).toEqual([
+      { key: "serverUrl", value: "http://localhost:4096" },
+      { key: "username", value: "opencode" },
+    ])
+    expect(secretStores).toEqual([])
+    expect(secretDeletes).toEqual([])
+  })
+
+  test("stores new passwords and treats explicit blanks as clearing the password", async () => {
+    await saveConnectionSettings(secretContext(), { serverUrl: "http://localhost:4096", username: "opencode", password: " secret " })
+
+    expect(connectionInputHasPassword({ serverUrl: "http://localhost:4096", username: "opencode", password: undefined })).toBe(true)
+    expect(secretStores).toEqual([{ key: PASSWORD_SECRET_KEY, value: "secret" }])
+    expect(secretDeletes).toEqual([])
+
+    secretStores = []
+    configUpdates = []
+
+    await saveConnectionSettings(secretContext(), { serverUrl: "http://localhost:4096", username: "opencode", password: "" })
+
+    expect(secretStores).toEqual([])
+    expect(secretDeletes).toEqual([PASSWORD_SECRET_KEY])
+  })
 })
 
 describe("RAG settings validation", () => {
@@ -47,6 +90,7 @@ describe("RAG settings validation", () => {
 
     expect(settings.rag.embedding.batchSize).toBe(RAG_EMBEDDING_BATCH_SIZE_DEFAULT)
     expect(settings.rag.embedding.batchSize).toBe(128)
+    expect(settings.rag.embedding.maxTokensPerRequest).toBe(65536)
     expect(settings.rag.embedding.timeoutMs).toBe(RAG_EMBEDDING_TIMEOUT_DEFAULT_MS)
     expect(settings.rag.embedding.configError).toBeUndefined()
   })
@@ -109,6 +153,23 @@ describe("RAG settings validation", () => {
     expect(configUpdates.find((update) => update.key === "rag.embedding.batchSize")?.value).toBe(512)
     expect(configUpdates.find((update) => update.key === "rag.embedding.timeoutMs")?.value).toBe(RAG_EMBEDDING_TIMEOUT_LARGE_BATCH_MS)
   })
+
+  test("saves max token request caps without writing embedding dimensions", async () => {
+    await saveRagSettings(ragInput({ embeddingMaxTokensPerRequest: 32768 }))
+
+    expect(configUpdates.some((update) => update.key === "rag.embedding.dimensions")).toBe(false)
+    expect(configUpdates.find((update) => update.key === "rag.embedding.maxTokensPerRequest")?.value).toBe(32768)
+  })
+
+  test("skips optional max token cap saves when the active manifest has not registered it", async () => {
+    configUpdates = []
+    updateFailures.set("rag.embedding.maxTokensPerRequest", new Error("opencode.remote.rag.embedding.maxTokensPerRequest is not a registered configuration"))
+
+    await saveRagSettings(ragInput({ embeddingMaxTokensPerRequest: 32768 }))
+
+    expect(configUpdates.some((update) => update.key === "rag.embedding.endpoint")).toBe(true)
+    expect(configUpdates.some((update) => update.key === "rag.embedding.maxTokensPerRequest")).toBe(false)
+  })
 })
 
 function ragInput(overrides: Partial<Parameters<typeof saveRagSettings>[0]> = {}): Parameters<typeof saveRagSettings>[0] {
@@ -116,6 +177,7 @@ function ragInput(overrides: Partial<Parameters<typeof saveRagSettings>[0]> = {}
     embeddingEndpoint: "http://127.0.0.1:8000/v1/embeddings",
     embeddingModel: "local-embedding",
     embeddingBatchSize: RAG_EMBEDDING_BATCH_SIZE_DEFAULT,
+    embeddingMaxTokensPerRequest: 65536,
     embeddingTimeoutMs: 30000,
     embeddingRequestDelayMs: 500,
     embeddingMaxRequestsPerRun: 100,
@@ -130,4 +192,17 @@ function ragInput(overrides: Partial<Parameters<typeof saveRagSettings>[0]> = {}
     rerankTopK: 16,
     ...overrides,
   }
+}
+
+function secretContext() {
+  return {
+    secrets: {
+      store: async (key: string, value: string) => {
+        secretStores.push({ key, value })
+      },
+      delete: async (key: string) => {
+        secretDeletes.push(key)
+      },
+    },
+  } as Parameters<typeof saveConnectionSettings>[0]
 }

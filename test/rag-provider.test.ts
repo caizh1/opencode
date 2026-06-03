@@ -70,6 +70,33 @@ describe("offline RAG HTTP provider policy", () => {
     expect(captured).toEqual(["Bearer secret", "Bearer secret"])
   })
 
+  test("omits embedding dimensions and sends one request per embed call", async () => {
+    let requests = 0
+    let body: Record<string, unknown> | undefined
+    const baseUrl = await listen((request, response) => {
+      requests++
+      let raw = ""
+      request.on("data", (chunk) => {
+        raw += chunk
+      })
+      request.on("end", () => {
+        body = JSON.parse(raw)
+        json(response, 200, {
+          data: [
+            { embedding: [1, 0, 0] },
+            { embedding: [0, 1, 0] },
+          ],
+        })
+      })
+    })
+
+    await createHttpEmbeddingProvider(ragSettings(`${baseUrl}/v1/embeddings`))?.embed(["query one", "query two"])
+
+    expect(requests).toBe(1)
+    expect(body?.input).toEqual(["query one", "query two"])
+    expect(body).not.toHaveProperty("dimensions")
+  })
+
   test("omits authorization when RAG API key is empty", async () => {
     let auth: string | undefined
     const baseUrl = await listen((request, response) => {
@@ -206,6 +233,7 @@ function ragSettings(embeddingEndpoint = "http://127.0.0.1:8000/v1/embeddings", 
       endpoint: embeddingEndpoint,
       model: "local-embedding",
       batchSize: 128,
+      maxTokensPerRequest: 65536,
       timeoutMs: 30000,
       requestDelayMs: 500,
       maxRequestsPerRun: 100,

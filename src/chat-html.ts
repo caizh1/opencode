@@ -2714,6 +2714,7 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
           <summary>Advanced</summary>
           <div class="settingsGrid">
             <label class="field">Batch size<select id="ragEmbeddingBatchSize" title="Embedding request timeout is automatic: 32-256 use 30s, 512 uses 90s"><option value="32">32</option><option value="64">64</option><option value="128">128</option><option value="256">256</option><option value="512">512</option></select></label>
+            <label class="field">Max tokens/request<input id="ragEmbeddingMaxTokensPerRequest" type="number" min="1" max="1000000" step="1024"></label>
             <label class="field">Request delay ms<input id="ragEmbeddingRequestDelayMs" type="number" min="0" max="60000" step="100"></label>
             <label class="field">Max requests per run<input id="ragEmbeddingMaxRequestsPerRun" type="number" min="0" max="100000" step="1"></label>
             <label class="field">Max retries<input id="ragEmbeddingMaxRetries" type="number" min="0" max="10" step="1"></label>
@@ -2842,6 +2843,7 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
     const RAG_EMBEDDING_BATCH_SIZE_DEFAULT = 128;
     const RAG_EMBEDDING_BATCH_SIZE_OPTIONS = [32, 64, 128, 256, 512];
     const RAG_EMBEDDING_BATCH_SIZE_ERROR = "Embedding batch size must be one of 32, 64, 128, 256, or 512.";
+    const RAG_EMBEDDING_MAX_TOKENS_PER_REQUEST_DEFAULT = 65536;
     let state = {};
 		    let pendingAction = "";
 		    let settingsOpen = false;
@@ -2895,7 +2897,7 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
 	        renderCompletionSettings();
 	      });
 	    }
-	    for (const id of ["ragEmbeddingEndpoint", "ragEmbeddingModel", "ragEmbeddingBatchSize", "ragEmbeddingRequestDelayMs", "ragEmbeddingMaxRequestsPerRun", "ragEmbeddingMaxRetries", "ragEmbeddingRetryBackoffMs", "ragEmbeddingResumeAutomatically", "ragEmbeddingResumeDelayMs", "ragRerankEndpoint", "ragRerankModel", "ragAllowedHosts", "ragVectorTopK", "ragRerankTopK"]) {
+	    for (const id of ["ragEmbeddingEndpoint", "ragEmbeddingModel", "ragEmbeddingBatchSize", "ragEmbeddingMaxTokensPerRequest", "ragEmbeddingRequestDelayMs", "ragEmbeddingMaxRequestsPerRun", "ragEmbeddingMaxRetries", "ragEmbeddingRetryBackoffMs", "ragEmbeddingResumeAutomatically", "ragEmbeddingResumeDelayMs", "ragRerankEndpoint", "ragRerankModel", "ragAllowedHosts", "ragVectorTopK", "ragRerankTopK"]) {
 	      el(id).addEventListener("input", () => {
 	        userEditedRagSettings = true;
 	      });
@@ -3098,12 +3100,14 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
 	    function connectOrTest(type) {
 	      pendingAction = type === "testWithSettings" ? "test" : "connect";
 	      renderConnectionButtons();
-	      vscode.postMessage({
+	      const payload = {
 	        type,
         serverUrl: el("serverUrl").value,
-        username: el("username").value,
-        password: el("password").value
-	      });
+        username: el("username").value
+	      };
+	      const password = el("password").value;
+	      if (password) payload.password = password;
+	      vscode.postMessage(payload);
 	    }
 
 	    function saveCompletionSettings() {
@@ -3158,8 +3162,8 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
 	        apiBaseUrl: el("completionApiBaseUrl").value,
 	        model: el("completionModel").value,
 	        maxTokens: numberInputValue("completionMaxTokens", 128),
-	        temperature: numberInputValue("completionTemperature", 0.2),
-	        topP: numberInputValue("completionTopP", 0.8)
+	        temperature: numberInputValue("completionTemperature", 0),
+	        topP: numberInputValue("completionTopP", 1)
 	      };
 	    }
 
@@ -3169,6 +3173,7 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
 	        embeddingEndpoint: el("ragEmbeddingEndpoint").value,
 	        embeddingModel: el("ragEmbeddingModel").value,
 	        embeddingBatchSize,
+	        embeddingMaxTokensPerRequest: numberInputValue("ragEmbeddingMaxTokensPerRequest", RAG_EMBEDDING_MAX_TOKENS_PER_REQUEST_DEFAULT),
 	        embeddingTimeoutMs: ragEmbeddingTimeoutMsForBatchSize(embeddingBatchSize),
 	        embeddingRequestDelayMs: numberInputValue("ragEmbeddingRequestDelayMs", 500),
 	        embeddingMaxRequestsPerRun: numberInputValue("ragEmbeddingMaxRequestsPerRun", 100),
@@ -3529,8 +3534,8 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
 	        el("completionApiBaseUrl").value = completion.apiBaseUrl || "";
 	        el("completionModel").value = completion.model || "";
 	        el("completionMaxTokens").value = String(completion.maxTokens || 128);
-	        el("completionTemperature").value = String(completion.temperature ?? 0.2);
-	        el("completionTopP").value = String(completion.topP ?? 0.8);
+	        el("completionTemperature").value = String(completion.temperature ?? 0);
+	        el("completionTopP").value = String(completion.topP ?? 1);
 	      }
 	      const direct = el("completionProvider").value === "openai-compatible";
 	      el("completionDirectFields").className = "completionDirectFields" + (direct ? "" : " hidden");
@@ -3551,6 +3556,7 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
 	        el("ragEmbeddingEndpoint").value = embedding.endpoint || "";
 	        el("ragEmbeddingModel").value = embedding.model || "";
 	        el("ragEmbeddingBatchSize").value = String(ragEmbeddingBatchSizeSelectValue(embedding.batchSize));
+	        el("ragEmbeddingMaxTokensPerRequest").value = String(embedding.maxTokensPerRequest ?? RAG_EMBEDDING_MAX_TOKENS_PER_REQUEST_DEFAULT);
 	        el("ragEmbeddingRequestDelayMs").value = String(embedding.requestDelayMs ?? 500);
 	        el("ragEmbeddingMaxRequestsPerRun").value = String(embedding.maxRequestsPerRun ?? 100);
 	        el("ragEmbeddingMaxRetries").value = String(embedding.maxRetries ?? 3);

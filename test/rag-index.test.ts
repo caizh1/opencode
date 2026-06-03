@@ -40,6 +40,64 @@ describe("local RAG vector index", () => {
     expect(provider.calls).toBeLessThan(first.chunks.length + second.chunks.length)
   })
 
+  test("does not reuse previous vectors when provider dimensions change", async () => {
+    const index = sampleIndex()
+    const firstProvider = countingEmbeddingProvider(3)
+    const secondProvider = countingEmbeddingProvider(2)
+    const first = await buildRagVectorIndex({ index, provider: firstProvider })
+    const second = await buildRagVectorIndex({
+      index,
+      provider: secondProvider,
+      previous: first,
+    })
+
+    expect(firstProvider.calls).toBe(buildRagChunks(index).length)
+    expect(secondProvider.calls).toBe(buildRagChunks(index).length)
+    expect(second.chunks.length).toBe(first.chunks.length)
+  })
+
+  test("uses token-aware batch planning as a safety cap", async () => {
+    const index = sampleIndex()
+    const shortProvider = recordingEmbeddingProvider()
+    await buildRagVectorIndex({
+      index,
+      provider: shortProvider,
+      batchSize: 512,
+      maxTokensPerRequest: 1_000_000,
+      requestDelayMs: 0,
+    })
+    expect(shortProvider.batches).toHaveLength(1)
+
+    const cappedProvider = recordingEmbeddingProvider()
+    await buildRagVectorIndex({
+      index,
+      provider: cappedProvider,
+      batchSize: 512,
+      maxTokensPerRequest: 10,
+      requestDelayMs: 0,
+    })
+    expect(cappedProvider.batches.length).toBeGreaterThan(1)
+  })
+
+  test("throttles partial vector index checkpoints", async () => {
+    const index = sampleIndex()
+    const updates: number[] = []
+    await buildRagVectorIndex({
+      index,
+      provider: fakeEmbeddingProvider(),
+      batchSize: 1,
+      requestDelayMs: 0,
+      checkpointChunkInterval: 3,
+      checkpointIntervalMs: 0,
+      onIndexUpdate: async (partial) => {
+        updates.push(partial.chunks.length)
+      },
+    })
+
+    expect(updates[0]).toBe(1)
+    expect(updates.length).toBeLessThan(buildRagChunks(index).length)
+  })
+
   test("records the source code graph snapshot timestamp in full and partial indexes", async () => {
     const index = sampleIndex()
     const partialSourceTimestamps: Array<number | undefined> = []
@@ -268,17 +326,18 @@ int nand_read_page(void) { return ecc_check(); }
   }
 }
 
-function fakeEmbeddingProvider(): EmbeddingProvider {
+function fakeEmbeddingProvider(dimension?: number): EmbeddingProvider {
   return {
     id: "fake",
     model: "fake",
+    dimension,
     embed: async (input) => input.map(embedText),
   }
 }
 
-function countingEmbeddingProvider(): EmbeddingProvider & { calls: number } {
+function countingEmbeddingProvider(dimension?: number): EmbeddingProvider & { calls: number } {
   return {
-    ...fakeEmbeddingProvider(),
+    ...fakeEmbeddingProvider(dimension),
     calls: 0,
     async embed(input) {
       this.calls += input.length

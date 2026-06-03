@@ -505,6 +505,7 @@ function settings(serverUrl: string): RemoteSettings {
         endpoint: "",
         model: "",
         batchSize: 128,
+        maxTokensPerRequest: 65536,
         timeoutMs: 30000,
         requestDelayMs: 500,
         maxRequestsPerRun: 100,

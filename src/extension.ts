@@ -10,13 +10,14 @@ import { registerLocalTerminalCommands } from "./local-terminal"
 import { RemoteOpenCodeAuthError, RemoteOpenCodeClient } from "./remote-client"
 import {
   promptAndSaveCompletionApiKey,
-  promptAndSaveConnectionSettings,
+  promptConnectionSettings,
   promptAndSaveRagApiKey,
   readCompletionApiKey,
   readRagApiKey,
   readRemotePassword,
   readRemoteSettings,
   saveConnectionSettings,
+  connectionInputHasPassword,
   settingsFromConnectionInput,
   type ConnectionSettingsInput,
 } from "./settings"
@@ -25,6 +26,8 @@ import type { ConnectionState } from "./types"
 let client: RemoteOpenCodeClient | undefined
 const CONNECTION_TEST_TIMEOUT_MS = 8000
 const RAG_CONFIG_REFRESH_DEBOUNCE_MS = 500
+const EXTENSION_UPDATE_RELOAD_PROMPT_KEY = "opencode.remote.updateReloadPrompt.version"
+const RELOAD_WINDOW_ACTION = "Reload Window"
 
 type ConnectionProbeResult =
   | { ok: true; detail: string }
@@ -37,6 +40,7 @@ export async function activate(context: vscode.ExtensionContext) {
   const status = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100)
   status.command = "opencode.remote.openChat"
   context.subscriptions.push(output, status, editorContextTracker)
+  registerExtensionUpdateReloadPrompt(context, output)
 
   let activeConnectionState: ConnectionState = "disconnected"
   const setConnectionState = (state: ConnectionState, detail = "") => {
@@ -96,20 +100,29 @@ export async function activate(context: vscode.ExtensionContext) {
   }
 
   const connect = async () => {
-    const saved = await promptAndSaveConnectionSettings(context)
-    if (!saved) return
-    const next = await createClient()
-    await connectClient(next)
+    const input = await promptConnectionSettings()
+    if (!input) return
+    const settings = settingsFromConnectionInput(input)
+    const password = input.password?.trim() || undefined
+    const next = new RemoteOpenCodeClient(settings, password)
+    await connectClient(next, () => saveConnectionSettings(context, input))
   }
   const connectWithSettings = async (input: ConnectionSettingsInput) => {
     const settings = settingsFromConnectionInput(input)
-    const next = new RemoteOpenCodeClient(settings, input.password?.trim() || undefined)
+    const password = connectionInputHasPassword(input) ? input.password?.trim() || undefined : await readRemotePassword(context)
+    const next = new RemoteOpenCodeClient(settings, password)
     await connectClient(next, () => saveConnectionSettings(context, input))
   }
   const testWithSettings = async (input: ConnectionSettingsInput) => {
     const settings = settingsFromConnectionInput(input)
-    const testClientInstance = new RemoteOpenCodeClient(settings, input.password?.trim() || undefined)
+    const password = connectionInputHasPassword(input) ? input.password?.trim() || undefined : await readRemotePassword(context)
+    const testClientInstance = new RemoteOpenCodeClient(settings, password)
     await testClientOnly(testClientInstance)
+  }
+  const restoreSavedConnection = async () => {
+    output.appendLine("[connect] Restoring saved OpenCode connection")
+    const next = await createClient()
+    await connectClient(next)
   }
 
   let chatProvider: RemoteChatViewProvider
@@ -271,7 +284,7 @@ export async function activate(context: vscode.ExtensionContext) {
     context.subscriptions.push(
       vscode.languages.registerInlineCompletionItemProvider(
         { scheme: "file" },
-        new RemoteCompletionProvider({ getClient, getCompletionApiKey: () => readCompletionApiKey(context), getSettings, output }),
+        new RemoteCompletionProvider({ getClient, getCompletionApiKey: () => readCompletionApiKey(context), getSettings, codeGraph, output }),
       ),
     )
   } catch (error) {
@@ -280,6 +293,11 @@ export async function activate(context: vscode.ExtensionContext) {
 
   client = undefined
   setConnectionState("disconnected", "Ready. Enter a server URL and click Connect.")
+  void restoreSavedConnection().catch((error) => {
+    const message = error instanceof Error ? error.message : String(error)
+    output.appendLine(`[connect] restore failed: ${message}`)
+    setConnectionState("error", message)
+  })
   void analysisBridge.ensureStarted().catch((error) => {
     const message = error instanceof Error ? error.message : String(error)
     output.appendLine(`[analysis-bridge] failed to start: ${message}`)
@@ -289,6 +307,70 @@ export async function activate(context: vscode.ExtensionContext) {
 
 export function deactivate() {
   client = undefined
+}
+
+function registerExtensionUpdateReloadPrompt(context: vscode.ExtensionContext, output: vscode.OutputChannel) {
+  const extensionId = context.extension.id || "local.opencode-remote"
+  const runningVersion = readPackageJsonVersion(context.extension.packageJSON)
+  if (!runningVersion) return
+
+  let promptInFlightVersion: string | undefined
+  const checkForInstalledUpdate = async () => {
+    const installedVersion = readPackageJsonVersion(vscode.extensions.getExtension(extensionId)?.packageJSON)
+    if (!installedVersion || !shouldPromptReloadForInstalledVersion(installedVersion, runningVersion)) return
+
+    const promptedVersion = context.globalState.get<string>(EXTENSION_UPDATE_RELOAD_PROMPT_KEY)
+    if (promptedVersion === installedVersion || promptInFlightVersion === installedVersion) return
+
+    promptInFlightVersion = installedVersion
+    try {
+      await context.globalState.update(EXTENSION_UPDATE_RELOAD_PROMPT_KEY, installedVersion)
+      const selected = await vscode.window.showInformationMessage(
+        `OpenCode Remote 已更新到 ${installedVersion}，重新加载窗口后新版本会生效。`,
+        RELOAD_WINDOW_ACTION,
+      )
+      if (selected === RELOAD_WINDOW_ACTION) {
+        await vscode.commands.executeCommand("workbench.action.reloadWindow")
+      }
+    } finally {
+      if (promptInFlightVersion === installedVersion) promptInFlightVersion = undefined
+    }
+  }
+
+  context.subscriptions.push(vscode.extensions.onDidChange(() => {
+    void checkForInstalledUpdate().catch((error) => {
+      const message = error instanceof Error ? error.message : String(error)
+      output.appendLine(`[update] reload prompt failed: ${message}`)
+    })
+  }))
+}
+
+function shouldPromptReloadForInstalledVersion(installedVersion: string, runningVersion: string) {
+  if (installedVersion === runningVersion) return false
+  return compareExtensionVersions(installedVersion, runningVersion) > 0
+}
+
+function compareExtensionVersions(left: string, right: string) {
+  const leftParts = readSemverCoreParts(left)
+  const rightParts = readSemverCoreParts(right)
+  if (!leftParts || !rightParts) return left === right ? 0 : 1
+  for (let index = 0; index < leftParts.length; index += 1) {
+    const delta = leftParts[index] - rightParts[index]
+    if (delta !== 0) return delta
+  }
+  return 0
+}
+
+function readSemverCoreParts(version: string): [number, number, number] | undefined {
+  const match = version.match(/^(\d+)\.(\d+)\.(\d+)/)
+  if (!match) return undefined
+  return [Number(match[1]), Number(match[2]), Number(match[3])]
+}
+
+function readPackageJsonVersion(packageJSON: unknown) {
+  if (!packageJSON || typeof packageJSON !== "object" || !("version" in packageJSON)) return undefined
+  const version = (packageJSON as { version?: unknown }).version
+  return typeof version === "string" && version.trim() ? version.trim() : undefined
 }
 
 async function probeClient(target: RemoteOpenCodeClient, timeoutMs: number): Promise<ConnectionProbeResult> {

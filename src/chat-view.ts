@@ -54,7 +54,7 @@ import type {
   RenderedUsage,
   RemoteSettings,
 } from "./types"
-import { saveCompletionSettings, saveRagSettings, type CompletionSettingsInput, type ConnectionSettingsInput, type RagSettingsInput } from "./settings"
+import { connectionInputHasPassword, saveCompletionSettings, saveRagSettings, type CompletionSettingsInput, type ConnectionSettingsInput, type RagSettingsInput } from "./settings"
 
 const SESSION_MESSAGE_LIMIT = 100
 const MODEL_REFRESH_TIMEOUT_MS = 8000
@@ -677,18 +677,10 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
           await this.openEvidence(message.path, message.line)
           break
         case "connectWithSettings":
-          await this.connectWithSettings({
-            serverUrl: message.serverUrl,
-            username: message.username,
-            password: message.password,
-          })
+          await this.connectWithSettings(connectionSettingsFromMessage(message))
           break
         case "testWithSettings":
-          await this.testWithSettings({
-            serverUrl: message.serverUrl,
-            username: message.username,
-            password: message.password,
-          })
+          await this.testWithSettings(connectionSettingsFromMessage(message))
           break
         case "saveCompletionSettings":
           await this.saveCompletionSettings(message.settings)
@@ -788,20 +780,12 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
 
   private async connectWithSettings(input: ConnectionSettingsInput) {
     this.deps.output.appendLine(`[connect] requested URL: ${input.serverUrl}`)
-    await this.deps.connectWithSettings({
-      serverUrl: input.serverUrl,
-      username: input.username,
-      password: input.password,
-    })
+    await this.deps.connectWithSettings(connectionSettingsForDeps(input))
   }
 
   private async testWithSettings(input: ConnectionSettingsInput) {
     this.deps.output.appendLine(`[test] requested URL: ${input.serverUrl}`)
-    await this.deps.testWithSettings({
-      serverUrl: input.serverUrl,
-      username: input.username,
-      password: input.password,
-    })
+    await this.deps.testWithSettings(connectionSettingsForDeps(input))
   }
 
   private async saveCompletionSettings(input: CompletionSettingsInput) {
@@ -1967,6 +1951,24 @@ function ragResumeScheduleMessage(rag: RagStatus) {
   const remainingMs = Math.max(0, rag.resumeScheduledAt - Date.now())
   const label = rag.resumeReason === "rate-limit" ? "retry scheduled" : "resume scheduled"
   return `; ${label} in ${Math.ceil(remainingMs / 1000)}s`
+}
+
+function connectionSettingsFromMessage(message: Extract<ChatViewMessage, { type: "connectWithSettings" | "testWithSettings" }>): ConnectionSettingsInput {
+  const input: ConnectionSettingsInput = {
+    serverUrl: message.serverUrl,
+    username: message.username,
+  }
+  if (Object.prototype.hasOwnProperty.call(message, "password")) input.password = message.password
+  return input
+}
+
+function connectionSettingsForDeps(input: ConnectionSettingsInput): ConnectionSettingsInput {
+  const next: ConnectionSettingsInput = {
+    serverUrl: input.serverUrl,
+    username: input.username,
+  }
+  if (connectionInputHasPassword(input)) next.password = input.password
+  return next
 }
 
 function truncate(input: string, max: number) {

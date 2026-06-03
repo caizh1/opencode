@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import { parseCFile } from "../src/codegraph-c-parser"
-import { buildCodeGraphContext, classifyQuestion, extractSymbols, retrieveEvidence } from "../src/codegraph-query"
+import { buildCodeGraphContext, classifyQuestion, extractSymbols, retrieveEvidence, searchCodeGraphSymbols } from "../src/codegraph-query"
 import type { CodeGraphIndex } from "../src/codegraph-types"
 
 describe("code graph query context", () => {
@@ -136,6 +136,19 @@ describe("code graph query context", () => {
     expect(result?.evidence.some((item) => item.reason.includes("comment:configuration"))).toBe(true)
   })
 
+  test("finds snake-case prefix symbol completions", () => {
+    const result = searchCodeGraphSymbols({
+      index: eprIndex(),
+      query: "epr_ppn_raw_wr",
+      relatedPath: "src/epr/epr_ppn_raw_test.c",
+      limit: 5,
+    })
+
+    expect(result[0]?.name).toBe("epr_ppn_raw_write_with_cb_dfx")
+    expect(result[0]?.kind).toBe("function")
+    expect(result[0]?.reason).toContain("prefix")
+  })
+
   test("marks evidence packing as truncated when byte budget is small", () => {
     const result = retrieveEvidence({
       index: sampleIndex(),
@@ -207,6 +220,37 @@ int constructor(void) { return 0; }
 int __proto__(void) { return constructor(); }
 int toString(void) { return __proto__(); }
 int caller(void) { return toString(); }
+`,
+    }),
+  ]
+  return {
+    version: 1,
+    rootPath: "/repo",
+    rootName: "repo",
+    updatedAt: 1,
+    truncated: false,
+    files: Object.fromEntries(files.map((file) => [file.path, file])),
+  }
+}
+
+function eprIndex(): CodeGraphIndex {
+  const files = [
+    parseCFile({
+      path: "src/epr/epr_ppn_raw.c",
+      hash: "epr",
+      size: 1,
+      text: `
+int epr_ppn_raw_write_with_cb_dfx(void) { return 0; }
+int epr_ppn_raw_write_cb_dfx(void) { return 0; }
+int epr_ppn_raw_read(void) { return 0; }
+`,
+    }),
+    parseCFile({
+      path: "src/epr/epr_ppn_raw_test.c",
+      hash: "test",
+      size: 1,
+      text: `
+int test_epr_ppn_raw_write_with_cb_dfx(void) { return epr_ppn_raw_write_with_cb_dfx(); }
 `,
     }),
   ]

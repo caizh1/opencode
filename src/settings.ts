@@ -1,4 +1,5 @@
 import * as vscode from "vscode"
+import { RAG_EMBEDDING_MAX_TOKENS_PER_REQUEST_DEFAULT } from "./rag-token"
 import type { CodeGraphAnalysisMode, CompletionLogLevel, CompletionProfile, CompletionProvider, RemoteSettings } from "./types"
 
 export const PASSWORD_SECRET_KEY = "opencode.remote.password"
@@ -15,7 +16,7 @@ export const RAG_EMBEDDING_TIMEOUT_LARGE_BATCH_MS = 90000
 export type ConnectionSettingsInput = {
   serverUrl: string
   username: string
-  password: string | undefined
+  password?: string
 }
 
 export type CompletionSettingsInput = {
@@ -33,6 +34,7 @@ export type RagSettingsInput = {
   embeddingEndpoint: string
   embeddingModel: string
   embeddingBatchSize: number
+  embeddingMaxTokensPerRequest: number
   embeddingTimeoutMs?: number
   embeddingRequestDelayMs: number
   embeddingMaxRequestsPerRun: number
@@ -50,6 +52,7 @@ export type RagSettingsInput = {
 export type SettingsUpdate = {
   key: string
   value: unknown
+  optional?: boolean
 }
 
 export function readRemoteSettings(): RemoteSettings {
@@ -78,8 +81,8 @@ export function readRemoteSettings(): RemoteSettings {
       apiBaseUrl: normalizeServerUrl(config.get<string>("completion.apiBaseUrl", "")),
       model: config.get<string>("completion.model", "").trim(),
       maxTokens: Math.max(1, Math.min(4096, config.get<number>("completion.maxTokens", 128))),
-      temperature: Math.max(0, Math.min(2, config.get<number>("completion.temperature", 0.2))),
-      topP: Math.max(0, Math.min(1, config.get<number>("completion.topP", 0.8))),
+      temperature: Math.max(0, Math.min(2, config.get<number>("completion.temperature", 0))),
+      topP: Math.max(0, Math.min(1, config.get<number>("completion.topP", 1))),
       debounceMs: Math.max(0, config.get<number>("completion.debounceMs", 350)),
       logLevel: readCompletionLogLevel(config.get<string>("completion.logLevel", "info")),
     },
@@ -117,6 +120,7 @@ export function readRemoteSettings(): RemoteSettings {
         endpoint: ragEmbeddingEndpoint,
         model: config.get<string>("rag.embedding.model", "").trim(),
         batchSize: ragEmbeddingBatchSize.batchSize,
+        maxTokensPerRequest: clampInteger(config.get<number>("rag.embedding.maxTokensPerRequest", RAG_EMBEDDING_MAX_TOKENS_PER_REQUEST_DEFAULT), 1, 1_000_000, RAG_EMBEDDING_MAX_TOKENS_PER_REQUEST_DEFAULT),
         configError: ragEmbeddingBatchSize.configError,
         timeoutMs: ragEmbeddingTimeoutMsForBatchSize(ragEmbeddingBatchSize.batchSize),
         requestDelayMs: Math.max(0, Math.min(60000, config.get<number>("rag.embedding.requestDelayMs", 500))),
@@ -201,6 +205,13 @@ export async function promptAndSaveRagApiKey(context: vscode.ExtensionContext) {
 }
 
 export async function promptAndSaveConnectionSettings(context: vscode.ExtensionContext) {
+  const input = await promptConnectionSettings()
+  if (!input) return false
+  await saveConnectionSettings(context, input)
+  return true
+}
+
+export async function promptConnectionSettings(): Promise<ConnectionSettingsInput | undefined> {
   const current = readRemoteSettings()
   const serverUrl = await vscode.window.showInputBox({
     title: "Remote OpenCode server URL",
@@ -208,7 +219,7 @@ export async function promptAndSaveConnectionSettings(context: vscode.ExtensionC
     value: current.serverUrl,
     ignoreFocusOut: true,
   })
-  if (!serverUrl) return false
+  if (!serverUrl) return undefined
 
   const username = await vscode.window.showInputBox({
     title: "Remote OpenCode username",
@@ -216,7 +227,7 @@ export async function promptAndSaveConnectionSettings(context: vscode.ExtensionC
     value: current.username || "opencode",
     ignoreFocusOut: true,
   })
-  if (username === undefined) return false
+  if (username === undefined) return undefined
 
   const password = await vscode.window.showInputBox({
     title: "Remote OpenCode password",
@@ -224,10 +235,9 @@ export async function promptAndSaveConnectionSettings(context: vscode.ExtensionC
     password: true,
     ignoreFocusOut: true,
   })
-  if (password === undefined) return false
+  if (password === undefined) return undefined
 
-  await saveConnectionSettings(context, { serverUrl, username, password: password || undefined })
-  return true
+  return { serverUrl, username, password }
 }
 
 export async function saveConnectionSettings(context: vscode.ExtensionContext, input: ConnectionSettingsInput) {
@@ -236,7 +246,11 @@ export async function saveConnectionSettings(context: vscode.ExtensionContext, i
   const config = vscode.workspace.getConfiguration("opencode.remote")
   await config.update("serverUrl", settings.serverUrl, vscode.ConfigurationTarget.Global)
   await config.update("username", settings.username, vscode.ConfigurationTarget.Global)
-  await writeRemotePassword(context, input.password?.trim() || undefined)
+  if (connectionInputHasPassword(input)) await writeRemotePassword(context, input.password?.trim() || undefined)
+}
+
+export function connectionInputHasPassword(input: ConnectionSettingsInput) {
+  return Object.prototype.hasOwnProperty.call(input, "password")
 }
 
 export async function saveCompletionSettings(input: CompletionSettingsInput) {
@@ -255,7 +269,12 @@ export async function saveRagSettings(input: RagSettingsInput) {
   const updates = ragSettingsUpdates(input)
   const config = vscode.workspace.getConfiguration("opencode.remote")
   for (const update of updates) {
-    await config.update(update.key, update.value, vscode.ConfigurationTarget.Global)
+    try {
+      await config.update(update.key, update.value, vscode.ConfigurationTarget.Global)
+    } catch (error) {
+      if (update.optional && isUnregisteredConfigurationError(error)) continue
+      throw error
+    }
   }
 }
 
@@ -265,6 +284,7 @@ export function ragSettingsUpdates(input: RagSettingsInput): SettingsUpdate[] {
     { key: "rag.embedding.endpoint", value: normalizeServerUrl(input.embeddingEndpoint) },
     { key: "rag.embedding.model", value: input.embeddingModel.trim() },
     { key: "rag.embedding.batchSize", value: embeddingBatchSize },
+    { key: "rag.embedding.maxTokensPerRequest", value: clampInteger(input.embeddingMaxTokensPerRequest, 1, 1_000_000, RAG_EMBEDDING_MAX_TOKENS_PER_REQUEST_DEFAULT), optional: true },
     { key: "rag.embedding.timeoutMs", value: ragEmbeddingTimeoutMsForBatchSize(embeddingBatchSize) },
     { key: "rag.embedding.requestDelayMs", value: clampInteger(input.embeddingRequestDelayMs, 0, 60000, 500) },
     { key: "rag.embedding.maxRequestsPerRun", value: clampInteger(input.embeddingMaxRequestsPerRun, 0, 100000, 100) },
@@ -356,6 +376,11 @@ export function validateRagEmbeddingBatchSize(input: unknown) {
 
 export function ragEmbeddingTimeoutMsForBatchSize(input: unknown) {
   return Number(input) === RAG_EMBEDDING_BATCH_SIZE_MAX ? RAG_EMBEDDING_TIMEOUT_LARGE_BATCH_MS : RAG_EMBEDDING_TIMEOUT_DEFAULT_MS
+}
+
+function isUnregisteredConfigurationError(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error)
+  return /not a registered configuration/i.test(message)
 }
 
 function isAllowedRagEmbeddingBatchSize(value: number) {

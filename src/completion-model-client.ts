@@ -36,14 +36,28 @@ export class CompletionModelClient {
     private readonly apiKey?: string,
   ) {}
 
-  async complete(input: { prompt: string; signal?: AbortSignal }): Promise<OpenCodeMessage> {
+  async complete(input: {
+    prompt: string
+    signal?: AbortSignal
+    maxTokens?: number
+    temperature?: number
+    topP?: number
+  }): Promise<OpenCodeMessage> {
     const baseUrl = this.settings.completion.apiBaseUrl
     const model = completionModel(this.settings)
     if (!baseUrl) throw new CompletionModelRequestError(0, "Completion API base URL is required.")
     if (!model) throw new CompletionModelRequestError(0, "Completion model is required.")
 
     if (this.settings.completion.profile === "qwen-coder-fim") {
-      return this.completeRawFim({ prompt: input.prompt, signal: input.signal, baseUrl, model })
+      return this.completeRawFim({
+        prompt: input.prompt,
+        signal: input.signal,
+        baseUrl,
+        model,
+        maxTokens: input.maxTokens,
+        temperature: input.temperature,
+        topP: input.topP,
+      })
     }
 
     const body = await this.postJson(chatCompletionsUrl(baseUrl), {
@@ -53,9 +67,9 @@ export class CompletionModelClient {
       body: JSON.stringify({
         model,
         messages: completionMessages(input.prompt),
-        max_tokens: this.settings.completion.maxTokens,
-        temperature: this.settings.completion.temperature,
-        top_p: this.settings.completion.topP,
+        max_tokens: input.maxTokens ?? this.settings.completion.maxTokens,
+        temperature: input.temperature ?? this.settings.completion.temperature,
+        top_p: input.topP ?? this.settings.completion.topP,
       }),
     })
     return normalizeChatCompletionMessage(body)
@@ -66,6 +80,9 @@ export class CompletionModelClient {
     signal?: AbortSignal
     baseUrl: string
     model: string
+    maxTokens?: number
+    temperature?: number
+    topP?: number
   }) {
     const body = await this.postJson(completionsUrl(input.baseUrl), {
       method: "POST",
@@ -74,9 +91,9 @@ export class CompletionModelClient {
       body: JSON.stringify({
         model: input.model,
         prompt: input.prompt,
-        max_tokens: this.settings.completion.maxTokens,
-        temperature: this.settings.completion.temperature,
-        top_p: this.settings.completion.topP,
+        max_tokens: input.maxTokens ?? this.settings.completion.maxTokens,
+        temperature: input.temperature ?? this.settings.completion.temperature,
+        top_p: input.topP ?? this.settings.completion.topP,
         stop: QWEN_CODER_FIM_STOP,
       }),
     })
