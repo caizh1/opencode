@@ -65,6 +65,8 @@ const SESSION_STATUS_TIMEOUT_MS = 5000
 const SEND_STATUS_POLL_INTERVAL_MS = 5000
 const EXPORT_INTENT_TIMEOUT_MS = 15000
 const EXPORT_INTENT_SESSION_TITLE = "VS Code export intent"
+const DIAGNOSTIC_CONTEXT_LIMIT = 60
+const DIAGNOSTIC_PREVIEW_LIMIT = 5
 
 type MentionedFileRef = {
   uri: string
@@ -1587,13 +1589,12 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
 
   private autoContextState() {
     const editorContext = this.deps.getEditorContext()
-    const diagnosticCount = vscode.languages
-      .getDiagnostics()
-      .reduce((count, [, diagnostics]) => count + diagnostics.length, 0)
+    const diagnostics = workspaceDiagnosticsSummary(DIAGNOSTIC_PREVIEW_LIMIT)
     return {
       currentFile: editorContext ? relativePath(editorContext.uri) : "",
       hasSelection: Boolean(editorContext && !editorContext.selection.isEmpty),
-      diagnosticCount,
+      diagnosticCount: diagnostics.total,
+      diagnostics,
     }
   }
 
@@ -1606,6 +1607,85 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
       .map((item) => `${item.source}:${item.path}${item.truncated ? ":truncated" : ""}${item.skipped ? ":skipped" : ""}`)
       .join(", ")
     this.deps.output.appendLine(`[context] sent ${summary}`)
+  }
+}
+
+function workspaceDiagnosticsSummary(previewLimit: number) {
+  const counts = {
+    error: 0,
+    warning: 0,
+    information: 0,
+    hint: 0,
+    unknown: 0,
+  }
+  const files = new Map<string, {
+    path: string
+    total: number
+    errors: number
+    warnings: number
+    information: number
+    hints: number
+    unknown: number
+    examples: Array<{ line: number; severity: string; message: string }>
+  }>()
+
+  for (const [uri, diagnostics] of vscode.languages.getDiagnostics()) {
+    if (!vscode.workspace.getWorkspaceFolder(uri)) continue
+    const filePath = relativePath(uri)
+    let file = files.get(filePath)
+    if (!file) {
+      file = {
+        path: filePath,
+        total: 0,
+        errors: 0,
+        warnings: 0,
+        information: 0,
+        hints: 0,
+        unknown: 0,
+        examples: [],
+      }
+      files.set(filePath, file)
+    }
+
+    for (const diagnostic of diagnostics) {
+      const severity = diagnosticSeverityName(diagnostic.severity)
+      counts[severity.key] += 1
+      file.total += 1
+      file[severity.fileKey] += 1
+      if (file.examples.length < 2) {
+        file.examples.push({
+          line: diagnostic.range.start.line + 1,
+          severity: severity.label,
+          message: diagnostic.message,
+        })
+      }
+    }
+  }
+
+  const total = counts.error + counts.warning + counts.information + counts.hint + counts.unknown
+  return {
+    total,
+    limit: DIAGNOSTIC_CONTEXT_LIMIT,
+    counts,
+    files: [...files.values()]
+      .filter((file) => file.total > 0)
+      .sort((left, right) => right.total - left.total || left.path.localeCompare(right.path))
+      .slice(0, previewLimit),
+  }
+}
+
+function diagnosticSeverityName(severity: vscode.DiagnosticSeverity) {
+  switch (severity) {
+    case vscode.DiagnosticSeverity.Error:
+      return { label: "Error", key: "error" as const, fileKey: "errors" as const }
+    case vscode.DiagnosticSeverity.Warning:
+      return { label: "Warning", key: "warning" as const, fileKey: "warnings" as const }
+    case vscode.DiagnosticSeverity.Information:
+      return { label: "Information", key: "information" as const, fileKey: "information" as const }
+    case vscode.DiagnosticSeverity.Hint:
+      return { label: "Hint", key: "hint" as const, fileKey: "hints" as const }
+    default:
+      return { label: "Unknown", key: "unknown" as const, fileKey: "unknown" as const }
   }
 }
 

@@ -1315,18 +1315,24 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       line-height: 1.3;
     }
     .composerToolbar {
-      display: grid;
-      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
+      display: flex;
+      flex-wrap: wrap;
       align-items: center;
       gap: 6px;
       min-width: 0;
       padding: 0 5px 5px;
     }
 	    .send {
-	      width: 30px;
-	      min-width: 30px;
-	      height: 30px;
-	      border-radius: 6px;
+	      width: var(--composer-send-button-size);
+	      min-width: var(--composer-send-button-size);
+	      height: var(--composer-send-button-size);
+	      min-height: var(--composer-send-button-size);
+	      display: inline-flex;
+	      align-items: center;
+	      justify-content: center;
+	      flex: 0 0 var(--composer-send-button-size);
+	      border-radius: 8px;
+	      padding: 0;
 	    }
 	    .composerHint {
       display: none;
@@ -1476,10 +1482,10 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       background: var(--vscode-button-secondaryHoverBackground, var(--vscode-toolbar-hoverBackground));
     }
     .composerIconButton {
-      width: 30px;
-      min-width: 30px;
-      height: 30px;
-      min-height: 30px;
+      width: var(--composer-icon-button-size);
+      min-width: var(--composer-icon-button-size);
+      height: var(--composer-icon-button-size);
+      min-height: var(--composer-icon-button-size);
       display: inline-flex;
       align-items: center;
       justify-content: center;
@@ -1489,8 +1495,8 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       line-height: 1;
     }
     .composerIconButton .oc-liquid-icon {
-      width: 18px;
-      height: 18px;
+      width: 16px;
+      height: 16px;
       flex: 0 0 auto;
       pointer-events: none;
     }
@@ -1502,22 +1508,17 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       .topbar { gap: 6px; padding: 7px; }
       .icon { max-width: 52px; padding: 0 6px; }
       .primary, .secondary { padding-inline: 7px; }
-	      .composerActionRow { gap: 7px; }
-	      .toggles label { font-size: 9px; }
-	      .toggles input { width: 10px; height: 10px; }
-	      .composerIconButton { width: 30px; min-width: 30px; height: 30px; padding: 0; }
+      .composerActionRow { gap: 7px; }
+      .toggles label { font-size: 9px; }
+      .toggles input { width: 10px; height: 10px; }
+      .composerIconButton { width: var(--composer-icon-button-size); min-width: var(--composer-icon-button-size); height: var(--composer-icon-button-size); padding: 0; }
       .composerToolbar {
-        grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
         gap: 4px;
-      }
-      .composerHint {
-        grid-column: 1 / -1;
-        grid-row: 2;
       }
       .settingsActions { justify-content: flex-start; }
     }
 	    @media (max-width: 360px) {
-	      .composerStatusToggle { width: 30px; min-width: 30px; padding-inline: 0; }
+	      .composerStatusToggle { width: var(--composer-icon-button-size); min-width: var(--composer-icon-button-size); padding-inline: 0; }
       .composerToggleFull { display: none; }
       .composerToggleShort { display: inline; }
       .composerActionRow { gap: 6px; }
@@ -1531,9 +1532,9 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       .primary, .secondary { min-height: 24px; padding-inline: 6px; }
 	      .composerWrap { padding: 3px 4px; }
 	      .composerActionRow { gap: 5px 7px; }
-	      .composerIconButton { width: 30px; min-width: 30px; height: 30px; min-height: 30px; padding: 0; }
+	      .composerIconButton { width: var(--composer-icon-button-size); min-width: var(--composer-icon-button-size); height: var(--composer-icon-button-size); min-height: var(--composer-icon-button-size); padding: 0; }
 	      .composerHint { display: none; }
-	      .send { min-width: 30px; padding: 0; }
+	      .send { min-width: var(--composer-icon-button-size); padding: 0; }
 	      .modelTrigger { height: 30px; }
     }
     @media (min-width: 760px) {
@@ -1608,10 +1609,12 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       --oc-soft-bg: color-mix(in srgb, var(--vscode-foreground) 4%, transparent);
       --oc-warning-soft: color-mix(in srgb, var(--vscode-editorWarning-foreground) 12%, transparent);
       --oc-error-soft: color-mix(in srgb, var(--vscode-errorForeground) 12%, transparent);
+      --composer-icon-button-size: 24px;
+      --composer-send-button-size: 34px;
     }
     .topbar {
-      min-height: 52px;
-      padding: 8px 8px 7px;
+      min-height: 48px;
+      padding: 7px 8px 6px;
       gap: 8px;
       border-bottom-color: var(--oc-border);
       background: var(--vscode-sideBar-background);
@@ -1633,11 +1636,18 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       letter-spacing: 0;
     }
     .meta {
-      font-size: 11px;
+      font-size: 10px;
       color: var(--oc-muted);
     }
-    .headerStatus { gap: 6px; font-size: 11px; }
-    .iconbar { gap: 2px; }
+    .headerStatus { gap: 6px; font-size: 10px; }
+    .iconbar { gap: 6px; }
+    .headerHistoryAction {
+      opacity: 0.58;
+    }
+    .headerHistoryAction:hover,
+    .headerHistoryAction:focus-visible {
+      opacity: 1;
+    }
     .oc-tool-btn,
     .oc-icon-btn,
     .oc-icon-toggle,
@@ -1768,9 +1778,7 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
     .oc-badge,
     .oc-liquid-badge,
     .statusBadge {
-      position: absolute;
-      top: -4px;
-      right: -4px;
+      flex: 0 0 auto;
       min-width: 14px;
       height: 14px;
       padding: 0 4px;
@@ -1812,7 +1820,7 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
     .primary:hover { background: var(--vscode-button-hoverBackground); }
     .oc-settings-tile,
     .settingsEntry {
-      min-height: 42px;
+      min-height: 36px;
       display: flex;
       align-items: center;
       justify-content: flex-start;
@@ -1829,9 +1837,13 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
     .settingsEntry:hover { background: var(--oc-hover-bg); }
     .oc-settings-tile.is-active,
     .settingsEntry.is-active {
-      border-color: color-mix(in srgb, var(--vscode-focusBorder) 70%, var(--oc-border));
+      border-color: var(--oc-border);
       box-shadow: inset 2px 0 0 var(--vscode-focusBorder);
+      background: var(--oc-soft-bg);
+    }
+    .settings.settings-page .settingsEntry[data-settings-section="connect"].is-active {
       background: transparent;
+      color: var(--oc-muted);
     }
     .settingsEntry .oc-liquid-icon {
       width: 16px;
@@ -1880,7 +1892,19 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       grid-template-columns: repeat(2, minmax(0, 1fr));
       gap: 8px;
     }
-    .settingsSection { gap: 10px; }
+    .settingsSection {
+      gap: 10px;
+      border-left: 2px solid transparent;
+      padding-left: 0;
+    }
+    .settingsSection.active {
+      border-left-color: color-mix(in srgb, var(--vscode-focusBorder) 68%, transparent);
+      padding-left: 8px;
+    }
+    .app.mode-connection-only .settingsSection.active {
+      border-left-color: transparent;
+      padding-left: 0;
+    }
     .settingsGrid { gap: 8px; }
     .field {
       gap: 4px;
@@ -1908,6 +1932,19 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       flex-wrap: wrap;
     }
     .settingsActions > .row { flex: 0 0 auto; }
+    .connectionActions,
+    .settingsActions .row {
+      gap: 6px;
+    }
+    .settingsActions .oc-icon-btn,
+    .settingsActions .oc-liquid-btn,
+    .ragActionbar .oc-icon-btn,
+    .ragActionbar .oc-liquid-btn {
+      width: 30px;
+      min-width: 30px;
+      height: 30px;
+      min-height: 30px;
+    }
     #connect {
       min-height: 32px;
       color: var(--vscode-button-foreground);
@@ -1952,13 +1989,27 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       bottom: 0;
       padding: 8px 0 0;
     }
+    #setRagApiKey {
+      color: var(--vscode-foreground);
+      border-color: color-mix(in srgb, var(--vscode-focusBorder) 38%, transparent);
+      background: var(--oc-soft-bg);
+    }
+    #setRagApiKey:hover,
+    #setRagApiKey:focus-visible {
+      border-color: color-mix(in srgb, var(--vscode-focusBorder) 70%, transparent);
+      background: var(--oc-hover-bg);
+    }
+    #setRagApiKey .oc-liquid-icon {
+      width: 18px;
+      height: 18px;
+    }
     .messages {
       padding: 14px 10px;
       gap: 12px;
       background: var(--vscode-editor-background, var(--vscode-sideBar-background));
     }
     .empty {
-      width: min(100%, 300px);
+      width: min(100%, 330px);
       padding: 10px 8px;
       color: var(--oc-muted);
       text-align: center;
@@ -1984,19 +2035,81 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
     .emptyPrompts {
       display: grid;
       grid-template-columns: minmax(0, 1fr);
-      gap: 6px;
+      gap: 5px;
       margin-top: 14px;
     }
+    .emptyCommand,
     .emptyPrompt {
       width: 100%;
       max-width: none;
-      min-height: 30px;
+      min-height: 38px;
       justify-content: flex-start;
       border-color: transparent;
       color: var(--vscode-foreground);
       background: transparent;
     }
-    .emptyPrompt:hover { background: var(--oc-hover-bg); }
+    .emptyCommand {
+      display: grid;
+      grid-template-columns: 20px minmax(0, 1fr) 14px;
+      align-items: center;
+      gap: 8px;
+      padding: 4px 8px;
+      border: 1px solid transparent;
+      border-radius: var(--oc-radius);
+      text-align: left;
+      transition: background 100ms ease, border-color 100ms ease;
+    }
+    .emptyCommand:hover,
+    .emptyCommand:focus-visible,
+    .emptyPrompt:hover {
+      background: var(--oc-hover-bg);
+    }
+    .emptyCommandIcon {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      color: var(--oc-muted);
+    }
+    .emptyCommandIcon .oc-liquid-icon {
+      width: 16px;
+      height: 16px;
+    }
+    .emptyCommandMain {
+      display: grid;
+      gap: 1px;
+      min-width: 0;
+    }
+    .emptyCommandTitle {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      color: var(--vscode-foreground);
+      font-size: 12px;
+      font-weight: 600;
+      line-height: 1.15;
+    }
+    .emptyCommandCaption {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      color: var(--oc-muted);
+      font-size: 10px;
+      line-height: 1.15;
+    }
+    .emptyCommandArrow {
+      color: var(--oc-muted);
+      font-size: 14px;
+      line-height: 1;
+      justify-self: end;
+      transition: transform 100ms ease, color 100ms ease;
+    }
+    .emptyCommand:hover .emptyCommandArrow,
+    .emptyCommand:focus-visible .emptyCommandArrow {
+      color: var(--vscode-foreground);
+      transform: translateX(2px);
+    }
     .recentSessions { display: none; }
     .timelineItem {
       grid-template-columns: 22px minmax(0, 1fr);
@@ -2098,26 +2211,67 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
     .codeBlock:focus-within .copyCode,
     .copyCode:focus-visible { opacity: 1; }
     .composerWrap {
+      position: relative;
       gap: 4px;
       padding: 5px 6px 6px;
       border-top-color: var(--oc-border);
       background: var(--vscode-sideBar-background);
     }
     .composerStatusBar {
-      min-height: 28px;
+      position: static;
+      display: flex;
+      align-items: center;
+      justify-content: flex-start;
+      flex-wrap: wrap;
+      min-width: 0;
+      min-height: 30px;
       gap: 4px;
+      overflow: visible;
+      opacity: 1;
+    }
+    .composerWrap.collapsed {
+      min-height: 36px;
+    }
+    .composerWrap.collapsed .composerStatusBar {
+      justify-content: flex-start;
     }
     .composerStatusToggle,
     .composerStatusPill,
     .composerIconButton,
-    .send,
     .toggles .oc-liquid-toggle,
     .toggles .oc-icon-toggle {
-      width: 26px;
-      min-width: 26px;
-      height: 26px;
-      min-height: 26px;
+      width: var(--composer-icon-button-size);
+      min-width: var(--composer-icon-button-size);
+      height: var(--composer-icon-button-size);
+      min-height: var(--composer-icon-button-size);
       border-radius: var(--oc-radius);
+    }
+    .composerStatusToggle {
+      width: 24px;
+      min-width: 24px;
+      height: 24px;
+      min-height: 24px;
+    }
+    .composerSupportRail {
+      display: inline-flex;
+      align-items: center;
+      gap: 3px;
+      flex: 0 0 auto;
+      min-width: 0;
+    }
+    .composerSupportRail .composerStatusPill {
+      width: var(--composer-icon-button-size);
+      min-width: var(--composer-icon-button-size);
+      height: var(--composer-icon-button-size);
+      min-height: var(--composer-icon-button-size);
+      color: var(--oc-muted);
+    }
+    .composerStatusPill .oc-liquid-icon,
+    .composerIconButton .oc-liquid-icon,
+    .toggles .oc-liquid-toggle .oc-liquid-icon,
+    .toggles .oc-icon-toggle .oc-liquid-icon {
+      width: 16px;
+      height: 16px;
     }
     .composerStatusPill:hover,
     .composerStatusPill.open {
@@ -2152,33 +2306,50 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       border-radius: var(--oc-radius-lg);
       background: var(--vscode-input-background);
     }
+    .composer:focus-within {
+      border-color: var(--vscode-focusBorder);
+      box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--vscode-focusBorder) 45%, transparent);
+    }
     .composer textarea {
       min-height: 38px;
       max-height: 108px;
-      padding: 8px 9px 4px;
+      padding: 8px 9px 5px;
       font-size: var(--chat-content-font-size);
       line-height: 1.35;
     }
     .composerToolbar {
       display: flex;
+      flex-wrap: nowrap;
       align-items: center;
       gap: 6px;
       min-width: 0;
+      min-height: 40px;
       padding: 0 6px 6px;
+      overflow: visible;
     }
-    .composerToolbar .modelTrigger {
-      flex: 0 1 160px;
-      width: auto;
-      max-width: min(180px, 42%);
+    .composerPickerRail {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      flex: 1 1 auto;
+      flex-wrap: wrap;
+      min-width: 0;
     }
-    .composerToolbar .agentTrigger {
-      flex: 0 1 160px;
+    .composerPickerRail .modelTrigger {
+      flex: 1 1 132px;
       width: auto;
-      max-width: min(180px, 42%);
+      min-width: 84px;
+      max-width: 180px;
+    }
+    .composerPickerRail .agentTrigger {
+      flex: 1 1 112px;
+      width: auto;
+      min-width: 76px;
+      max-width: 150px;
     }
     .composerToolbar .send {
-      flex: 0 0 26px;
-      margin-left: auto;
+      flex: 0 0 var(--composer-send-button-size);
+      margin-inline-start: auto;
     }
     .composerToolbar .oc-liquid-chip-label {
       min-width: 0;
@@ -2196,48 +2367,137 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
     .modelTrigger:hover,
     .modelTrigger.open { background: var(--oc-hover-bg); }
     .agentTrigger.ready { border-color: var(--oc-border); }
-    .agentTrigger.warning {
+    .agentTrigger.warning,
+    .modelTrigger.warning {
       color: var(--vscode-editorWarning-foreground);
-      border-color: var(--vscode-inputValidation-warningBorder, var(--oc-border));
-      background: var(--oc-warning-soft);
+      border-color: color-mix(in srgb, var(--vscode-editorWarning-foreground) 48%, var(--oc-border));
+      background: transparent;
+    }
+    .composerPickerRail .agentTrigger.warning,
+    .composerPickerRail .modelTrigger.warning {
+      flex: 0 0 102px;
+      width: 102px;
+      min-width: 92px;
+      max-width: 110px;
+    }
+    .agentTrigger.warning .oc-liquid-chip-label,
+    .modelTrigger.warning .oc-liquid-chip-label {
+      color: var(--vscode-editorWarning-foreground);
     }
     .composerActionRow {
-      gap: 5px;
-      justify-content: flex-start;
-      width: auto;
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 4px;
       min-width: 0;
+      padding: 3px 1px 0;
     }
     .toggles {
-      flex: 0 0 auto;
-      gap: 3px;
       padding: 0;
     }
     .toggles .oc-liquid-toggle,
     .toggles .oc-icon-toggle,
     .composerIconButton {
-      flex: 0 0 26px;
+      flex: 0 0 var(--composer-icon-button-size);
+    }
+    .send {
+      width: var(--composer-send-button-size);
+      min-width: var(--composer-send-button-size);
+      height: var(--composer-send-button-size);
+      min-height: var(--composer-send-button-size);
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      flex: 0 0 var(--composer-send-button-size);
+      padding: 0;
+      border-radius: 8px;
+      color: var(--vscode-button-foreground);
+      border-color: color-mix(in srgb, var(--vscode-button-background) 62%, var(--oc-border));
+      background: var(--vscode-button-background);
+    }
+    .send .oc-liquid-icon {
+      width: 18px;
+      height: 18px;
+    }
+    .send:hover,
+    .send:focus-visible {
+      color: var(--vscode-button-foreground);
+      border-color: color-mix(in srgb, var(--vscode-focusBorder) 68%, var(--vscode-button-background));
+      background: var(--vscode-button-hoverBackground, var(--vscode-button-background));
+    }
+    .send[disabled] {
+      color: var(--oc-muted);
+      border-color: transparent;
+      background: transparent;
+      opacity: 0.48;
+    }
+    .send[disabled]:hover,
+    .send[disabled]:focus-visible {
+      color: var(--oc-muted);
+      border-color: transparent;
+      background: transparent;
     }
     .composerActions {
       flex: 0 0 auto;
       min-width: 0;
       padding-top: 1px;
     }
+    .composerSecondaryAction {
+      opacity: 0.68;
+    }
+    .composerSecondaryAction:hover,
+    .composerSecondaryAction:focus-visible {
+      opacity: 1;
+    }
+    .composerProgress {
+      display: none;
+      grid-template-columns: minmax(0, 1fr) auto;
+      align-items: center;
+      gap: 7px;
+      padding: 0 7px 6px;
+      color: var(--oc-muted);
+      font-size: 9px;
+    }
+    .composerProgress.visible {
+      display: grid;
+    }
+    .composerProgressTrack {
+      height: 2px;
+      min-width: 0;
+      overflow: hidden;
+      border-radius: 999px;
+      background: color-mix(in srgb, var(--oc-muted) 24%, transparent);
+    }
+    .composerProgressFill {
+      width: var(--composer-context-progress, 0%);
+      height: 100%;
+      border-radius: inherit;
+      background: var(--vscode-focusBorder);
+    }
+    .composerProgress.warning .composerProgressFill {
+      background: var(--vscode-editorWarning-foreground);
+    }
+    .composerProgress.error .composerProgressFill {
+      background: var(--vscode-errorForeground);
+    }
+    .composerProgressLabel {
+      white-space: nowrap;
+      color: var(--oc-muted);
+    }
     .notice {
       min-height: 14px;
       color: var(--oc-muted);
       font-size: 11px;
     }
-    .send.is-active::after,
-    .composerIconButton.loading::after,
-    .oc-liquid-btn.is-spinning::after {
-      content: "";
-      position: absolute;
-      inset: 4px;
+    .sendSpinner {
+      display: inline-block;
+      width: 16px;
+      height: 16px;
+      flex: 0 0 16px;
       border-radius: 999px;
-      border: 1px solid color-mix(in srgb, currentColor 38%, transparent);
+      border: 2px solid color-mix(in srgb, currentColor 34%, transparent);
       border-top-color: currentColor;
       animation: statusRingSpin 800ms linear infinite;
-      pointer-events: none;
     }
     .modelMenu,
     .suggestions,
@@ -2288,30 +2548,21 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
     }
     @media (max-width: 479px) {
       .composerToolbar {
-        display: flex;
         gap: 4px;
       }
-      .composerToolbar .modelTrigger,
-      .composerToolbar .agentTrigger {
-        flex-basis: 136px;
-        max-width: min(136px, 40%);
-      }
-      .composerToolbar .send {
-        flex-basis: 26px;
-        margin-left: auto;
+      .composerPickerRail .modelTrigger,
+      .composerPickerRail .agentTrigger {
+        flex-grow: 1;
+        min-width: 74px;
+        max-width: 132px;
       }
       .composerActionRow {
-        justify-content: flex-start;
         gap: 4px;
       }
-      .composerIconButton,
-      .send,
-      .toggles .oc-liquid-toggle,
-      .toggles .oc-icon-toggle {
-        width: 26px;
-        min-width: 26px;
-        height: 26px;
-        min-height: 26px;
+      .composerSupportRail { gap: 2px; }
+      .composerSupportRail .composerStatusPill {
+        width: var(--composer-icon-button-size);
+        min-width: var(--composer-icon-button-size);
       }
       .settingsActions { justify-content: flex-start; }
     }
@@ -2325,11 +2576,10 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       .composerStatusToggle,
       .composerStatusPill,
       .composerIconButton,
-      .send,
       .toggles .oc-liquid-toggle {
-        width: 26px;
-        min-width: 26px;
-        height: 26px;
+        width: var(--composer-icon-button-size);
+        min-width: var(--composer-icon-button-size);
+        height: var(--composer-icon-button-size);
       }
     }
     @media (forced-colors: active) {
@@ -2344,6 +2594,8 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       .oc-liquid-toggle,
       .oc-liquid-chip,
       .settingsEntry,
+      .emptyCommand,
+      .composerProgressTrack,
       .messageCard,
       .codeBlock,
       .tableBlock,
@@ -2357,6 +2609,7 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       .oc-icon-toggle:hover,
       .oc-liquid-btn:hover,
       .oc-liquid-toggle:hover,
+      .emptyCommand:hover,
       .emptyPrompt:hover {
         background: Highlight;
         color: HighlightText;
@@ -2379,9 +2632,9 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
         </div>
       </div>
       <div class="iconbar">
-        <button id="historyToggle" class="oc-icon-btn oc-liquid-btn" type="button" title="History" aria-label="History">${liquidIcons.history}<span class="srOnly">History</span></button>
+        <button id="historyToggle" class="oc-icon-btn oc-liquid-btn headerHistoryAction" type="button" title="History" aria-label="History">${liquidIcons.history}<span class="srOnly">History</span></button>
         <button id="newSession" class="oc-icon-btn oc-liquid-btn" type="button" title="New session" aria-label="New session">${liquidIcons.add}<span class="srOnly">New session</span></button>
-        <button id="syncState" class="oc-icon-btn oc-liquid-btn" type="button" title="Refresh chat state" aria-label="Refresh chat state">${liquidIcons.sync}<span class="srOnly">Refresh chat state</span></button>
+        <button id="syncState" class="oc-icon-btn oc-liquid-btn" type="button" title="Refresh chat state" aria-label="Refresh chat state">${liquidIcons.refresh}<span class="srOnly">Refresh chat state</span></button>
         <button id="settingsToggle" class="oc-icon-btn oc-liquid-btn" type="button" title="Connection settings" aria-label="Connection settings">${liquidIcons.settings}<span class="srOnly">Connection settings</span></button>
       </div>
     </header>
@@ -2406,15 +2659,11 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
           <label class="field">Username<input id="username" type="text" spellcheck="false" autocomplete="username" placeholder="opencode"></label>
           <label class="field">Password<input id="password" type="password" autocomplete="current-password" placeholder="Leave empty for no password"></label>
         </div>
-        <div class="row settingsActions">
-          <div class="row">
-            <button id="connect" class="oc-primary-btn oc-liquid-chip" type="button" title="Connect to this remote OpenCode server">${liquidIcons.server}<span class="oc-liquid-chip-label">Connect</span></button>
-            <button id="test" class="oc-icon-btn oc-liquid-btn" type="button" title="Test this remote OpenCode server without connecting" aria-label="Test remote OpenCode connection without connecting">${liquidIcons.beaker}<span class="srOnly">Test remote OpenCode connection without connecting</span></button>
-          </div>
-          <div class="row">
-            <button id="refresh" class="oc-icon-btn oc-liquid-btn" type="button" title="Refresh chat state" aria-label="Refresh chat state">${liquidIcons.refresh}<span class="srOnly">Refresh chat state</span></button>
-            <button id="openOutput" class="oc-icon-btn oc-liquid-btn" type="button" title="Open output log" aria-label="Open output log">${liquidIcons.file}<span class="srOnly">Open output log</span></button>
-          </div>
+        <div class="row settingsActions connectionActions">
+          <button id="connect" class="oc-primary-btn oc-liquid-chip" type="button" title="Connect to this remote OpenCode server">${liquidIcons.server}<span class="oc-liquid-chip-label">Connect</span></button>
+          <button id="test" class="oc-icon-btn oc-liquid-btn" type="button" title="Test this remote OpenCode server without connecting" aria-label="Test remote OpenCode connection without connecting">${liquidIcons.beaker}<span class="srOnly">Test remote OpenCode connection without connecting</span></button>
+          <button id="refresh" class="oc-icon-btn oc-liquid-btn" type="button" title="Refresh chat state" aria-label="Refresh chat state">${liquidIcons.refresh}<span class="srOnly">Refresh chat state</span></button>
+          <button id="openOutput" class="oc-icon-btn oc-liquid-btn" type="button" title="Open output log" aria-label="Open output log">${liquidIcons.file}<span class="srOnly">Open output log</span></button>
         </div>
         <div id="connectionDetail" class="detail visible" aria-live="polite">If this message does not change, the Webview script did not start.</div>
       </div>
@@ -2517,10 +2766,12 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
                 <span id="composerToggleShort" class="composerToggleShort">Hide</span>
               </span>
             </button>
-            <button id="contextStatusPill" class="composerStatusPill oc-icon-btn oc-liquid-btn context" type="button" title="Show context details"><span class="pillText">${liquidIcons.references}</span></button>
-            <button id="indexStatusPill" class="composerStatusPill oc-icon-btn oc-liquid-btn index info compactRing" type="button" title="Show index details"><span class="pillText statusRing" aria-hidden="true">${liquidIcons.database}</span></button>
-            <button id="guardStatusPill" class="composerStatusPill oc-icon-btn oc-liquid-btn guard ok" type="button" title="Show guard details"><span class="pillText">${liquidIcons.shield}</span></button>
-            <button id="usageStatusPill" class="composerStatusPill oc-icon-btn oc-liquid-btn usage pending compactRing" type="button" title="Show usage details"><span class="pillText statusRing" aria-hidden="true">${liquidIcons.sparkle}</span></button>
+            <div class="composerSupportRail" aria-label="Composer status details">
+              <button id="contextStatusPill" class="composerStatusPill oc-icon-btn oc-liquid-btn context" type="button" title="Show context details"><span class="pillText">${liquidIcons.references}</span></button>
+              <button id="indexStatusPill" class="composerStatusPill oc-icon-btn oc-liquid-btn index info compactRing" type="button" title="Show index details"><span class="pillText statusRing" aria-hidden="true">${liquidIcons.database}</span></button>
+              <button id="guardStatusPill" class="composerStatusPill oc-icon-btn oc-liquid-btn guard ok" type="button" title="Show guard details"><span class="pillText">${liquidIcons.shield}</span></button>
+              <button id="usageStatusPill" class="composerStatusPill oc-icon-btn oc-liquid-btn usage pending compactRing" type="button" title="Show usage details"><span class="pillText statusRing" aria-hidden="true">${liquidIcons.sparkle}</span></button>
+            </div>
           </div>
           <div id="composerStatusPopover" class="composerStatusPopover" aria-hidden="true"></div>
           <div id="composerPanel" class="composerPanel">
@@ -2531,29 +2782,37 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
               <div id="modelMenu" class="modelMenu" role="listbox" aria-label="Model" aria-hidden="true"></div>
               <div id="agentMenu" class="modelMenu agentMenu" role="listbox" aria-label="Agent" aria-hidden="true"></div>
               <textarea id="input" placeholder="Ask OpenCode…"></textarea>
-              <div class="composerToolbar">
-                <button id="modelTrigger" class="modelTrigger oc-chip oc-liquid-chip" type="button" title="Model" aria-haspopup="listbox" aria-expanded="false" aria-controls="modelMenu">${liquidIcons.server}<span class="oc-liquid-chip-label">Model</span></button>
-                <button id="agentTrigger" class="modelTrigger agentTrigger oc-chip oc-liquid-chip" type="button" title="Agent" aria-haspopup="listbox" aria-expanded="false" aria-controls="agentMenu">${liquidIcons.agent}<span class="oc-liquid-chip-label">Agent</span></button>
+              <div class="composerToolbar composerControlRail">
+                <div class="composerPickerRail">
+                  <button id="modelTrigger" class="modelTrigger oc-chip oc-liquid-chip" type="button" title="Model" aria-haspopup="listbox" aria-expanded="false" aria-controls="modelMenu">${liquidIcons.server}<span class="oc-liquid-chip-label">Model</span></button>
+                  <button id="agentTrigger" class="modelTrigger agentTrigger oc-chip oc-liquid-chip" type="button" title="Agent" aria-haspopup="listbox" aria-expanded="false" aria-controls="agentMenu">${liquidIcons.agent}<span class="oc-liquid-chip-label">Agent</span></button>
+                </div>
                 <div id="composerHint" class="composerHint">@ files, Ctrl+Enter send</div>
                 <button id="send" class="send oc-icon-btn oc-liquid-btn" type="button" title="Send" aria-label="Send message">${liquidIcons.send}<span class="srOnly">Send message</span></button>
               </div>
             </div>
-            <div class="composerActions">
-              <div class="composerActionRow">
-                <div class="toggles">
-                  <input id="sel" class="toggleInput" type="checkbox" checked>
-                  <button id="selToggle" class="oc-icon-toggle oc-liquid-toggle" type="button" title="Include editor selection" aria-label="Include editor selection" aria-pressed="true">${liquidIcons.selection}<span class="srOnly">Include editor selection</span></button>
-                  <input id="file" class="toggleInput" type="checkbox" checked>
-                  <button id="fileToggle" class="oc-icon-toggle oc-liquid-toggle" type="button" title="Include current file" aria-label="Include current file" aria-pressed="true">${liquidIcons.file}<span class="srOnly">Include current file</span></button>
-                  <input id="diag" class="toggleInput" type="checkbox">
-                  <button id="diagToggle" class="oc-icon-toggle oc-liquid-toggle" type="button" title="Include diagnostics" aria-label="Include diagnostics" aria-pressed="false">${liquidIcons.diagnostics}<span class="srOnly">Include diagnostics</span></button>
-                  <input id="diff" class="toggleInput" type="checkbox">
-                  <button id="diffToggle" class="oc-icon-toggle oc-liquid-toggle" type="button" title="Include git diff" aria-label="Include git diff" aria-pressed="false">${liquidIcons.diff}<span class="srOnly">Include git diff</span></button>
-                </div>
-                <button id="exportMarkdown" class="composerIconButton oc-icon-btn oc-liquid-btn" type="button" title="Export current chat to Markdown" aria-label="Export current chat to Markdown">${liquidIcons.save}<span class="srOnly">Export current chat to Markdown</span></button>
-                <button id="attach" class="composerIconButton oc-icon-btn oc-liquid-btn" type="button" title="Attach file as persistent context" aria-label="Attach file as persistent context">${liquidIcons.attach}<span class="srOnly">Attach file as persistent context</span></button>
-                <button id="refreshModels" class="composerIconButton oc-icon-btn oc-liquid-btn" type="button" title="Refresh models" aria-label="Refresh models">${liquidIcons.refresh}<span class="srOnly">Refresh models</span></button>
+            <div class="composerActionRow toggles composerContextRail" aria-label="Composer context actions">
+              <input id="file" class="toggleInput" type="checkbox" checked>
+              <button id="fileToggle" class="oc-icon-toggle oc-liquid-toggle" type="button" title="Include current file" aria-label="Include current file" aria-pressed="true">${liquidIcons.file}<span class="srOnly">Include current file</span></button>
+              <input id="sel" class="toggleInput" type="checkbox" checked>
+              <button id="selToggle" class="oc-icon-toggle oc-liquid-toggle" type="button" title="Include editor selection" aria-label="Include editor selection" aria-pressed="true">${liquidIcons.selection}<span class="srOnly">Include editor selection</span></button>
+              <input id="diag" class="toggleInput" type="checkbox">
+              <button id="diagToggle" class="oc-icon-toggle oc-liquid-toggle" type="button" title="Include diagnostics" aria-label="Include diagnostics" aria-pressed="false">${liquidIcons.diagnostics}<span class="srOnly">Include diagnostics</span></button>
+              <input id="diff" class="toggleInput" type="checkbox">
+              <button id="diffToggle" class="oc-icon-toggle oc-liquid-toggle" type="button" title="Include git diff" aria-label="Include git diff" aria-pressed="false">${liquidIcons.diff}<span class="srOnly">Include git diff</span></button>
+              <button id="attach" class="composerIconButton oc-icon-btn oc-liquid-btn" type="button" title="Attach file as persistent context" aria-label="Attach file as persistent context">${liquidIcons.attach}<span class="srOnly">Attach file as persistent context</span></button>
+              <button id="refreshModels" class="composerIconButton oc-icon-btn oc-liquid-btn" type="button" title="Refresh models" aria-label="Refresh models">${liquidIcons.refresh}<span class="srOnly">Refresh models</span></button>
+              <button id="composerMore" class="composerIconButton composerMoreButton oc-icon-btn oc-liquid-btn" type="button" title="More actions" aria-label="More actions" aria-haspopup="menu" aria-expanded="false" aria-controls="composerMoreMenu">${liquidIcons.more}<span class="srOnly">More actions</span></button>
+              <div id="composerMoreMenu" class="modelMenu composerMoreMenu" role="menu" aria-label="More composer actions" aria-hidden="true">
+                <button id="exportMarkdown" class="modelMenuItem composerMoreItem" type="button" role="menuitem" title="Export current chat to Markdown" aria-label="Export current chat to Markdown">
+                  <span class="modelMenuName">Export Markdown</span>
+                  <span class="modelMenuMeta">Save current chat</span>
+                </button>
               </div>
+            </div>
+            <div id="composerProgress" class="composerProgress" aria-hidden="true">
+              <div class="composerProgressTrack"><div id="composerProgressFill" class="composerProgressFill"></div></div>
+              <span id="composerProgressLabel" class="composerProgressLabel"></span>
             </div>
             <div id="manualModelRow" class="manualModel">
               <input id="manualModel" spellcheck="false" placeholder="provider/model">
@@ -2572,6 +2831,7 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
 	    const STATUS_ICONS = {
 	      context: LIQUID_ICONS.references,
 	      database: LIQUID_ICONS.database,
+	      diagnostics: LIQUID_ICONS.diagnostics,
 	      panelBottomClose: LIQUID_ICONS.more,
 	      panelBottomOpen: LIQUID_ICONS.chat,
 	      shieldAlert: LIQUID_ICONS.diagnostics,
@@ -2605,6 +2865,7 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
     let mentionSearched = false;
     let modelMenuOpen = false;
     let agentMenuOpen = false;
+    let composerMoreMenuOpen = false;
     let composerCollapsed = false;
     let composerPinnedStatusPopover = "";
     let composerHoverStatusPopover = "";
@@ -2650,6 +2911,7 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       renderShell();
       positionModelMenu();
       positionAgentMenu();
+      positionComposerMoreMenu();
     });
     el("historyToggle").addEventListener("click", () => {
       historyTouched = true;
@@ -2715,12 +2977,21 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
     el("agentMenu").addEventListener("click", (event) => event.stopPropagation());
     el("modelMenu").addEventListener("keydown", (event) => onPopupMenuKeydown(event, "model"));
     el("agentMenu").addEventListener("keydown", (event) => onPopupMenuKeydown(event, "agent"));
+    el("composerMore").addEventListener("click", (event) => {
+      event.stopPropagation();
+      toggleComposerMoreMenu();
+    });
+    el("composerMore").addEventListener("keydown", onComposerMoreKeydown);
+    el("composerMoreMenu").addEventListener("click", (event) => event.stopPropagation());
+    el("composerMoreMenu").addEventListener("keydown", onComposerMoreKeydown);
     window.addEventListener("click", () => {
       const hadModelMenu = modelMenuOpen;
       const hadAgentMenu = agentMenuOpen;
+      const hadComposerMoreMenu = composerMoreMenuOpen;
       const hadStatusPopover = Boolean(activeComposerStatusPopover());
       modelMenuOpen = false;
       agentMenuOpen = false;
+      composerMoreMenuOpen = false;
       closeComposerStatusPopoverState();
       if (hadModelMenu) {
         renderModelMenu();
@@ -2730,15 +3001,17 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
         renderAgentMenu();
         renderAgentTrigger();
       }
+      if (hadComposerMoreMenu) renderComposerMoreMenu();
       if (hadStatusPopover) renderComposerStatusBar();
     });
     window.addEventListener("keydown", (event) => {
       if (event.key !== "Escape") return;
-      const hadPopup = modelMenuOpen || agentMenuOpen || Boolean(activeComposerStatusPopover()) || el("suggestions").classList.contains("open");
+      const hadPopup = modelMenuOpen || agentMenuOpen || composerMoreMenuOpen || Boolean(activeComposerStatusPopover()) || el("suggestions").classList.contains("open");
       if (!hadPopup) return;
       event.preventDefault();
       modelMenuOpen = false;
       agentMenuOpen = false;
+      composerMoreMenuOpen = false;
       closeComposerStatusPopoverState();
       mentionResults = [];
       mentionStatus = "";
@@ -2749,6 +3022,7 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       renderModelTrigger();
       renderAgentMenu();
       renderAgentTrigger();
+      renderComposerMoreMenu();
       renderSuggestions();
       renderComposerStatusBar();
     });
@@ -2760,7 +3034,11 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       }
     });
 	    el("codeIntelligence").addEventListener("click", onCodeIntelligenceAction);
-	    el("exportMarkdown").addEventListener("click", () => vscode.postMessage({ type: "exportMarkdown", scope: "session" }));
+	    el("exportMarkdown").addEventListener("click", () => {
+        composerMoreMenuOpen = false;
+        renderComposerMoreMenu();
+        vscode.postMessage({ type: "exportMarkdown", scope: "session" });
+      });
 	    el("attach").addEventListener("click", () => vscode.postMessage({ type: "addFile" }));
 	    el("send").addEventListener("click", onSendButtonClick);
 	    el("input").addEventListener("input", onComposerInput);
@@ -2768,12 +3046,12 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
 	    el("sel").addEventListener("change", renderMentionChips);
 	    el("file").addEventListener("change", renderMentionChips);
     for (const item of [
-      ["sel", "selToggle"],
       ["file", "fileToggle"],
-      ["diag", "diagToggle"],
+      ["sel", "selToggle"],
+      ["diag", "diagToggle", "diagnostics"],
       ["diff", "diffToggle"],
     ]) {
-      bindContextToggle(item[0], item[1]);
+      bindContextToggle(item[0], item[1], item[2]);
     }
 
     window.addEventListener("message", (event) => {
@@ -2950,6 +3228,7 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
     function closeComposerPopups() {
       modelMenuOpen = false;
       agentMenuOpen = false;
+      composerMoreMenuOpen = false;
       mentionResults = [];
       mentionStatus = "";
       mentionError = "";
@@ -2959,6 +3238,7 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       renderModelTrigger();
       renderAgentMenu();
       renderAgentTrigger();
+      renderComposerMoreMenu();
       renderSuggestions();
     }
 
@@ -3001,14 +3281,23 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
         send();
       }
 
-      function bindContextToggle(inputId, buttonId) {
+      function bindContextToggle(inputId, buttonId, popoverName) {
         const input = el(inputId);
         const button = el(buttonId);
         if (!input || !button) return;
-        button.addEventListener("click", () => {
+        button.addEventListener("click", (event) => {
           input.checked = !input.checked;
           input.dispatchEvent(new Event("change", { bubbles: true }));
-          renderComposerToggles();
+          if (popoverName) {
+            event.stopPropagation();
+            cancelComposerHoverClose();
+            composerPinnedStatusPopover = popoverName;
+            composerHoverStatusPopover = "";
+            closeComposerPopups();
+            renderComposerStatusBar();
+          } else {
+            renderComposerToggles();
+          }
         });
         input.addEventListener("change", renderComposerToggles);
       }
@@ -3169,6 +3458,7 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
 	      el("diag").checked = Boolean(state.defaults && state.defaults.includeDiagnostics);
 	      el("diff").checked = Boolean(state.defaults && state.defaults.includeGitDiff);
         renderComposerToggles();
+        renderComposerMoreMenu();
 	      renderSendButton();
 	      renderComposerStatusBar();
 	    }
@@ -3176,13 +3466,19 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
 	    function renderSendButton() {
 	      const blockedByGuard = localOnlyAgentBlocked() && !looksLikeExportRequest(el("input").value);
         const button = el("send");
+        const cancellable = Boolean(state.sending && state.sendCancellable !== false);
+        const loading = Boolean(state.sending && !cancellable);
 	      button.disabled = Boolean(!state.sending && blockedByGuard);
-        const label = state.sending ? "Stop current request" : "Send message";
-        button.title = label;
-        button.setAttribute("aria-label", label);
-        button.classList.toggle("is-active", Boolean(state.sending));
-        button.classList.toggle("is-spinning", Boolean(state.sending));
-        setIconOnlyButton(button, state.sending ? "stop" : "send", label);
+        const label = blockedByGuard && !state.sending
+          ? "Select an agent before sending"
+          : cancellable
+            ? "Stop current request"
+            : loading
+              ? "Sending message"
+              : "Send message";
+        button.classList.toggle("is-active", cancellable);
+        button.classList.toggle("is-loading", loading);
+        setSendButtonContent(button, cancellable ? "stop" : "send", label, loading);
 	    }
 
     function renderShell() {
@@ -3317,9 +3613,9 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
 
       function renderComposerToggles() {
         const configs = [
-          { input: "sel", button: "selToggle", label: "Include editor selection", icon: "selection" },
           { input: "file", button: "fileToggle", label: "Include current file", icon: "file" },
-          { input: "diag", button: "diagToggle", label: "Include diagnostics", icon: "diagnostics", badge: diagnosticsBadgeText() },
+          { input: "sel", button: "selToggle", label: "Include editor selection", icon: "selection" },
+          { input: "diag", button: "diagToggle", label: diagnosticsToggleLabel(), icon: "diagnostics", badge: diagnosticsBadgeText(), popover: "diagnostics" },
           { input: "diff", button: "diffToggle", label: "Include git diff", icon: "diff" },
         ];
         for (const config of configs) {
@@ -3330,14 +3626,26 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
           button.setAttribute("aria-pressed", pressed ? "true" : "false");
           button.classList.toggle("is-active", pressed);
           setIconOnlyButton(button, config.icon, config.label);
+          if (config.popover) {
+            button.setAttribute("aria-haspopup", "dialog");
+            button.setAttribute("aria-expanded", activeComposerStatusPopover() === config.popover ? "true" : "false");
+            button.setAttribute("aria-controls", "composerStatusPopover");
+          }
           renderLiquidBadge(button, config.badge);
         }
       }
 
       function diagnosticsBadgeText() {
-        const count = state.autoContext && Number(state.autoContext.diagnosticCount || 0);
+        const count = diagnosticsTotal();
         if (!count) return "";
         return String(Math.min(count, 99));
+      }
+
+      function diagnosticsToggleLabel() {
+        const count = diagnosticsTotal();
+        const included = Boolean(el("diag").checked);
+        if (!count) return included ? "Diagnostics included; none available in workspace" : "Include diagnostics; none available in workspace";
+        return count + " diagnostics available; " + (included ? "included" : "excluded") + " in next prompt";
       }
 
       function renderRagCompactStatus(rag, statusText) {
@@ -3380,6 +3688,26 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
         button.setAttribute("aria-label", label);
       }
 
+      function setSendButtonContent(button, iconName, label, loading) {
+        if (!button) return;
+        button.textContent = "";
+        if (button.tagName === "BUTTON" && !button.getAttribute("type")) button.type = "button";
+        if (loading) {
+          const spinner = document.createElement("span");
+          spinner.className = "sendSpinner";
+          spinner.setAttribute("aria-hidden", "true");
+          button.appendChild(spinner);
+        } else {
+          appendLiquidIcon(button, iconName);
+        }
+        const sr = document.createElement("span");
+        sr.className = "srOnly";
+        sr.textContent = label;
+        button.appendChild(sr);
+        button.title = label;
+        button.setAttribute("aria-label", label);
+      }
+
       function setChipLabel(button, iconName, label) {
         if (!button) return;
         button.textContent = "";
@@ -3400,16 +3728,31 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       }
 
       function renderLiquidBadge(node, text) {
-        for (const badge of Array.from(node.querySelectorAll(".oc-liquid-badge"))) badge.remove();
+        removeInlineBadge(node, "oc-liquid-badge");
         if (!text) return;
         const badge = document.createElement("span");
         badge.className = "oc-badge oc-liquid-badge";
+        badge.dataset.badgeFor = node.id || "";
         badge.setAttribute("aria-hidden", "true");
         badge.textContent = text;
-        node.appendChild(badge);
+        insertInlineBadge(node, badge);
+      }
+
+      function removeInlineBadge(node, className) {
+        if (!node || !node.parentElement) return;
+        for (const badge of Array.from(node.parentElement.children)) {
+          if (badge.classList.contains(className) && badge.getAttribute("data-badge-for") === (node.id || "")) {
+            badge.remove();
+          }
+        }
+      }
+
+      function insertInlineBadge(node, badge) {
+        if (node && node.parentElement) node.insertAdjacentElement("afterend", badge);
       }
 
     function renderComposerStatusBar() {
+      renderComposerToggles();
       const wrap = document.querySelector(".composerWrap");
       const panel = el("composerPanel");
       const toggle = el("composerStatusToggle");
@@ -3436,7 +3779,34 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       updateStatusPill(el("guardStatusPill"), guard);
       const usage = composerUsageStatus();
       updateStatusPill(el("usageStatusPill"), usage);
+      renderComposerProgress();
       renderComposerStatusPopover();
+    }
+
+    function renderComposerProgress() {
+      const root = el("composerProgress");
+      const fill = el("composerProgressFill");
+      const label = el("composerProgressLabel");
+      if (!root || !fill || !label) return;
+      const progress = contextUsageProgress();
+      root.className = "composerProgress" + (progress ? " visible " + progress.kind : "");
+      root.setAttribute("aria-hidden", progress ? "false" : "true");
+      root.title = progress ? progress.title : "";
+      fill.style.width = progress ? progress.percent : "0%";
+      label.textContent = progress ? progress.label : "";
+    }
+
+    function contextUsageProgress() {
+      const context = state.usage && state.usage.context;
+      if (!context || !context.used || !context.limit) return undefined;
+      const ratio = clamp01(Number(context.ratio ?? (context.used / context.limit)));
+      const kind = state.usage && (state.usage.level === "warning" || state.usage.level === "error") ? state.usage.level : "normal";
+      return {
+        kind,
+        percent: formatRingProgress(ratio),
+        label: formatCompactCount(context.used) + " / " + formatCompactCount(context.limit),
+        title: context.detail || context.summary || "Context usage",
+      };
     }
 
     function updateStatusPill(node, input) {
@@ -3461,16 +3831,17 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
     }
 
     function renderStatusBadge(node, text) {
-      for (const badge of Array.from(node.querySelectorAll(".statusBadge"))) badge.remove();
+      removeInlineBadge(node, "statusBadge");
       if (!text) return;
       const badge = document.createElement("span");
       badge.className = "statusBadge";
+      badge.dataset.badgeFor = node.id || "";
       badge.setAttribute("aria-hidden", "true");
       const badgeText = document.createElement("span");
       badgeText.className = "statusBadgeText";
       badgeText.textContent = text;
       badge.append(badgeText);
-      node.append(badge);
+      insertInlineBadge(node, badge);
     }
 
     function bindComposerStatusPill(id, name, hover) {
@@ -3500,6 +3871,7 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       root.setAttribute("aria-hidden", activePopover ? "false" : "true");
       if (!activePopover) return;
       if (activePopover === "context") renderContextStatusPopover(root);
+      if (activePopover === "diagnostics") renderDiagnosticsStatusPopover(root);
       if (activePopover === "index") renderIndexStatusPopover(root);
       if (activePopover === "guard") renderGuardStatusPopover(root);
       if (activePopover === "usage") renderUsageStatusPopover(root);
@@ -3755,6 +4127,73 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       root.appendChild(rows);
     }
 
+    function renderDiagnosticsStatusPopover(root) {
+      const summary = diagnosticsSummary();
+      const included = Boolean(el("diag").checked);
+      const total = Number(summary.total || 0);
+      const limit = Number(summary.limit || 60);
+      const stateText = total
+        ? total + " workspace diagnostics; " + (included ? "included" : "excluded") + " in next prompt. Up to " + limit + " will be sent."
+        : (included ? "Diagnostics are included, but none are currently available in this workspace." : "Diagnostics are excluded, and none are currently available in this workspace.");
+      appendStatusPopoverHeader(root, "Diagnostics", stateText);
+      const rows = statusRows();
+      appendStatusRow(rows, included ? "Will be sent with the next prompt" : "Will not be sent with the next prompt");
+      appendStatusRow(rows, diagnosticsSeverityText(summary));
+      const files = Array.isArray(summary.files) ? summary.files : [];
+      for (const file of files) {
+        appendStatusRow(rows, diagnosticsFileText(file));
+        for (const example of (file.examples || []).slice(0, 2)) {
+          appendStatusRow(rows, file.path + ":" + example.line + " " + example.severity + ": " + example.message);
+        }
+      }
+      if (!files.length && total > 0) appendStatusRow(rows, "Diagnostics exist, but no preview rows were provided.");
+      root.appendChild(rows);
+    }
+
+    function diagnosticsSummary() {
+      const auto = state.autoContext || {};
+      const summary = auto.diagnostics || {};
+      return {
+        total: Number(summary.total ?? auto.diagnosticCount ?? 0),
+        limit: Number(summary.limit || 60),
+        counts: summary.counts || {},
+        files: Array.isArray(summary.files) ? summary.files : [],
+      };
+    }
+
+    function diagnosticsTotal() {
+      return Number(diagnosticsSummary().total || 0);
+    }
+
+    function diagnosticsSeverityText(summary) {
+      const counts = summary.counts || {};
+      const parts = [
+        countLabel(counts.error, "error"),
+        countLabel(counts.warning, "warning"),
+        countLabel(counts.information, "info"),
+        countLabel(counts.hint, "hint"),
+        countLabel(counts.unknown, "unknown"),
+      ].filter(Boolean);
+      return parts.length ? parts.join(" · ") : "No workspace diagnostics";
+    }
+
+    function diagnosticsFileText(file) {
+      const parts = [
+        countLabel(file.errors, "error"),
+        countLabel(file.warnings, "warning"),
+        countLabel(file.information, "info"),
+        countLabel(file.hints, "hint"),
+        countLabel(file.unknown, "unknown"),
+      ].filter(Boolean);
+      return file.path + ": " + Number(file.total || 0) + " diagnostics" + (parts.length ? " (" + parts.join(", ") + ")" : "");
+    }
+
+    function countLabel(value, label) {
+      const count = Number(value || 0);
+      if (!count) return "";
+      return count + " " + label + (count === 1 ? "" : "s");
+    }
+
     function renderIndexStatusPopover(root) {
       const graph = state.codeGraph || { state: "disabled", detail: "Local code graph is disabled.", indexedFiles: 0, indexedFunctions: 0, indexedMacros: 0, truncated: false };
       const stateName = graph.state || "disabled";
@@ -3931,20 +4370,32 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
 	      const prompts = document.createElement("div");
 	      prompts.className = "emptyPrompts";
 	      for (const item of [
-          { label: "Explain file", prompt: "Explain the current file.", icon: "file" },
-          { label: "Refactor", prompt: "Refactor this safely.", icon: "sparkle" },
-          { label: "Review diff", prompt: "Review the current diff.", icon: "diff" },
+          { label: "Explain file", caption: "Summarize the current file.", prompt: "Explain the current file.", icon: "file" },
+          { label: "Refactor", caption: "Improve the selected code.", prompt: "Refactor this safely.", icon: "sparkle" },
+          { label: "Review diff", caption: "Check the current diff.", prompt: "Review the current diff.", icon: "diff" },
         ]) {
 	        const prompt = document.createElement("button");
           prompt.type = "button";
-	        prompt.className = "emptyPrompt oc-chip oc-liquid-chip";
+	        prompt.className = "emptyCommand";
           prompt.title = item.label;
           prompt.setAttribute("aria-label", item.label);
-          appendLiquidIcon(prompt, item.icon);
+          const icon = document.createElement("span");
+          icon.className = "emptyCommandIcon";
+          appendLiquidIcon(icon, item.icon);
+          const main = document.createElement("span");
+          main.className = "emptyCommandMain";
           const label = document.createElement("span");
-          label.className = "oc-chip-label oc-liquid-chip-label";
+          label.className = "emptyCommandTitle";
 	        label.textContent = item.label;
-          prompt.appendChild(label);
+          const caption = document.createElement("span");
+          caption.className = "emptyCommandCaption";
+          caption.textContent = item.caption;
+          main.append(label, caption);
+          const arrow = document.createElement("span");
+          arrow.className = "emptyCommandArrow";
+          arrow.setAttribute("aria-hidden", "true");
+          arrow.textContent = "›";
+          prompt.append(icon, main, arrow);
           prompt.addEventListener("click", () => {
             el("input").value = item.prompt;
             onComposerInput();
@@ -5471,6 +5922,14 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       return Number(value || 0).toLocaleString();
     }
 
+    function formatCompactCount(value) {
+      const number = Number(value || 0);
+      const absolute = Math.abs(number);
+      if (absolute < 1000) return String(Math.round(number));
+      if (absolute < 1000000) return (Math.round(number / 100) / 10).toFixed(1).replace(/\\.0$/, "") + "k";
+      return (Math.round(number / 100000) / 10).toFixed(1).replace(/\\.0$/, "") + "m";
+    }
+
     function formatBytes(value) {
       const bytes = Number(value || 0);
       if (bytes < 1024) return bytes + " B";
@@ -5531,15 +5990,22 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
 	    function renderModelTrigger() {
 	      const trigger = el("modelTrigger");
 	      const label = state.loadingModels ? "Loading models" : currentModelLabel();
-        setChipLabel(trigger, "server", shortModelName(label));
-	      trigger.title = label;
+        const warning = Boolean(state.modelError);
+        setChipLabel(trigger, warning ? "diagnostics" : "server", warning ? "model" : shortModelName(label));
+	      trigger.title = warning ? state.modelError : label;
 	      trigger.setAttribute("aria-expanded", modelMenuOpen ? "true" : "false");
-	      trigger.className = "modelTrigger oc-chip oc-liquid-chip" + (modelMenuOpen ? " open is-active" : "");
+	      trigger.className = "modelTrigger oc-chip oc-liquid-chip"
+          + (modelMenuOpen ? " open is-active" : "")
+          + (warning ? " warning" : "");
 	    }
 
     function toggleModelMenu() {
       modelMenuOpen = !modelMenuOpen;
-      if (modelMenuOpen) agentMenuOpen = false;
+      if (modelMenuOpen) {
+        agentMenuOpen = false;
+        composerMoreMenuOpen = false;
+      }
+      renderComposerMoreMenu();
       renderAgentMenu();
       renderAgentTrigger();
       renderModelMenu();
@@ -5591,7 +6057,11 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
 
     function toggleAgentMenu() {
       agentMenuOpen = !agentMenuOpen;
-      if (agentMenuOpen) modelMenuOpen = false;
+      if (agentMenuOpen) {
+        modelMenuOpen = false;
+        composerMoreMenuOpen = false;
+      }
+      renderComposerMoreMenu();
       renderModelMenu();
       renderModelTrigger();
       renderAgentMenu();
@@ -5636,6 +6106,49 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       else if (key === "ArrowUp") next = current <= 0 ? items.length - 1 : current - 1;
       else next = current < 0 || current >= items.length - 1 ? 0 : current + 1;
       items[next].focus();
+    }
+
+    function toggleComposerMoreMenu() {
+      composerMoreMenuOpen = !composerMoreMenuOpen;
+      if (composerMoreMenuOpen) {
+        modelMenuOpen = false;
+        agentMenuOpen = false;
+        closeComposerStatusPopoverState();
+      }
+      renderModelMenu();
+      renderModelTrigger();
+      renderAgentMenu();
+      renderAgentTrigger();
+      renderComposerStatusBar();
+      renderComposerMoreMenu();
+    }
+
+    function renderComposerMoreMenu() {
+      const trigger = el("composerMore");
+      const root = el("composerMoreMenu");
+      if (!trigger || !root) return;
+      trigger.setAttribute("aria-expanded", composerMoreMenuOpen ? "true" : "false");
+      root.className = "modelMenu composerMoreMenu" + (composerMoreMenuOpen ? " open" : "");
+      root.setAttribute("aria-hidden", composerMoreMenuOpen ? "false" : "true");
+      if (composerMoreMenuOpen) positionComposerMoreMenu();
+    }
+
+    function positionComposerMoreMenu() {
+      positionPopupMenu("composerMoreMenu", "composerMore", composerMoreMenuOpen);
+    }
+
+    function onComposerMoreKeydown(event) {
+      if (event.key === "Escape" && composerMoreMenuOpen) {
+        event.preventDefault();
+        composerMoreMenuOpen = false;
+        renderComposerMoreMenu();
+        el("composerMore").focus();
+        return;
+      }
+      if (event.key !== "ArrowDown" && event.key !== "ArrowUp" && event.key !== "Home" && event.key !== "End") return;
+      event.preventDefault();
+      if (!composerMoreMenuOpen) toggleComposerMoreMenu();
+      requestAnimationFrame(() => focusPopupMenuItem("composerMoreMenu", event.key));
     }
 
     function renderAgentMenu() {
@@ -5749,7 +6262,7 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       if (!state.localOnlyMode && !state.selectedAgent) return "No agent";
       const current = state.selectedAgent || state.localOnlyAgent || "vscode-local";
       if (state.loadingAgents) return "Loading agent";
-      if (localOnlyAgentBlocked()) return "Missing";
+      if (localOnlyAgentBlocked()) return "agent";
       return current;
     }
 

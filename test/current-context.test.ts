@@ -39,5 +39,8 @@ describe("default current file context", () => {
     expect(chatViewSource).toContain("onContextSummary")
     expect(chatViewSource).toContain("[context] sent")
     expect(chatViewSource).toContain("autoContext: this.autoContextState()")
+    expect(chatViewSource).toContain("workspaceDiagnosticsSummary")
+    expect(chatViewSource).toContain("diagnosticCount: diagnostics.total")
+    expect(chatViewSource).toContain("vscode.workspace.getWorkspaceFolder(uri)")
   })
 })

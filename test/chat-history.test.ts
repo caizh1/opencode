@@ -192,6 +192,10 @@ describe("chat history flow", () => {
     expect(chatHtmlSource).toContain('id="indexStatusPill"')
     expect(chatHtmlSource).toContain('id="guardStatusPill"')
     expect(chatHtmlSource).toContain('id="usageStatusPill"')
+    expect(chatHtmlSource).toContain('class="composerSupportRail" aria-label="Composer status details"')
+    expect(chatHtmlSource).toContain('id="composerProgress" class="composerProgress" aria-hidden="true"')
+    expect(chatHtmlSource).toContain("function renderComposerProgress")
+    expect(chatHtmlSource).toContain("function contextUsageProgress")
     expect(chatHtmlSource).toContain('aria-controls="composerPanel"')
     expect(chatHtmlSource).toContain("composerToggleIcon")
     expect(chatHtmlSource).toContain("composerToggleFull")
@@ -203,7 +207,7 @@ describe("chat history flow", () => {
     expect(chatHtmlSource).toContain("statusBadge")
     expect(chatHtmlSource).toContain("Hide input")
     expect(chatHtmlSource).toContain("Show input")
-    expect(chatHtmlSource).toContain('setIconOnlyButton(button, state.sending ? "stop" : "send", label)')
+    expect(chatHtmlSource).toContain('setSendButtonContent(button, cancellable ? "stop" : "send", label, loading)')
     expect(chatHtmlSource).toContain("let composerCollapsed = false")
     expect(chatHtmlSource).toContain('let composerPinnedStatusPopover = ""')
     expect(chatHtmlSource).toContain('let composerHoverStatusPopover = ""')
@@ -235,14 +239,28 @@ describe("chat history flow", () => {
       chatHtmlSource.lastIndexOf("    .statusRing {"),
       chatHtmlSource.indexOf("    .statusRing::after", chatHtmlSource.lastIndexOf("    .statusRing {")),
     )
+    const finalStatusBarRule = chatHtmlSource.slice(
+      chatHtmlSource.lastIndexOf("    .composerStatusBar {"),
+      chatHtmlSource.indexOf("    .composerWrap.collapsed", chatHtmlSource.lastIndexOf("    .composerStatusBar {")),
+    )
     expect(finalStatusRingRule).toContain("background: conic-gradient")
     expect(finalStatusRingRule).toContain("var(--ring-progress")
     expect(finalStatusRingRule).not.toContain("background: transparent;")
     expect(finalStatusRingRule).not.toContain("box-shadow: none;")
+    expect(finalStatusBarRule).toContain("position: static;")
+    expect(finalStatusBarRule).toContain("justify-content: flex-start;")
+    expect(finalStatusBarRule).not.toContain("position: absolute;")
+    expect(finalStatusBarRule).not.toContain("justify-content: space-between;")
     expect(chatHtmlSource).toContain(".composerStatusPill.index.ready { color: var(--vscode-testing-iconPassed")
     expect(chatHtmlSource).toContain(".statusRing .oc-liquid-icon")
     expect(chatHtmlSource).toContain("badgeText: count > 0")
     expect(chatHtmlSource).toContain("ringIcon: STATUS_ICONS.database")
+    expect(chatHtmlSource.indexOf('class="composerSupportRail" aria-label="Composer status details"')).toBeGreaterThan(
+      chatHtmlSource.indexOf('id="composerStatusBar"'),
+    )
+    expect(chatHtmlSource.indexOf('class="composerSupportRail" aria-label="Composer status details"')).toBeLessThan(
+      chatHtmlSource.indexOf('id="composerStatusPopover"'),
+    )
     expect(chatHtmlSource).toContain('bindComposerStatusPill("contextStatusPill", "context", true)')
     expect(chatHtmlSource).toContain("color-mix(in srgb, currentColor")
     expect(chatHtmlSource).toContain("transform: none")
@@ -263,8 +281,10 @@ describe("chat history flow", () => {
 
   test("supports markdown export from explicit UI and model-classified prompts", () => {
     expect(chatHtmlSource).toContain('id="exportMarkdown"')
-    expect(chatHtmlSource).toContain('class="composerActionRow"')
+    expect(chatHtmlSource).toContain('class="composerActionRow toggles composerContextRail"')
     expect(chatHtmlSource).toContain('class="composerIconButton oc-icon-btn oc-liquid-btn"')
+    expect(chatHtmlSource).toContain('id="composerMoreMenu" class="modelMenu composerMoreMenu"')
+    expect(chatHtmlSource).toContain('class="modelMenuItem composerMoreItem"')
     expect(chatHtmlSource).toContain('aria-label="Export current chat to Markdown"')
     expect(chatHtmlSource).toContain('class="srOnly"')
     expect(chatHtmlSource).toContain("border: 0;")
