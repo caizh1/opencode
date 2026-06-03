@@ -39,6 +39,42 @@ describe("session.retry.delay", () => {
     expect(delays).toStrictEqual([2000, 4000, 8000, 16000, 30000, 30000, 30000, 30000, 30000, 30000])
   })
 
+  test("uses initial delay for 504 gateway timeout retries", () => {
+    const error = Schema.decodeUnknownSync(MessageV2.APIError.Schema)(
+      new MessageV2.APIError({
+        message: "Gateway Time-out",
+        isRetryable: true,
+        statusCode: 504,
+        responseHeaders: { "retry-after-ms": "90000" },
+      }).toObject(),
+    )
+    const delays = Array.from({ length: 5 }, (_, index) => SessionRetry.delay(index + 1, error))
+    expect(delays).toStrictEqual([2000, 2000, 2000, 2000, 2000])
+  })
+
+  test("uses initial delay for gateway timeout metadata retries", () => {
+    const error = Schema.decodeUnknownSync(MessageV2.APIError.Schema)(
+      new MessageV2.APIError({
+        message: "Provider request failed",
+        isRetryable: true,
+        metadata: { timeoutSource: "gateway_timeout" },
+      }).toObject(),
+    )
+    const delays = Array.from({ length: 5 }, (_, index) => SessionRetry.delay(index + 1, error))
+    expect(delays).toStrictEqual([2000, 2000, 2000, 2000, 2000])
+  })
+
+  test("uses initial delay for gateway timeout message retries", () => {
+    const error = Schema.decodeUnknownSync(MessageV2.APIError.Schema)(
+      new MessageV2.APIError({
+        message: "Gateway Timeout",
+        isRetryable: true,
+      }).toObject(),
+    )
+    const delays = Array.from({ length: 5 }, (_, index) => SessionRetry.delay(index + 1, error))
+    expect(delays).toStrictEqual([2000, 2000, 2000, 2000, 2000])
+  })
+
   test("prefers retry-after-ms when shorter than exponential", () => {
     const error = apiError({ "retry-after-ms": "1500" })
     expect(SessionRetry.delay(4, error)).toBe(1500)

@@ -31,8 +31,17 @@ function cap(ms: number) {
   return Math.min(ms, RETRY_MAX_DELAY)
 }
 
+function isGatewayTimeout(error: MessageV2.APIError) {
+  return (
+    error.data.statusCode === 504 ||
+    error.data.metadata?.timeoutSource === "gateway_timeout" ||
+    /gateway time[- ]?out/i.test(error.data.message)
+  )
+}
+
 export function delay(attempt: number, error?: MessageV2.APIError) {
   if (error) {
+    if (isGatewayTimeout(error)) return RETRY_INITIAL_DELAY
     const headers = error.data.responseHeaders
     if (headers) {
       const retryAfterMs = headers["retry-after-ms"]
