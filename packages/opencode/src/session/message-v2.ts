@@ -1243,6 +1243,17 @@ export function fromError(
       ).toObject()
     case e instanceof LLMError:
       return fromLLMError(e)
+    case e instanceof ProviderError.ResponseStreamError:
+      return new APIError(
+        {
+          message: e.message,
+          isRetryable: true,
+          metadata: {
+            code: e.name,
+          },
+        },
+        { cause: e },
+      ).toObject()
     case APICallError.isInstance(e):
       const parsed = ProviderError.parseAPICallError({
         providerID: ctx.providerID,
