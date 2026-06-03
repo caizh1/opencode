@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import { parseCFile } from "../src/codegraph-c-parser"
-import { buildRagChunks, buildRagVectorIndex, decodeRagShardVectors, encodeRagShardVectors, searchRagVectorIndex, splitRagVectorIndex } from "../src/rag-index"
+import { RagHttpError } from "../src/rag-provider"
+import { buildRagChunks, buildRagVectorIndex, createRagSerializedManifest, decodeRagShardVectors, encodeRagShardVectors, searchRagVectorIndex, splitRagVectorIndex } from "../src/rag-index"
 import type { CodeGraphIndex } from "../src/codegraph-types"
 import type { EmbeddingProvider } from "../src/rag-types"
 
@@ -36,6 +37,113 @@ describe("local RAG vector index", () => {
 
     expect(second.chunks.length).toBe(first.chunks.length)
     expect(provider.calls).toBeLessThan(first.chunks.length + second.chunks.length)
+  })
+
+  test("pauses at the embedding request budget and resumes missing chunks", async () => {
+    const index = sampleIndex()
+    const provider = recordingEmbeddingProvider()
+    const first = await buildRagVectorIndex({
+      index,
+      provider,
+      batchSize: 1,
+      maxRequestsPerRun: 1,
+      requestDelayMs: 0,
+    })
+
+    expect(first.indexPausedReason).toBe("request-budget")
+    expect(first.chunks).toHaveLength(1)
+    expect(first.pendingChunkCount).toBe(buildRagChunks(index).length - 1)
+    expect(provider.batches).toHaveLength(1)
+
+    const second = await buildRagVectorIndex({
+      index,
+      provider,
+      previous: first,
+      batchSize: 1,
+      requestDelayMs: 0,
+    })
+
+    expect(second.indexPausedReason).toBeUndefined()
+    expect(second.chunks).toHaveLength(buildRagChunks(index).length)
+    expect(second.pendingChunkCount).toBe(0)
+    expect(provider.batches.length).toBe(buildRagChunks(index).length)
+  })
+
+  test("waits between embedding index requests", async () => {
+    const sleeps: number[] = []
+    const index = sampleIndex()
+    await buildRagVectorIndex({
+      index,
+      provider: fakeEmbeddingProvider(),
+      batchSize: 1,
+      maxRequestsPerRun: 2,
+      requestDelayMs: 25,
+      sleep: async (ms) => {
+        sleeps.push(ms)
+      },
+    })
+
+    expect(sleeps).toContain(25)
+  })
+
+  test("retries rate-limited embedding batches and preserves a paused partial index", async () => {
+    const sleeps: number[] = []
+    const events: string[] = []
+    const index = sampleIndex()
+    const provider: EmbeddingProvider = {
+      id: "limited",
+      model: "limited",
+      async embed() {
+        throw new RagHttpError("429 Too Many Requests: slow down", 429, "Too Many Requests", "slow down", 10)
+      },
+    }
+
+    const vectorIndex = await buildRagVectorIndex({
+      index,
+      provider,
+      batchSize: 1,
+      maxRetries: 1,
+      retryBackoffMs: 1000,
+      requestDelayMs: 0,
+      sleep: async (ms) => {
+        sleeps.push(ms)
+      },
+      onProgress: (event) => {
+        events.push(event.phase)
+      },
+    })
+
+    expect(vectorIndex.indexPausedReason).toBe("rate-limit")
+    expect(vectorIndex.lastError).toContain("429 Too Many Requests")
+    expect(vectorIndex.resumeDelayMs).toBe(10)
+    expect(vectorIndex.resumeReason).toBe("rate-limit")
+    expect(vectorIndex.chunks).toHaveLength(0)
+    expect(sleeps).toEqual([10])
+    expect(events).toContain("rate-limit")
+    expect(events).toContain("paused")
+  })
+
+  test("serializes scheduled RAG resume metadata", async () => {
+    const index = sampleIndex()
+    const vectorIndex = await buildRagVectorIndex({
+      index,
+      provider: recordingEmbeddingProvider(),
+      batchSize: 1,
+      maxRequestsPerRun: 1,
+      requestDelayMs: 0,
+    })
+    const manifest = createRagSerializedManifest({
+      ...vectorIndex,
+      nextResumeAt: 12345,
+      resumeDelayMs: 60000,
+      resumeReason: "request-budget",
+    })
+
+    expect(manifest.pendingChunks).toBeGreaterThan(0)
+    expect(manifest.indexPausedReason).toBe("request-budget")
+    expect(manifest.nextResumeAt).toBe(12345)
+    expect(manifest.resumeDelayMs).toBe(60000)
+    expect(manifest.resumeReason).toBe("request-budget")
   })
 })
 
@@ -81,6 +189,17 @@ function countingEmbeddingProvider(): EmbeddingProvider & { calls: number } {
     calls: 0,
     async embed(input) {
       this.calls += input.length
+      return input.map(embedText)
+    },
+  }
+}
+
+function recordingEmbeddingProvider(): EmbeddingProvider & { batches: string[][] } {
+  return {
+    ...fakeEmbeddingProvider(),
+    batches: [],
+    async embed(input) {
+      this.batches.push(input)
       return input.map(embedText)
     },
   }

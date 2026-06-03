@@ -38,6 +38,13 @@ describe("connection and stale-session recovery wiring", () => {
     expect(chatViewSource).toContain("this.deps.setConnectionState(state, detail)")
   })
 
+  test("debounces RAG configuration refresh events", () => {
+    expect(extensionSource).toContain("RAG_CONFIG_REFRESH_DEBOUNCE_MS")
+    expect(extensionSource).toContain("const scheduleRagConfigurationRefresh")
+    expect(extensionSource).toContain("if (ragConfigurationRefreshTimer) clearTimeout(ragConfigurationRefreshTimer)")
+    expect(extensionSource).toContain("scheduleRagConfigurationRefresh()")
+  })
+
   test("remote failure state distinguishes auth failures from connection errors", () => {
     expect(chatViewSource).toContain("RemoteOpenCodeAuthError")
     expect(chatViewSource).toContain("RemoteOpenCodeConnectionError")

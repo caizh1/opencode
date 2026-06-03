@@ -1,5 +1,5 @@
 import type { CodeGraphEvidence } from "./codegraph-types"
-import type { RagEndpointKind, RagSettings, RagStatus } from "./types"
+import type { RagEndpointKind, RagIndexPausedReason, RagResumeReason, RagSettings, RagStatus } from "./types"
 
 export type RagChunkKind = "function" | "file-summary" | "module-summary" | "state-transition" | "text-window"
 
@@ -24,6 +24,14 @@ export type RagVectorIndex = {
   dimension: number
   chunks: RagChunk[]
   vectors: number[][]
+  totalChunks?: number
+  pendingChunkCount?: number
+  indexPausedReason?: RagIndexPausedReason
+  lastError?: string
+  requestsUsed?: number
+  nextResumeAt?: number
+  resumeDelayMs?: number
+  resumeReason?: RagResumeReason
 }
 
 export type RagVectorShard = {

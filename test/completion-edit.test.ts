@@ -227,6 +227,78 @@ describe("language-aware completion edits", () => {
     })
   })
 
+  test("rejects echoed comment prefixes with no new completion text", () => {
+    const prefix = "// a unittest function to test epr_ppn_raw_"
+    expect(editResult({
+      text: prefix,
+      languageId: "c",
+      linePrefix: prefix,
+      character: prefix.length,
+      currentWord: "epr_ppn_raw_",
+    })).toEqual({
+      reason: "echoed-prefix",
+    })
+
+    expect(editResult({
+      text: `${prefix}${prefix}`,
+      languageId: "c",
+      linePrefix: prefix,
+      character: prefix.length,
+      currentWord: "epr_ppn_raw_",
+    })).toEqual({
+      reason: "echoed-prefix",
+    })
+  })
+
+  test("strips echoed comment prefixes while keeping real suffix text", () => {
+    const prefix = "// a unittest function to test epr_ppn_raw_"
+    expect(edit({
+      text: `${prefix}write_with_cb_dfx`,
+      languageId: "c",
+      linePrefix: prefix,
+      character: prefix.length,
+      currentWord: "epr_ppn_raw_",
+    })).toMatchObject({
+      insertText: "write_with_cb_dfx",
+      replaceRange: {
+        startLine: 0,
+        startCharacter: prefix.length,
+        endLine: 0,
+        endCharacter: prefix.length,
+      },
+      filterText: "write_with_cb_dfx",
+      normalized: "prefix-overlap",
+    })
+
+    expect(edit({
+      text: `${prefix}${prefix}write_with_cb_dfx`,
+      languageId: "c",
+      linePrefix: prefix,
+      character: prefix.length,
+      currentWord: "epr_ppn_raw_",
+    })?.insertText).toBe("write_with_cb_dfx")
+  })
+
+  test("keeps code after echoed comment prefixes on the next line", () => {
+    const prefix = "// a unittest function to test epr_ppn_raw_"
+    expect(edit({
+      text: `${prefix}\nvoid test_epr_ppn_raw_write(void) {\nreturn;\n}`,
+      languageId: "c",
+      linePrefix: prefix,
+      character: prefix.length,
+      currentWord: "epr_ppn_raw_",
+    })).toMatchObject({
+      insertText: "\nvoid test_epr_ppn_raw_write(void) {\n    return;\n}",
+      replaceRange: {
+        startLine: 0,
+        startCharacter: prefix.length,
+        endLine: 0,
+        endCharacter: prefix.length,
+      },
+      normalized: "prefix-overlap",
+    })
+  })
+
   test("rejects leading-newline completions that do not continue the current C line", () => {
     const prefix = "void test"
     expect(editResult({
@@ -289,6 +361,47 @@ describe("language-aware completion edits", () => {
       linePrefix: prefix,
       character: prefix.length,
     })?.insertText).toBe("\n    return;")
+  })
+
+  test("inserts TypeScript code completions after comment prompts on the next line", () => {
+    const prefix = "// test func for add two numb"
+    expect(edit({
+      text: "function add(a: number, b: number) {\nreturn a + b;\n}",
+      languageId: "typescript",
+      linePrefix: prefix,
+      character: prefix.length,
+      currentWord: "numb",
+    })).toMatchObject({
+      insertText: "\nfunction add(a: number, b: number) {\n    return a + b;\n}",
+      replaceRange: {
+        startLine: 0,
+        startCharacter: prefix.length,
+        endLine: 0,
+        endCharacter: prefix.length,
+      },
+    })
+  })
+
+  test("allows leading-newline code completions after comment prompts", () => {
+    const prefix = "// test func for add two numb"
+    expect(edit({
+      text: "\nfunction add(a: number, b: number) {\nreturn a + b;\n}",
+      languageId: "typescript",
+      linePrefix: prefix,
+      character: prefix.length,
+      currentWord: "numb",
+    })?.insertText).toBe("\nfunction add(a: number, b: number) {\n    return a + b;\n}")
+  })
+
+  test("keeps non-code completions after comment prompts on the same line", () => {
+    const prefix = "// add two numb"
+    expect(edit({
+      text: "ers",
+      languageId: "typescript",
+      linePrefix: prefix,
+      character: prefix.length,
+      currentWord: "numb",
+    })?.insertText).toBe("ers")
   })
 
   test("uses explicit zero-width ranges for ordinary suffix insertions", () => {

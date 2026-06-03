@@ -65,9 +65,11 @@ async function manifestContributesActivityBarContainer() {
     ),
     "OpenCode activity bar container should be contributed",
   )
+  assert.equal(manifest.icon, "media/opencode-icon.png")
   assert.equal(JSON.stringify(manifest).includes(oldViewID), false)
   assert.equal(manifest.activationEvents?.includes(`onView:${newViewID}`), true)
   assert.equal(explorerViews.some((view: { id?: string }) => view.id === newViewID), false)
   assert.equal(opencodeViews.some((view: { id?: string }) => view.id === newViewID), true)
+  await fs.access(path.join(extension.extensionPath, "media", "opencode-icon.png"))
   await fs.access(path.join(extension.extensionPath, "media", "opencode.svg"))
 }

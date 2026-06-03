@@ -1,5 +1,5 @@
 import { splitThinkingFromParts } from "./thinking"
-import type { OpenCodeMessage } from "./types"
+import type { CompletionProfile, OpenCodeMessage } from "./types"
 
 const PROMPT_LEAK_PATTERNS = [
   /\blet me re-?read\b/i,
@@ -10,19 +10,107 @@ const PROMPT_LEAK_PATTERNS = [
   /\breturn only the exact text to insert at the cursor\b/i,
 ]
 
-export function completionInsertText(message: OpenCodeMessage | undefined): string {
+const QWEN_SPECIAL_TOKEN_PATTERN = /<\|(?:fim_prefix|fim_middle|fim_suffix|fim_pad|repo_name|file_sep|endoftext|im_start|im_end)\|>/g
+
+export function completionInsertText(message: OpenCodeMessage | undefined, profile: CompletionProfile = "generic-chat"): string {
   if (!message) return ""
 
-  const text = cleanupCompletion(splitThinkingFromParts(message.parts).text)
-  if (looksLikePromptLeak(text)) return ""
+  const split = splitThinkingFromParts(message.parts)
+  const text = profile === "qwen-coder-fim"
+    ? cleanupFimCompletion(split.text)
+    : cleanupChatCompletion(split.text)
+  if (text) return text
+
+  return cleanupReasoningCompletion(split.reasoning, profile)
+}
+
+function cleanupChatCompletion(input: string) {
+  let text = firstFencedCode(input) ?? input
+  text = stripQwenSpecialTokens(text)
+  text = stripLeadingMetaLines(text)
+  text = stripInlineLeadIn(text)
+  text = stripWrappingFence(text)
+  text = stripLeadingMetaLines(text)
+  return finalizeCompletion(text)
+}
+
+function cleanupFimCompletion(input: string) {
+  let text = firstFencedCode(input) ?? input
+  text = stripQwenSpecialTokens(text)
+  text = stripWrappingFence(text)
+  text = stripLeadingMetaLines(text)
+  return finalizeCompletion(text)
+}
+
+function cleanupReasoningCompletion(input: string, profile: CompletionProfile) {
+  if (!input.trim()) return ""
+
+  const fenced = firstFencedCode(input)
+  if (fenced !== undefined) {
+    return profile === "qwen-coder-fim" ? cleanupFimCompletion(fenced) : cleanupChatCompletion(fenced)
+  }
+
+  const finalMatch = /(?:^|\n)\s*(?:final(?: answer)?|answer|completion)\s*:\s*([\s\S]+)$/i.exec(input)
+  if (!finalMatch) return ""
+  return profile === "qwen-coder-fim" ? cleanupFimCompletion(finalMatch[1]) : cleanupChatCompletion(finalMatch[1])
+}
+
+function firstFencedCode(input: string) {
+  const match = /```[a-zA-Z0-9_-]*[ \t]*\r?\n?([\s\S]*?)(?:\r?\n)?[ \t]*```/.exec(input)
+  return match?.[1]
+}
+
+function stripWrappingFence(input: string) {
+  return input
+    .replace(/^[ \t]*```[a-zA-Z0-9_-]*[ \t]*(?:\r?\n)?/, "")
+    .replace(/(?:\r?\n)?[ \t]*```[ \t]*$/, "")
+}
+
+function stripQwenSpecialTokens(input: string) {
+  return input.replace(QWEN_SPECIAL_TOKEN_PATTERN, "")
+}
+
+function stripInlineLeadIn(input: string) {
+  const text = input.replace(
+    /^[ \t]*(?:(?:sure|ok(?:ay)?)[,.!]?[ \t]+)?(?:here(?:'s| is)|below is|the completion is|completion|answer|final(?: answer)?)(?:[^\n:]*):[ \t]*/i,
+    "",
+  )
+  if (text === input) return input
+  return text.replace(/^\r?\n/, "")
+}
+
+function stripLeadingMetaLines(input: string) {
+  const normalized = input.replace(/\r\n/g, "\n")
+  const lines = normalized.split("\n")
+  let index = 0
+  let removed = false
+  while (index < lines.length) {
+    const trimmed = lines[index].trim()
+    if (!trimmed && removed) {
+      index += 1
+      continue
+    }
+    if (!isMetaLine(trimmed)) break
+    removed = true
+    index += 1
+  }
+  return lines.slice(index).join("\n")
+}
+
+function finalizeCompletion(input: string) {
+  const text = input.replace(/\s+$/, "")
+  if (!text.trim()) return ""
+  if (text.split(/\r?\n/).every((line) => !line.trim() || isMetaLine(line.trim()))) return ""
   return text
 }
 
-function cleanupCompletion(input: string) {
-  let text = input
-  text = text.replace(/^[ \t]*```[a-zA-Z0-9_-]*[ \t]*(?:\r?\n)?/, "").replace(/(?:\r?\n)?[ \t]*```[ \t]*$/, "")
-  text = text.replace(/^Here is.*?:\s*/i, "")
-  return text.replace(/\s+$/, "")
+function isMetaLine(input: string) {
+  if (!input) return false
+  if (looksLikePromptLeak(input)) return true
+  if (/^(?:sure|ok(?:ay)?)[,.!]?$/i.test(input)) return true
+  if (/^(?:here(?:'s| is)|below is|the completion is|completion|answer|final(?: answer)?)(?:[^\n:]*):?$/i.test(input)) return true
+  if (/^```[a-zA-Z0-9_-]*$/.test(input) || input === "```") return true
+  return false
 }
 
 function looksLikePromptLeak(input: string) {

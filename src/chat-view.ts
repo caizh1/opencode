@@ -50,10 +50,11 @@ import type {
   OpenCodeSessionStatus,
   PromptModel,
   CodeGraphStatus,
+  RagStatus,
   RenderedUsage,
   RemoteSettings,
 } from "./types"
-import { saveCompletionSettings, type CompletionSettingsInput, type ConnectionSettingsInput } from "./settings"
+import { saveCompletionSettings, saveRagSettings, type CompletionSettingsInput, type ConnectionSettingsInput, type RagSettingsInput } from "./settings"
 
 const SESSION_MESSAGE_LIMIT = 100
 const MODEL_REFRESH_TIMEOUT_MS = 8000
@@ -104,6 +105,11 @@ type ChatViewMessage =
       settings: CompletionSettingsInput
     }
   | { type: "setCompletionApiKey" }
+  | {
+      type: "saveRagSettings" | "testRagSettings"
+      settings: RagSettingsInput
+    }
+  | { type: "setRagApiKey" }
   | {
       type: "sendMessage"
       text: string
@@ -158,6 +164,7 @@ type RemoteChatViewProviderDeps = {
   getSettings: () => RemoteSettings
   getCompletionApiKey: () => Promise<string | undefined>
   promptCompletionApiKey: () => Promise<boolean>
+  promptRagApiKey: () => Promise<boolean>
   getEditorContext: () => TrackedEditorContext | undefined
   connectWithSettings: (input: ConnectionSettingsInput) => Promise<void>
   testWithSettings: (input: ConnectionSettingsInput) => Promise<void>
@@ -675,6 +682,15 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
         case "testCompletionApi":
           await this.testCompletionApi(message.settings)
           break
+        case "saveRagSettings":
+          await this.saveRagSettings(message.settings)
+          break
+        case "testRagSettings":
+          await this.testRagSettings(message.settings)
+          break
+        case "setRagApiKey":
+          await this.setRagApiKey()
+          break
         case "sendMessage":
           await this.handleSendMessage(
             message.text,
@@ -795,12 +811,21 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
 
     try {
       const client = new CompletionModelClient(settings, await this.deps.getCompletionApiKey())
+      const prompt = settings.completion.profile === "qwen-coder-fim"
+        ? [
+            "<|repo_name|>opencode-test",
+            "<|file_sep|>test.ts\n",
+            "<|fim_prefix|>const value = ",
+            "<|fim_suffix|>;\n",
+            "<|fim_middle|>",
+          ].join("")
+        : [
+            "You are testing an inline completion endpoint.",
+            "Return only this exact text:",
+            "ok",
+          ].join("\n")
       await client.complete({
-        prompt: [
-          "You are testing an inline completion endpoint.",
-          "Return only this exact text:",
-          "ok",
-        ].join("\n"),
+        prompt,
       })
       this.postCompletionStatus(`Direct completion API test succeeded for ${model}.`)
     } catch (error) {
@@ -808,6 +833,36 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
     } finally {
       this.postState()
     }
+  }
+
+  private async saveRagSettings(input: RagSettingsInput) {
+    await saveRagSettings(input)
+    await this.deps.codeGraph?.refreshRagConfiguration()
+    this.postRagStatus(ragStatusMessage(this.deps.codeGraph?.status().rag, "RAG settings saved."))
+    this.postState()
+  }
+
+  private async testRagSettings(input: RagSettingsInput) {
+    await saveRagSettings(input)
+    this.deps.output.appendLine("[rag-test] testing RAG configuration")
+    this.postRagStatus("Testing RAG configuration...")
+    try {
+      await this.deps.codeGraph?.testRagConfiguration()
+      const rag = this.deps.codeGraph?.status().rag
+      this.deps.output.appendLine(`[rag-test] result: ${ragTestResultMessage(rag)}`)
+      this.postRagStatus(ragStatusMessage(rag, "RAG test finished."))
+    } catch (error) {
+      this.deps.output.appendLine(`[rag-test] failed: ${formatErrorMessage(error)}`)
+      this.postRagStatus(`RAG test failed: ${formatErrorMessage(error)}`, "error")
+    } finally {
+      this.postState()
+    }
+  }
+
+  private async setRagApiKey() {
+    const saved = await this.deps.promptRagApiKey()
+    this.postRagStatus(saved ? "RAG API key saved." : "RAG API key unchanged.")
+    this.postState()
   }
 
   private async addFile() {
@@ -1409,6 +1464,14 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
     })
   }
 
+  private postRagStatus(message: string, status = "info") {
+    this.view?.webview.postMessage({
+      type: "ragStatus",
+      message,
+      status,
+    })
+  }
+
   private postState() {
     const settings = this.deps.getSettings()
     const agentSelection = this.agentForSettings(settings)
@@ -1424,6 +1487,7 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
           includeGitDiff: settings.context.includeGitDiff,
         },
         completion: settings.completion,
+        rag: settings.rag,
         localOnlyMode: settings.context.localOnlyMode,
         localOnlyAgent: settings.localOnlyAgent,
         strictLocalOnlyAgent: settings.context.strictLocalOnlyAgent,
@@ -1712,6 +1776,58 @@ function isServerFilesystemTool(tool: string | undefined) {
 
 function looksLikeServerAgentError(message: string) {
   return /UnknownError|unknown agent|agent|4\d\d|5\d\d|request failed|internal server error/i.test(message)
+}
+
+function ragStatusMessage(rag: RagStatus | undefined, fallback: string) {
+  if (!rag) return fallback
+  if (rag.embeddingEnabled) {
+    const rerank = rag.rerankEnabled
+      ? ", rerank ready"
+      : rag.rerankProvider || rag.rerankLastError
+        ? `, rerank unavailable: ${rag.rerankLastError || "endpoint test failed"}`
+        : ""
+    if (rag.availability === "partial") {
+      return `RAG partial: ${rag.embeddedChunks}/${rag.chunks} chunk(s), ${rag.pendingChunkCount ?? Math.max(0, rag.chunks - rag.embeddedChunks)} pending${ragResumeScheduleMessage(rag)}${rerank}.`
+    }
+    if (rag.availability === "paused") {
+      return `RAG indexing paused: ${rag.fallbackReason ?? ragPausedReasonMessage(rag.indexPausedReason, rag.lastError)}${ragResumeScheduleMessage(rag)}, ${rag.embeddedChunks}/${rag.chunks} chunk(s) indexed${rerank}.`
+    }
+    return `RAG ready: ${rag.embeddedChunks}/${rag.chunks} chunk(s), ${rag.vectorShards} shard(s)${rerank}.`
+  }
+  if (rag.availability === "checking") return "RAG checking embedding endpoint and vector index."
+  if (rag.availability === "partial") return `RAG partial: ${rag.embeddedChunks}/${rag.chunks} chunk(s), ${rag.pendingChunkCount ?? Math.max(0, rag.chunks - rag.embeddedChunks)} pending${ragResumeScheduleMessage(rag)}.`
+  if (rag.availability === "paused") return `RAG indexing paused: ${rag.fallbackReason ?? ragPausedReasonMessage(rag.indexPausedReason, rag.lastError)}${ragResumeScheduleMessage(rag)}`
+  if (rag.availability === "not-indexed") return `RAG not indexed: ${rag.fallbackReason || "rebuild the local code graph to enable vector retrieval"}`
+  if (rag.availability === "unavailable") return `RAG unavailable: ${rag.fallbackReason || rag.lastError || "endpoint test failed"}`
+  return "RAG not configured. Add an embedding endpoint to enable vector retrieval."
+}
+
+function ragTestResultMessage(rag: RagStatus | undefined) {
+  if (!rag) return "unknown"
+  const state = rag.embeddingEnabled ? "ready" : rag.availability ?? "unavailable"
+  const details = [
+    `embeddingEnabled=${rag.embeddingEnabled}`,
+    `rerankEnabled=${rag.rerankEnabled}`,
+    rag.fallbackReason ? `fallbackReason=${truncate(rag.fallbackReason, 180)}` : undefined,
+    rag.lastError ? `lastError=${truncate(rag.lastError, 180)}` : undefined,
+    rag.rerankLastError ? `rerankLastError=${truncate(rag.rerankLastError, 180)}` : undefined,
+  ].filter(Boolean)
+  return `${state} ${details.join(" ")}`
+}
+
+function ragPausedReasonMessage(reason?: RagStatus["indexPausedReason"], detail?: string) {
+  const suffix = detail ? `: ${detail}` : ""
+  if (reason === "request-budget") return `request budget reached${suffix}`
+  if (reason === "rate-limit") return `rate limited${suffix}`
+  if (reason === "provider-error") return `provider error${suffix}`
+  return `indexing paused${suffix}`
+}
+
+function ragResumeScheduleMessage(rag: RagStatus) {
+  if (!rag.resumeScheduledAt || !rag.resumeReason) return ""
+  const remainingMs = Math.max(0, rag.resumeScheduledAt - Date.now())
+  const label = rag.resumeReason === "rate-limit" ? "retry scheduled" : "resume scheduled"
+  return `; ${label} in ${Math.ceil(remainingMs / 1000)}s`
 }
 
 function truncate(input: string, max: number) {

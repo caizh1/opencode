@@ -2,7 +2,8 @@
   "name": "opencode-remote",
   "displayName": "OpenCode Remote",
   "description": "Remote opencode serve client for VS Code",
-  "version": "0.0.61",
+  "version": "0.0.74",
+  "icon": "media/opencode-icon.png",
   "publisher": "local",
   "repository": {
     "type": "git",
@@ -221,6 +222,15 @@
           "default": "opencode",
           "description": "Provider for inline completions. OpenCode uses the remote opencode serve session; OpenAI-compatible calls a direct model API for completion only."
         },
+        "opencode.remote.completion.profile": {
+          "type": "string",
+          "enum": [
+            "generic-chat",
+            "qwen-coder-fim"
+          ],
+          "default": "generic-chat",
+          "description": "Direct model completion profile. Generic Chat uses /chat/completions; Qwen Coder FIM uses raw /completions with Qwen fill-in-the-middle tokens."
+        },
         "opencode.remote.completion.apiBaseUrl": {
           "type": "string",
           "default": "",
@@ -293,14 +303,14 @@
           "type": "number",
           "default": 50000,
           "minimum": 100,
-          "maximum": 1000000,
+          "maximum": 1e6,
           "description": "Maximum number of C/C++ files to index in the local code graph."
         },
         "opencode.remote.codeGraph.maxContextBytes": {
           "type": "number",
           "default": 24000,
           "minimum": 2000,
-          "maximum": 100000,
+          "maximum": 1e5,
           "description": "Maximum bytes of local code graph context to include in one remote prompt."
         },
         "opencode.remote.codeGraph.maxEvidenceBytes": {
@@ -342,7 +352,7 @@
           "type": "number",
           "default": 750,
           "minimum": 25,
-          "maximum": 10000,
+          "maximum": 1e4,
           "description": "Number of queued file watcher events that switches incremental indexing to one scheduled full rescan."
         },
         "opencode.remote.codeGraph.workerConcurrency": {
@@ -412,7 +422,7 @@
           "type": "number",
           "default": 16000,
           "minimum": 1000,
-          "maximum": 100000,
+          "maximum": 1e5,
           "description": "Maximum bytes returned from one local file slice analysis call."
         },
         "opencode.remote.analysis.maxGraphEdges": {
@@ -429,15 +439,10 @@
           "maximum": 50,
           "description": "Maximum state-machine or call-chain paths returned by local analysis tools."
         },
-        "opencode.remote.rag.embedding.enabled": {
-          "type": "boolean",
-          "default": false,
-          "description": "Enable offline RAG vector indexing through a localhost or intranet embedding HTTP service."
-        },
         "opencode.remote.rag.embedding.endpoint": {
           "type": "string",
           "default": "",
-          "description": "Full localhost or intranet embedding endpoint. OpenAI-compatible /v1/embeddings responses are expected."
+          "description": "Full localhost or intranet embedding endpoint. OpenAI-compatible /v1/embeddings responses are expected. RAG vector retrieval is enabled automatically when this endpoint is configured and reachable."
         },
         "opencode.remote.rag.embedding.model": {
           "type": "string",
@@ -458,15 +463,50 @@
           "maximum": 120000,
           "description": "Timeout for one embedding HTTP request."
         },
-        "opencode.remote.rag.rerank.enabled": {
+        "opencode.remote.rag.embedding.requestDelayMs": {
+          "type": "number",
+          "default": 500,
+          "minimum": 0,
+          "maximum": 60000,
+          "description": "Delay between RAG embedding index HTTP requests. This protects rate-limited internal embedding services."
+        },
+        "opencode.remote.rag.embedding.maxRequestsPerRun": {
+          "type": "number",
+          "default": 100,
+          "minimum": 0,
+          "maximum": 100000,
+          "description": "Maximum embedding HTTP requests used by one RAG index run. Set to 0 for unlimited requests."
+        },
+        "opencode.remote.rag.embedding.maxRetries": {
+          "type": "number",
+          "default": 3,
+          "minimum": 0,
+          "maximum": 10,
+          "description": "Maximum retry attempts for one RAG embedding batch when the provider returns 429 or 503."
+        },
+        "opencode.remote.rag.embedding.retryBackoffMs": {
+          "type": "number",
+          "default": 2000,
+          "minimum": 0,
+          "maximum": 120000,
+          "description": "Base exponential backoff delay used when a rate-limited embedding response has no Retry-After header."
+        },
+        "opencode.remote.rag.embedding.resumeAutomatically": {
           "type": "boolean",
-          "default": false,
-          "description": "Enable optional offline rerank for hybrid RAG candidates through a localhost or intranet HTTP service."
+          "default": true,
+          "description": "Automatically resume paused RAG embedding index runs in the background until pending chunks are complete."
+        },
+        "opencode.remote.rag.embedding.resumeDelayMs": {
+          "type": "number",
+          "default": 60000,
+          "minimum": 0,
+          "maximum": 3600000,
+          "description": "Delay before automatically resuming a paused RAG embedding index run after the per-run request budget is reached."
         },
         "opencode.remote.rag.rerank.endpoint": {
           "type": "string",
           "default": "",
-          "description": "Full localhost or intranet rerank endpoint accepting query, documents, and top_n."
+          "description": "Full localhost or intranet rerank endpoint accepting query, documents, and top_n. Rerank is enabled automatically when this endpoint is configured and allowed."
         },
         "opencode.remote.rag.rerank.model": {
           "type": "string",
@@ -592,6 +632,7 @@
     "@vscode/test-electron": "^2.5.2",
     "@vscode/vsce": "^3.2.2",
     "eslint": "^9.25.1",
+    "lucide": "^1.17.0",
     "typescript": "^5.8.3"
   }
 }

@@ -48,6 +48,36 @@ describe("completion insert formatting", () => {
     })).toBe("me = 1")
   })
 
+  test("moves code completions after comment prompts onto the next line", () => {
+    expect(formatCompletionInsertText({
+      text: "function add(a: number, b: number) {\nreturn a + b;\n}",
+      linePrefix: "// test func for add two numb",
+      targetIndent: "",
+      indentUnit: "    ",
+      languageId: "typescript",
+    })).toBe("\nfunction add(a: number, b: number) {\n    return a + b;\n}")
+  })
+
+  test("keeps non-code comment continuations on the same line", () => {
+    expect(formatCompletionInsertText({
+      text: "ers",
+      linePrefix: "// add two numb",
+      targetIndent: "",
+      indentUnit: "    ",
+      languageId: "typescript",
+    })).toBe("ers")
+  })
+
+  test("uses comment indentation as the generated code indentation", () => {
+    expect(formatCompletionInsertText({
+      text: "def add(a, b):\nreturn a + b",
+      linePrefix: "    # add two numbers",
+      targetIndent: "        ",
+      indentUnit: "    ",
+      languageId: "python",
+    })).toBe("\n    def add(a, b):\n        return a + b")
+  })
+
   test("does not force block formatting when the cursor has a non-empty suffix", () => {
     expect(formatCompletionInsertText({
       text: "return x;",

@@ -35,4 +35,25 @@ describe("code graph query observability", () => {
     expect(querySource).toContain("packedBytes")
     expect(querySource).toContain("elapsedMs")
   })
+
+  test("separates lightweight RAG probes from vector index rebuilds", () => {
+    expect(serviceSource).toContain("async testRagConfiguration()")
+    expect(serviceSource).toContain("private async probeRagConfiguration()")
+    expect(serviceSource).toContain("private async rebuildRagIndex")
+    expect(serviceSource).toContain("ragProbeInFlight")
+    expect(serviceSource).toContain("ragIndexInFlight")
+    expect(serviceSource).toContain("availability: \"not-indexed\"")
+    expect(serviceSource).toContain("[rag-index] embedding")
+  })
+
+  test("schedules automatic RAG index resume after recoverable pauses", () => {
+    expect(serviceSource).toContain("private ragResumeTimer")
+    expect(serviceSource).toContain("private ragResumeInFlight")
+    expect(serviceSource).toContain("private async scheduleRagIndexResumeFromStatus")
+    expect(serviceSource).toContain("private async runRagIndexResume")
+    expect(serviceSource).toContain("reason !== \"request-budget\" && reason !== \"rate-limit\"")
+    expect(serviceSource).toContain("[rag-index] resume scheduled")
+    expect(serviceSource).toContain("[rag-index] auto resume starting")
+    expect(serviceSource).toContain("resumeScheduledAt")
+  })
 })

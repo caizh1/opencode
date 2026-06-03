@@ -55,20 +55,20 @@ OpenCode Remote 不让远端 OpenCode 直接读取本地文件。扩展在 VS Co
 
 RAG 编排、chunk 生成、向量索引、hybrid retrieval、安全检查、query trace 和 evidence pack 都打包在 VS Code 扩展内。embedding/rerank 模型权重、推理运行时和 OpenCode Server 不打包进 VSIX；它们由离线环境中的本机或内网 HTTP 服务提供。
 
-默认不启用 embedding/rerank。启用后，扩展只允许调用 localhost、私网 IP 或 `opencode.remote.rag.allowedHosts` 中显式列出的内网主机；公共公网 endpoint 会在发起 fetch 前被阻断。embedding endpoint 默认按 OpenAI-compatible `/v1/embeddings` 响应解析，rerank endpoint 默认按 `{ query, documents, top_n }` 请求和 `results[].index / results[].relevance_score` 响应解析。
+默认不配置 embedding/rerank。配置 endpoint 后，扩展会自动探测本机/内网服务；连接和索引可用时才启用对应运行时能力，不可用时继续回退。扩展只允许调用 localhost、私网 IP 或 `opencode.remote.rag.allowedHosts` 中显式列出的内网主机；公共公网 endpoint 会在发起 fetch 前被阻断。embedding endpoint 默认按 OpenAI-compatible `/v1/embeddings` 响应解析，rerank endpoint 默认按 `{ query, documents, top_n }` 请求和 `results[].index / results[].relevance_score` 响应解析。
+
+这些配置可以在 OpenCode 侧边栏右上角设置图标里的 `Code RAG` 区块填写。RAG API key 通过 `Set RAG API key` 保存到 VS Code SecretStorage，不写入 settings JSON；保存后会作为 `Authorization: Bearer <key>` 同时发送给 embedding 和 rerank endpoint。
 
 ```json
 {
-  "opencode.remote.rag.embedding.enabled": true,
   "opencode.remote.rag.embedding.endpoint": "http://127.0.0.1:8000/v1/embeddings",
   "opencode.remote.rag.embedding.model": "local-embedding-model",
-  "opencode.remote.rag.rerank.enabled": true,
   "opencode.remote.rag.rerank.endpoint": "http://127.0.0.1:8000/rerank",
   "opencode.remote.rag.rerank.model": "local-rerank-model"
 }
 ```
 
-没有配置 embedding、模型服务不可用、endpoint 被离线策略阻断、返回维度不一致或请求超时时，扩展会自动回退到 BM25/postings、exact path/symbol、调用图和状态机 evidence。query trace 会记录 vector/rerank/fallback 步骤、候选数、耗时和原因。
+没有配置 embedding endpoint、模型服务不可用、endpoint 被离线策略阻断、返回维度不一致或请求超时时，扩展会自动回退到 BM25/postings、exact path/symbol、调用图和状态机 evidence。query trace 会记录 vector/rerank/fallback 步骤、候选数、耗时和原因。
 
 ### Local Analysis Bridge 与 Code Intelligence
 
@@ -172,6 +172,7 @@ inline completion 默认关闭。开启后，扩展会在编辑器中注册 VS C
 {
   "opencode.remote.completion.enabled": true,
   "opencode.remote.completion.provider": "openai-compatible",
+  "opencode.remote.completion.profile": "generic-chat",
   "opencode.remote.completion.apiBaseUrl": "http://localhost:8000/v1",
   "opencode.remote.completion.model": "Qwen/Qwen3.6-27B-FP8",
   "opencode.remote.completion.maxTokens": 128,
@@ -180,12 +181,30 @@ inline completion 默认关闭。开启后，扩展会在编辑器中注册 VS C
 }
 ```
 
+Qwen Coder FIM 示例：
+
+```json
+{
+  "opencode.remote.completion.enabled": true,
+  "opencode.remote.completion.provider": "openai-compatible",
+  "opencode.remote.completion.profile": "qwen-coder-fim",
+  "opencode.remote.completion.apiBaseUrl": "http://localhost:8000/v1",
+  "opencode.remote.completion.model": "qwen-coder-30b",
+  "opencode.remote.completion.maxTokens": 128,
+  "opencode.remote.completion.temperature": 0.2,
+  "opencode.remote.completion.topP": 0.8
+}
+```
+
+`qwen-coder-fim` 会请求 OpenAI-compatible raw `/completions` endpoint，并使用 Qwen 的 `<|fim_prefix|>`、`<|fim_suffix|>`、`<|fim_middle|>` FIM token 构造补全 prompt；普通聊天模型继续使用 `generic-chat`。
+
 直连补全 API key 通过命令 `OpenCode Remote: Set Inline Completion API Key` 或侧边栏 Inline Completion 区块保存到 VS Code SecretStorage，不写入 settings JSON。直连模式只影响 inline completion，不要求 OpenCode 处于 connected 状态。
 
 补全逻辑包含几层保护和格式化：
 
-- 只使用模型返回的可见 assistant text，丢弃 reasoning parts、`reasoning_content` 和 `<think>...</think>`。
-- 遇到明显 prompt 泄漏或 plan-mode 元文本时返回空补全，避免把内部推理插入代码。
+- `generic-chat` 会从模型返回中剥离解释、代码围栏和明显 prompt 泄漏行，尽量保留真实可插入代码；纯元文本仍返回空补全。
+- `qwen-coder-fim` 主要依赖 raw FIM 输出，只做最小清洗：移除 Qwen 特殊 token、代码围栏和明显元文本，保留必要前导换行与缩进。
+- reasoning parts、`reasoning_content` 和 `<think>...</think>` 默认不会直接插入；只有明确 fenced code 或 `Final/Answer/Completion:` 标记的兜底文本才会被提取。
 - 对当前词使用显式 replace range，例如 `whil|` 可以替换成完整 `while (...) { ... }`。
 - 对模型返回的整行补全做前缀对齐，例如 `void simulate|` 加上远端返回的 `void simulate_cpu_worker(...)` 时，只插入剩余后缀。
 - 对 C/C++、JavaScript、TypeScript、Go、Rust、C# 等 brace language 做轻量语言感知缩进。
@@ -226,6 +245,7 @@ inline completion 默认关闭。开启后，扩展会在编辑器中注册 VS C
 | `opencode.remote.context.strictLocalOnlyAgent` | `true` | 兼容旧配置项；local-only 模式现在总是强制使用 `opencode.remote.localOnlyAgent`，找不到时会阻止请求。 |
 | `opencode.remote.completion.enabled` | `false` | 是否启用远端 inline completion。 |
 | `opencode.remote.completion.provider` | `opencode` | 补全 provider；`openai-compatible` 只让 inline completion 直连模型 API。 |
+| `opencode.remote.completion.profile` | `generic-chat` | 直连补全 profile；`generic-chat` 使用 `/chat/completions`，`qwen-coder-fim` 使用 raw `/completions` 和 Qwen FIM token。 |
 | `opencode.remote.completion.apiBaseUrl` | `""` | OpenAI-compatible direct completion base URL，例如 `http://localhost:8000/v1`。 |
 | `opencode.remote.completion.model` | `""` | direct completion 模型名；为空时回退到 `opencode.remote.defaultModel`。 |
 | `opencode.remote.completion.maxTokens` | `128` | direct completion 最大输出 token 数。 |
@@ -254,12 +274,10 @@ inline completion 默认关闭。开启后，扩展会在编辑器中注册 VS C
 | `opencode.remote.analysis.maxFileSliceBytes` | `16000` | 单次本地文件片段查询最多返回的字节数。 |
 | `opencode.remote.analysis.maxGraphEdges` | `120` | 调用图和状态机查询最多返回的边数。 |
 | `opencode.remote.analysis.maxPaths` | `10` | 状态路径或调用路径最多返回的路径数。 |
-| `opencode.remote.rag.embedding.enabled` | `false` | 是否通过本机/内网 embedding HTTP 服务启用离线向量检索。 |
 | `opencode.remote.rag.embedding.endpoint` | `""` | OpenAI-compatible embedding HTTP endpoint，例如 `http://127.0.0.1:8000/v1/embeddings`。 |
 | `opencode.remote.rag.embedding.model` | `""` | 发送给 embedding endpoint 的模型名。 |
 | `opencode.remote.rag.embedding.batchSize` | `32` | 每次 embedding HTTP 请求包含的 chunk 数。 |
 | `opencode.remote.rag.embedding.timeoutMs` | `30000` | 单次 embedding HTTP 请求超时。 |
-| `opencode.remote.rag.rerank.enabled` | `false` | 是否通过本机/内网 rerank HTTP 服务重排普通候选。 |
 | `opencode.remote.rag.rerank.endpoint` | `""` | rerank HTTP endpoint，例如 `http://127.0.0.1:8000/rerank`。 |
 | `opencode.remote.rag.rerank.model` | `""` | 发送给 rerank endpoint 的模型名。 |
 | `opencode.remote.rag.allowedHosts` | `[]` | 额外允许的内网 embedding/rerank 主机名；localhost 和私网 IP 自动允许。 |
@@ -402,7 +420,7 @@ code --install-extension opencode-remote-<version>.vsix
 - 当前文档是本地文件。
 - output channel 中能看到 `[completion] triggered`、`sent`、`received` 或 `returned`。
 
-如果只有 `triggered`，可能还在 debounce 或被 VS Code token 取消。如果有 `received` 但没有 `edit-ready`，通常是远端返回空文本、reasoning 被清洗后为空，或 completion edit 被安全规则拒绝。如果有 `returned` 但没有 ghost text，可以把 `opencode.remote.completion.logLevel` 改成 `debug`，查看 range、filterText 和首行摘要。
+如果只有 `triggered`，可能还在 debounce 或被 VS Code token 取消。如果有 `received` 但没有 `edit-ready`，通常是远端返回空文本、清洗后没有可插入文本，或 completion edit 被安全规则拒绝。使用 Qwen Coder 等专门 coder 模型时，确认 `opencode.remote.completion.profile` 已设为 `qwen-coder-fim`，并且服务支持 `/v1/completions`。如果有 `returned` 但没有 ghost text，可以把 `opencode.remote.completion.logLevel` 改成 `debug`，查看 range、filterText 和首行摘要。
 
 ### Inline completion 缩进不符合预期
 

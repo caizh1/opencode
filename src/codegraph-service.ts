@@ -27,13 +27,14 @@ import {
 import { LocalAnalysisJobQueue, recordStateTransition, type LocalAnalysisJob } from "./local-analysis-service"
 import type { AnalysisToolName, AnalysisToolResult, CodeIntelligenceSnapshot, QueryEvidenceResult } from "./analysis-types"
 import { extractStateMachines } from "./state-machine-extractor"
-import { checkRagEndpoint, createHttpEmbeddingProvider, createHttpRerankProvider } from "./rag-provider"
+import { checkRagEndpoint, createHttpEmbeddingProvider, createHttpRerankProvider, probeRagRerankProvider, type RagHttpDiagnosticEvent, type RagHttpDiagnostics } from "./rag-provider"
 import {
   buildRagVectorIndex,
   createRagSerializedManifest,
   decodeRagShardVectors,
   encodeRagShardVectors,
   splitRagVectorIndex,
+  type RagIndexBuildProgress,
   type RagSerializedManifest,
   type RagSerializedShardMetadata,
 } from "./rag-index"
@@ -46,7 +47,7 @@ import type {
   CodeGraphShardData,
   CodeGraphShardManifest,
 } from "./codegraph-types"
-import type { CodeGraphStatus, RagStatus, RemoteSettings } from "./types"
+import type { CodeGraphStatus, RagResumeReason, RagStatus, RemoteSettings } from "./types"
 
 const INDEX_VERSION = CURRENT_CODE_GRAPH_INDEX_VERSION
 const INDEX_TIME_SLICE_MS = 35
@@ -79,6 +80,12 @@ type CodeGraphJobCheckpoint = {
   currentShard?: string
 }
 
+type RerankProbeStatus = {
+  enabled: boolean
+  provider?: string
+  lastError?: string
+}
+
 export class LocalCodeGraphService implements vscode.Disposable {
   private index?: CodeGraphIndex
   private analyzer?: CodeGraphAnalyzerStatus
@@ -96,6 +103,14 @@ export class LocalCodeGraphService implements vscode.Disposable {
   private ragIndex?: RagVectorIndex
   private ragEmbeddingProvider?: EmbeddingProvider
   private ragRerankProvider?: RerankProvider
+  private ragEmbeddingProviderError?: string
+  private ragRerankProviderError?: string
+  private ragApiKey?: string
+  private ragProbeInFlight?: Promise<RagStatus>
+  private ragIndexInFlight?: Promise<void>
+  private pendingRagIndexChangedPaths?: Set<string> | "full"
+  private ragResumeTimer?: ReturnType<typeof setTimeout>
+  private ragResumeInFlight?: Promise<void>
   private lastRagElapsedMs: number | undefined
   private ragStatusValue = disabledRagStatus()
   private changeTimer?: ReturnType<typeof setTimeout>
@@ -111,12 +126,14 @@ export class LocalCodeGraphService implements vscode.Disposable {
     private readonly context: vscode.ExtensionContext,
     private readonly output: vscode.OutputChannel,
     private readonly getSettings: () => RemoteSettings,
+    private readonly getRagApiKey: () => Promise<string | undefined>,
     private readonly onStatusChanged: () => void,
   ) {}
 
   dispose() {
     this.disposed = true
     if (this.changeTimer) clearTimeout(this.changeTimer)
+    this.clearRagIndexResume()
     this.watcher?.dispose()
     this.workerPool.dispose()
   }
@@ -148,6 +165,7 @@ export class LocalCodeGraphService implements vscode.Disposable {
 
   cancelIndexing(reason = "cancelled by user") {
     this.cancelRequested = true
+    this.clearRagIndexResume()
     this.jobs.cancelActive(reason)
     this.jobs.clearPending()
     this.pendingChanges.clear()
@@ -162,6 +180,7 @@ export class LocalCodeGraphService implements vscode.Disposable {
 
   pauseIndexing(reason = "paused by user") {
     this.paused = true
+    this.clearRagIndexResume()
     this.jobs.pause()
     this.setStatus({
       ...this.statusValue,
@@ -188,6 +207,7 @@ export class LocalCodeGraphService implements vscode.Disposable {
         this.indexing = undefined
       })
     }
+    this.scheduleRagIndexResumeFromStatus("manual-resume")
   }
 
   async benchmarkSyntheticRepository(files = 1000) {
@@ -284,12 +304,40 @@ export class LocalCodeGraphService implements vscode.Disposable {
       ? ` Analyzer: ${status.analysisMode} on ${status.analyzerHost ?? "unknown"}${status.analyzerPlatform ? ` (${status.analyzerPlatform})` : ""}.`
       : ""
     const degraded = status.analyzerDegradedReason ? ` ${status.analyzerDegradedReason}` : ""
-    const rag = status.rag?.embeddingEnabled
-      ? ` RAG: ${status.rag.embeddedChunks}/${status.rag.chunks} chunk(s), ${status.rag.vectorShards} shard(s), ${status.rag.endpointKind}${status.rag.fallbackReason ? `, fallback ${status.rag.fallbackReason}` : ""}.`
-      : " RAG: embedding disabled; BM25/graph/state-machine fallback active."
+    const rag = formatRagStatus(status.rag)
     await vscode.window.showInformationMessage(
       `Local code graph: ${status.state}. ${status.indexedFiles} file(s), ${status.indexedFunctions} function(s), ${status.indexedMacros} macro(s). ${status.detail}${updated}${truncated}${storage}${schema}${queue}${errors}${size}${skipped}${analyzer}${degraded}${rag}`.trim(),
     )
+  }
+
+  async refreshRagConfiguration() {
+    await this.testRagConfiguration()
+  }
+
+  async testRagConfiguration(): Promise<RagStatus> {
+    if (this.ragProbeInFlight) return this.ragProbeInFlight
+    this.ragProbeInFlight = this.probeRagConfiguration().finally(() => {
+      this.ragProbeInFlight = undefined
+    })
+    return this.ragProbeInFlight
+  }
+
+  private async probeRagConfiguration(): Promise<RagStatus> {
+    await this.refreshRagApiKey()
+    this.queryCache.clear()
+    if (!this.getSettings().codeGraph.enabled) {
+      this.ragIndex = undefined
+      const status = disabledRagStatus()
+      this.setRagStatus(status)
+      return status
+    }
+    const status = await this.probeRagProvidersOnly()
+    this.setRagStatus(status)
+    return status
+  }
+
+  private async refreshRagApiKey() {
+    this.ragApiKey = await this.getRagApiKey()
   }
 
   async buildContext(input: {
@@ -995,11 +1043,13 @@ export class LocalCodeGraphService implements vscode.Disposable {
 
   private hybridOptions(): HybridRetrievalOptions {
     this.configureRagProviders()
+    const embeddingReady = Boolean(this.ragStatusValue.embeddingEnabled && this.ragIndex && this.ragEmbeddingProvider)
+    const rerankReady = Boolean(this.ragStatusValue.rerankEnabled && this.ragRerankProvider)
     return {
       settings: this.getSettings().rag,
-      vectorIndex: this.ragIndex,
-      embeddingProvider: this.ragEmbeddingProvider,
-      rerankProvider: this.ragRerankProvider,
+      vectorIndex: embeddingReady ? this.ragIndex : undefined,
+      embeddingProvider: embeddingReady ? this.ragEmbeddingProvider : undefined,
+      rerankProvider: rerankReady ? this.ragRerankProvider : undefined,
     }
   }
 
@@ -1007,107 +1057,456 @@ export class LocalCodeGraphService implements vscode.Disposable {
     const settings = this.getSettings().rag
     this.ragEmbeddingProvider = undefined
     this.ragRerankProvider = undefined
-    if (settings.embedding.enabled && settings.embedding.endpoint) {
+    this.ragEmbeddingProviderError = undefined
+    this.ragRerankProviderError = undefined
+    if (settings.embedding.endpoint) {
       try {
-        this.ragEmbeddingProvider = createHttpEmbeddingProvider(settings)
+        this.ragEmbeddingProvider = createHttpEmbeddingProvider(settings, this.ragApiKey, this.ragHttpDiagnostics())
       } catch (error) {
+        this.ragEmbeddingProviderError = error instanceof Error ? error.message : String(error)
         this.setRagStatus({
           ...this.ragStatusValue,
-          enabled: true,
-          embeddingEnabled: true,
+          enabled: false,
+          availability: "unavailable",
+          embeddingEnabled: false,
           endpointKind: checkRagEndpoint(settings.embedding.endpoint, settings.allowedHosts).kind,
-          fallbackReason: error instanceof Error ? error.message : String(error),
+          fallbackReason: this.ragEmbeddingProviderError,
         })
       }
     }
-    if (settings.rerank.enabled && settings.rerank.endpoint) {
+    if (settings.rerank.endpoint) {
       try {
-        this.ragRerankProvider = createHttpRerankProvider(settings)
+        this.ragRerankProvider = createHttpRerankProvider(settings, this.ragApiKey, this.ragHttpDiagnostics())
       } catch (error) {
+        this.ragRerankProviderError = error instanceof Error ? error.message : String(error)
         this.setRagStatus({
           ...this.ragStatusValue,
-          enabled: true,
-          rerankEnabled: true,
-          fallbackReason: error instanceof Error ? error.message : String(error),
+          rerankEnabled: false,
+          rerankLastError: this.ragRerankProviderError,
         })
       }
     }
   }
 
-  private async refreshRagIndex(changedPaths?: string[]) {
-    const root = workspaceRoot()
+  private ragHttpDiagnostics(): RagHttpDiagnostics {
+    return (event) => this.output.appendLine(formatRagHttpDiagnosticEvent(event))
+  }
+
+  private async probeConfiguredRerankProvider(): Promise<RerankProbeStatus> {
     const settings = this.getSettings().rag
-    if (!root || !this.index) return
-    if (!settings.embedding.enabled) {
+    if (!settings.rerank.endpoint) return { enabled: false }
+    if (!this.ragRerankProvider) {
+      return {
+        enabled: false,
+        lastError: this.ragRerankProviderError ?? "rerank provider is not configured",
+      }
+    }
+    try {
+      await probeRagRerankProvider(this.ragRerankProvider)
+      return { enabled: true, provider: this.ragRerankProvider.id }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      this.output.appendLine(`[rag] rerank probe failed: ${message}`)
+      return { enabled: false, provider: this.ragRerankProvider.id, lastError: message }
+    }
+  }
+
+  private async probeRagProvidersOnly(): Promise<RagStatus> {
+    const settings = this.getSettings().rag
+    if (!settings.embedding.endpoint) {
       this.ragIndex = undefined
-      this.setRagStatus(disabledRagStatus("embedding disabled; BM25/graph/state-machine fallback active"))
+      this.configureRagProviders()
+      const rerankProbe = await this.probeConfiguredRerankProvider()
+      return {
+        ...disabledRagStatus("embedding endpoint not configured; BM25/graph/state-machine fallback active"),
+        rerankEnabled: rerankProbe.enabled,
+        rerankProvider: rerankProbe.provider,
+        rerankLastError: rerankProbe.lastError,
+      }
+    }
+
+    const policy = checkRagEndpoint(settings.embedding.endpoint, settings.allowedHosts)
+    if (!policy.ok) {
+      this.ragIndex = undefined
+      this.configureRagProviders()
+      const rerankProbe = await this.probeConfiguredRerankProvider()
+      return {
+        ...disabledRagStatus(policy.reason),
+        availability: "unavailable",
+        endpointKind: policy.kind,
+        rerankEnabled: rerankProbe.enabled,
+        rerankProvider: rerankProbe.provider,
+        rerankLastError: rerankProbe.lastError,
+        fallbackReason: policy.reason,
+      }
+    }
+
+    this.configureRagProviders()
+    const rerankProbe = await this.probeConfiguredRerankProvider()
+    if (!this.ragEmbeddingProvider) {
+      this.ragIndex = undefined
+      return {
+        ...disabledRagStatus("embedding provider is not configured"),
+        availability: "unavailable",
+        endpointKind: policy.kind,
+        rerankEnabled: rerankProbe.enabled,
+        rerankProvider: rerankProbe.provider,
+        rerankLastError: rerankProbe.lastError,
+      }
+    }
+
+    const expectedDimension = this.currentRagIndexMatchesProvider() ? this.ragIndex?.dimension ?? 0 : 0
+    this.setRagStatus({
+      ...this.ragStatusValue,
+      enabled: false,
+      availability: "checking",
+      embeddingEnabled: false,
+      endpointKind: policy.kind,
+      fallbackReason: "checking embedding endpoint",
+      lastError: undefined,
+      rerankEnabled: rerankProbe.enabled,
+      rerankProvider: rerankProbe.provider,
+      rerankLastError: rerankProbe.lastError,
+      embeddingProvider: this.ragEmbeddingProvider.id,
+    })
+
+    try {
+      await this.probeRagEmbeddingProvider(expectedDimension)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      return {
+        ...this.ragStatusValue,
+        enabled: false,
+        availability: "unavailable",
+        embeddingEnabled: false,
+        rerankEnabled: rerankProbe.enabled,
+        endpointKind: policy.kind,
+        lastError: message,
+        fallbackReason: message,
+        rerankProvider: rerankProbe.provider,
+        rerankLastError: rerankProbe.lastError,
+      }
+    }
+
+    if (!this.currentRagIndexMatchesProvider()) {
+      this.ragIndex = undefined
+      return {
+        enabled: false,
+        availability: "not-indexed",
+        embeddingEnabled: false,
+        rerankEnabled: rerankProbe.enabled,
+        endpointKind: policy.kind,
+        chunks: 0,
+        embeddedChunks: 0,
+        vectorShards: 0,
+        embeddingProvider: this.ragEmbeddingProvider.id,
+        rerankProvider: rerankProbe.provider,
+        rerankLastError: rerankProbe.lastError,
+        fallbackReason: "embedding endpoint is reachable, but no matching RAG vector index is built; rebuild the local code graph to enable vector retrieval",
+      }
+    }
+
+    return this.readyRagStatus(policy.kind, rerankProbe, this.ragIndex!)
+  }
+
+  private currentRagIndexMatchesProvider() {
+    return Boolean(
+      this.ragIndex
+        && this.ragEmbeddingProvider
+        && this.ragIndex.provider === this.ragEmbeddingProvider.id
+        && this.ragIndex.model === this.ragEmbeddingProvider.model
+        && this.ragIndex.dimension > 0
+        && this.ragIndex.vectors.length > 0,
+    )
+  }
+
+  private readyRagStatus(endpointKind: RagStatus["endpointKind"], rerankProbe: RerankProbeStatus, index: RagVectorIndex): RagStatus {
+    return this.ragStatusForIndex(endpointKind, rerankProbe, index)
+  }
+
+  private ragStatusForIndex(endpointKind: RagStatus["endpointKind"], rerankProbe: RerankProbeStatus, index: RagVectorIndex): RagStatus {
+    const totalChunks = index.totalChunks ?? index.chunks.length
+    const pendingChunkCount = Math.max(0, index.pendingChunkCount ?? totalChunks - index.chunks.length)
+    const indexAvailability = pendingChunkCount > 0
+      ? index.indexPausedReason ? "paused" : "partial"
+      : "ready"
+    const availability = indexAvailability
+    const hasVectors = index.dimension > 0 && index.vectors.length > 0
+    const fallbackReason = index.indexPausedReason
+      ? ragPausedReasonMessage(index.indexPausedReason, index.lastError)
+      : pendingChunkCount > 0
+        ? "RAG vector index is partially built; remaining chunks will be embedded on the next RAG index run"
+        : undefined
+    return {
+      enabled: hasVectors,
+      availability,
+      indexAvailability,
+      embeddingEnabled: hasVectors,
+      rerankEnabled: rerankProbe.enabled,
+      endpointKind,
+      chunks: totalChunks,
+      embeddedChunks: index.vectors.length,
+      indexedChunkCount: index.vectors.length,
+      pendingChunkCount,
+      indexPausedReason: index.indexPausedReason,
+      resumeScheduledAt: index.nextResumeAt,
+      resumeDelayMs: index.resumeDelayMs,
+      resumeReason: index.resumeReason,
+      vectorShards: new Set(index.chunks.map((chunk) => chunk.shard)).size,
+      embeddingProvider: index.provider,
+      rerankProvider: rerankProbe.provider,
+      rerankLastError: rerankProbe.lastError,
+      dimension: index.dimension,
+      updatedAt: index.updatedAt,
+      lastError: index.lastError,
+      fallbackReason,
+    }
+  }
+
+  private async refreshRagIndex(changedPaths?: string[]) {
+    if (this.ragIndexInFlight) {
+      this.queuePendingRagIndex(changedPaths)
+      await this.ragIndexInFlight
+      return
+    }
+    this.clearRagIndexResume()
+    this.ragIndexInFlight = this.rebuildRagIndex(changedPaths).finally(async () => {
+      this.ragIndexInFlight = undefined
+      const pending = this.pendingRagIndexChangedPaths
+      this.pendingRagIndexChangedPaths = undefined
+      if (pending) await this.refreshRagIndex(pending === "full" ? undefined : [...pending])
+    })
+    await this.ragIndexInFlight
+  }
+
+  private queuePendingRagIndex(changedPaths?: string[]) {
+    if (!changedPaths) {
+      this.pendingRagIndexChangedPaths = "full"
+      return
+    }
+    if (this.pendingRagIndexChangedPaths === "full") return
+    const pending = this.pendingRagIndexChangedPaths ?? new Set<string>()
+    for (const path of changedPaths) pending.add(path)
+    this.pendingRagIndexChangedPaths = pending
+  }
+
+  private clearRagIndexResume() {
+    if (this.ragResumeTimer) clearTimeout(this.ragResumeTimer)
+    this.ragResumeTimer = undefined
+    if (this.ragIndex?.nextResumeAt || this.ragIndex?.resumeReason || this.ragIndex?.resumeDelayMs) {
+      this.ragIndex = {
+        ...this.ragIndex,
+        nextResumeAt: undefined,
+        resumeReason: undefined,
+        resumeDelayMs: undefined,
+      }
+      this.setRagStatus(this.ragStatusValue.resumeScheduledAt ? {
+        ...this.ragStatusValue,
+        resumeScheduledAt: undefined,
+        resumeReason: undefined,
+        resumeDelayMs: undefined,
+      } : this.ragStatusValue)
+    }
+  }
+
+  private async scheduleRagIndexResumeFromStatus(trigger: string) {
+    const settings = this.getSettings().rag
+    const index = this.ragIndex
+    const reason = index?.indexPausedReason
+    const pending = index?.pendingChunkCount ?? 0
+    if (!index || pending <= 0) {
+      this.clearRagIndexResume()
+      return
+    }
+    if (!settings.embedding.resumeAutomatically) {
+      this.clearRagIndexResume()
+      this.output.appendLine(`[rag-index] auto resume skipped reason=disabled pending=${pending}`)
+      return
+    }
+    if (this.disposed || this.paused) {
+      this.output.appendLine(`[rag-index] auto resume skipped reason=${this.disposed ? "disposed" : "codegraph-paused"} pending=${pending}`)
+      return
+    }
+    if (reason !== "request-budget" && reason !== "rate-limit") {
+      this.clearRagIndexResume()
+      this.output.appendLine(`[rag-index] auto resume skipped reason=${reason ?? "not-paused"} pending=${pending}`)
+      return
+    }
+    if (!settings.embedding.endpoint || !this.getSettings().codeGraph.enabled) {
+      this.clearRagIndexResume()
       return
     }
     const policy = checkRagEndpoint(settings.embedding.endpoint, settings.allowedHosts)
     if (!policy.ok) {
+      this.clearRagIndexResume()
+      return
+    }
+
+    const delayMs = this.ragResumeDelayMs(index, reason)
+    const nextResumeAt = Date.now() + delayMs
+    const scheduled = {
+      ...index,
+      nextResumeAt,
+      resumeDelayMs: delayMs,
+      resumeReason: reason satisfies RagResumeReason,
+    }
+    this.ragIndex = scheduled
+    this.setRagStatus({
+      ...this.ragStatusForIndex(policy.kind, {
+        enabled: this.ragStatusValue.rerankEnabled,
+        provider: this.ragStatusValue.rerankProvider,
+        lastError: this.ragStatusValue.rerankLastError,
+      }, scheduled),
+      resumeScheduledAt: nextResumeAt,
+      resumeDelayMs: delayMs,
+      resumeReason: reason,
+    })
+    const root = workspaceRoot()
+    if (root) await this.saveRagIndex(root, scheduled)
+
+    if (this.ragResumeTimer) clearTimeout(this.ragResumeTimer)
+    this.output.appendLine(`[rag-index] resume scheduled reason=${reason} trigger=${trigger} delayMs=${delayMs} pending=${pending}`)
+    this.ragResumeTimer = setTimeout(() => {
+      this.ragResumeTimer = undefined
+      this.ragResumeInFlight = this.runRagIndexResume(reason, pending)
+        .catch((error) => {
+          const message = error instanceof Error ? error.message : String(error)
+          this.output.appendLine(`[rag-index] auto resume failed: ${message}`)
+        })
+        .finally(() => {
+          this.ragResumeInFlight = undefined
+        })
+    }, delayMs)
+  }
+
+  private ragResumeDelayMs(index: RagVectorIndex, reason: RagResumeReason) {
+    const settings = this.getSettings().rag.embedding
+    if (reason === "rate-limit") {
+      const fallback = settings.resumeDelayMs || settings.retryBackoffMs
+      return Math.max(0, Math.floor(index.resumeDelayMs ?? fallback))
+    }
+    return Math.max(0, Math.floor(settings.resumeDelayMs))
+  }
+
+  private async runRagIndexResume(reason: RagResumeReason, pendingAtSchedule: number) {
+    if (this.disposed || this.paused) return
+    const pending = this.ragIndex?.pendingChunkCount ?? 0
+    if (pending <= 0) return
+    this.output.appendLine(`[rag-index] auto resume starting reason=${reason} pending=${pending} scheduledPending=${pendingAtSchedule}`)
+    await this.refreshRagIndex()
+  }
+
+  private async rebuildRagIndex(changedPaths?: string[]) {
+    const root = workspaceRoot()
+    const settings = this.getSettings().rag
+    await this.refreshRagApiKey()
+    this.queryCache.clear()
+    if (!root || !this.index) return
+    if (!settings.embedding.endpoint) {
+      this.clearRagIndexResume()
       this.ragIndex = undefined
+      this.configureRagProviders()
+      const rerankProbe = await this.probeConfiguredRerankProvider()
+      this.setRagStatus({
+        ...disabledRagStatus("embedding endpoint not configured; BM25/graph/state-machine fallback active"),
+        rerankEnabled: rerankProbe.enabled,
+        rerankProvider: rerankProbe.provider,
+        rerankLastError: rerankProbe.lastError,
+      })
+      return
+    }
+    const policy = checkRagEndpoint(settings.embedding.endpoint, settings.allowedHosts)
+    if (!policy.ok) {
+      this.clearRagIndexResume()
+      this.ragIndex = undefined
+      this.configureRagProviders()
+      const rerankProbe = await this.probeConfiguredRerankProvider()
       this.setRagStatus({
         ...disabledRagStatus(policy.reason),
-        enabled: true,
-        embeddingEnabled: true,
-        rerankEnabled: settings.rerank.enabled,
+        availability: "unavailable",
+        rerankEnabled: rerankProbe.enabled,
         endpointKind: policy.kind,
+        rerankProvider: rerankProbe.provider,
+        rerankLastError: rerankProbe.lastError,
         fallbackReason: policy.reason,
       })
       return
     }
     this.configureRagProviders()
-    if (!this.ragEmbeddingProvider) return
+    const rerankProbe = await this.probeConfiguredRerankProvider()
+    if (!this.ragEmbeddingProvider) {
+      this.clearRagIndexResume()
+      this.setRagStatus({
+        ...disabledRagStatus("embedding provider is not configured"),
+        availability: "unavailable",
+        endpointKind: policy.kind,
+        rerankEnabled: rerankProbe.enabled,
+        rerankProvider: rerankProbe.provider,
+        rerankLastError: rerankProbe.lastError,
+      })
+      return
+    }
 
     const started = Date.now()
+    const existingRagStatus = this.currentRagIndexMatchesProvider()
+      ? this.ragStatusForIndex(policy.kind, rerankProbe, this.ragIndex!)
+      : this.ragStatusValue
     this.setRagStatus({
-      ...this.ragStatusValue,
-      enabled: true,
-      embeddingEnabled: true,
-      rerankEnabled: settings.rerank.enabled,
+      ...existingRagStatus,
+      enabled: existingRagStatus.embeddingEnabled,
+      availability: "checking",
+      rerankEnabled: rerankProbe.enabled,
       endpointKind: policy.kind,
-      fallbackReason: undefined,
+      fallbackReason: "checking embedding endpoint and vector index",
       lastError: undefined,
+      rerankLastError: rerankProbe.lastError,
       embeddingProvider: this.ragEmbeddingProvider.id,
-      rerankProvider: this.ragRerankProvider?.id,
+      rerankProvider: rerankProbe.provider,
     })
     try {
       const activeIndex = this.isLazyManifestIndex() ? await this.activeIndexForQuestion("", []) : this.index
       if (!activeIndex) return
+      this.output.appendLine(`[rag-index] embedding ${changedPaths ? `${changedPaths.length} changed path(s)` : "full local code graph"} with batchSize=${settings.embedding.batchSize} requestDelayMs=${settings.embedding.requestDelayMs} maxRequestsPerRun=${settings.embedding.maxRequestsPerRun || "unlimited"} maxRetries=${settings.embedding.maxRetries} retryBackoffMs=${settings.embedding.retryBackoffMs}`)
       const next = await buildRagVectorIndex({
         index: activeIndex,
         provider: this.ragEmbeddingProvider,
         previous: this.ragIndex,
         changedPaths,
         stateMachines: extractStateMachines(activeIndex, { maxTransitions: this.getSettings().codeGraph.maxStateTransitions }),
+        batchSize: settings.embedding.batchSize,
+        requestDelayMs: settings.embedding.requestDelayMs,
+        maxRequestsPerRun: settings.embedding.maxRequestsPerRun,
+        maxRetries: settings.embedding.maxRetries,
+        retryBackoffMs: settings.embedding.retryBackoffMs,
+        resumeMissing: settings.embedding.resumeAutomatically || !changedPaths,
+        onProgress: (event) => this.output.appendLine(formatRagIndexBuildProgress(event)),
+        onIndexUpdate: async (partial) => {
+          if (partial.dimension <= 0 || partial.vectors.length === 0) return
+          this.ragIndex = partial
+          await this.saveRagIndex(root, partial)
+          this.setRagStatus(this.ragStatusForIndex(policy.kind, rerankProbe, partial))
+        },
       })
+      if ((next.requestsUsed ?? 0) === 0) await this.probeRagEmbeddingProvider(next.dimension)
       this.ragIndex = next
       this.lastRagElapsedMs = Date.now() - started
       await this.saveRagIndex(root, next)
-      this.setRagStatus({
-        enabled: true,
-        embeddingEnabled: true,
-        rerankEnabled: settings.rerank.enabled,
-        endpointKind: policy.kind,
-        chunks: next.chunks.length,
-        embeddedChunks: next.vectors.length,
-        vectorShards: new Set(next.chunks.map((chunk) => chunk.shard)).size,
-        embeddingProvider: next.provider,
-        rerankProvider: this.ragRerankProvider?.id,
-        dimension: next.dimension,
-        updatedAt: next.updatedAt,
-      })
-      this.output.appendLine(`[rag] embedded ${next.vectors.length}/${next.chunks.length} chunk(s) in ${this.lastRagElapsedMs}ms`)
+      this.setRagStatus(this.ragStatusForIndex(policy.kind, rerankProbe, next))
+      this.output.appendLine(`[rag-index] embedded ${next.vectors.length}/${next.totalChunks ?? next.chunks.length} chunk(s) in ${this.lastRagElapsedMs}ms${next.indexPausedReason ? ` paused=${next.indexPausedReason}` : ""}`)
+      await this.scheduleRagIndexResumeFromStatus("index-build")
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       this.lastRagElapsedMs = Date.now() - started
       this.setRagStatus({
         ...this.ragStatusValue,
-        enabled: true,
-        embeddingEnabled: true,
-        rerankEnabled: settings.rerank.enabled,
+        enabled: false,
+        availability: "unavailable",
+        embeddingEnabled: false,
+        rerankEnabled: rerankProbe.enabled,
         endpointKind: policy.kind,
         lastError: message,
+        rerankProvider: rerankProbe.provider,
+        rerankLastError: rerankProbe.lastError,
         fallbackReason: message,
       })
       this.output.appendLine(`[rag] embedding index failed after ${this.lastRagElapsedMs}ms: ${message}`)
@@ -1132,11 +1531,79 @@ export class LocalCodeGraphService implements vscode.Disposable {
     await vscode.workspace.fs.writeFile(this.ragManifestUri(root), encodeJson(manifest))
   }
 
+  private async probeRagEmbeddingProvider(dimension: number) {
+    if (!this.ragEmbeddingProvider) throw new Error("embedding provider is not configured")
+    const vector = (await this.ragEmbeddingProvider.embed(["opencode RAG connectivity probe"]))[0]
+    if (!vector) throw new Error("embedding provider returned no probe vector")
+    if (dimension > 0 && vector.length !== dimension) {
+      throw new Error(`embedding provider returned ${vector.length} dimension(s), expected ${dimension}`)
+    }
+  }
+
   private async loadRagIndex(root: vscode.WorkspaceFolder) {
+    const settings = this.getSettings().rag
+    await this.refreshRagApiKey()
+    if (!settings.embedding.endpoint) {
+      this.clearRagIndexResume()
+      this.ragIndex = undefined
+      this.configureRagProviders()
+      const rerankProbe = await this.probeConfiguredRerankProvider()
+      this.setRagStatus({
+        ...disabledRagStatus("embedding endpoint not configured; BM25/graph/state-machine fallback active"),
+        rerankEnabled: rerankProbe.enabled,
+        rerankProvider: rerankProbe.provider,
+        rerankLastError: rerankProbe.lastError,
+      })
+      return
+    }
+
+    const policy = checkRagEndpoint(settings.embedding.endpoint, settings.allowedHosts)
+    if (!policy.ok) {
+      this.clearRagIndexResume()
+      this.ragIndex = undefined
+      this.configureRagProviders()
+      const rerankProbe = await this.probeConfiguredRerankProvider()
+      this.setRagStatus({
+        ...disabledRagStatus(policy.reason),
+        availability: "unavailable",
+        endpointKind: policy.kind,
+        rerankEnabled: rerankProbe.enabled,
+        rerankProvider: rerankProbe.provider,
+        rerankLastError: rerankProbe.lastError,
+        fallbackReason: policy.reason,
+      })
+      return
+    }
+
+    this.configureRagProviders()
+    const rerankProbe = await this.probeConfiguredRerankProvider()
+    if (!this.ragEmbeddingProvider) {
+      this.clearRagIndexResume()
+      this.ragIndex = undefined
+      this.setRagStatus({
+        ...disabledRagStatus("embedding provider is not configured"),
+        availability: "unavailable",
+        endpointKind: policy.kind,
+        rerankEnabled: rerankProbe.enabled,
+        rerankProvider: rerankProbe.provider,
+        rerankLastError: rerankProbe.lastError,
+      })
+      return
+    }
+
     try {
       const manifestBytes = await vscode.workspace.fs.readFile(this.ragManifestUri(root))
       const manifest = JSON.parse(new TextDecoder().decode(manifestBytes)) as RagSerializedManifest
-      if (manifest.version !== 1 || manifest.rootPath !== root.uri.fsPath) return
+      if (manifest.version !== 1 || manifest.rootPath !== root.uri.fsPath) {
+        this.ragIndex = undefined
+        this.setRagStatus(await this.probeRagProvidersOnly())
+        return
+      }
+      if (manifest.provider !== this.ragEmbeddingProvider.id || manifest.model !== this.ragEmbeddingProvider.model) {
+        this.ragIndex = undefined
+        this.setRagStatus(await this.probeRagProvidersOnly())
+        return
+      }
       const chunks: RagVectorIndex["chunks"] = []
       const vectors: RagVectorIndex["vectors"] = []
       const shardsDir = vscode.Uri.joinPath(this.ragDir(root), "shards")
@@ -1156,24 +1623,20 @@ export class LocalCodeGraphService implements vscode.Disposable {
         dimension: manifest.dimension,
         chunks,
         vectors,
+        totalChunks: manifest.totalChunks ?? manifest.chunks,
+        pendingChunkCount: manifest.pendingChunks ?? Math.max(0, (manifest.totalChunks ?? manifest.chunks) - chunks.length),
+        indexPausedReason: manifest.indexPausedReason,
+        lastError: manifest.lastError,
+        nextResumeAt: manifest.nextResumeAt,
+        resumeDelayMs: manifest.resumeDelayMs,
+        resumeReason: manifest.resumeReason,
       }
-      this.setRagStatus({
-        enabled: true,
-        embeddingEnabled: this.getSettings().rag.embedding.enabled,
-        rerankEnabled: this.getSettings().rag.rerank.enabled,
-        endpointKind: this.getSettings().rag.embedding.enabled
-          ? checkRagEndpoint(this.getSettings().rag.embedding.endpoint, this.getSettings().rag.allowedHosts).kind
-          : "disabled",
-        chunks: chunks.length,
-        embeddedChunks: vectors.length,
-        vectorShards: manifest.shards.length,
-        embeddingProvider: manifest.provider,
-        dimension: manifest.dimension,
-        updatedAt: manifest.updatedAt,
-      })
+      await this.probeRagEmbeddingProvider(manifest.dimension)
+      this.setRagStatus(this.ragStatusForIndex(policy.kind, rerankProbe, this.ragIndex))
+      await this.scheduleRagIndexResumeFromStatus("index-load")
     } catch {
       this.ragIndex = undefined
-      this.setRagStatus(disabledRagStatus("no stored RAG vector index"))
+      this.setRagStatus(await this.probeRagProvidersOnly())
     }
   }
 
@@ -1596,9 +2059,11 @@ function disabledStatus(detail = "Local code graph is disabled."): CodeGraphStat
   }
 }
 
-function disabledRagStatus(fallbackReason = "embedding disabled; BM25/graph/state-machine fallback active"): RagStatus {
+function disabledRagStatus(fallbackReason = "embedding endpoint not configured; BM25/graph/state-machine fallback active"): RagStatus {
   return {
     enabled: false,
+    availability: "not-configured",
+    indexAvailability: "none",
     embeddingEnabled: false,
     rerankEnabled: false,
     endpointKind: "disabled",
@@ -1607,6 +2072,104 @@ function disabledRagStatus(fallbackReason = "embedding disabled; BM25/graph/stat
     vectorShards: 0,
     fallbackReason,
   }
+}
+
+function formatRagStatus(status?: RagStatus) {
+  if (!status) return " RAG: not configured; BM25/graph/state-machine fallback active."
+  const rerankReason = status.rerankLastError
+  const rerank = status.rerankEnabled
+    ? " Rerank: ready."
+    : status.rerankProvider || rerankReason
+      ? ` Rerank: unavailable${rerankReason ? `, ${rerankReason}` : ""}.`
+      : ""
+  if (status.embeddingEnabled) {
+    if (status.availability === "partial") {
+      return ` RAG: partial, ${status.embeddedChunks}/${status.chunks} chunk(s), ${status.pendingChunkCount ?? Math.max(0, status.chunks - status.embeddedChunks)} pending${ragResumeScheduleMessage(status)}, ${status.vectorShards} shard(s), ${status.endpointKind}.${rerank}`
+    }
+    if (status.availability === "paused") {
+      return ` RAG: indexing paused, ${status.embeddedChunks}/${status.chunks} chunk(s), ${status.fallbackReason ?? ragPausedReasonMessage(status.indexPausedReason, status.lastError)}${ragResumeScheduleMessage(status)}, ${status.vectorShards} shard(s), ${status.endpointKind}.${rerank}`
+    }
+    return ` RAG: ready, ${status.embeddedChunks}/${status.chunks} chunk(s), ${status.vectorShards} shard(s), ${status.endpointKind}.${rerank}`
+  }
+  if (status.availability === "checking") {
+    return ` RAG: checking ${status.endpointKind} embedding endpoint; BM25/graph/state-machine fallback active.${rerank}`
+  }
+  if (status.availability === "paused") {
+    return ` RAG: indexing paused, ${status.fallbackReason ?? ragPausedReasonMessage(status.indexPausedReason, status.lastError)}${ragResumeScheduleMessage(status)}; BM25/graph/state-machine fallback active.${rerank}`
+  }
+  if (status.availability === "partial") {
+    return ` RAG: partial, ${status.embeddedChunks}/${status.chunks} chunk(s), ${status.pendingChunkCount ?? Math.max(0, status.chunks - status.embeddedChunks)} pending${ragResumeScheduleMessage(status)}.${rerank}`
+  }
+  if (status.availability === "not-indexed") {
+    return ` RAG: not indexed${status.fallbackReason ? `, ${status.fallbackReason}` : ""}; BM25/graph/state-machine fallback active.${rerank}`
+  }
+  if (status.availability === "unavailable") {
+    return ` RAG: unavailable${status.fallbackReason ? `, ${status.fallbackReason}` : ""}; BM25/graph/state-machine fallback active.${rerank}`
+  }
+  return ` RAG: not configured; BM25/graph/state-machine fallback active.${rerank}`
+}
+
+function formatRagHttpDiagnosticEvent(event: RagHttpDiagnosticEvent) {
+  const key = event.authorizationPresent
+    ? `present ${event.apiKeyFingerprint ?? "fingerprint-unavailable"}`
+    : "empty"
+  const headers = event.authorizationPresent
+    ? "content-type:application/json, authorization:Bearer <redacted>"
+    : "content-type:application/json"
+  const common = [
+    `[rag-http] ${event.phase}`,
+    event.kind,
+    `${event.method} ${event.endpoint}`,
+    event.model ? `model=${event.model}` : undefined,
+    event.inputCount !== undefined ? `inputCount=${event.inputCount}` : undefined,
+    event.batchSize !== undefined ? `batchSize=${event.batchSize}` : undefined,
+    event.documentCount !== undefined ? `documentCount=${event.documentCount}` : undefined,
+    event.topN !== undefined ? `topN=${event.topN}` : undefined,
+    `timeoutMs=${event.timeoutMs}`,
+    `headers=${headers}`,
+    `key=${key}`,
+  ].filter(Boolean)
+  if (event.phase === "response") {
+    common.push(`status=${event.status ?? "unknown"} ${event.statusText ?? ""}`.trim())
+    common.push(`ok=${event.ok ? "true" : "false"}`)
+    if (event.elapsedMs !== undefined) common.push(`elapsedMs=${event.elapsedMs}`)
+    if (event.errorPreview) common.push(`errorPreview=${compactLogValue(event.errorPreview)}`)
+  }
+  return common.join(" ")
+}
+
+function formatRagIndexBuildProgress(event: RagIndexBuildProgress) {
+  if (event.phase === "batch") {
+    const requestLimit = event.requestLimit > 0 ? String(event.requestLimit) : "unlimited"
+    return `[rag-index] embedding batch ${event.batchIndex}/${event.batchCount} request ${event.requestNumber}/${requestLimit} inputCount=${event.inputCount}`
+  }
+  if (event.phase === "delay") return `[rag-index] delay ${event.delayMs}ms before next embedding request`
+  if (event.phase === "rate-limit") {
+    const retryAfter = event.retryAfterMs !== undefined ? ` retryAfterMs=${event.retryAfterMs}` : ""
+    return `[rag-index] rate limited status=${event.status}${retryAfter} retry=${event.retry}/${event.maxRetries} delayMs=${event.delayMs}`
+  }
+  const requestLimit = event.requestLimit > 0 ? String(event.requestLimit) : "unlimited"
+  return `[rag-index] paused: ${ragPausedReasonMessage(event.reason, event.message)} used=${event.requestsUsed} limit=${requestLimit}`
+}
+
+function ragPausedReasonMessage(reason?: RagStatus["indexPausedReason"], detail?: string) {
+  const suffix = detail ? `: ${detail}` : ""
+  if (reason === "request-budget") return `request budget reached${suffix}`
+  if (reason === "rate-limit") return `rate limited${suffix}`
+  if (reason === "provider-error") return `provider error${suffix}`
+  return `indexing paused${suffix}`
+}
+
+function ragResumeScheduleMessage(status: RagStatus) {
+  if (!status.resumeScheduledAt || !status.resumeReason) return ""
+  const remainingMs = Math.max(0, status.resumeScheduledAt - Date.now())
+  const seconds = Math.ceil(remainingMs / 1000)
+  const label = status.resumeReason === "rate-limit" ? "retry scheduled" : "resume scheduled"
+  return `; ${label} in ${seconds}s`
+}
+
+function compactLogValue(input: string) {
+  return input.replace(/\s+/g, " ").trim().slice(0, 300)
 }
 
 function formatCodeGraphQueryMetrics(metrics: CodeGraphQueryMetrics) {

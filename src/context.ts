@@ -162,6 +162,28 @@ export async function buildCompletionPrompt(input: {
     .join("\n")
 }
 
+export function buildQwenCoderFimPrompt(input: {
+  document: vscode.TextDocument
+  position: vscode.Position
+  settings: RemoteSettings
+}) {
+  const before = Math.max(0, input.position.line - 80)
+  const after = Math.min(input.document.lineCount - 1, input.position.line + 60)
+  const prefix = input.document.getText(new vscode.Range(before, 0, input.position.line, input.position.character))
+  const suffix = input.document.getText(
+    new vscode.Range(input.position.line, input.position.character, after, input.document.lineAt(after).text.length),
+  )
+  const path = relativePath(input.document.uri)
+  const repoName = vscode.workspace.getWorkspaceFolder(input.document.uri)?.name || vscode.workspace.workspaceFolders?.[0]?.name || "workspace"
+  return [
+    `<|repo_name|>${repoName}`,
+    `<|file_sep|>${path}\n`,
+    `<|fim_prefix|>${limitText(prefix, input.settings.context.maxFileBytes).text}`,
+    `<|fim_suffix|>${limitText(suffix, Math.floor(input.settings.context.maxFileBytes / 2)).text}`,
+    "<|fim_middle|>",
+  ].join("")
+}
+
 function completionLanguageRules(languageId: string) {
   switch (languageId) {
     case "c":

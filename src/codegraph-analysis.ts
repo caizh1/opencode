@@ -86,7 +86,11 @@ export function buildCodeIntelligenceSnapshot(index: CodeGraphIndex, lastTrace?:
   const summaries = buildAnalysisSummaries(index, stateMachines)
   const ragStatus = rag?.embeddingEnabled
     ? `, RAG ${rag.embeddedChunks}/${rag.chunks} chunk(s), ${rag.vectorShards} vector shard(s)${rag.fallbackReason ? `, fallback ${rag.fallbackReason}` : ""}`
-    : ", RAG fallback BM25/graph/state-machine"
+    : rag?.availability === "checking"
+      ? ", RAG checking embedding endpoint"
+      : rag?.availability === "unavailable"
+        ? `, RAG unavailable${rag.fallbackReason ? ` (${rag.fallbackReason})` : ""}`
+        : ", RAG not configured; fallback BM25/graph/state-machine"
   return {
     status: `ready: ${Object.keys(index.files).length} file(s), ${summaries.functions.length} function(s), ${stateMachines.length} state machine(s)${ragStatus}`,
     modules: summaries.modules,

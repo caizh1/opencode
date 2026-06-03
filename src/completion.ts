@@ -6,7 +6,7 @@ import { CompletionModelClient, completionModel } from "./completion-model-clien
 import { CompletionRequestCoordinator, type CompletionRequestOutcome } from "./completion-request-coordinator"
 import { INLINE_COMPLETION_SESSION_TITLE } from "./completion-session"
 import { completionInsertText } from "./completion-text"
-import { buildCompletionPrompt, relativePath } from "./context"
+import { buildCompletionPrompt, buildQwenCoderFimPrompt, relativePath } from "./context"
 import { resolveRequestAgent } from "./local-agent"
 import { isSessionNotFoundError, parseModel, RemoteOpenCodeClient } from "./remote-client"
 import type { OpenCodeMessage, RemoteSettings } from "./types"
@@ -181,12 +181,18 @@ export class RemoteCompletionProvider implements vscode.InlineCompletionItemProv
     editInput: Omit<CompletionEditInput, "text">
   }): Promise<CompletionRequestOutcome> {
     try {
-      const prompt = await buildCompletionPrompt({
-        document: input.document,
-        position: input.position,
-        settings: input.settings,
-        transport: "openai-compatible",
-      })
+      const prompt = input.settings.completion.profile === "qwen-coder-fim"
+        ? buildQwenCoderFimPrompt({
+            document: input.document,
+            position: input.position,
+            settings: input.settings,
+          })
+        : await buildCompletionPrompt({
+            document: input.document,
+            position: input.position,
+            settings: input.settings,
+            transport: "openai-compatible",
+          })
       const apiKey = await this.deps.getCompletionApiKey?.()
       const client = new CompletionModelClient(input.settings, apiKey)
       return await this.completionOutcomeWithRetry({
@@ -229,7 +235,7 @@ export class RemoteCompletionProvider implements vscode.InlineCompletionItemProv
       editInput: input.editInput,
       attempt: "initial",
     })
-    if (initial.edit || initial.reason !== "misaligned-leading-newline") return initial
+    if (initial.edit || initial.reason !== "misaligned-leading-newline" || completionTextProfile(input.settings) === "qwen-coder-fim") return initial
 
     const retryPrompt = completionRetryPrompt(input.prompt, input.editInput)
     this.logInfo(input.settings, `retry-sent reason=${initial.reason} ${input.details}`)
@@ -253,7 +259,7 @@ export class RemoteCompletionProvider implements vscode.InlineCompletionItemProv
     editInput: Omit<CompletionEditInput, "text">
     attempt: "initial" | "retry"
   }): CompletionRequestOutcome {
-    const visibleText = completionInsertText(input.response)
+    const visibleText = completionInsertText(input.response, completionTextProfile(input.settings))
     if (!visibleText) {
       if (input.attempt === "retry") {
         this.logInfo(
@@ -410,6 +416,7 @@ function completionRequestKey(document: vscode.TextDocument, position: vscode.Po
     document.uri.toString(),
     document.languageId,
     settings.completion.provider,
+    settings.completion.profile,
     settings.completion.provider === "openai-compatible" ? document.version : "",
     position.line,
     position.character,
@@ -450,6 +457,7 @@ function requestDetails(document: vscode.TextDocument, position: vscode.Position
     `line=${position.line + 1}`,
     `character=${position.character + 1}`,
     `provider=${settings.completion.provider}`,
+    `profile=${settings.completion.profile}`,
     `model="${quoteLogValue(model)}"`,
     `debounceMs=${settings.completion.debounceMs}`,
   ].join(" ")
@@ -457,6 +465,10 @@ function requestDetails(document: vscode.TextDocument, position: vscode.Position
 
 function elapsedMs(started: number) {
   return Date.now() - started
+}
+
+function completionTextProfile(settings: RemoteSettings) {
+  return settings.completion.provider === "openai-compatible" ? settings.completion.profile : "generic-chat"
 }
 
 function formatError(error: unknown) {

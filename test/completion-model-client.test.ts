@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test"
 import * as http from "node:http"
-import { CompletionModelClient, chatCompletionsUrl, completionModel } from "../src/completion-model-client"
+import { CompletionModelClient, chatCompletionsUrl, completionModel, completionsUrl } from "../src/completion-model-client"
 import { completionInsertText } from "../src/completion-text"
 import type { RemoteSettings } from "../src/types"
 
@@ -63,6 +63,47 @@ describe("direct completion model client", () => {
     expect(completionInsertText(message)).toBe("return 2;")
   })
 
+  test("posts Qwen coder FIM requests to raw completions", async () => {
+    let captured: { url?: string; body?: Record<string, unknown> } = {}
+    const baseUrl = await listen(async (request, response) => {
+      captured = {
+        url: request.url,
+        body: await collectJson(request) as Record<string, unknown>,
+      }
+      json(response, 200, {
+        id: "cmpl",
+        model: "qwen-coder",
+        choices: [{ text: "_sum(a, b) {\n    return a + b;\n}" }],
+      })
+    })
+
+    const prompt = "<|repo_name|>opencode<|file_sep|>test.ts\n<|fim_prefix|>function add<|fim_suffix|>\n<|fim_middle|>"
+    const message = await new CompletionModelClient(settings(`${baseUrl}/v1`, { profile: "qwen-coder-fim" })).complete({ prompt })
+
+    expect(captured.url).toBe("/v1/completions")
+    expect(captured.body).toMatchObject({
+      model: "qwen",
+      prompt,
+      max_tokens: 128,
+      temperature: 0.2,
+      top_p: 0.8,
+    })
+    expect(captured.body?.stop).toEqual(expect.arrayContaining(["<|fim_prefix|>", "<|fim_suffix|>", "<|fim_middle|>"]))
+    expect(completionInsertText(message, "qwen-coder-fim")).toBe("_sum(a, b) {\n    return a + b;\n}")
+  })
+
+  test("accepts chat-shaped raw completion responses from compatible servers", async () => {
+    const baseUrl = await listen((_request, response) => {
+      json(response, 200, {
+        choices: [{ message: { content: "return ok;" } }],
+      })
+    })
+
+    const message = await new CompletionModelClient(settings(baseUrl, { profile: "qwen-coder-fim" })).complete({ prompt: "fim" })
+
+    expect(completionInsertText(message, "qwen-coder-fim")).toBe("return ok;")
+  })
+
   test("reports HTTP and malformed response errors", async () => {
     const httpBaseUrl = await listen((_request, response) => {
       response.writeHead(500, { "content-type": "text/plain" }).end("broken")
@@ -83,11 +124,14 @@ describe("direct completion model client", () => {
   test("builds chat completion URLs and falls back to the default model", () => {
     expect(chatCompletionsUrl("http://localhost:8000/v1")).toBe("http://localhost:8000/v1/chat/completions")
     expect(chatCompletionsUrl("http://localhost:8000/v1/chat/completions")).toBe("http://localhost:8000/v1/chat/completions")
+    expect(completionsUrl("http://localhost:8000/v1")).toBe("http://localhost:8000/v1/completions")
+    expect(completionsUrl("http://localhost:8000/v1/chat/completions")).toBe("http://localhost:8000/v1/completions")
+    expect(completionsUrl("http://localhost:8000/v1/completions")).toBe("http://localhost:8000/v1/completions")
     expect(completionModel(settings("http://localhost:8000/v1", { completionModel: "", defaultModel: "fallback" }))).toBe("fallback")
   })
 })
 
-function settings(baseUrl: string, input: { completionModel?: string; defaultModel?: string } = {}): RemoteSettings {
+function settings(baseUrl: string, input: { completionModel?: string; defaultModel?: string; profile?: RemoteSettings["completion"]["profile"] } = {}): RemoteSettings {
   return {
     serverUrl: "http://localhost:4096",
     username: "opencode",
@@ -105,6 +149,7 @@ function settings(baseUrl: string, input: { completionModel?: string; defaultMod
     completion: {
       enabled: true,
       provider: "openai-compatible",
+      profile: input.profile ?? "generic-chat",
       apiBaseUrl: baseUrl,
       model: input.completionModel ?? "qwen",
       maxTokens: 128,
@@ -148,6 +193,12 @@ function settings(baseUrl: string, input: { completionModel?: string; defaultMod
         model: "",
         batchSize: 32,
         timeoutMs: 30000,
+        requestDelayMs: 500,
+        maxRequestsPerRun: 100,
+        maxRetries: 3,
+        retryBackoffMs: 2000,
+        resumeAutomatically: true,
+        resumeDelayMs: 60000,
       },
       rerank: {
         enabled: false,

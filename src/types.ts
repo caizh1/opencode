@@ -1,9 +1,14 @@
 export type ConnectionState = "disconnected" | "connecting" | "connected" | "authFailed" | "error"
 export type CompletionLogLevel = "off" | "info" | "debug"
+export type CompletionProfile = "generic-chat" | "qwen-coder-fim"
 export type CompletionProvider = "opencode" | "openai-compatible"
 export type CodeGraphAnalysisMode = "auto" | "fast" | "ast" | "semantic"
 
 export type RagEndpointKind = "disabled" | "localhost" | "private-lan" | "approved-host" | "blocked" | "error"
+export type RagAvailability = "not-configured" | "not-indexed" | "checking" | "ready" | "partial" | "paused" | "unavailable"
+export type RagIndexAvailability = "none" | "partial" | "ready" | "paused"
+export type RagIndexPausedReason = "request-budget" | "rate-limit" | "provider-error"
+export type RagResumeReason = "request-budget" | "rate-limit"
 
 export type RagSettings = {
   embedding: {
@@ -12,6 +17,12 @@ export type RagSettings = {
     model: string
     batchSize: number
     timeoutMs: number
+    requestDelayMs: number
+    maxRequestsPerRun: number
+    maxRetries: number
+    retryBackoffMs: number
+    resumeAutomatically: boolean
+    resumeDelayMs: number
   }
   rerank: {
     enabled: boolean
@@ -25,17 +36,26 @@ export type RagSettings = {
 
 export type RagStatus = {
   enabled: boolean
+  availability?: RagAvailability
+  indexAvailability?: RagIndexAvailability
   embeddingEnabled: boolean
   rerankEnabled: boolean
   endpointKind: RagEndpointKind
   chunks: number
   embeddedChunks: number
+  indexedChunkCount?: number
+  pendingChunkCount?: number
+  indexPausedReason?: RagIndexPausedReason
+  resumeScheduledAt?: number
+  resumeDelayMs?: number
+  resumeReason?: RagResumeReason
   vectorShards: number
   embeddingProvider?: string
   rerankProvider?: string
   dimension?: number
   updatedAt?: number
   lastError?: string
+  rerankLastError?: string
   fallbackReason?: string
 }
 
@@ -56,6 +76,7 @@ export type RemoteSettings = {
   completion: {
     enabled: boolean
     provider: CompletionProvider
+    profile: CompletionProfile
     apiBaseUrl: string
     model: string
     maxTokens: number

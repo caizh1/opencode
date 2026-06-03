@@ -1,4 +1,4 @@
-import { formatCompletionBlock, formatCompletionInsertText, formatCompletionReplacementText } from "./completion-format"
+import { formatCompletionBlock, formatCompletionInsertText, formatCompletionReplacementText, isCommentPromptCodeCompletion } from "./completion-format"
 import type { CompletionIndentContext } from "./completion-indent"
 
 export type CompletionPosition = {
@@ -34,6 +34,7 @@ export type CompletionEdit = {
 
 export type CompletionEditRejectReason =
   | "empty-model-text"
+  | "echoed-prefix"
   | "unsafe-colon-context"
   | "no-insert-text"
   | "misaligned-leading-newline"
@@ -65,8 +66,8 @@ export function buildCompletionEditResult(input: CompletionEditInput): Completio
   const wordReplacement = currentWordReplacement(input)
   if (wordReplacement) return { edit: wordReplacement }
 
-  const prefixOverlap = linePrefixOverlapInsertion(input)
-  if (prefixOverlap) return { edit: prefixOverlap }
+  const prefixOverlap = linePrefixOverlapResult(input)
+  if (prefixOverlap) return prefixOverlap
 
   if (isBraceLanguage(input.languageId) && looksLikeColonFunctionSignature(input.linePrefix)) {
     const edit = braceFunctionReplacement(input)
@@ -101,19 +102,29 @@ export function buildCompletionEditResult(input: CompletionEditInput): Completio
   }
 }
 
-function linePrefixOverlapInsertion(input: CompletionEditInput): CompletionEdit | undefined {
-  const overlap = linePrefixOverlapLength(input.text, input.linePrefix)
-  if (overlap <= 0) return
+function linePrefixOverlapResult(input: CompletionEditInput): CompletionEditResult | undefined {
+  const overlapText = linePrefixOverlapText(input.text, input.linePrefix)
+  if (overlapText === undefined) return
+  if (!overlapText.trim()) return { reason: "echoed-prefix" }
 
   const currentIndent = lineIndent(input.linePrefix)
-  const insertText = formatCompletionReplacementText(
-    input.text.slice(overlap),
-    currentIndent,
-    input.indent.indentUnit,
-    input.languageId,
-  )
-  if (!insertText) return
-  return zeroWidthInsertion(input, insertText, "prefix-overlap")
+  const insertText = isCommentPromptCodeCompletion({ ...input, text: overlapText })
+    ? formatCompletionInsertText({
+        text: overlapText,
+        linePrefix: input.linePrefix,
+        lineSuffix: input.lineSuffix,
+        targetIndent: input.indent.targetIndent,
+        indentUnit: input.indent.indentUnit,
+        languageId: input.languageId,
+      })
+    : formatCompletionReplacementText(
+        overlapText,
+        currentIndent,
+        input.indent.indentUnit,
+        input.languageId,
+      )
+  if (!insertText.trim()) return { reason: "echoed-prefix" }
+  return { edit: zeroWidthInsertion(input, insertText, "prefix-overlap") }
 }
 
 function currentWordReplacement(input: CompletionEditInput): CompletionEdit | undefined {
@@ -162,6 +173,7 @@ function isMisalignedLeadingNewline(input: CompletionEditInput) {
   if (!hasLeadingLineBreak(input.text)) return false
   if (!input.linePrefix.trim()) return false
   if (startsBlockCompletionContext(input.linePrefix)) return false
+  if (isCommentPromptCodeCompletion(input)) return false
   return true
 }
 
@@ -247,6 +259,18 @@ function isBraceLanguage(languageId: string) {
 function startsWithCurrentWord(text: string, currentWord: string) {
   if (!currentWord) return false
   return text.trimStart().startsWith(currentWord)
+}
+
+function linePrefixOverlapText(text: string, linePrefix: string) {
+  let remaining = text
+  let stripped = false
+  while (true) {
+    const overlap = linePrefixOverlapLength(remaining, linePrefix)
+    if (overlap <= 0) break
+    remaining = remaining.slice(overlap)
+    stripped = true
+  }
+  return stripped ? remaining : undefined
 }
 
 function linePrefixOverlapLength(text: string, linePrefix: string) {

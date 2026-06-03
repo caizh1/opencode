@@ -10,6 +10,10 @@ export type CompletionFormatInput = {
 export function formatCompletionInsertText(input: CompletionFormatInput): string {
   if (!input.text) return ""
   if (input.lineSuffix?.trim()) return input.text
+  if (isCommentPromptCodeCompletion(input)) {
+    const currentIndent = lineIndent(input.linePrefix)
+    return formatCompletionBlock(input.text, currentIndent, input.indentUnit, input.languageId)
+  }
   if (isIndentedBlankLine(input.linePrefix) && hasLineBreak(input.text)) {
     return formatCompletionReplacementText(input.text, input.linePrefix, input.indentUnit, input.languageId)
   }
@@ -34,6 +38,13 @@ export function formatCompletionReplacementText(text: string, currentLineIndent:
   return reindentLines(structured, "", currentLineIndent, indentUnit, profile).join("\n")
 }
 
+export function isCommentPromptCodeCompletion(input: Pick<CompletionFormatInput, "text" | "linePrefix" | "lineSuffix" | "languageId">) {
+  if (!input.text) return false
+  if (input.lineSuffix?.trim()) return false
+  if (!isSingleLineCommentPrompt(input.linePrefix, input.languageId)) return false
+  return looksLikeCodeCompletion(input.text, input.languageId)
+}
+
 function startsIndentedBlock(linePrefix: string) {
   const trimmed = linePrefix.trimEnd()
   if (!trimmed) return false
@@ -46,6 +57,57 @@ function isIndentedBlankLine(linePrefix: string) {
 
 function hasLineBreak(text: string) {
   return /\r?\n/.test(text)
+}
+
+function isSingleLineCommentPrompt(linePrefix: string, languageId?: string) {
+  const trimmed = linePrefix.trimStart()
+  if (!trimmed) return false
+  if (supportsSlashComments(languageId) && trimmed.startsWith("//")) return true
+  if (supportsHashComments(languageId) && trimmed.startsWith("#") && !trimmed.startsWith("#!")) return true
+  return false
+}
+
+function supportsSlashComments(languageId: string | undefined) {
+  return new Set([
+    "c",
+    "cpp",
+    "csharp",
+    "go",
+    "java",
+    "javascript",
+    "javascriptreact",
+    "rust",
+    "typescript",
+    "typescriptreact",
+  ]).has(languageId ?? "")
+}
+
+function supportsHashComments(languageId: string | undefined) {
+  return new Set([
+    "bash",
+    "python",
+    "shell",
+    "shellscript",
+    "sh",
+    "zsh",
+  ]).has(languageId ?? "")
+}
+
+function looksLikeCodeCompletion(text: string, languageId?: string) {
+  const firstLine = text.replace(/\r\n/g, "\n").replace(/^\s*\n+/, "").trimStart().split("\n")[0]?.trim() ?? ""
+  if (!firstLine) return false
+  if (languageId === "python") {
+    return /^(?:async\s+def|def|class|from|import|return|if|elif|else|for|while|try|except|finally|with|raise|yield)\b/.test(firstLine)
+  }
+  if (supportsHashComments(languageId)) {
+    return /^(?:case|do|done|echo|export|for|function|if|local|read|return|then|while)\b/.test(firstLine)
+      || /^[A-Za-z_][A-Za-z0-9_]*=/.test(firstLine)
+  }
+  return /^(?:export\s+)?(?:async\s+)?(?:function|class|interface|type|enum|namespace|const|let|var|import|return|if|else|for|while|switch|try|throw|await)\b/.test(firstLine)
+    || /^(?:public|private|protected|static|readonly|final|override)\b/.test(firstLine)
+    || /^[A-Za-z_$][\w$]*\s*(?:<[^>]+>\s*)?\([^)]*\)\s*(?::\s*[^={]+)?\s*\{?/.test(firstLine)
+    || /^[A-Za-z_$][\w$]*\s*[:=]\s*\S/.test(firstLine)
+    || /[;{}]$/.test(firstLine)
 }
 
 function normalizeLines(text: string) {

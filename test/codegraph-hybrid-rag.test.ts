@@ -54,6 +54,27 @@ describe("hybrid offline evidence RAG", () => {
     expect(unavailable.trace.steps.some((step) => step.label === "fallback" && step.detail.includes("embedding provider"))).toBe(true)
     expect(unavailable.answerPolicy.allowed).toBe(true)
   })
+
+  test("keeps vector retrieval when rerank is configured but unavailable", async () => {
+    const index = sampleIndex()
+    const embedding = fakeEmbeddingProvider()
+    const vectorIndex = await buildRagVectorIndex({ index, provider: embedding })
+    const result = await retrieveHybridEvidence({
+      index,
+      question: "explain flash page verification",
+      maxBytes: 60000,
+      hybrid: {
+        settings: settings({ embedding: true, rerank: true }),
+        embeddingProvider: embedding,
+        vectorIndex,
+      },
+    })
+
+    expect(result?.trace?.some((step) => step.label === "vector")).toBe(true)
+    expect(result?.trace?.some((step) => step.label === "rerank")).toBe(false)
+    expect(result?.trace?.some((step) => step.label === "fallback" && step.detail.includes("rerank provider"))).toBe(true)
+    expect(result?.evidence.some((item) => item.reason.includes("vector:function"))).toBe(true)
+  })
 })
 
 function sampleIndex(): CodeGraphIndex {
@@ -88,14 +109,20 @@ function settings(input: { embedding: boolean; rerank?: boolean }): RagSettings 
   return {
     embedding: {
       enabled: input.embedding,
-      endpoint: "http://127.0.0.1:8000/v1/embeddings",
+      endpoint: input.embedding ? "http://127.0.0.1:8000/v1/embeddings" : "",
       model: "fake",
       batchSize: 16,
       timeoutMs: 1000,
+      requestDelayMs: 500,
+      maxRequestsPerRun: 100,
+      maxRetries: 3,
+      retryBackoffMs: 2000,
+      resumeAutomatically: true,
+      resumeDelayMs: 60000,
     },
     rerank: {
       enabled: input.rerank ?? false,
-      endpoint: "http://127.0.0.1:8000/rerank",
+      endpoint: input.rerank ? "http://127.0.0.1:8000/rerank" : "",
       model: "fake-rerank",
     },
     allowedHosts: [],

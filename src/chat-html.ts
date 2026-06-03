@@ -1,5 +1,111 @@
 import { randomBytes } from "node:crypto"
 
+type LucideIconNode = readonly [string, Record<string, string>][]
+
+const lucideIcons = {
+  bookOpen: [
+    ["path", { d: "M12 7v14" }],
+    ["path", { d: "M3 18a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h5a4 4 0 0 1 4 4 4 4 0 0 1 4-4h5a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1h-6a3 3 0 0 0-3 3 3 3 0 0 0-3-3z" }],
+  ],
+  download: [
+    ["path", { d: "M12 15V3" }],
+    ["path", { d: "M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" }],
+    ["path", { d: "m7 10 5 5 5-5" }],
+  ],
+  gauge: [
+    ["path", { d: "m12 14 4-4" }],
+    ["path", { d: "M3.34 19a10 10 0 1 1 17.32 0" }],
+  ],
+  history: [
+    ["path", { d: "M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" }],
+    ["path", { d: "M3 3v5h5" }],
+    ["path", { d: "M12 7v5l4 2" }],
+  ],
+  paperclip: [
+    [
+      "path",
+      {
+        d: "m16 6-8.414 8.586a2 2 0 0 0 2.829 2.829l8.414-8.586a4 4 0 1 0-5.657-5.657l-8.379 8.551a6 6 0 1 0 8.485 8.485l8.379-8.551",
+      },
+    ],
+  ],
+  panelBottomClose: [
+    ["rect", { width: "18", height: "18", x: "3", y: "3", rx: "2" }],
+    ["path", { d: "M3 15h18" }],
+    ["path", { d: "m15 8-3 3-3-3" }],
+  ],
+  panelBottomOpen: [
+    ["rect", { width: "18", height: "18", x: "3", y: "3", rx: "2" }],
+    ["path", { d: "M3 15h18" }],
+    ["path", { d: "m9 10 3-3 3 3" }],
+  ],
+  plus: [
+    ["path", { d: "M5 12h14" }],
+    ["path", { d: "M12 5v14" }],
+  ],
+  refreshCw: [
+    ["path", { d: "M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8" }],
+    ["path", { d: "M21 3v5h-5" }],
+    ["path", { d: "M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16" }],
+    ["path", { d: "M8 16H3v5" }],
+  ],
+  rotateCw: [
+    ["path", { d: "M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8" }],
+    ["path", { d: "M21 3v5h-5" }],
+  ],
+  radar: [
+    ["path", { d: "M19.07 4.93A10 10 0 0 0 6.99 3.34" }],
+    ["path", { d: "M4 6h.01" }],
+    ["path", { d: "M2.29 9.62A10 10 0 1 0 21.31 8.35" }],
+    ["path", { d: "M16.24 7.76A6 6 0 1 0 8.23 16.67" }],
+    ["path", { d: "M12 18h.01" }],
+    ["path", { d: "M17.99 11.66A6 6 0 0 1 15.77 16.67" }],
+    ["circle", { cx: "12", cy: "12", r: "2" }],
+    ["path", { d: "m13.41 10.59 5.66-5.66" }],
+  ],
+  settings2: [
+    ["path", { d: "M14 17H5" }],
+    ["path", { d: "M19 7h-9" }],
+    ["circle", { cx: "17", cy: "17", r: "3" }],
+    ["circle", { cx: "7", cy: "7", r: "3" }],
+  ],
+  shieldAlert: [
+    ["path", { d: "M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z" }],
+    ["path", { d: "M12 8v4" }],
+    ["path", { d: "M12 16h.01" }],
+  ],
+  shieldCheck: [
+    ["path", { d: "M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z" }],
+    ["path", { d: "m9 12 2 2 4-4" }],
+  ],
+  shieldOff: [
+    ["path", { d: "m2 2 20 20" }],
+    ["path", { d: "M5 5a1 1 0 0 0-1 1v7c0 5 3.5 7.5 7.67 8.94a1 1 0 0 0 .67.01c2.35-.82 4.48-1.97 5.9-3.71" }],
+    ["path", { d: "M9.309 3.652A12.252 12.252 0 0 0 11.24 2.28a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1v7a9.784 9.784 0 0 1-.08 1.264" }],
+  ],
+  x: [
+    ["path", { d: "M18 6 6 18" }],
+    ["path", { d: "m6 6 12 12" }],
+  ],
+} as const satisfies Record<string, LucideIconNode>
+
+function renderLucideIcon(className: string, icon: LucideIconNode, strokeWidth: string) {
+  const children = icon
+    .map(([tag, attributes]) => {
+      const renderedAttributes = Object.entries(attributes)
+        .map(([name, value]) => `${name}="${value}"`)
+        .join(" ")
+      return `<${tag} ${renderedAttributes}></${tag}>`
+    })
+    .join("")
+  return `<svg class="${className}" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="${strokeWidth}" stroke-linecap="round" stroke-linejoin="round">${children}</svg>`
+}
+
+const topbarIcon = (icon: LucideIconNode) => renderLucideIcon("topbarIconSvg", icon, "2")
+const composerIcon = (icon: LucideIconNode) => renderLucideIcon("buttonIcon", icon, "2.2")
+const statusIcon = (icon: LucideIconNode) => renderLucideIcon("statusIcon", icon, "2.1")
+const statusRingIcon = (icon: LucideIconNode) => renderLucideIcon("statusRingIcon", icon, "2.3")
+
 export function createNonce(length = 32) {
   const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
   const bytes = randomBytes(length)
@@ -111,6 +217,12 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       white-space: nowrap;
     }
     .icon:hover { background: var(--vscode-toolbar-hoverBackground); }
+    .topbarIconSvg {
+      width: 14px;
+      height: 14px;
+      vertical-align: middle;
+      pointer-events: none;
+    }
     .primary, .secondary {
       min-height: 26px;
       border-radius: 5px;
@@ -127,12 +239,22 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
     .secondary:hover { background: var(--vscode-button-secondaryHoverBackground, var(--vscode-toolbar-hoverBackground)); }
     .settings {
       display: none;
+      flex: 1;
+      min-height: 0;
       gap: 8px;
       padding: 8px 9px 9px;
       border-bottom: 1px solid var(--vscode-sideBarSectionHeader-border, var(--vscode-panel-border));
       background: var(--vscode-sideBar-background);
+      align-content: flex-start;
+      overflow: auto;
+      scrollbar-gutter: stable;
     }
-    .settings.open { display: grid; }
+    .app.mode-connection-only .settings,
+    .app.mode-settings-page .settings { display: grid; }
+    .app.mode-connection-only .completionSettingsGroup,
+    .app.mode-connection-only .ragSettingsGroup { display: none; }
+    .app.mode-connection-only .settings,
+    .app.mode-settings-page .settings { border-bottom: 0; }
     .settingsHeader { display: flex; justify-content: space-between; gap: 8px; align-items: baseline; flex-wrap: wrap; min-width: 0; }
     .sectionTitle { min-width: 0; font-size: 11px; font-weight: 650; text-transform: uppercase; color: var(--vscode-descriptionForeground); }
     .sectionMeta { min-width: 0; color: var(--vscode-descriptionForeground); font-size: 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -149,6 +271,8 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
     }
     .field.checkbox { display: flex; align-items: center; gap: 6px; }
     .field.checkbox input { width: auto; }
+    .completionSettingsGroup,
+    .ragSettingsGroup { display: grid; gap: 8px; min-width: 0; }
     .completionDirectFields.hidden { display: none; }
     .settingsActions { justify-content: space-between; align-items: flex-start; min-width: 0; }
     .settingsActions .row { min-width: 0; }
@@ -172,6 +296,8 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       grid-template-columns: minmax(0, 1fr);
       overflow: hidden;
     }
+    .app.mode-connection-only .body,
+    .app.mode-settings-page .body { display: none; }
     .historyBackdrop { display: none; }
     .historyPane {
       position: absolute;
@@ -653,15 +779,15 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
     .composerStatusBar::-webkit-scrollbar { display: none; }
     .composerStatusToggle {
       flex: 0 0 auto;
-      min-width: 64px;
+      width: 26px;
+      min-width: 26px;
       height: 22px;
       display: inline-flex;
       align-items: center;
       justify-content: center;
-      gap: 4px;
       border: 1px solid var(--vscode-focusBorder, rgba(77, 163, 255, 0.65));
       border-radius: 5px;
-      padding: 0 7px;
+      padding: 0;
       color: var(--vscode-button-foreground);
       background: var(--vscode-button-background);
       font-size: 9px;
@@ -674,64 +800,50 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       box-shadow: 0 0 0 1px rgba(77, 163, 255, 0.32) inset;
     }
     .composerToggleIcon {
-      position: relative;
-      width: 10px;
-      height: 10px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 14px;
+      height: 14px;
       flex: 0 0 auto;
     }
-    .composerToggleIcon::before {
-      content: "";
-      position: absolute;
-      left: 1px;
-      right: 1px;
-      top: 2px;
-      border-top: 1.5px solid currentColor;
-      opacity: 0.9;
-    }
-    .composerToggleIcon::after {
-      content: "";
-      position: absolute;
-      left: 2px;
-      top: 3px;
-      width: 6px;
-      height: 6px;
-      border-right: 1.5px solid currentColor;
-      border-bottom: 1.5px solid currentColor;
-      transform: rotate(45deg);
-      transition: transform 120ms ease, top 120ms ease;
-    }
-    .composerWrap.collapsed .composerToggleIcon::after {
-      top: 2px;
-      transform: rotate(225deg);
-    }
     .composerToggleLabel {
-      min-width: 0;
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      margin: -1px;
+      padding: 0;
       overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
+      clip: rect(0, 0, 0, 0);
+      border: 0;
     }
     .composerToggleShort { display: none; }
     .composerStatusPill {
+      position: relative;
       flex: 0 0 auto;
-      min-width: 0;
+      width: 24px;
+      min-width: 24px;
       height: 20px;
       display: inline-flex;
       align-items: center;
-      gap: 4px;
+      justify-content: center;
       border: 1px solid var(--vscode-panel-border);
       border-radius: 5px;
-      padding: 0 6px;
+      padding: 0;
       color: var(--vscode-descriptionForeground);
       background: var(--vscode-editor-background);
       font-weight: 650;
       font-size: 9px;
       line-height: 18px;
       white-space: nowrap;
+      transition: background 120ms ease, border-color 120ms ease, box-shadow 120ms ease, color 120ms ease, transform 120ms ease;
     }
     .composerStatusPill:hover,
     .composerStatusPill.open {
-      background: var(--vscode-toolbar-hoverBackground);
-      border-color: var(--vscode-focusBorder);
+      background: color-mix(in srgb, currentColor 16%, var(--vscode-editor-background));
+      border-color: var(--vscode-focusBorder, currentColor);
+      box-shadow: 0 0 0 1px color-mix(in srgb, currentColor 32%, transparent) inset, 0 1px 4px rgba(0, 0, 0, 0.16);
+      transform: translateY(-1px);
     }
     .composerStatusPill .pillText {
       overflow: hidden;
@@ -741,17 +853,37 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
     .composerStatusPill.compactRing {
       width: 22px;
       min-width: 22px;
-      justify-content: center;
-      padding: 0;
+    }
+    .statusIcon {
+      width: 12px;
+      height: 12px;
+      flex: 0 0 auto;
+      pointer-events: none;
+      opacity: 0.86;
+      transition: opacity 120ms ease, transform 120ms ease;
+    }
+    .composerStatusPill:hover .statusIcon,
+    .composerStatusPill.open .statusIcon {
+      opacity: 1;
+      transform: scale(1.08);
     }
     .statusRing {
       position: relative;
-      width: 12px;
-      height: 12px;
+      width: 14px;
+      height: 14px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
       flex: 0 0 auto;
       border-radius: 999px;
       background: conic-gradient(var(--ring-fill, currentColor) var(--ring-progress, 0%), var(--ring-empty, rgba(127, 127, 127, 0.24)) 0);
       box-shadow: 0 0 0 1px var(--ring-border, rgba(127, 127, 127, 0.28)) inset;
+      transition: box-shadow 120ms ease, transform 120ms ease;
+    }
+    .composerStatusPill:hover .statusRing,
+    .composerStatusPill.open .statusRing {
+      box-shadow: 0 0 0 1px var(--ring-border, rgba(127, 127, 127, 0.42)) inset, 0 0 0 2px color-mix(in srgb, currentColor 22%, transparent);
+      transform: scale(1.08);
     }
     .statusRing::after {
       content: "";
@@ -760,6 +892,35 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       border-radius: inherit;
       background: var(--vscode-editor-background);
       box-shadow: 0 0 0 1px rgba(127, 127, 127, 0.08);
+    }
+    .statusRingIcon {
+      position: relative;
+      z-index: 1;
+      width: 8px;
+      height: 8px;
+      flex: 0 0 auto;
+      pointer-events: none;
+    }
+    .statusBadge {
+      position: absolute;
+      top: -4px;
+      right: -4px;
+      min-width: 11px;
+      height: 11px;
+      padding: 0 3px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 999px;
+      border: 1px solid var(--vscode-editor-background);
+      background: currentColor;
+      font-size: 8px;
+      font-weight: 700;
+      line-height: 1;
+      box-shadow: 0 0 0 1px rgba(127, 127, 127, 0.18);
+    }
+    .statusBadgeText {
+      color: var(--vscode-button-foreground);
     }
     .statusRing.indeterminate {
       --ring-progress: 32%;
@@ -1377,7 +1538,7 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       .settingsActions { justify-content: flex-start; }
     }
     @media (max-width: 360px) {
-      .composerStatusToggle { min-width: 62px; padding-inline: 7px; }
+      .composerStatusToggle { width: 26px; min-width: 26px; padding-inline: 0; }
       .composerToggleFull { display: none; }
       .composerToggleShort { display: inline; }
       .composerActionRow { gap: 6px; }
@@ -1437,7 +1598,7 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
   </style>
 </head>
 <body>
-  <div id="app" class="app history-closed history-narrow">
+  <div id="app" class="app mode-connection-only history-closed history-narrow">
     <header class="topbar">
       <div class="mark">OC</div>
       <div class="title">
@@ -1447,12 +1608,15 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
         </div>
       </div>
       <div class="iconbar">
-        <button id="historyToggle" class="icon" title="History" aria-label="History">History</button>
-        <button id="newSession" class="icon" title="New session">+</button>
-        <button id="settingsToggle" class="icon" title="Connection settings" aria-label="Connection settings">...</button>
+        <button id="historyToggle" class="icon" title="History" aria-label="History">${topbarIcon(lucideIcons.history)}<span class="srOnly">History</span></button>
+        <button id="newSession" class="icon" title="New session" aria-label="New session">${topbarIcon(lucideIcons.plus)}<span class="srOnly">New session</span></button>
+        <button id="settingsToggle" class="icon" title="Connection settings" aria-label="Connection settings">
+          ${topbarIcon(lucideIcons.settings2)}
+          <span class="srOnly">Connection settings</span>
+        </button>
       </div>
     </header>
-    <section id="settings" class="settings open">
+    <section id="settings" class="settings" aria-label="OpenCode Remote settings">
       <div class="settingsHeader">
         <div class="sectionTitle">Connection</div>
         <div class="sectionMeta">Remote endpoint</div>
@@ -1464,8 +1628,8 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       </div>
       <div class="row settingsActions">
         <div class="row">
-          <button id="connect" class="primary">Connect</button>
-          <button id="test" class="secondary">Test</button>
+          <button id="connect" class="primary" title="Connect to this remote OpenCode server">Connect</button>
+          <button id="test" class="secondary" title="Test this remote OpenCode server without connecting" aria-label="Test remote OpenCode connection without connecting">Test</button>
         </div>
         <div class="row">
           <button id="refresh" class="secondary" title="Refresh chat state">Refresh</button>
@@ -1473,32 +1637,69 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
         </div>
 	      </div>
 	      <div id="connectionDetail" class="detail visible">If this message does not change, the Webview script did not start.</div>
-	      <div class="settingsHeader">
-	        <div class="sectionTitle">Inline Completion</div>
-	        <div class="sectionMeta">Completion model</div>
-	      </div>
-	      <div class="settingsGrid">
-	        <label class="field checkbox"><input id="completionEnabled" type="checkbox"><span>Enable inline completion</span></label>
-	        <label class="field">Provider<select id="completionProvider">
-	          <option value="opencode">OpenCode</option>
-	          <option value="openai-compatible">Direct Model API</option>
-	        </select></label>
-	        <div id="completionDirectFields" class="completionDirectFields hidden">
-	          <label class="field">API Base URL<input id="completionApiBaseUrl" type="url" spellcheck="false" placeholder="http://localhost:8000/v1"></label>
-	          <label class="field">Model<input id="completionModel" type="text" spellcheck="false" placeholder="Qwen/Qwen3.6-27B-FP8"></label>
-	          <label class="field">Max tokens<input id="completionMaxTokens" type="number" min="1" max="4096" step="1"></label>
-	          <label class="field">Temperature<input id="completionTemperature" type="number" min="0" max="2" step="0.1"></label>
-	          <label class="field">Top P<input id="completionTopP" type="number" min="0" max="1" step="0.05"></label>
+	      <div id="completionSettingsGroup" class="completionSettingsGroup">
+	        <div class="settingsHeader">
+	          <div class="sectionTitle">Inline Completion</div>
+	          <div class="sectionMeta">Completion model</div>
 	        </div>
-	      </div>
-	      <div class="row settingsActions">
-	        <div class="row">
-	          <button id="saveCompletionSettings" class="secondary">Save completion</button>
-	          <button id="testCompletionApi" class="secondary">Test completion API</button>
+	        <div class="settingsGrid">
+	          <label class="field checkbox"><input id="completionEnabled" type="checkbox"><span>Enable inline completion</span></label>
+	          <label class="field">Provider<select id="completionProvider">
+	            <option value="opencode">OpenCode</option>
+	            <option value="openai-compatible">Direct Model API</option>
+	          </select></label>
+	          <div id="completionDirectFields" class="completionDirectFields hidden">
+	            <label class="field">Profile<select id="completionProfile">
+	              <option value="generic-chat">Generic Chat</option>
+	              <option value="qwen-coder-fim">Qwen Coder FIM</option>
+	            </select></label>
+	            <label class="field">API Base URL<input id="completionApiBaseUrl" type="url" spellcheck="false" placeholder="http://localhost:8000/v1"></label>
+	            <label class="field">Model<input id="completionModel" type="text" spellcheck="false" placeholder="Qwen/Qwen3.6-27B-FP8"></label>
+	            <label class="field">Max tokens<input id="completionMaxTokens" type="number" min="1" max="4096" step="1"></label>
+	            <label class="field">Temperature<input id="completionTemperature" type="number" min="0" max="2" step="0.1"></label>
+	            <label class="field">Top P<input id="completionTopP" type="number" min="0" max="1" step="0.05"></label>
+	          </div>
 	        </div>
-	        <button id="setCompletionApiKey" class="secondary">Set API key</button>
+	        <div class="row settingsActions">
+	          <div class="row">
+	            <button id="saveCompletionSettings" class="secondary">Save completion</button>
+	            <button id="testCompletionApi" class="secondary">Test completion API</button>
+	          </div>
+	          <button id="setCompletionApiKey" class="secondary">Set API key</button>
+	        </div>
+	        <div id="completionDetail" class="detail"></div>
 	      </div>
-	      <div id="completionDetail" class="detail"></div>
+	      <div id="ragSettingsGroup" class="ragSettingsGroup">
+	        <div class="settingsHeader">
+	          <div class="sectionTitle">Code RAG</div>
+	          <div class="sectionMeta">Embedding and rerank</div>
+	        </div>
+	        <div class="settingsGrid">
+	          <label class="field">Embedding endpoint<input id="ragEmbeddingEndpoint" type="url" spellcheck="false" placeholder="http://127.0.0.1:8000/v1/embeddings"></label>
+	          <label class="field">Embedding model<input id="ragEmbeddingModel" type="text" spellcheck="false" placeholder="local-embedding-model"></label>
+	          <label class="field">Embedding batch size<input id="ragEmbeddingBatchSize" type="number" min="1" max="256" step="1"></label>
+	          <label class="field">Embedding timeout ms<input id="ragEmbeddingTimeoutMs" type="number" min="250" max="120000" step="250"></label>
+	          <label class="field">Embedding request delay ms<input id="ragEmbeddingRequestDelayMs" type="number" min="0" max="60000" step="100"></label>
+	          <label class="field">Embedding max requests per run<input id="ragEmbeddingMaxRequestsPerRun" type="number" min="0" max="100000" step="1"></label>
+	          <label class="field">Embedding max retries<input id="ragEmbeddingMaxRetries" type="number" min="0" max="10" step="1"></label>
+	          <label class="field">Embedding retry backoff ms<input id="ragEmbeddingRetryBackoffMs" type="number" min="0" max="120000" step="500"></label>
+	          <label class="field checkbox"><input id="ragEmbeddingResumeAutomatically" type="checkbox"><span>Resume embedding index automatically</span></label>
+	          <label class="field">Embedding resume delay ms<input id="ragEmbeddingResumeDelayMs" type="number" min="0" max="3600000" step="1000"></label>
+	          <label class="field">Rerank endpoint<input id="ragRerankEndpoint" type="url" spellcheck="false" placeholder="http://127.0.0.1:8000/rerank"></label>
+	          <label class="field">Rerank model<input id="ragRerankModel" type="text" spellcheck="false" placeholder="local-rerank-model"></label>
+	          <label class="field">Allowed hosts<input id="ragAllowedHosts" type="text" spellcheck="false" placeholder="rag.internal, 10.0.0.20"></label>
+	          <label class="field">Vector top K<input id="ragVectorTopK" type="number" min="0" max="200" step="1"></label>
+	          <label class="field">Rerank top K<input id="ragRerankTopK" type="number" min="0" max="200" step="1"></label>
+	        </div>
+	        <div class="row settingsActions">
+	          <div class="row">
+	            <button id="saveRagSettings" class="secondary">Save RAG</button>
+	            <button id="testRagSettings" class="secondary">Test RAG</button>
+	          </div>
+	          <button id="setRagApiKey" class="secondary">Set RAG API key</button>
+	        </div>
+	        <div id="ragDetail" class="detail"></div>
+	      </div>
 	    </section>
     <div class="body">
       <button id="historyBackdrop" class="historyBackdrop" title="Close history"></button>
@@ -1506,8 +1707,8 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
         <div class="historyHeader">
           <div class="historyTitle">History</div>
           <div class="row">
-            <button id="refreshHistory" class="icon" title="Refresh sessions">Refresh</button>
-            <button id="closeHistory" class="icon" title="Close history">x</button>
+            <button id="refreshHistory" class="icon" title="Refresh sessions" aria-label="Refresh sessions">${topbarIcon(lucideIcons.refreshCw)}<span class="srOnly">Refresh sessions</span></button>
+            <button id="closeHistory" class="icon" title="Close history" aria-label="Close history">${topbarIcon(lucideIcons.x)}<span class="srOnly">Close history</span></button>
           </div>
         </div>
         <div id="sessionList" class="sessionList"></div>
@@ -1519,17 +1720,16 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
         <footer class="composerWrap">
           <div id="composerStatusBar" class="composerStatusBar">
             <button id="composerStatusToggle" class="composerStatusToggle" type="button" aria-expanded="true" aria-controls="composerPanel" title="Hide input panel">
-              <span class="composerToggleIcon" aria-hidden="true"></span>
+              <span class="composerToggleIcon" aria-hidden="true">${statusIcon(lucideIcons.panelBottomClose)}</span>
               <span class="composerToggleLabel">
                 <span id="composerToggleFull" class="composerToggleFull">Hide input</span>
                 <span id="composerToggleShort" class="composerToggleShort">Hide</span>
               </span>
             </button>
-            <button id="panelStatusPill" class="composerStatusPill panel" type="button" title="Collapse input panel"><span class="pillText">Panel</span></button>
-            <button id="contextStatusPill" class="composerStatusPill context" type="button" title="Show context details"><span class="pillText">Ctx 0</span></button>
-            <button id="indexStatusPill" class="composerStatusPill index info compactRing" type="button" title="Show index details"><span class="pillText statusRing" aria-hidden="true"></span></button>
-            <button id="guardStatusPill" class="composerStatusPill guard ok" type="button" title="Show guard details"><span class="pillText">Guard ok</span></button>
-            <button id="usageStatusPill" class="composerStatusPill usage pending compactRing" type="button" title="Show usage details"><span class="pillText statusRing" aria-hidden="true"></span></button>
+            <button id="contextStatusPill" class="composerStatusPill context" type="button" title="Show context details"><span class="pillText">${statusIcon(lucideIcons.bookOpen)}</span></button>
+            <button id="indexStatusPill" class="composerStatusPill index info compactRing" type="button" title="Show index details"><span class="pillText statusRing" aria-hidden="true">${statusRingIcon(lucideIcons.radar)}</span></button>
+            <button id="guardStatusPill" class="composerStatusPill guard ok" type="button" title="Show guard details"><span class="pillText">${statusIcon(lucideIcons.shieldCheck)}</span></button>
+            <button id="usageStatusPill" class="composerStatusPill usage pending compactRing" type="button" title="Show usage details"><span class="pillText statusRing" aria-hidden="true">${statusRingIcon(lucideIcons.gauge)}</span></button>
           </div>
           <div id="composerStatusPopover" class="composerStatusPopover" aria-hidden="true"></div>
           <div id="composerPanel" class="composerPanel">
@@ -1556,25 +1756,15 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
                   <label><input id="diff" type="checkbox"><span class="toggleFull">Git diff</span><span class="toggleShort">Diff</span></label>
                 </div>
                 <button id="exportMarkdown" class="secondary exportButton composerIconButton" title="Export current chat to Markdown" aria-label="Export current chat to Markdown">
-                  <svg class="buttonIcon" viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
-                    <path d="M8 2.5v7"></path>
-                    <path d="M5.2 7.1 8 9.9l2.8-2.8"></path>
-                    <path d="M3.2 12.5h9.6"></path>
-                  </svg>
+                  ${composerIcon(lucideIcons.download)}
                   <span class="srOnly">Export current chat to Markdown</span>
                 </button>
                 <button id="attach" class="secondary attachButton composerIconButton" title="Attach file as persistent context" aria-label="Attach file as persistent context">
-                  <svg class="buttonIcon" viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-                    <path d="M6 8.2 9.8 4.4a2.1 2.1 0 0 1 3 3L7.6 12.6a3.2 3.2 0 0 1-4.5-4.5l5-5"></path>
-                    <path d="M8 10 11.6 6.4"></path>
-                  </svg>
+                  ${composerIcon(lucideIcons.paperclip)}
                   <span class="srOnly">Attach file as persistent context</span>
                 </button>
                 <button id="refreshModels" class="secondary refreshButton composerIconButton" title="Refresh models" aria-label="Refresh models">
-                  <svg class="buttonIcon" viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
-                    <path d="M12.8 5.4A5 5 0 1 0 13 10"></path>
-                    <path d="M12.8 2.8v2.6h-2.6"></path>
-                  </svg>
+                  ${composerIcon(lucideIcons.rotateCw)}
                   <span class="srOnly">Refresh models</span>
                 </button>
               </div>
@@ -1592,11 +1782,23 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
   <script nonce="${nonce}">
     const vscode = acquireVsCodeApi();
     const el = (id) => document.getElementById(id);
+    const STATUS_ICONS = ${JSON.stringify({
+      bookOpen: statusIcon(lucideIcons.bookOpen),
+      gauge: statusRingIcon(lucideIcons.gauge),
+      panelBottomClose: statusIcon(lucideIcons.panelBottomClose),
+      panelBottomOpen: statusIcon(lucideIcons.panelBottomOpen),
+      radar: statusRingIcon(lucideIcons.radar),
+      shieldAlert: statusIcon(lucideIcons.shieldAlert),
+      shieldCheck: statusIcon(lucideIcons.shieldCheck),
+      shieldOff: statusIcon(lucideIcons.shieldOff),
+    })};
     let state = {};
 	    let pendingAction = "";
-	    let settingsOpen = true;
+	    let settingsOpen = false;
+	    let lastConnectionState = "";
 	    let userEditedConnection = false;
 	    let userEditedCompletionSettings = false;
+	    let userEditedRagSettings = false;
     let historyTouched = false;
     let historyOpen = false;
     let userNearBottom = true;
@@ -1631,7 +1833,7 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
 	        userEditedConnection = true;
 	      });
 	    }
-	    for (const id of ["completionEnabled", "completionProvider", "completionApiBaseUrl", "completionModel", "completionMaxTokens", "completionTemperature", "completionTopP"]) {
+	    for (const id of ["completionEnabled", "completionProvider", "completionProfile", "completionApiBaseUrl", "completionModel", "completionMaxTokens", "completionTemperature", "completionTopP"]) {
 	      el(id).addEventListener("input", () => {
 	        userEditedCompletionSettings = true;
 	        renderCompletionSettings();
@@ -1639,6 +1841,14 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
 	      el(id).addEventListener("change", () => {
 	        userEditedCompletionSettings = true;
 	        renderCompletionSettings();
+	      });
+	    }
+	    for (const id of ["ragEmbeddingEndpoint", "ragEmbeddingModel", "ragEmbeddingBatchSize", "ragEmbeddingTimeoutMs", "ragEmbeddingRequestDelayMs", "ragEmbeddingMaxRequestsPerRun", "ragEmbeddingMaxRetries", "ragEmbeddingRetryBackoffMs", "ragEmbeddingResumeAutomatically", "ragEmbeddingResumeDelayMs", "ragRerankEndpoint", "ragRerankModel", "ragAllowedHosts", "ragVectorTopK", "ragRerankTopK"]) {
+	      el(id).addEventListener("input", () => {
+	        userEditedRagSettings = true;
+	      });
+	      el(id).addEventListener("change", () => {
+	        userEditedRagSettings = true;
 	      });
 	    }
 
@@ -1668,19 +1878,21 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
     el("refreshHistory").addEventListener("click", () => vscode.postMessage({ type: "refreshSessions" }));
     el("settingsToggle").addEventListener("click", () => {
       settingsOpen = !settingsOpen;
-      renderSettings();
+      render();
     });
 	    el("connect").addEventListener("click", () => connectOrTest("connectWithSettings"));
 	    el("test").addEventListener("click", () => connectOrTest("testWithSettings"));
 	    el("saveCompletionSettings").addEventListener("click", saveCompletionSettings);
 	    el("setCompletionApiKey").addEventListener("click", () => vscode.postMessage({ type: "setCompletionApiKey" }));
 	    el("testCompletionApi").addEventListener("click", testCompletionApi);
+	    el("saveRagSettings").addEventListener("click", saveRagSettings);
+	    el("testRagSettings").addEventListener("click", testRagSettings);
+	    el("setRagApiKey").addEventListener("click", () => vscode.postMessage({ type: "setRagApiKey" }));
     el("refresh").addEventListener("click", () => vscode.postMessage({ type: "refresh" }));
     el("openOutput").addEventListener("click", () => vscode.postMessage({ type: "openOutput" }));
     el("newSession").addEventListener("click", () => vscode.postMessage({ type: "newSession" }));
     el("composerStatusToggle").addEventListener("click", toggleComposerPanel);
-    el("panelStatusPill").addEventListener("click", toggleComposerPanel);
-    bindComposerStatusPill("contextStatusPill", "context", false);
+    bindComposerStatusPill("contextStatusPill", "context", true);
     bindComposerStatusPill("indexStatusPill", "index", true);
     bindComposerStatusPill("guardStatusPill", "guard", false);
     bindComposerStatusPill("usageStatusPill", "usage", true);
@@ -1758,9 +1970,13 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
 
     window.addEventListener("message", (event) => {
       if (event.data.type === "state") {
-        state = event.data.state;
+        const nextState = event.data.state || {};
+        const nextConnectionState = nextState.connectionState || "disconnected";
+        const wasPendingConnect = pendingAction === "connect";
+        state = nextState;
         pendingAction = "";
-        if (state.connectionState === "connected") settingsOpen = false;
+        if (nextConnectionState === "connected" && (lastConnectionState !== "connected" || wasPendingConnect)) settingsOpen = false;
+        lastConnectionState = nextConnectionState;
         render();
         return;
       }
@@ -1787,6 +2003,9 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
 	      }
 	      if (event.data.type === "completionStatus") {
 	        renderCompletionStatus(event.data.message || "", event.data.status || "info");
+	      }
+	      if (event.data.type === "ragStatus") {
+	        renderRagStatus(event.data.message || "", event.data.status || "info");
 	      }
 	    });
 
@@ -1818,16 +2037,61 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
 	      });
 	    }
 
+	    function saveRagSettings() {
+	      userEditedRagSettings = false;
+	      vscode.postMessage({
+	        type: "saveRagSettings",
+	        settings: ragSettingsPayload()
+	      });
+	    }
+
+	    function testRagSettings() {
+	      userEditedRagSettings = false;
+	      renderRagStatus("Testing RAG configuration...", "info");
+	      vscode.postMessage({
+	        type: "testRagSettings",
+	        settings: ragSettingsPayload()
+	      });
+	    }
+
 	    function completionSettingsPayload() {
 	      return {
 	        enabled: el("completionEnabled").checked,
 	        provider: el("completionProvider").value,
+	        profile: el("completionProfile").value,
 	        apiBaseUrl: el("completionApiBaseUrl").value,
 	        model: el("completionModel").value,
 	        maxTokens: numberInputValue("completionMaxTokens", 128),
 	        temperature: numberInputValue("completionTemperature", 0.2),
 	        topP: numberInputValue("completionTopP", 0.8)
 	      };
+	    }
+
+	    function ragSettingsPayload() {
+	      return {
+	        embeddingEndpoint: el("ragEmbeddingEndpoint").value,
+	        embeddingModel: el("ragEmbeddingModel").value,
+	        embeddingBatchSize: numberInputValue("ragEmbeddingBatchSize", 32),
+	        embeddingTimeoutMs: numberInputValue("ragEmbeddingTimeoutMs", 30000),
+	        embeddingRequestDelayMs: numberInputValue("ragEmbeddingRequestDelayMs", 500),
+	        embeddingMaxRequestsPerRun: numberInputValue("ragEmbeddingMaxRequestsPerRun", 100),
+	        embeddingMaxRetries: numberInputValue("ragEmbeddingMaxRetries", 3),
+	        embeddingRetryBackoffMs: numberInputValue("ragEmbeddingRetryBackoffMs", 2000),
+	        embeddingResumeAutomatically: el("ragEmbeddingResumeAutomatically").checked,
+	        embeddingResumeDelayMs: numberInputValue("ragEmbeddingResumeDelayMs", 60000),
+	        rerankEndpoint: el("ragRerankEndpoint").value,
+	        rerankModel: el("ragRerankModel").value,
+	        allowedHosts: stringListInputValue("ragAllowedHosts"),
+	        vectorTopK: numberInputValue("ragVectorTopK", 24),
+	        rerankTopK: numberInputValue("ragRerankTopK", 16)
+	      };
+	    }
+
+	    function stringListInputValue(id) {
+	      return el(id).value
+	        .split(/[,\\n]/)
+	        .map((item) => item.trim())
+	        .filter(Boolean);
 	    }
 
 	    function numberInputValue(id, fallback) {
@@ -2040,6 +2304,7 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
 	      renderModelSelector();
 	      renderAgentSelector();
 	      renderCompletionSettings();
+	      renderRagSettings();
 	      renderConnectionButtons();
       el("diag").checked = Boolean(state.defaults && state.defaults.includeDiagnostics);
       el("diff").checked = Boolean(state.defaults && state.defaults.includeGitDiff);
@@ -2055,7 +2320,13 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
 
     function renderShell() {
       const widthClass = window.innerWidth >= 760 ? "history-wide" : "history-narrow";
-      el("app").className = "app " + (historyOpen ? "history-open" : "history-closed") + " " + widthClass;
+      const mode = currentViewMode();
+      el("app").className = "app mode-" + mode + " " + (historyOpen ? "history-open" : "history-closed") + " " + widthClass;
+    }
+
+    function currentViewMode() {
+      if (settingsOpen) return "settings-page";
+      return (state.connectionState || "disconnected") === "connected" ? "chat" : "connection-only";
     }
 
 	    function renderConnection() {
@@ -2083,6 +2354,7 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
 	      if (!userEditedCompletionSettings) {
 	        el("completionEnabled").checked = Boolean(completion.enabled);
 	        el("completionProvider").value = completion.provider || "opencode";
+	        el("completionProfile").value = completion.profile || "generic-chat";
 	        el("completionApiBaseUrl").value = completion.apiBaseUrl || "";
 	        el("completionModel").value = completion.model || "";
 	        el("completionMaxTokens").value = String(completion.maxTokens || 128);
@@ -2100,8 +2372,43 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
 	      detail.textContent = message || "";
 	    }
 
+	    function renderRagSettings() {
+	      const rag = state.rag || {};
+	      const embedding = rag.embedding || {};
+	      const rerank = rag.rerank || {};
+	      if (!userEditedRagSettings) {
+	        el("ragEmbeddingEndpoint").value = embedding.endpoint || "";
+	        el("ragEmbeddingModel").value = embedding.model || "";
+	        el("ragEmbeddingBatchSize").value = String(embedding.batchSize || 32);
+	        el("ragEmbeddingTimeoutMs").value = String(embedding.timeoutMs || 30000);
+	        el("ragEmbeddingRequestDelayMs").value = String(embedding.requestDelayMs ?? 500);
+	        el("ragEmbeddingMaxRequestsPerRun").value = String(embedding.maxRequestsPerRun ?? 100);
+	        el("ragEmbeddingMaxRetries").value = String(embedding.maxRetries ?? 3);
+	        el("ragEmbeddingRetryBackoffMs").value = String(embedding.retryBackoffMs ?? 2000);
+	        el("ragEmbeddingResumeAutomatically").checked = embedding.resumeAutomatically !== false;
+	        el("ragEmbeddingResumeDelayMs").value = String(embedding.resumeDelayMs ?? 60000);
+	        el("ragRerankEndpoint").value = rerank.endpoint || "";
+	        el("ragRerankModel").value = rerank.model || "";
+	        el("ragAllowedHosts").value = (rag.allowedHosts || []).join(", ");
+	        el("ragVectorTopK").value = String(rag.vectorTopK ?? 24);
+	        el("ragRerankTopK").value = String(rag.rerankTopK ?? 16);
+	      }
+	      const statusText = codeGraphRagMeta(state.codeGraph && state.codeGraph.rag);
+	      if (statusText) renderRagStatus(statusText, statusText.includes("unavailable") ? "error" : "info");
+	    }
+
+	    function renderRagStatus(message, status) {
+	      const detail = el("ragDetail");
+	      detail.className = "detail " + (status === "error" ? "error " : "") + (message ? "visible" : "");
+	      detail.textContent = message || "";
+	    }
+
 	    function renderSettings() {
-      el("settings").className = "settings " + (settingsOpen || state.connectionState !== "connected" ? "open" : "");
+      const mode = currentViewMode();
+      const title = mode === "settings-page" ? "Close full settings" : "Open full settings";
+      el("settings").className = "settings " + mode;
+      el("settingsToggle").title = title;
+      el("settingsToggle").setAttribute("aria-label", title);
     }
 
     function renderConnectionButtons() {
@@ -2128,14 +2435,11 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       toggle.setAttribute("aria-expanded", composerCollapsed ? "false" : "true");
       toggle.setAttribute("aria-label", composerCollapsed ? "Show input and context panel" : "Hide input and context panel");
       toggle.title = composerCollapsed ? "Show input and context panel" : "Hide input and context panel";
+      const toggleIcon = toggle.querySelector(".composerToggleIcon");
+      if (toggleIcon) toggleIcon.innerHTML = composerCollapsed ? STATUS_ICONS.panelBottomOpen : STATUS_ICONS.panelBottomClose;
       toggleFull.textContent = toggleLabel;
       toggleShort.textContent = toggleShortLabel;
 
-      updateStatusPill(el("panelStatusPill"), {
-        text: "Panel",
-        title: composerCollapsed ? "Input panel hidden. Click Show input to expand." : "Input panel visible. Click Hide input to collapse.",
-        className: "composerStatusPill panel" + (composerCollapsed ? " collapsed" : " open"),
-      });
       const context = composerContextStatus();
       updateStatusPill(el("contextStatusPill"), context);
       const index = composerIndexStatus();
@@ -2157,13 +2461,28 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       if (input.ring) {
         label.className = "pillText statusRing" + (input.ring.indeterminate ? " indeterminate" : "");
         label.setAttribute("aria-hidden", "true");
-        label.textContent = "";
+        label.innerHTML = input.ringIcon || "";
         if (typeof input.ring.progress === "number") node.style.setProperty("--ring-progress", formatRingProgress(input.ring.progress));
+        renderStatusBadge(node, input.badgeText);
         return;
       }
       label.className = "pillText";
-      label.removeAttribute("aria-hidden");
-      label.textContent = input.text;
+      label.setAttribute("aria-hidden", "true");
+      label.innerHTML = input.icon || input.text || "";
+      renderStatusBadge(node, input.badgeText);
+    }
+
+    function renderStatusBadge(node, text) {
+      for (const badge of Array.from(node.querySelectorAll(".statusBadge"))) badge.remove();
+      if (!text) return;
+      const badge = document.createElement("span");
+      badge.className = "statusBadge";
+      badge.setAttribute("aria-hidden", "true");
+      const badgeText = document.createElement("span");
+      badgeText.className = "statusBadgeText";
+      badgeText.textContent = text;
+      badge.append(badgeText);
+      node.append(badge);
     }
 
     function bindComposerStatusPill(id, name, hover) {
@@ -2239,11 +2558,15 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
 
     function composerContextStatus() {
       const count = composerContextCount();
+      const detail = contextStatusDetail();
       return {
         text: "Ctx " + count,
-        title: contextStatusDetail(),
+        title: detail,
         className: "composerStatusPill context",
         popover: "context",
+        ariaLabel: "Context: " + count + ". " + detail,
+        icon: STATUS_ICONS.bookOpen,
+        badgeText: count > 0 ? String(Math.min(count, 99)) : "",
       };
     }
 
@@ -2265,6 +2588,7 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
         popover: "index",
         ariaLabel: "Index status: " + view.shortLabel + ". " + title,
         ring: indexStatusRing(graph, stateName, view.kind),
+        ringIcon: STATUS_ICONS.radar,
       };
     }
 
@@ -2301,6 +2625,8 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
           title: detail,
           className: "composerStatusPill guard warning",
           popover: "guard",
+          ariaLabel: "Guard warning: " + detail,
+          icon: STATUS_ICONS.shieldAlert,
         };
       }
       if (state.localOnlyMode === false) {
@@ -2309,6 +2635,8 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
           title: detail,
           className: "composerStatusPill guard off",
           popover: "guard",
+          ariaLabel: "Guard off: " + detail,
+          icon: STATUS_ICONS.shieldOff,
         };
       }
       return {
@@ -2316,6 +2644,8 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
         title: detail,
         className: "composerStatusPill guard ok",
         popover: "guard",
+        ariaLabel: "Guard ok: " + detail,
+        icon: STATUS_ICONS.shieldCheck,
       };
     }
 
@@ -2328,6 +2658,7 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
           popover: "usage",
           ariaLabel: "Context usage: connect to load usage.",
           ring: { progress: 0 },
+          ringIcon: STATUS_ICONS.gauge,
         };
       }
       const usage = state.usage || {};
@@ -2342,6 +2673,7 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
         popover: "usage",
         ariaLabel: "Context usage: " + title,
         ring: { progress: contextUsageRatio(usage) ?? 0 },
+        ringIcon: STATUS_ICONS.gauge,
       };
     }
 
@@ -4048,6 +4380,8 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       if (graph.truncated) parts.push("Index truncated by file limit");
       if (graph.analysisMode) parts.push("Analyzer: " + graph.analysisMode + (graph.analyzerHost ? " on " + graph.analyzerHost : ""));
       if (graph.analyzerDegradedReason) parts.push(graph.analyzerDegradedReason);
+      const rag = codeGraphRagMeta(graph.rag);
+      if (rag) parts.push(rag);
       if (parts.length > 0) return parts.join(" · ");
       return graph.detail || "Ready for whole-repo code questions.";
     }
@@ -4066,7 +4400,49 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       if (graph.updatedAt) parts.push("Updated " + formatDateTime(graph.updatedAt));
       if (graph.truncated) parts.push("Index truncated by file limit.");
       if (graph.analyzerDetail) parts.push(graph.analyzerDetail);
+      const rag = codeGraphRagMeta(graph.rag);
+      if (rag) parts.push(rag + ".");
       return parts.filter(Boolean).join(" ");
+    }
+
+    function codeGraphRagMeta(rag) {
+      if (!rag) return "";
+      const rerank = rag.rerankEnabled
+        ? ", rerank ready"
+        : (rag.rerankProvider || rag.rerankLastError)
+          ? ", rerank unavailable" + (rag.rerankLastError ? ": " + rag.rerankLastError : "")
+          : "";
+      if (rag.embeddingEnabled) {
+        if (rag.availability === "partial") {
+          return "RAG partial: " + formatCount(rag.embeddedChunks || 0) + "/" + formatCount(rag.chunks || 0) + " chunks, " + formatCount(rag.pendingChunkCount || Math.max(0, (rag.chunks || 0) - (rag.embeddedChunks || 0))) + " pending" + ragResumeScheduleMeta(rag) + rerank;
+        }
+        if (rag.availability === "paused") {
+          return "RAG indexing paused: " + ragPausedReasonMeta(rag) + ragResumeScheduleMeta(rag) + ", " + formatCount(rag.embeddedChunks || 0) + "/" + formatCount(rag.chunks || 0) + " chunks" + rerank;
+        }
+        return "RAG ready: " + formatCount(rag.embeddedChunks || 0) + "/" + formatCount(rag.chunks || 0) + " chunks" + rerank;
+      }
+      if (rag.availability === "checking") return "RAG checking" + rerank;
+      if (rag.availability === "partial") return "RAG partial: " + formatCount(rag.embeddedChunks || 0) + "/" + formatCount(rag.chunks || 0) + " chunks" + ragResumeScheduleMeta(rag) + rerank;
+      if (rag.availability === "paused") return "RAG indexing paused: " + ragPausedReasonMeta(rag) + ragResumeScheduleMeta(rag) + rerank;
+      if (rag.availability === "not-indexed") return "RAG not indexed" + (rag.fallbackReason ? ": " + rag.fallbackReason : "") + rerank;
+      if (rag.availability === "unavailable") return "RAG unavailable" + (rag.fallbackReason ? ": " + rag.fallbackReason : "") + rerank;
+      return "RAG not configured" + rerank;
+    }
+
+    function ragPausedReasonMeta(rag) {
+      if (rag.fallbackReason) return rag.fallbackReason;
+      const detail = rag.lastError || "";
+      if (rag.indexPausedReason === "request-budget") return "request budget reached" + (detail ? ": " + detail : "");
+      if (rag.indexPausedReason === "rate-limit") return "rate limited" + (detail ? ": " + detail : "");
+      if (rag.indexPausedReason === "provider-error") return "provider error" + (detail ? ": " + detail : "");
+      return "indexing paused" + (detail ? ": " + detail : "");
+    }
+
+    function ragResumeScheduleMeta(rag) {
+      if (!rag.resumeScheduledAt || !rag.resumeReason) return "";
+      const remainingMs = Math.max(0, rag.resumeScheduledAt - Date.now());
+      const label = rag.resumeReason === "rate-limit" ? "retry scheduled" : "resume scheduled";
+      return "; " + label + " in " + Math.ceil(remainingMs / 1000) + "s";
     }
 
     function formatCount(value) {

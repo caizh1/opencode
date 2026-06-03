@@ -1,8 +1,9 @@
 import * as vscode from "vscode"
-import type { CodeGraphAnalysisMode, CompletionLogLevel, CompletionProvider, RemoteSettings } from "./types"
+import type { CodeGraphAnalysisMode, CompletionLogLevel, CompletionProfile, CompletionProvider, RemoteSettings } from "./types"
 
 export const PASSWORD_SECRET_KEY = "opencode.remote.password"
 export const COMPLETION_API_KEY_SECRET_KEY = "opencode.remote.completion.apiKey"
+export const RAG_API_KEY_SECRET_KEY = "opencode.remote.rag.apiKey"
 
 export type ConnectionSettingsInput = {
   serverUrl: string
@@ -13,6 +14,7 @@ export type ConnectionSettingsInput = {
 export type CompletionSettingsInput = {
   enabled: boolean
   provider: CompletionProvider
+  profile: CompletionProfile
   apiBaseUrl: string
   model: string
   maxTokens: number
@@ -20,8 +22,28 @@ export type CompletionSettingsInput = {
   topP: number
 }
 
+export type RagSettingsInput = {
+  embeddingEndpoint: string
+  embeddingModel: string
+  embeddingBatchSize: number
+  embeddingTimeoutMs: number
+  embeddingRequestDelayMs: number
+  embeddingMaxRequestsPerRun: number
+  embeddingMaxRetries: number
+  embeddingRetryBackoffMs: number
+  embeddingResumeAutomatically: boolean
+  embeddingResumeDelayMs: number
+  rerankEndpoint: string
+  rerankModel: string
+  allowedHosts: string[]
+  vectorTopK: number
+  rerankTopK: number
+}
+
 export function readRemoteSettings(): RemoteSettings {
   const config = vscode.workspace.getConfiguration("opencode.remote")
+  const ragEmbeddingEndpoint = normalizeServerUrl(config.get<string>("rag.embedding.endpoint", ""))
+  const ragRerankEndpoint = normalizeServerUrl(config.get<string>("rag.rerank.endpoint", ""))
   return {
     serverUrl: normalizeServerUrl(config.get<string>("serverUrl", "http://localhost:4096")),
     username: config.get<string>("username", "opencode"),
@@ -39,6 +61,7 @@ export function readRemoteSettings(): RemoteSettings {
     completion: {
       enabled: config.get<boolean>("completion.enabled", false),
       provider: readCompletionProvider(config.get<string>("completion.provider", "opencode")),
+      profile: readCompletionProfile(config.get<string>("completion.profile", "generic-chat")),
       apiBaseUrl: normalizeServerUrl(config.get<string>("completion.apiBaseUrl", "")),
       model: config.get<string>("completion.model", "").trim(),
       maxTokens: Math.max(1, Math.min(4096, config.get<number>("completion.maxTokens", 128))),
@@ -77,15 +100,21 @@ export function readRemoteSettings(): RemoteSettings {
     },
     rag: {
       embedding: {
-        enabled: config.get<boolean>("rag.embedding.enabled", false),
-        endpoint: normalizeServerUrl(config.get<string>("rag.embedding.endpoint", "")),
+        enabled: Boolean(ragEmbeddingEndpoint),
+        endpoint: ragEmbeddingEndpoint,
         model: config.get<string>("rag.embedding.model", "").trim(),
         batchSize: Math.max(1, Math.min(256, config.get<number>("rag.embedding.batchSize", 32))),
         timeoutMs: Math.max(250, Math.min(120000, config.get<number>("rag.embedding.timeoutMs", 30000))),
+        requestDelayMs: Math.max(0, Math.min(60000, config.get<number>("rag.embedding.requestDelayMs", 500))),
+        maxRequestsPerRun: Math.max(0, Math.min(100000, config.get<number>("rag.embedding.maxRequestsPerRun", 100))),
+        maxRetries: Math.max(0, Math.min(10, config.get<number>("rag.embedding.maxRetries", 3))),
+        retryBackoffMs: Math.max(0, Math.min(120000, config.get<number>("rag.embedding.retryBackoffMs", 2000))),
+        resumeAutomatically: config.get<boolean>("rag.embedding.resumeAutomatically", true),
+        resumeDelayMs: Math.max(0, Math.min(3600000, config.get<number>("rag.embedding.resumeDelayMs", 60000))),
       },
       rerank: {
-        enabled: config.get<boolean>("rag.rerank.enabled", false),
-        endpoint: normalizeServerUrl(config.get<string>("rag.rerank.endpoint", "")),
+        enabled: Boolean(ragRerankEndpoint),
+        endpoint: ragRerankEndpoint,
         model: config.get<string>("rag.rerank.model", "").trim(),
       },
       allowedHosts: readStringArray(config.get<unknown>("rag.allowedHosts", [])),
@@ -111,6 +140,10 @@ export async function readCompletionApiKey(context: vscode.ExtensionContext) {
   return context.secrets.get(COMPLETION_API_KEY_SECRET_KEY)
 }
 
+export async function readRagApiKey(context: vscode.ExtensionContext) {
+  return context.secrets.get(RAG_API_KEY_SECRET_KEY)
+}
+
 export async function writeCompletionApiKey(context: vscode.ExtensionContext, apiKey: string | undefined) {
   const value = apiKey?.trim()
   if (value) {
@@ -118,6 +151,15 @@ export async function writeCompletionApiKey(context: vscode.ExtensionContext, ap
     return
   }
   await context.secrets.delete(COMPLETION_API_KEY_SECRET_KEY)
+}
+
+export async function writeRagApiKey(context: vscode.ExtensionContext, apiKey: string | undefined) {
+  const value = apiKey?.trim()
+  if (value) {
+    await context.secrets.store(RAG_API_KEY_SECRET_KEY, value)
+    return
+  }
+  await context.secrets.delete(RAG_API_KEY_SECRET_KEY)
 }
 
 export async function promptAndSaveCompletionApiKey(context: vscode.ExtensionContext) {
@@ -129,6 +171,18 @@ export async function promptAndSaveCompletionApiKey(context: vscode.ExtensionCon
   })
   if (apiKey === undefined) return false
   await writeCompletionApiKey(context, apiKey || undefined)
+  return true
+}
+
+export async function promptAndSaveRagApiKey(context: vscode.ExtensionContext) {
+  const apiKey = await vscode.window.showInputBox({
+    title: "RAG API key",
+    prompt: "Bearer token for the embedding and rerank HTTP services. Leave empty to clear it.",
+    password: true,
+    ignoreFocusOut: true,
+  })
+  if (apiKey === undefined) return false
+  await writeRagApiKey(context, apiKey || undefined)
   return true
 }
 
@@ -175,11 +229,31 @@ export async function saveCompletionSettings(input: CompletionSettingsInput) {
   const config = vscode.workspace.getConfiguration("opencode.remote")
   await config.update("completion.enabled", input.enabled, vscode.ConfigurationTarget.Global)
   await config.update("completion.provider", input.provider, vscode.ConfigurationTarget.Global)
+  await config.update("completion.profile", readCompletionProfile(input.profile), vscode.ConfigurationTarget.Global)
   await config.update("completion.apiBaseUrl", normalizeServerUrl(input.apiBaseUrl), vscode.ConfigurationTarget.Global)
   await config.update("completion.model", input.model.trim(), vscode.ConfigurationTarget.Global)
   await config.update("completion.maxTokens", Math.max(1, Math.min(4096, Math.floor(input.maxTokens))), vscode.ConfigurationTarget.Global)
   await config.update("completion.temperature", Math.max(0, Math.min(2, input.temperature)), vscode.ConfigurationTarget.Global)
   await config.update("completion.topP", Math.max(0, Math.min(1, input.topP)), vscode.ConfigurationTarget.Global)
+}
+
+export async function saveRagSettings(input: RagSettingsInput) {
+  const config = vscode.workspace.getConfiguration("opencode.remote")
+  await config.update("rag.embedding.endpoint", normalizeServerUrl(input.embeddingEndpoint), vscode.ConfigurationTarget.Global)
+  await config.update("rag.embedding.model", input.embeddingModel.trim(), vscode.ConfigurationTarget.Global)
+  await config.update("rag.embedding.batchSize", clampInteger(input.embeddingBatchSize, 1, 256, 32), vscode.ConfigurationTarget.Global)
+  await config.update("rag.embedding.timeoutMs", clampInteger(input.embeddingTimeoutMs, 250, 120000, 30000), vscode.ConfigurationTarget.Global)
+  await config.update("rag.embedding.requestDelayMs", clampInteger(input.embeddingRequestDelayMs, 0, 60000, 500), vscode.ConfigurationTarget.Global)
+  await config.update("rag.embedding.maxRequestsPerRun", clampInteger(input.embeddingMaxRequestsPerRun, 0, 100000, 100), vscode.ConfigurationTarget.Global)
+  await config.update("rag.embedding.maxRetries", clampInteger(input.embeddingMaxRetries, 0, 10, 3), vscode.ConfigurationTarget.Global)
+  await config.update("rag.embedding.retryBackoffMs", clampInteger(input.embeddingRetryBackoffMs, 0, 120000, 2000), vscode.ConfigurationTarget.Global)
+  await config.update("rag.embedding.resumeAutomatically", Boolean(input.embeddingResumeAutomatically), vscode.ConfigurationTarget.Global)
+  await config.update("rag.embedding.resumeDelayMs", clampInteger(input.embeddingResumeDelayMs, 0, 3600000, 60000), vscode.ConfigurationTarget.Global)
+  await config.update("rag.rerank.endpoint", normalizeServerUrl(input.rerankEndpoint), vscode.ConfigurationTarget.Global)
+  await config.update("rag.rerank.model", input.rerankModel.trim(), vscode.ConfigurationTarget.Global)
+  await config.update("rag.allowedHosts", cleanStringArray(input.allowedHosts), vscode.ConfigurationTarget.Global)
+  await config.update("rag.vectorTopK", clampInteger(input.vectorTopK, 0, 200, 24), vscode.ConfigurationTarget.Global)
+  await config.update("rag.rerankTopK", clampInteger(input.rerankTopK, 0, 200, 16), vscode.ConfigurationTarget.Global)
 }
 
 export function settingsFromConnectionInput(input: ConnectionSettingsInput): RemoteSettings {
@@ -208,6 +282,11 @@ function readCompletionProvider(input: string): CompletionProvider {
   return "opencode"
 }
 
+function readCompletionProfile(input: string): CompletionProfile {
+  if (input === "generic-chat" || input === "qwen-coder-fim") return input
+  return "generic-chat"
+}
+
 function readCodeGraphAnalysisMode(input: string): CodeGraphAnalysisMode {
   if (input === "auto" || input === "fast" || input === "ast" || input === "semantic") return input
   return "auto"
@@ -215,5 +294,18 @@ function readCodeGraphAnalysisMode(input: string): CodeGraphAnalysisMode {
 
 function readStringArray(input: unknown) {
   if (!Array.isArray(input)) return []
-  return input.filter((item): item is string => typeof item === "string" && item.trim().length > 0)
+  return cleanStringArray(input)
+}
+
+function cleanStringArray(input: unknown[]) {
+  return input
+    .filter((item): item is string => typeof item === "string")
+    .map((item) => item.trim())
+    .filter((item) => item.length > 0)
+}
+
+function clampInteger(input: number, min: number, max: number, fallback: number) {
+  const value = Math.floor(Number(input))
+  if (!Number.isFinite(value)) return fallback
+  return Math.max(min, Math.min(max, value))
 }

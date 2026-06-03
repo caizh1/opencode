@@ -1,5 +1,15 @@
 import type { OpenCodeMessage, OpenCodePart, RemoteSettings } from "./types"
 
+const QWEN_CODER_FIM_STOP = [
+  "<|fim_prefix|>",
+  "<|fim_suffix|>",
+  "<|fim_middle|>",
+  "<|file_sep|>",
+  "<|repo_name|>",
+  "<|endoftext|>",
+  "<|im_end|>",
+]
+
 export class CompletionModelRequestError extends Error {
   constructor(
     readonly status: number,
@@ -32,7 +42,11 @@ export class CompletionModelClient {
     if (!baseUrl) throw new CompletionModelRequestError(0, "Completion API base URL is required.")
     if (!model) throw new CompletionModelRequestError(0, "Completion model is required.")
 
-    const response = await this.safeFetch(baseUrl, {
+    if (this.settings.completion.profile === "qwen-coder-fim") {
+      return this.completeRawFim({ prompt: input.prompt, signal: input.signal, baseUrl, model })
+    }
+
+    const body = await this.postJson(chatCompletionsUrl(baseUrl), {
       method: "POST",
       signal: input.signal,
       headers: this.headers(),
@@ -44,27 +58,51 @@ export class CompletionModelClient {
         top_p: this.settings.completion.topP,
       }),
     })
+    return normalizeChatCompletionMessage(body)
+  }
+
+  private async completeRawFim(input: {
+    prompt: string
+    signal?: AbortSignal
+    baseUrl: string
+    model: string
+  }) {
+    const body = await this.postJson(completionsUrl(input.baseUrl), {
+      method: "POST",
+      signal: input.signal,
+      headers: this.headers(),
+      body: JSON.stringify({
+        model: input.model,
+        prompt: input.prompt,
+        max_tokens: this.settings.completion.maxTokens,
+        temperature: this.settings.completion.temperature,
+        top_p: this.settings.completion.topP,
+        stop: QWEN_CODER_FIM_STOP,
+      }),
+    })
+    return normalizeRawCompletionMessage(body)
+  }
+
+  private async postJson(url: string, init: RequestInit) {
+    const response = await this.safeFetch(url, init)
     const text = await response.text()
     if (!response.ok) {
       throw new CompletionModelRequestError(response.status, responseErrorMessage(response, text))
     }
     if (!text) throw new CompletionModelRequestError(response.status, "Completion model response body is empty.")
 
-    let body: unknown
     try {
-      body = JSON.parse(text)
+      return JSON.parse(text) as unknown
     } catch {
       throw new CompletionModelRequestError(response.status, "Completion model response is not valid JSON.")
     }
-
-    return normalizeChatCompletionMessage(body)
   }
 
-  private async safeFetch(baseUrl: string, init: RequestInit) {
+  private async safeFetch(url: string, init: RequestInit) {
     try {
-      return await fetch(chatCompletionsUrl(baseUrl), init)
+      return await fetch(url, init)
     } catch (error) {
-      throw new CompletionModelConnectionError(baseUrl, error)
+      throw new CompletionModelConnectionError(url, error)
     }
   }
 
@@ -105,6 +143,14 @@ export function chatCompletionsUrl(baseUrl: string) {
   return `${trimmed}/chat/completions`
 }
 
+export function completionsUrl(baseUrl: string) {
+  const trimmed = baseUrl.trim().replace(/\/+$/, "")
+  if (!trimmed) return "/completions"
+  if (/\/chat\/completions$/i.test(trimmed)) return trimmed.replace(/\/chat\/completions$/i, "/completions")
+  if (/\/completions$/i.test(trimmed)) return trimmed
+  return `${trimmed}/completions`
+}
+
 function normalizeChatCompletionMessage(input: unknown): OpenCodeMessage {
   const root = objectRecord(input)
   const choices = Array.isArray(root.choices) ? root.choices : []
@@ -114,6 +160,31 @@ function normalizeChatCompletionMessage(input: unknown): OpenCodeMessage {
   const reasoning = stringValue(message.reasoning_content)
   if (!content && !reasoning) {
     throw new CompletionModelRequestError(0, "Completion model response has no message content.")
+  }
+
+  const parts: OpenCodePart[] = []
+  if (reasoning) parts.push({ type: "reasoning", text: reasoning })
+  if (content) parts.push({ type: "text", text: content })
+  return {
+    info: {
+      id: stringValue(root.id) || "direct-completion",
+      role: "assistant",
+      providerID: "openai-compatible",
+      modelID: stringValue(root.model),
+    },
+    parts,
+  }
+}
+
+function normalizeRawCompletionMessage(input: unknown): OpenCodeMessage {
+  const root = objectRecord(input)
+  const choices = Array.isArray(root.choices) ? root.choices : []
+  const choice = objectRecord(choices[0])
+  const message = objectRecord(choice.message)
+  const content = stringValue(choice.text) || stringValue(message.content)
+  const reasoning = stringValue(message.reasoning_content)
+  if (!content && !reasoning) {
+    throw new CompletionModelRequestError(0, "Completion model response has no completion text.")
   }
 
   const parts: OpenCodePart[] = []

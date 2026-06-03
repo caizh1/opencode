@@ -57,6 +57,11 @@ describe("extension manifest", () => {
       enum: ["opencode", "openai-compatible"],
       default: "opencode",
     })
+    expect(properties["opencode.remote.completion.profile"]).toMatchObject({
+      type: "string",
+      enum: ["generic-chat", "qwen-coder-fim"],
+      default: "generic-chat",
+    })
     expect(properties["opencode.remote.completion.apiBaseUrl"]?.default).toBe("")
     expect(properties["opencode.remote.completion.model"]?.default).toBe("")
     expect(properties["opencode.remote.completion.maxTokens"]?.default).toBe(128)
@@ -106,12 +111,18 @@ describe("extension manifest", () => {
 
   test("contributes offline RAG embedding and rerank settings", () => {
     const properties = manifest.contributes?.configuration?.properties ?? {}
-    expect(properties["opencode.remote.rag.embedding.enabled"]?.default).toBe(false)
+    expect(properties["opencode.remote.rag.embedding.enabled"]).toBeUndefined()
     expect(properties["opencode.remote.rag.embedding.endpoint"]?.type).toBe("string")
     expect(properties["opencode.remote.rag.embedding.model"]?.type).toBe("string")
     expect(properties["opencode.remote.rag.embedding.batchSize"]?.default).toBe(32)
     expect(properties["opencode.remote.rag.embedding.timeoutMs"]?.default).toBe(30000)
-    expect(properties["opencode.remote.rag.rerank.enabled"]?.default).toBe(false)
+    expect(properties["opencode.remote.rag.embedding.requestDelayMs"]?.default).toBe(500)
+    expect(properties["opencode.remote.rag.embedding.maxRequestsPerRun"]?.default).toBe(100)
+    expect(properties["opencode.remote.rag.embedding.maxRetries"]?.default).toBe(3)
+    expect(properties["opencode.remote.rag.embedding.retryBackoffMs"]?.default).toBe(2000)
+    expect(properties["opencode.remote.rag.embedding.resumeAutomatically"]?.default).toBe(true)
+    expect(properties["opencode.remote.rag.embedding.resumeDelayMs"]?.default).toBe(60000)
+    expect(properties["opencode.remote.rag.rerank.enabled"]).toBeUndefined()
     expect(properties["opencode.remote.rag.rerank.endpoint"]?.type).toBe("string")
     expect(properties["opencode.remote.rag.rerank.model"]?.type).toBe("string")
     expect(properties["opencode.remote.rag.allowedHosts"]?.type).toBe("array")
@@ -121,11 +132,16 @@ describe("extension manifest", () => {
 
   test("contributes a dedicated OpenCode activity bar container", () => {
     const containers = manifest.contributes?.viewsContainers?.activitybar ?? []
+    expect(manifest.icon).toBe("media/opencode-icon.png")
     expect(containers).toContainEqual({
       id: "opencodeRemote",
       title: "OpenCode",
       icon: "media/opencode.svg",
     })
+    const iconPng = readFileSync(join(import.meta.dir, "..", "media", "opencode-icon.png"))
+    expect(iconPng.readUInt32BE(16)).toBe(256)
+    expect(iconPng.readUInt32BE(20)).toBe(256)
+    expect(existsSync(join(import.meta.dir, "..", "media", "opencode-icon.png"))).toBe(true)
     expect(existsSync(join(import.meta.dir, "..", "media", "opencode.svg"))).toBe(true)
   })
 

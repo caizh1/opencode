@@ -1,8 +1,10 @@
 import * as crypto from "node:crypto"
 import { moduleKey, shardKeyForPath } from "./codegraph-index"
+import { RagHttpError } from "./rag-provider"
 import type { CodeGraphFile, CodeGraphIndex } from "./codegraph-types"
 import type { StateMachine } from "./analysis-types"
 import type { EmbeddingProvider, RagChunk, RagVectorIndex, RagVectorSearchHit, RagVectorShard } from "./rag-types"
+import type { RagIndexPausedReason, RagResumeReason } from "./types"
 
 export type RagSerializedManifest = {
   version: 1
@@ -12,6 +14,14 @@ export type RagSerializedManifest = {
   model: string
   dimension: number
   chunks: number
+  totalChunks?: number
+  pendingChunks?: number
+  indexAvailability?: "partial" | "ready" | "paused"
+  indexPausedReason?: RagIndexPausedReason
+  lastError?: string
+  nextResumeAt?: number
+  resumeDelayMs?: number
+  resumeReason?: RagResumeReason
   shards: { key: string; chunks: number; metadataPath: string; vectorsPath: string }[]
 }
 
@@ -22,6 +32,35 @@ export type RagSerializedShardMetadata = {
   chunks: RagChunk[]
 }
 
+export type RagIndexBuildProgress =
+  | {
+    phase: "batch"
+    batchIndex: number
+    batchCount: number
+    requestNumber: number
+    requestLimit: number
+    inputCount: number
+  }
+  | {
+    phase: "delay"
+    delayMs: number
+  }
+  | {
+    phase: "rate-limit"
+    status: number
+    retryAfterMs?: number
+    retry: number
+    maxRetries: number
+    delayMs: number
+  }
+  | {
+    phase: "paused"
+    reason: RagIndexPausedReason
+    requestsUsed: number
+    requestLimit: number
+    message?: string
+  }
+
 export async function buildRagVectorIndex(input: {
   index: CodeGraphIndex
   provider: EmbeddingProvider
@@ -29,9 +68,19 @@ export async function buildRagVectorIndex(input: {
   previous?: RagVectorIndex
   changedPaths?: string[]
   signal?: AbortSignal
+  batchSize?: number
+  requestDelayMs?: number
+  maxRequestsPerRun?: number
+  maxRetries?: number
+  retryBackoffMs?: number
+  resumeMissing?: boolean
+  sleep?: (ms: number) => Promise<void>
+  onProgress?: (event: RagIndexBuildProgress) => void
+  onIndexUpdate?: (index: RagVectorIndex) => Promise<void>
 }): Promise<RagVectorIndex> {
   const chunks = buildRagChunks(input.index, input.stateMachines ?? [])
   const changed = input.changedPaths ? new Set(input.changedPaths.map(normalizePath)) : undefined
+  const resumeMissing = input.resumeMissing ?? true
   const previousById = new Map<string, { chunk: RagChunk; vector: number[] }>()
   if (input.previous && input.previous.dimension > 0 && input.previous.provider === input.provider.id && input.previous.model === input.provider.model) {
     for (let index = 0; index < input.previous.chunks.length; index++) {
@@ -49,31 +98,126 @@ export async function buildRagVectorIndex(input: {
       nextChunks.push(existing.chunk)
       vectors.push(existing.vector)
     } else {
-      pending.push(chunk)
+      const isChanged = !changed || changed.has(normalizePath(chunk.path))
+      if (isChanged || resumeMissing) pending.push(chunk)
     }
   }
 
+  let requestsUsed = 0
+  let pausedReason: RagIndexPausedReason | undefined
+  let lastError: string | undefined
+  let resumeDelayMs: number | undefined
+  const batchSize = Math.max(1, Math.floor(input.batchSize ?? Number.MAX_SAFE_INTEGER))
+  const requestLimit = Math.max(0, Math.floor(input.maxRequestsPerRun ?? 0))
+  const maxRetries = Math.max(0, Math.floor(input.maxRetries ?? 0))
+  const retryBackoffMs = Math.max(0, Math.floor(input.retryBackoffMs ?? 0))
+  const requestDelayMs = Math.max(0, Math.floor(input.requestDelayMs ?? 0))
+  const sleep = input.sleep ?? delay
+  const batchCount = Math.ceil(pending.length / batchSize)
+
   if (pending.length > 0) {
-    const embedded = await input.provider.embed(pending.map((chunk) => chunk.text), input.signal)
-    if (embedded.length !== pending.length) throw new Error(`embedding provider returned ${embedded.length} vector(s), expected ${pending.length}`)
-    for (let index = 0; index < pending.length; index++) {
-      nextChunks.push(pending[index])
-      vectors.push(normalizeVector(embedded[index]))
+    for (let offset = 0; offset < pending.length; offset += batchSize) {
+      if (requestLimit > 0 && requestsUsed >= requestLimit) {
+        pausedReason = "request-budget"
+        input.onProgress?.({
+          phase: "paused",
+          reason: pausedReason,
+          requestsUsed,
+          requestLimit,
+          message: "request budget reached",
+        })
+        break
+      }
+
+      const batch = pending.slice(offset, offset + batchSize)
+      const batchIndex = Math.floor(offset / batchSize) + 1
+      const embedded = await embedBatchWithRetry({
+        provider: input.provider,
+        batch,
+        signal: input.signal,
+        requestLimit,
+        maxRetries,
+        retryBackoffMs,
+        sleep,
+        onBeforeRequest: () => {
+          if (requestLimit > 0 && requestsUsed >= requestLimit) return false
+          requestsUsed += 1
+          input.onProgress?.({
+            phase: "batch",
+            batchIndex,
+            batchCount,
+            requestNumber: requestsUsed,
+            requestLimit,
+            inputCount: batch.length,
+          })
+          return true
+        },
+        onRateLimit: (event) => input.onProgress?.(event),
+      })
+
+      if (embedded.pausedReason) {
+        pausedReason = embedded.pausedReason
+        lastError = embedded.lastError
+        resumeDelayMs = embedded.resumeDelayMs
+        input.onProgress?.({
+          phase: "paused",
+          reason: pausedReason,
+          requestsUsed,
+          requestLimit,
+          message: lastError,
+        })
+        break
+      }
+
+      if (embedded.vectors.length !== batch.length) {
+        pausedReason = "provider-error"
+        lastError = `embedding provider returned ${embedded.vectors.length} vector(s), expected ${batch.length}`
+        input.onProgress?.({
+          phase: "paused",
+          reason: pausedReason,
+          requestsUsed,
+          requestLimit,
+          message: lastError,
+        })
+        break
+      }
+      for (let index = 0; index < batch.length; index++) {
+        nextChunks.push(batch[index])
+        vectors.push(normalizeVector(embedded.vectors[index]))
+      }
+      await input.onIndexUpdate?.(createVectorIndex({
+        rootPath: input.index.rootPath,
+        provider: input.provider,
+        chunks,
+        nextChunks,
+        vectors,
+        pausedReason,
+        lastError,
+        resumeDelayMs,
+        requestsUsed,
+      }))
+
+      const hasMore = offset + batchSize < pending.length
+      if (hasMore && requestDelayMs > 0 && (requestLimit <= 0 || requestsUsed < requestLimit)) {
+        input.onProgress?.({ phase: "delay", delayMs: requestDelayMs })
+        await sleep(requestDelayMs)
+      }
     }
   }
 
   const dimension = vectors[0]?.length ?? 0
   if (dimension > 0 && vectors.some((vector) => vector.length !== dimension)) throw new Error("RAG vectors have inconsistent dimensions")
-  return {
-    version: 1,
+  return createVectorIndex({
     rootPath: input.index.rootPath,
-    updatedAt: Date.now(),
-    provider: input.provider.id,
-    model: input.provider.model,
-    dimension,
-    chunks: nextChunks,
+    provider: input.provider,
+    chunks,
+    nextChunks,
     vectors,
-  }
+    pausedReason,
+    lastError,
+    resumeDelayMs,
+    requestsUsed,
+  })
 }
 
 export function buildRagChunks(index: CodeGraphIndex, stateMachines: StateMachine[] = []): RagChunk[] {
@@ -123,6 +267,8 @@ export function splitRagVectorIndex(index: RagVectorIndex): RagVectorShard[] {
 }
 
 export function createRagSerializedManifest(index: RagVectorIndex): RagSerializedManifest {
+  const totalChunks = index.totalChunks ?? index.chunks.length
+  const pendingChunks = Math.max(0, index.pendingChunkCount ?? totalChunks - index.chunks.length)
   return {
     version: 1,
     rootPath: index.rootPath,
@@ -131,6 +277,14 @@ export function createRagSerializedManifest(index: RagVectorIndex): RagSerialize
     model: index.model,
     dimension: index.dimension,
     chunks: index.chunks.length,
+    totalChunks,
+    pendingChunks,
+    indexAvailability: pendingChunks > 0 ? index.indexPausedReason ? "paused" : "partial" : "ready",
+    indexPausedReason: index.indexPausedReason,
+    lastError: index.lastError,
+    nextResumeAt: index.nextResumeAt,
+    resumeDelayMs: index.resumeDelayMs,
+    resumeReason: index.resumeReason,
     shards: splitRagVectorIndex(index).map((shard) => ({
       key: shard.key,
       chunks: shard.chunks.length,
@@ -159,6 +313,85 @@ export function decodeRagShardVectors(bytes: Uint8Array, dimension: number): num
     vectors.push(Array.from(array.slice(row * dimension, row * dimension + dimension)))
   }
   return vectors
+}
+
+function createVectorIndex(input: {
+  rootPath: string
+  provider: EmbeddingProvider
+  chunks: RagChunk[]
+  nextChunks: RagChunk[]
+  vectors: number[][]
+  pausedReason?: RagIndexPausedReason
+  lastError?: string
+  resumeDelayMs?: number
+  requestsUsed: number
+}): RagVectorIndex {
+  const dimension = input.vectors[0]?.length ?? 0
+  return {
+    version: 1,
+    rootPath: input.rootPath,
+    updatedAt: Date.now(),
+    provider: input.provider.id,
+    model: input.provider.model,
+    dimension,
+    chunks: [...input.nextChunks],
+    vectors: input.vectors.map((vector) => [...vector]),
+    totalChunks: input.chunks.length,
+    pendingChunkCount: Math.max(0, input.chunks.length - input.nextChunks.length),
+    indexPausedReason: input.pausedReason,
+    lastError: input.lastError,
+    requestsUsed: input.requestsUsed,
+    resumeDelayMs: input.resumeDelayMs,
+    resumeReason: input.pausedReason === "request-budget" || input.pausedReason === "rate-limit" ? input.pausedReason : undefined,
+  }
+}
+
+async function embedBatchWithRetry(input: {
+  provider: EmbeddingProvider
+  batch: RagChunk[]
+  signal?: AbortSignal
+  requestLimit: number
+  maxRetries: number
+  retryBackoffMs: number
+  sleep: (ms: number) => Promise<void>
+  onBeforeRequest: () => boolean
+  onRateLimit: (event: Extract<RagIndexBuildProgress, { phase: "rate-limit" }>) => void
+}): Promise<{ vectors: number[][]; pausedReason?: RagIndexPausedReason; lastError?: string; resumeDelayMs?: number }> {
+  for (let retry = 0; retry <= input.maxRetries; retry++) {
+    if (!input.onBeforeRequest()) {
+      return { vectors: [], pausedReason: "request-budget", lastError: "request budget reached" }
+    }
+    try {
+      return { vectors: await input.provider.embed(input.batch.map((chunk) => chunk.text), input.signal) }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      const retryable = retryableRagError(error)
+      if (!retryable) return { vectors: [], pausedReason: "provider-error", lastError: message }
+      if (retry >= input.maxRetries) return { vectors: [], pausedReason: "rate-limit", lastError: message, resumeDelayMs: retryable.retryAfterMs }
+      const delayMs = retryable.retryAfterMs ?? input.retryBackoffMs * 2 ** retry
+      input.onRateLimit({
+        phase: "rate-limit",
+        status: retryable.status,
+        retryAfterMs: retryable.retryAfterMs,
+        retry: retry + 1,
+        maxRetries: input.maxRetries,
+        delayMs,
+      })
+      if (delayMs > 0) await input.sleep(delayMs)
+    }
+  }
+  return { vectors: [], pausedReason: "provider-error", lastError: "embedding provider did not return vectors" }
+}
+
+function retryableRagError(error: unknown) {
+  if (error instanceof RagHttpError && (error.status === 429 || error.status === 503)) {
+    return { status: error.status, retryAfterMs: error.retryAfterMs }
+  }
+  return undefined
+}
+
+function delay(ms: number) {
+  return new Promise<void>((resolve) => setTimeout(resolve, ms))
 }
 
 function functionChunks(file: CodeGraphFile): RagChunk[] {

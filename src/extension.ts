@@ -11,7 +11,9 @@ import { RemoteOpenCodeAuthError, RemoteOpenCodeClient } from "./remote-client"
 import {
   promptAndSaveCompletionApiKey,
   promptAndSaveConnectionSettings,
+  promptAndSaveRagApiKey,
   readCompletionApiKey,
+  readRagApiKey,
   readRemotePassword,
   readRemoteSettings,
   saveConnectionSettings,
@@ -22,6 +24,7 @@ import type { ConnectionState } from "./types"
 
 let client: RemoteOpenCodeClient | undefined
 const CONNECTION_TEST_TIMEOUT_MS = 8000
+const RAG_CONFIG_REFRESH_DEBOUNCE_MS = 500
 
 type ConnectionProbeResult =
   | { ok: true; detail: string }
@@ -110,8 +113,22 @@ export async function activate(context: vscode.ExtensionContext) {
   }
 
   let chatProvider: RemoteChatViewProvider
-  const codeGraph = new LocalCodeGraphService(context, output, getSettings, () => chatProvider?.refreshCodeGraphStatus())
+  const codeGraph = new LocalCodeGraphService(context, output, getSettings, () => readRagApiKey(context), () => chatProvider?.refreshCodeGraphStatus())
   context.subscriptions.push(codeGraph)
+  let ragConfigurationRefreshTimer: ReturnType<typeof setTimeout> | undefined
+  const scheduleRagConfigurationRefresh = () => {
+    if (ragConfigurationRefreshTimer) clearTimeout(ragConfigurationRefreshTimer)
+    ragConfigurationRefreshTimer = setTimeout(() => {
+      ragConfigurationRefreshTimer = undefined
+      void codeGraph.refreshRagConfiguration().catch((error) => {
+        const message = error instanceof Error ? error.message : String(error)
+        output.appendLine(`[rag] configuration refresh failed: ${message}`)
+      })
+    }, RAG_CONFIG_REFRESH_DEBOUNCE_MS)
+  }
+  context.subscriptions.push(new vscode.Disposable(() => {
+    if (ragConfigurationRefreshTimer) clearTimeout(ragConfigurationRefreshTimer)
+  }))
   const analysisBridge = new LocalAnalysisBridge(
     output,
     (input) => codeGraph.runAnalysisTool(input),
@@ -132,6 +149,12 @@ export async function activate(context: vscode.ExtensionContext) {
       if (saved) vscode.window.setStatusBarMessage("Inline completion API key saved", 2000)
       return saved
     },
+    promptRagApiKey: async () => {
+      const saved = await promptAndSaveRagApiKey(context)
+      if (saved) vscode.window.setStatusBarMessage("RAG API key saved", 2000)
+      if (saved) await codeGraph.refreshRagConfiguration()
+      return saved
+    },
     connectWithSettings,
     testWithSettings,
     setConnectionState,
@@ -139,6 +162,13 @@ export async function activate(context: vscode.ExtensionContext) {
     openOutput: () => output.show(true),
   })
   context.subscriptions.push(chatProvider)
+
+  context.subscriptions.push(
+    vscode.workspace.onDidChangeConfiguration((event) => {
+      if (!event.affectsConfiguration("opencode.remote.rag")) return
+      scheduleRagConfigurationRefresh()
+    }),
+  )
 
   context.subscriptions.push(
     vscode.commands.registerCommand("opencode.remote.connect", connect),

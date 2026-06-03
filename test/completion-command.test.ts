@@ -4,6 +4,7 @@ import { join } from "node:path"
 
 describe("accepted completion formatting command wiring", () => {
   const completionSource = readFileSync(join(import.meta.dir, "..", "src", "completion.ts"), "utf8")
+  const contextSource = readFileSync(join(import.meta.dir, "..", "src", "context.ts"), "utf8")
   const commandSource = readFileSync(join(import.meta.dir, "..", "src", "completion-format-command.ts"), "utf8")
   const extensionSource = readFileSync(join(import.meta.dir, "..", "src", "extension.ts"), "utf8")
 
@@ -37,10 +38,25 @@ describe("accepted completion formatting command wiring", () => {
 
   test("completion provider can route inline completions to a direct model API", () => {
     expect(completionSource).toContain('settings.completion.provider === "openai-compatible"')
+    expect(completionSource).toContain('input.settings.completion.profile === "qwen-coder-fim"')
+    expect(completionSource).toContain("buildQwenCoderFimPrompt")
     expect(completionSource).toContain("new CompletionModelClient(input.settings, apiKey)")
     expect(completionSource).toContain('transport: "openai-compatible"')
     expect(completionSource).toContain("document.version")
     expect(completionSource).toContain("client.complete({ prompt: promptText, signal: input.signal })")
+  })
+
+  test("Qwen coder FIM prompt uses the expected token order", () => {
+    const repo = contextSource.indexOf("<|repo_name|>")
+    const file = contextSource.indexOf("<|file_sep|>")
+    const prefix = contextSource.indexOf("<|fim_prefix|>")
+    const suffix = contextSource.indexOf("<|fim_suffix|>")
+    const middle = contextSource.indexOf("<|fim_middle|>")
+    expect(repo).toBeGreaterThanOrEqual(0)
+    expect(file).toBeGreaterThan(repo)
+    expect(prefix).toBeGreaterThan(file)
+    expect(suffix).toBeGreaterThan(prefix)
+    expect(middle).toBeGreaterThan(suffix)
   })
 
   test("accepted formatting command formats only the accepted range", () => {

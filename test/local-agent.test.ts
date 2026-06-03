@@ -94,6 +94,7 @@ function settings(input: { localOnlyMode: boolean; defaultAgent?: string }): Rem
     completion: {
       enabled: false,
       provider: "opencode",
+      profile: "generic-chat",
       apiBaseUrl: "",
       model: "",
       maxTokens: 128,
@@ -137,6 +138,12 @@ function settings(input: { localOnlyMode: boolean; defaultAgent?: string }): Rem
         model: "",
         batchSize: 32,
         timeoutMs: 30000,
+        requestDelayMs: 500,
+        maxRequestsPerRun: 100,
+        maxRetries: 3,
+        retryBackoffMs: 2000,
+        resumeAutomatically: true,
+        resumeDelayMs: 60000,
       },
       rerank: {
         enabled: false,
