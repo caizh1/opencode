@@ -5,10 +5,31 @@ export type CompletionProvider = "opencode" | "openai-compatible"
 export type CodeGraphAnalysisMode = "auto" | "fast" | "ast" | "semantic"
 
 export type RagEndpointKind = "disabled" | "localhost" | "private-lan" | "approved-host" | "blocked" | "error"
-export type RagAvailability = "not-configured" | "not-indexed" | "checking" | "ready" | "partial" | "paused" | "unavailable"
+export type RagAvailability = "not-configured" | "not-indexed" | "checking" | "indexing" | "ready" | "partial" | "paused" | "unavailable"
 export type RagIndexAvailability = "none" | "partial" | "ready" | "paused"
 export type RagIndexPausedReason = "request-budget" | "rate-limit" | "provider-error"
 export type RagResumeReason = "request-budget" | "rate-limit"
+
+export type RagIndexProgress = {
+  phase: "batch" | "delay" | "rate-limit" | "paused"
+  batchIndex?: number
+  batchCount?: number
+  requestNumber?: number
+  requestLimit?: number
+  inputCount?: number
+  delayMs?: number
+  status?: number
+  retryAfterMs?: number
+  retry?: number
+  maxRetries?: number
+  reason?: RagIndexPausedReason
+  requestsUsed?: number
+  message?: string
+  embeddedChunks: number
+  chunks: number
+  pendingChunkCount: number
+  updatedAt: number
+}
 
 export type RagSettings = {
   embedding: {
@@ -16,6 +37,7 @@ export type RagSettings = {
     endpoint: string
     model: string
     batchSize: number
+    configError?: string
     timeoutMs: number
     requestDelayMs: number
     maxRequestsPerRun: number
@@ -45,6 +67,7 @@ export type RagStatus = {
   embeddedChunks: number
   indexedChunkCount?: number
   pendingChunkCount?: number
+  indexProgress?: RagIndexProgress
   indexPausedReason?: RagIndexPausedReason
   resumeScheduledAt?: number
   resumeDelayMs?: number

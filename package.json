@@ -2,7 +2,7 @@
   "name": "opencode-remote",
   "displayName": "OpenCode Remote",
   "description": "Remote opencode serve client for VS Code",
-  "version": "0.0.76",
+  "version": "0.0.83",
   "icon": "media/opencode-icon.png",
   "publisher": "local",
   "repository": {
@@ -74,7 +74,11 @@
       {
         "command": "opencode.remote.testConnection",
         "title": "Test Remote OpenCode Connection",
-        "category": "OpenCode Remote"
+        "category": "OpenCode Remote",
+        "icon": {
+          "light": "media/icons/light/sync.svg",
+          "dark": "media/icons/dark/sync.svg"
+        }
       },
       {
         "command": "opencode.remote.completion.setApiKey",
@@ -89,7 +93,11 @@
       {
         "command": "opencode.remote.newSession",
         "title": "New Remote OpenCode Session",
-        "category": "OpenCode Remote"
+        "category": "OpenCode Remote",
+        "icon": {
+          "light": "media/icons/light/new-session.svg",
+          "dark": "media/icons/dark/new-session.svg"
+        }
       },
       {
         "command": "opencode.remote.askSelection",
@@ -451,17 +459,25 @@
         },
         "opencode.remote.rag.embedding.batchSize": {
           "type": "number",
-          "default": 32,
-          "minimum": 1,
-          "maximum": 256,
-          "description": "Number of RAG chunks embedded per HTTP request."
+          "default": 128,
+          "enum": [
+            32,
+            64,
+            128,
+            256,
+            512
+          ],
+          "minimum": 32,
+          "maximum": 512,
+          "description": "Number of RAG chunks embedded per HTTP request. The request timeout is configured automatically from this value."
         },
         "opencode.remote.rag.embedding.timeoutMs": {
           "type": "number",
           "default": 30000,
           "minimum": 250,
           "maximum": 120000,
-          "description": "Timeout for one embedding HTTP request."
+          "description": "Timeout for one embedding HTTP request. This value is managed automatically from opencode.remote.rag.embedding.batchSize.",
+          "deprecationMessage": "RAG embedding timeout is managed automatically from batch size: 32/64/128/256 use 30000ms, 512 uses 90000ms."
         },
         "opencode.remote.rag.embedding.requestDelayMs": {
           "type": "number",

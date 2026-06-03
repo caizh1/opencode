@@ -45,6 +45,13 @@ describe("offline RAG HTTP provider policy", () => {
     expect(createHttpRerankProvider(settings)?.id).toContain("localhost")
   })
 
+  test("rejects embedding providers when batch size configuration is invalid", () => {
+    const settings = ragSettings()
+    settings.embedding.configError = "Embedding batch size must be one of 32, 64, 128, 256, or 512."
+
+    expect(() => createHttpEmbeddingProvider(settings)).toThrow("Embedding batch size must be one of 32, 64, 128, 256, or 512.")
+  })
+
   test("sends optional bearer API keys to embedding and rerank endpoints", async () => {
     const captured: string[] = []
     const baseUrl = await listen((request, response) => {
@@ -96,7 +103,7 @@ describe("offline RAG HTTP provider policy", () => {
       endpoint: `${baseUrl}/v1/embeddings`,
       model: "local-embedding",
       inputCount: 2,
-      batchSize: 32,
+      batchSize: 128,
       timeoutMs: 30000,
       authorizationPresent: true,
     })
@@ -198,7 +205,7 @@ function ragSettings(embeddingEndpoint = "http://127.0.0.1:8000/v1/embeddings", 
       enabled: false,
       endpoint: embeddingEndpoint,
       model: "local-embedding",
-      batchSize: 32,
+      batchSize: 128,
       timeoutMs: 30000,
       requestDelayMs: 500,
       maxRequestsPerRun: 100,

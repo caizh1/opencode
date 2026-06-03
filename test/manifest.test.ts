@@ -34,6 +34,29 @@ describe("extension manifest", () => {
     expect(commands.has("opencode.remote.codeGraph.status")).toBe(true)
   })
 
+  test("contributes mask-friendly view title command icons", () => {
+    const commands = manifest.contributes?.commands ?? []
+    const newSession = commands.find((command: { command: string }) => command.command === "opencode.remote.newSession")
+    const testConnection = commands.find((command: { command: string }) => command.command === "opencode.remote.testConnection")
+
+    expect(newSession?.icon).toEqual({
+      light: "media/icons/light/new-session.svg",
+      dark: "media/icons/dark/new-session.svg",
+    })
+    expect(testConnection?.icon).toEqual({
+      light: "media/icons/light/sync.svg",
+      dark: "media/icons/dark/sync.svg",
+    })
+    for (const icon of [
+      "media/icons/light/new-session.svg",
+      "media/icons/dark/new-session.svg",
+      "media/icons/light/sync.svg",
+      "media/icons/dark/sync.svg",
+    ]) {
+      expect(existsSync(join(import.meta.dir, "..", icon))).toBe(true)
+    }
+  })
+
   test("contributes local-only guard settings", () => {
     const properties = manifest.contributes?.configuration?.properties ?? {}
     expect(properties["opencode.remote.context.localOnlyMode"]?.default).toBe(true)
@@ -114,8 +137,11 @@ describe("extension manifest", () => {
     expect(properties["opencode.remote.rag.embedding.enabled"]).toBeUndefined()
     expect(properties["opencode.remote.rag.embedding.endpoint"]?.type).toBe("string")
     expect(properties["opencode.remote.rag.embedding.model"]?.type).toBe("string")
-    expect(properties["opencode.remote.rag.embedding.batchSize"]?.default).toBe(32)
+    expect(properties["opencode.remote.rag.embedding.batchSize"]?.default).toBe(128)
+    expect(properties["opencode.remote.rag.embedding.batchSize"]?.enum).toEqual([32, 64, 128, 256, 512])
+    expect(properties["opencode.remote.rag.embedding.batchSize"]?.maximum).toBe(512)
     expect(properties["opencode.remote.rag.embedding.timeoutMs"]?.default).toBe(30000)
+    expect(properties["opencode.remote.rag.embedding.timeoutMs"]?.deprecationMessage).toContain("managed automatically from batch size")
     expect(properties["opencode.remote.rag.embedding.requestDelayMs"]?.default).toBe(500)
     expect(properties["opencode.remote.rag.embedding.maxRequestsPerRun"]?.default).toBe(100)
     expect(properties["opencode.remote.rag.embedding.maxRetries"]?.default).toBe(3)

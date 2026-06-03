@@ -79,6 +79,7 @@ type ChatViewMessage =
   | { type: "refreshSessions" }
   | { type: "openOutput" }
   | { type: "newSession" }
+  | { type: "cancelSend" }
   | { type: "addFile" }
   | { type: "clearContext" }
   | { type: "exportMarkdown"; scope?: ExportScope; filenameHint?: string }
@@ -214,6 +215,7 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
   private readonly pendingLocalUserMessageIDs = new Set<string>()
   private readonly pendingLocalUserTexts = new Set<string>()
   private activeSend?: ActiveSend
+  private activeSendController?: AbortController
   private activeSendGeneration = 0
   private sendStatusTimer?: ReturnType<typeof setTimeout>
 
@@ -400,10 +402,20 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
   private clearActiveSendState() {
     this.activeSendGeneration += 1
     this.activeSend = undefined
+    this.activeSendController = undefined
     this.stopSendStatusWatchdog()
     this.pendingLocalUserMessageIDs.clear()
     this.pendingLocalUserTexts.clear()
     this.sending = false
+  }
+
+  private cancelActiveSend() {
+    if (!this.sending && !this.activeSendController) return
+    this.deps.output.appendLine("[send] canceled from webview")
+    this.activeSendController?.abort()
+    this.clearActiveSendState()
+    this.messages = [...this.messages, localMessage("error", "Request canceled.")]
+    this.postState()
   }
 
   private isActiveSend(client: RemoteOpenCodeClient, sessionID: string, generation: number) {
@@ -609,6 +621,9 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
           break
         case "newSession":
           await this.newSession()
+          break
+        case "cancelSend":
+          this.cancelActiveSend()
           break
         case "addFile":
           await this.addFile()
@@ -985,10 +1000,13 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
   private async sendMessage(text: string, options: ChatContextOptions, mentionedFiles: vscode.Uri[]) {
     const trimmed = text.trim()
     if (!trimmed && mentionedFiles.length === 0) return
+    if (this.sending) return
 
     const client = this.connectedClient("Connect to a remote OpenCode server before sending.")
     if (!client) return
 
+    const controller = new AbortController()
+    this.activeSendController = controller
     const optimistic = localMessage("user", trimmed || "Please review the referenced files.")
     this.messages = [...this.messages, optimistic]
     this.pendingLocalUserMessageIDs.add(optimistic.id)
@@ -1001,6 +1019,7 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
     try {
       const settings = this.deps.getSettings()
       await this.ensureAgentList(client, settings)
+      if (controller.signal.aborted) return
       const agentSelection = this.agentForSettings(settings)
       if (!agentSelection.ready) {
         throw new MissingLocalOnlyAgentError(agentSelection.warning ?? "Required VS Code local agent is not available.")
@@ -1024,6 +1043,7 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
           this.lastContextSummary = items
         },
       })
+      if (controller.signal.aborted) return
       this.lastContextSummary = contextSummary
       this.logContextSummary(contextSummary)
       this.deps.output.appendLine(`[agent] ${agentSelection.label}`)
@@ -1033,16 +1053,18 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
         model: modelSelection.model,
         agent: agentSelection.agent,
       }
-      sentStreaming = await this.sendPreparedMessage(client, preparedMessage)
+      sentStreaming = await this.sendPreparedMessage(client, preparedMessage, controller.signal)
     } catch (error) {
+      if (controller.signal.aborted) return
       let finalError = error
       if (preparedMessage && isSessionNotFoundError(error)) {
         try {
           this.clearMissingSession(this.sessionID)
           this.deps.output.appendLine("[session] Selected remote session was not found; retrying with a new session.")
-          sentStreaming = await this.sendPreparedMessage(client, preparedMessage)
+          sentStreaming = await this.sendPreparedMessage(client, preparedMessage, controller.signal)
           return
         } catch (retryError) {
+          if (controller.signal.aborted) return
           finalError = retryError
         }
       }
@@ -1076,7 +1098,8 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
       this.reportRemoteConnectionFailure(client, "Failed to send message to remote OpenCode", finalError, message)
     } finally {
       this.codeGraphWaitDetail = ""
-      if (!sentStreaming) this.sending = false
+      if (this.activeSendController === controller) this.activeSendController = undefined
+      if (!sentStreaming && !controller.signal.aborted) this.sending = false
       this.postState()
     }
   }
@@ -1103,9 +1126,9 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
     throw new CodeGraphReadinessError(codeGraphErrorMessage(next))
   }
 
-  private async getOrCreateSession(client: RemoteOpenCodeClient) {
+  private async getOrCreateSession(client: RemoteOpenCodeClient, signal?: AbortSignal) {
     if (this.sessionID) return this.sessionID
-    const session = await client.createSession(CHAT_SESSION_TITLE)
+    const session = await client.createSession(CHAT_SESSION_TITLE, signal)
     this.sessionID = session.id
     await this.refreshSessionList(client)
     return session.id
@@ -1114,8 +1137,9 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
   private async sendPreparedMessage(
     client: RemoteOpenCodeClient,
     input: { text: string; model?: PromptModel; agent?: string },
+    signal?: AbortSignal,
   ) {
-    const sessionID = await this.getOrCreateSession(client)
+    const sessionID = await this.getOrCreateSession(client, signal)
     const canStream = await this.ensureEventSubscription(client)
     if (canStream) {
       await client.sendMessageAsync({
@@ -1123,6 +1147,7 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
         text: input.text,
         model: input.model,
         agent: input.agent,
+        signal,
       })
       if (this.sending && this.sessionID === sessionID) this.startSendStatusWatchdog(client, sessionID)
       await this.refreshSessionList(client)
@@ -1135,6 +1160,7 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
       text: input.text,
       model: input.model,
       agent: input.agent,
+      signal,
     })
     await this.refreshSessionList(client)
     await this.loadSessionMessages(client, sessionID)
@@ -1561,9 +1587,13 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
 
   private autoContextState() {
     const editorContext = this.deps.getEditorContext()
+    const diagnosticCount = vscode.languages
+      .getDiagnostics()
+      .reduce((count, [, diagnostics]) => count + diagnostics.length, 0)
     return {
       currentFile: editorContext ? relativePath(editorContext.uri) : "",
       hasSelection: Boolean(editorContext && !editorContext.selection.isEmpty),
+      diagnosticCount,
     }
   }
 
@@ -1800,6 +1830,7 @@ function ragStatusMessage(rag: RagStatus | undefined, fallback: string) {
       : rag.rerankProvider || rag.rerankLastError
         ? `, rerank unavailable: ${rag.rerankLastError || "endpoint test failed"}`
         : ""
+    if (rag.availability === "indexing") return `${ragIndexingMessage(rag)}${rerank}.`
     if (rag.availability === "partial") {
       return `RAG partial: ${rag.embeddedChunks}/${rag.chunks} chunk(s), ${rag.pendingChunkCount ?? Math.max(0, rag.chunks - rag.embeddedChunks)} pending${ragResumeScheduleMessage(rag)}${rerank}.`
     }
@@ -1809,11 +1840,25 @@ function ragStatusMessage(rag: RagStatus | undefined, fallback: string) {
     return `RAG ready: ${rag.embeddedChunks}/${rag.chunks} chunk(s), ${rag.vectorShards} shard(s)${rerank}.`
   }
   if (rag.availability === "checking") return "RAG checking embedding endpoint and vector index."
+  if (rag.availability === "indexing") return `${ragIndexingMessage(rag)}.`
   if (rag.availability === "partial") return `RAG partial: ${rag.embeddedChunks}/${rag.chunks} chunk(s), ${rag.pendingChunkCount ?? Math.max(0, rag.chunks - rag.embeddedChunks)} pending${ragResumeScheduleMessage(rag)}.`
   if (rag.availability === "paused") return `RAG indexing paused: ${rag.fallbackReason ?? ragPausedReasonMessage(rag.indexPausedReason, rag.lastError)}${ragResumeScheduleMessage(rag)}`
   if (rag.availability === "not-indexed") return `RAG not indexed: ${rag.fallbackReason || "rebuild the local code graph to enable vector retrieval"}`
   if (rag.availability === "unavailable") return `RAG unavailable: ${rag.fallbackReason || rag.lastError || "endpoint test failed"}`
   return "RAG not configured. Add an embedding endpoint to enable vector retrieval."
+}
+
+function ragIndexingMessage(rag: RagStatus) {
+  const progress = rag.indexProgress
+  const pending = rag.pendingChunkCount ?? Math.max(0, rag.chunks - rag.embeddedChunks)
+  if (!progress) return `RAG indexing: ${rag.embeddedChunks}/${rag.chunks} chunk(s), ${pending} pending`
+  if (progress.phase === "batch") {
+    const requestLimit = progress.requestLimit && progress.requestLimit > 0 ? String(progress.requestLimit) : "unlimited"
+    return `RAG indexing: ${rag.embeddedChunks}/${rag.chunks} chunk(s), batch ${progress.batchIndex}/${progress.batchCount}, request ${progress.requestNumber}/${requestLimit}, ${pending} pending`
+  }
+  if (progress.phase === "delay") return `RAG indexing: ${rag.embeddedChunks}/${rag.chunks} chunk(s), waiting ${progress.delayMs}ms, ${pending} pending`
+  if (progress.phase === "rate-limit") return `RAG indexing: ${rag.embeddedChunks}/${rag.chunks} chunk(s), rate limited retry ${progress.retry}/${progress.maxRetries}, ${pending} pending`
+  return `RAG indexing paused: ${rag.embeddedChunks}/${rag.chunks} chunk(s), ${pending} pending`
 }
 
 function ragTestResultMessage(rag: RagStatus | undefined) {

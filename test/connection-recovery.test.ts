@@ -38,11 +38,23 @@ describe("connection and stale-session recovery wiring", () => {
     expect(chatViewSource).toContain("this.deps.setConnectionState(state, detail)")
   })
 
-  test("debounces RAG configuration refresh events", () => {
+  test("debounces RAG configuration apply events", () => {
     expect(extensionSource).toContain("RAG_CONFIG_REFRESH_DEBOUNCE_MS")
-    expect(extensionSource).toContain("const scheduleRagConfigurationRefresh")
-    expect(extensionSource).toContain("if (ragConfigurationRefreshTimer) clearTimeout(ragConfigurationRefreshTimer)")
-    expect(extensionSource).toContain("scheduleRagConfigurationRefresh()")
+    expect(extensionSource).toContain("const scheduleRagConfigurationApply")
+    expect(extensionSource).toContain("if (ragConfigurationApplyTimer) clearTimeout(ragConfigurationApplyTimer)")
+    expect(extensionSource).toContain("void codeGraph.applyRagConfiguration().catch")
+    expect(extensionSource).toContain("scheduleRagConfigurationApply()")
+    expect(extensionSource).not.toContain("codeGraph.refreshRagConfiguration()")
+  })
+
+  test("RAG API key saves apply the active configuration", () => {
+    const start = extensionSource.indexOf("promptRagApiKey: async")
+    const end = extensionSource.indexOf("connectWithSettings,", start)
+    const body = extensionSource.slice(start, end)
+
+    expect(body).toContain("promptAndSaveRagApiKey(context)")
+    expect(body).toContain("if (saved) await codeGraph.applyRagConfiguration()")
+    expect(body).not.toContain("refreshRagConfiguration")
   })
 
   test("remote failure state distinguishes auth failures from connection errors", () => {

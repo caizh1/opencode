@@ -63,6 +63,7 @@ RAG 编排、chunk 生成、向量索引、hybrid retrieval、安全检查、que
 {
   "opencode.remote.rag.embedding.endpoint": "http://127.0.0.1:8000/v1/embeddings",
   "opencode.remote.rag.embedding.model": "local-embedding-model",
+  "opencode.remote.rag.embedding.batchSize": 128,
   "opencode.remote.rag.rerank.endpoint": "http://127.0.0.1:8000/rerank",
   "opencode.remote.rag.rerank.model": "local-rerank-model"
 }
@@ -276,7 +277,7 @@ Qwen Coder FIM 示例：
 | `opencode.remote.analysis.maxPaths` | `10` | 状态路径或调用路径最多返回的路径数。 |
 | `opencode.remote.rag.embedding.endpoint` | `""` | OpenAI-compatible embedding HTTP endpoint，例如 `http://127.0.0.1:8000/v1/embeddings`。 |
 | `opencode.remote.rag.embedding.model` | `""` | 发送给 embedding endpoint 的模型名。 |
-| `opencode.remote.rag.embedding.batchSize` | `32` | 每次 embedding HTTP 请求包含的 chunk 数。 |
+| `opencode.remote.rag.embedding.batchSize` | `128` | 每次 embedding HTTP 请求包含的 chunk 数，合法范围为 `1..512`。 |
 | `opencode.remote.rag.embedding.timeoutMs` | `30000` | 单次 embedding HTTP 请求超时。 |
 | `opencode.remote.rag.rerank.endpoint` | `""` | rerank HTTP endpoint，例如 `http://127.0.0.1:8000/rerank`。 |
 | `opencode.remote.rag.rerank.model` | `""` | 发送给 rerank endpoint 的模型名。 |

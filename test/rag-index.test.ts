@@ -107,6 +107,29 @@ describe("local RAG vector index", () => {
     expect(sleeps).toContain(25)
   })
 
+  test("reports chunk counts with embedding progress events", async () => {
+    const index = sampleIndex()
+    const totalChunks = buildRagChunks(index).length
+    const events: Array<{ phase: string; embeddedChunks: number; chunks: number; pendingChunkCount: number }> = []
+    await buildRagVectorIndex({
+      index,
+      provider: fakeEmbeddingProvider(),
+      batchSize: 1,
+      maxRequestsPerRun: 2,
+      requestDelayMs: 25,
+      sleep: async () => {},
+      onProgress: (event) => {
+        events.push(event)
+      },
+    })
+
+    expect(events.map((event) => event.phase)).toEqual(["batch", "delay", "batch", "paused"])
+    expect(events.every((event) => event.chunks === totalChunks)).toBe(true)
+    expect(events[0]).toMatchObject({ embeddedChunks: 0, pendingChunkCount: totalChunks })
+    expect(events[1]).toMatchObject({ embeddedChunks: 1, pendingChunkCount: totalChunks - 1 })
+    expect(events[3]).toMatchObject({ embeddedChunks: 2, pendingChunkCount: totalChunks - 2 })
+  })
+
   test("aborts while waiting between embedding index requests", async () => {
     const controller = new AbortController()
     const provider = recordingEmbeddingProvider()

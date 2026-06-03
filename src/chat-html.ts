@@ -1,110 +1,38 @@
 import { randomBytes } from "node:crypto"
+import { liquidIcon, type LiquidIconName } from "./webview/liquid-icons"
 
-type LucideIconNode = readonly [string, Record<string, string>][]
+const liquidIconNames: LiquidIconName[] = [
+  "chat",
+  "sparkle",
+  "add",
+  "history",
+  "sync",
+  "settings",
+  "server",
+  "agent",
+  "send",
+  "stop",
+  "attach",
+  "file",
+  "selection",
+  "diagnostics",
+  "diff",
+  "references",
+  "refresh",
+  "copy",
+  "retry",
+  "apply",
+  "database",
+  "beaker",
+  "key",
+  "shield",
+  "save",
+  "discard",
+  "more",
+]
 
-const lucideIcons = {
-  bookOpen: [
-    ["path", { d: "M12 7v14" }],
-    ["path", { d: "M3 18a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h5a4 4 0 0 1 4 4 4 4 0 0 1 4-4h5a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1h-6a3 3 0 0 0-3 3 3 3 0 0 0-3-3z" }],
-  ],
-  download: [
-    ["path", { d: "M12 15V3" }],
-    ["path", { d: "M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" }],
-    ["path", { d: "m7 10 5 5 5-5" }],
-  ],
-  gauge: [
-    ["path", { d: "m12 14 4-4" }],
-    ["path", { d: "M3.34 19a10 10 0 1 1 17.32 0" }],
-  ],
-  history: [
-    ["path", { d: "M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" }],
-    ["path", { d: "M3 3v5h5" }],
-    ["path", { d: "M12 7v5l4 2" }],
-  ],
-  paperclip: [
-    [
-      "path",
-      {
-        d: "m16 6-8.414 8.586a2 2 0 0 0 2.829 2.829l8.414-8.586a4 4 0 1 0-5.657-5.657l-8.379 8.551a6 6 0 1 0 8.485 8.485l8.379-8.551",
-      },
-    ],
-  ],
-  panelBottomClose: [
-    ["rect", { width: "18", height: "18", x: "3", y: "3", rx: "2" }],
-    ["path", { d: "M3 15h18" }],
-    ["path", { d: "m15 8-3 3-3-3" }],
-  ],
-  panelBottomOpen: [
-    ["rect", { width: "18", height: "18", x: "3", y: "3", rx: "2" }],
-    ["path", { d: "M3 15h18" }],
-    ["path", { d: "m9 10 3-3 3 3" }],
-  ],
-  plus: [
-    ["path", { d: "M5 12h14" }],
-    ["path", { d: "M12 5v14" }],
-  ],
-  refreshCw: [
-    ["path", { d: "M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8" }],
-    ["path", { d: "M21 3v5h-5" }],
-    ["path", { d: "M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16" }],
-    ["path", { d: "M8 16H3v5" }],
-  ],
-  rotateCw: [
-    ["path", { d: "M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8" }],
-    ["path", { d: "M21 3v5h-5" }],
-  ],
-  radar: [
-    ["path", { d: "M19.07 4.93A10 10 0 0 0 6.99 3.34" }],
-    ["path", { d: "M4 6h.01" }],
-    ["path", { d: "M2.29 9.62A10 10 0 1 0 21.31 8.35" }],
-    ["path", { d: "M16.24 7.76A6 6 0 1 0 8.23 16.67" }],
-    ["path", { d: "M12 18h.01" }],
-    ["path", { d: "M17.99 11.66A6 6 0 0 1 15.77 16.67" }],
-    ["circle", { cx: "12", cy: "12", r: "2" }],
-    ["path", { d: "m13.41 10.59 5.66-5.66" }],
-  ],
-  settings2: [
-    ["path", { d: "M14 17H5" }],
-    ["path", { d: "M19 7h-9" }],
-    ["circle", { cx: "17", cy: "17", r: "3" }],
-    ["circle", { cx: "7", cy: "7", r: "3" }],
-  ],
-  shieldAlert: [
-    ["path", { d: "M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z" }],
-    ["path", { d: "M12 8v4" }],
-    ["path", { d: "M12 16h.01" }],
-  ],
-  shieldCheck: [
-    ["path", { d: "M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z" }],
-    ["path", { d: "m9 12 2 2 4-4" }],
-  ],
-  shieldOff: [
-    ["path", { d: "m2 2 20 20" }],
-    ["path", { d: "M5 5a1 1 0 0 0-1 1v7c0 5 3.5 7.5 7.67 8.94a1 1 0 0 0 .67.01c2.35-.82 4.48-1.97 5.9-3.71" }],
-    ["path", { d: "M9.309 3.652A12.252 12.252 0 0 0 11.24 2.28a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1v7a9.784 9.784 0 0 1-.08 1.264" }],
-  ],
-  x: [
-    ["path", { d: "M18 6 6 18" }],
-    ["path", { d: "m6 6 12 12" }],
-  ],
-} as const satisfies Record<string, LucideIconNode>
-
-function renderLucideIcon(className: string, icon: LucideIconNode, strokeWidth: string) {
-  const children = icon
-    .map(([tag, attributes]) => {
-      const renderedAttributes = Object.entries(attributes)
-        .map(([name, value]) => `${name}="${value}"`)
-        .join(" ")
-      return `<${tag} ${renderedAttributes}></${tag}>`
-    })
-    .join("")
-  return `<svg class="${className}" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="${strokeWidth}" stroke-linecap="round" stroke-linejoin="round">${children}</svg>`
-}
-
-const topbarIcon = (icon: LucideIconNode) => renderLucideIcon("topbarIconSvg", icon, "2")
-const composerIcon = (icon: LucideIconNode) => renderLucideIcon("buttonIcon", icon, "2.2")
-const statusIcon = (icon: LucideIconNode) => renderLucideIcon("statusIcon", icon, "2.1")
-const statusRingIcon = (icon: LucideIconNode) => renderLucideIcon("statusRingIcon", icon, "2.3")
+const liquidIcons = Object.fromEntries(liquidIconNames.map((name) => [name, liquidIcon(name)])) as Record<LiquidIconName, string>
+const liquidIconForScript = JSON.stringify(liquidIcons)
 
 export function createNonce(length = 32) {
   const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
@@ -128,6 +56,7 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       --chat-content-font-size: max(12px, var(--vscode-font-size, 13px));
       --chat-user-font-size: max(11px, calc(var(--vscode-font-size, 13px) - 1px));
       --chat-code-font-size: max(11px, calc(var(--vscode-font-size, 13px) - 1px));
+      --oc-accent: var(--vscode-focusBorder);
     }
     * { box-sizing: border-box; }
     html, body { height: 100%; }
@@ -164,15 +93,17 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       background: var(--vscode-sideBar-background);
     }
     .mark {
-      width: 24px;
-      height: 24px;
-      border-radius: 6px;
+      width: 30px;
+      height: 30px;
+      border-radius: 10px;
       display: grid;
       place-items: center;
-      color: var(--vscode-button-foreground);
-      background: var(--vscode-button-background);
+      color: var(--vscode-foreground);
+      border: 1px solid var(--vscode-panel-border);
+      background: transparent;
       font-weight: 700;
       font-size: 10px;
+      box-shadow: none;
     }
     .title { min-width: 0; display: grid; gap: 2px; }
     .name { font-weight: 650; line-height: 1.1; }
@@ -189,6 +120,17 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       background: var(--vscode-editor-background);
       vertical-align: top;
     }
+    .headerStatus {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      max-width: 100%;
+      min-width: 0;
+      color: var(--vscode-descriptionForeground);
+      font-size: 10px;
+      line-height: 1.2;
+    }
+    .headerStatusText { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .dot {
       width: 7px;
       height: 7px;
@@ -217,12 +159,6 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       white-space: nowrap;
     }
     .icon:hover { background: var(--vscode-toolbar-hoverBackground); }
-    .topbarIconSvg {
-      width: 14px;
-      height: 14px;
-      vertical-align: middle;
-      pointer-events: none;
-    }
     .primary, .secondary {
       min-height: 26px;
       border-radius: 5px;
@@ -255,9 +191,51 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
     .app.mode-connection-only .ragSettingsGroup { display: none; }
     .app.mode-connection-only .settings,
     .app.mode-settings-page .settings { border-bottom: 0; }
-    .settingsHeader { display: flex; justify-content: space-between; gap: 8px; align-items: baseline; flex-wrap: wrap; min-width: 0; }
+    .settingsHeader { display: flex; justify-content: space-between; gap: 8px; align-items: center; flex-wrap: wrap; min-width: 0; }
     .sectionTitle { min-width: 0; font-size: 11px; font-weight: 650; text-transform: uppercase; color: var(--vscode-descriptionForeground); }
     .sectionMeta { min-width: 0; color: var(--vscode-descriptionForeground); font-size: 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .settingsHome {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 8px;
+      min-width: 0;
+    }
+    .app.mode-connection-only .settingsHome { display: none; }
+    .settingsEntry {
+      min-width: 0;
+      min-height: 70px;
+      display: grid;
+      justify-items: center;
+      align-content: center;
+      gap: 6px;
+      padding: 9px 6px;
+      color: var(--vscode-foreground);
+      text-align: center;
+      font-size: 11px;
+    }
+    .settingsEntry .oc-liquid-icon { width: 20px; height: 20px; }
+    .settingsEntryLabel { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .settingsSection {
+      display: none;
+      gap: 8px;
+      min-width: 0;
+    }
+    .settingsSection.active { display: grid; }
+    .app.mode-connection-only .settingsSection[data-settings-panel="connect"] { display: grid; }
+    .app.mode-connection-only .settingsSection:not([data-settings-panel="connect"]) { display: none; }
+    .settingsCompactLine {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      min-width: 0;
+      color: var(--vscode-descriptionForeground);
+      font-size: 11px;
+    }
+    .settingsStatusChip {
+      width: fit-content;
+      max-width: 100%;
+      min-width: 0;
+    }
     .settingsGrid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 7px; }
     .field { display: grid; gap: 3px; color: var(--vscode-descriptionForeground); font-size: 10px; }
     .field input, .field select {
@@ -272,8 +250,31 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
     .field.checkbox { display: flex; align-items: center; gap: 6px; }
     .field.checkbox input { width: auto; }
     .completionSettingsGroup,
-    .ragSettingsGroup { display: grid; gap: 8px; min-width: 0; }
+    .ragSettingsGroup { gap: 8px; min-width: 0; }
     .completionDirectFields.hidden { display: none; }
+    .ragAdvanced {
+      min-width: 0;
+      border: 1px solid var(--vscode-panel-border);
+      border-radius: 10px;
+      background: transparent;
+      overflow: hidden;
+    }
+    .ragAdvanced summary {
+      cursor: pointer;
+      padding: 8px 9px;
+      color: var(--vscode-descriptionForeground);
+      font-size: 11px;
+      user-select: none;
+    }
+    .ragAdvanced .settingsGrid { padding: 0 9px 9px; }
+    .ragActionbar {
+      position: sticky;
+      bottom: 0;
+      justify-content: flex-start;
+      padding: 7px 0 0;
+      background: var(--vscode-sideBar-background);
+      z-index: 2;
+    }
     .settingsActions { justify-content: space-between; align-items: flex-start; min-width: 0; }
     .settingsActions .row { min-width: 0; }
     .detail {
@@ -315,7 +316,7 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       overflow: hidden;
       transform: translateX(-104%);
       transition: transform 140ms ease;
-      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.28);
+      box-shadow: 0 2px 8px color-mix(in srgb, black 16%, transparent);
     }
     .app.history-open .historyPane { transform: translateX(0); }
     .app.history-open .historyBackdrop {
@@ -373,20 +374,32 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       color: var(--vscode-descriptionForeground);
       font-size: var(--chat-content-font-size);
       line-height: 1.3;
-      border: 1px solid var(--vscode-panel-border);
-      border-radius: 8px;
-      padding: 11px;
-      background: var(--vscode-editor-background);
+      padding: 18px 14px;
+      text-align: center;
     }
-    .emptyTitle { color: var(--vscode-foreground); font-weight: 650; margin-bottom: 6px; }
-    .emptyPrompts { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 12px; }
+    .emptyHeroIcon {
+      width: 44px;
+      height: 44px;
+      margin: 0 auto 10px;
+      display: grid;
+      place-items: center;
+      color: var(--vscode-icon-foreground, var(--vscode-foreground));
+    }
+    .emptyHeroIcon .oc-liquid-icon { width: 34px; height: 34px; }
+    .emptyTitle { color: var(--vscode-foreground); font-weight: 650; margin-bottom: 0; }
+    .emptyCopy { display: none; }
+    .emptyPrompts { display: flex; flex-wrap: wrap; justify-content: center; gap: 7px; margin-top: 14px; }
     .emptyPrompt {
-      border: 1px solid var(--vscode-panel-border);
-      border-radius: 999px;
-      padding: 3px 7px;
-      color: var(--vscode-descriptionForeground);
-      background: var(--vscode-sideBar-background);
-      font-size: 10px;
+      width: auto;
+      max-width: 118px;
+      min-height: 30px;
+      border-radius: 10px;
+      padding: 0 9px;
+      font-size: 11px;
+    }
+    .emptyPrompt .oc-liquid-icon {
+      width: 16px;
+      height: 16px;
     }
     .recentSessions { display: grid; gap: 5px; margin-top: 12px; }
     .recentSessions button {
@@ -465,23 +478,26 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       text-transform: none;
     }
     .messageAction {
-      min-height: 17px;
-      border: 1px solid var(--vscode-panel-border);
-      border-radius: 3px;
-      padding: 0 4px;
+      width: 24px;
+      min-width: 24px;
+      height: 24px;
+      min-height: 24px;
+      border-radius: 8px;
+      padding: 0;
       color: var(--vscode-descriptionForeground);
-      background: transparent;
       font-size: 9px;
       line-height: 1;
+      opacity: 0.62;
     }
+    .messageAction .oc-liquid-icon { width: 14px; height: 14px; }
     .messageAction:hover {
       color: var(--vscode-foreground);
-      border-color: var(--vscode-focusBorder);
-      background: var(--vscode-toolbar-hoverBackground);
+      opacity: 1;
     }
-    .messageAction.copyMarkdown { color: var(--vscode-charts-purple, #b180d7); border-color: rgba(177, 128, 215, 0.5); }
-    .messageAction.collapseMessage { color: var(--vscode-charts-blue, #4da3ff); border-color: rgba(77, 163, 255, 0.5); }
-    .messageAction.jumpStructure { color: var(--vscode-testing-iconPassed, #73c991); border-color: rgba(115, 201, 145, 0.5); }
+    .messageAction:focus-visible { opacity: 1; }
+    .messageAction.copyMarkdown,
+    .messageAction.collapseMessage,
+    .messageAction.jumpStructure { color: var(--vscode-descriptionForeground); }
     .messageBody {
       padding: 10px 11px;
       font-size: var(--chat-content-font-size);
@@ -710,8 +726,21 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       white-space: nowrap;
       font-weight: 650;
     }
-    .copyCode { color: var(--vscode-textLink-foreground); background: transparent; padding: 2px 5px; border-radius: 3px; }
-    .copyCode:hover { background: var(--vscode-toolbar-hoverBackground); }
+    .copyCode {
+      width: 24px;
+      min-width: 24px;
+      height: 24px;
+      min-height: 24px;
+      border-radius: 8px;
+      color: var(--vscode-descriptionForeground);
+      opacity: 0.58;
+    }
+    .copyCode .oc-liquid-icon { width: 14px; height: 14px; }
+    .codeBlock:hover .copyCode,
+    .copyCode:focus-visible,
+    .copyCode:hover {
+      opacity: 1;
+    }
     .codeBlock pre { margin: 0; padding: 10px; overflow: auto; white-space: pre; line-height: 1.45; }
     .codeBlock code { font-family: var(--vscode-editor-font-family); font-size: var(--chat-code-font-size); }
     .syntaxKeyword { color: var(--vscode-symbolIcon-keywordForeground, #c586c0); }
@@ -770,9 +799,9 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       position: relative;
       display: flex;
       align-items: center;
-      gap: 4px;
+      gap: 6px;
       min-width: 0;
-      min-height: 22px;
+      min-height: 30px;
       overflow-x: auto;
       overflow-y: hidden;
       scrollbar-width: none;
@@ -780,32 +809,25 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
     .composerStatusBar::-webkit-scrollbar { display: none; }
     .composerStatusToggle {
       flex: 0 0 auto;
-      width: 26px;
-      min-width: 26px;
-      height: 22px;
+      width: 30px;
+      min-width: 30px;
+      height: 30px;
       display: inline-flex;
       align-items: center;
       justify-content: center;
-      border: 1px solid var(--vscode-focusBorder, rgba(77, 163, 255, 0.65));
-      border-radius: 5px;
+      border-radius: 6px;
       padding: 0;
-      color: var(--vscode-button-foreground);
-      background: var(--vscode-button-background);
+      color: var(--vscode-icon-foreground, var(--vscode-foreground));
       font-size: 9px;
       font-weight: 700;
       line-height: 1;
-      box-shadow: 0 0 0 1px rgba(77, 163, 255, 0.16) inset;
-    }
-    .composerStatusToggle:hover {
-      background: var(--vscode-button-hoverBackground);
-      box-shadow: 0 0 0 1px rgba(77, 163, 255, 0.32) inset;
     }
     .composerToggleIcon {
       display: inline-flex;
       align-items: center;
       justify-content: center;
-      width: 14px;
-      height: 14px;
+      width: 18px;
+      height: 18px;
       flex: 0 0 auto;
     }
     .composerToggleLabel {
@@ -822,29 +844,26 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
     .composerStatusPill {
       position: relative;
       flex: 0 0 auto;
-      width: 24px;
-      min-width: 24px;
-      height: 20px;
+      width: 30px;
+      min-width: 30px;
+      height: 30px;
       display: inline-flex;
       align-items: center;
       justify-content: center;
-      border: 1px solid var(--vscode-panel-border);
-      border-radius: 5px;
+      border-radius: 6px;
       padding: 0;
-      color: var(--vscode-descriptionForeground);
-      background: var(--vscode-editor-background);
+      color: var(--vscode-icon-foreground, var(--vscode-foreground));
       font-weight: 650;
       font-size: 9px;
-      line-height: 18px;
+      line-height: 1;
       white-space: nowrap;
-      transition: background 120ms ease, border-color 120ms ease, box-shadow 120ms ease, color 120ms ease, transform 120ms ease;
+      transition: background 120ms ease, border-color 120ms ease, color 120ms ease;
     }
     .composerStatusPill:hover,
     .composerStatusPill.open {
       background: color-mix(in srgb, currentColor 16%, var(--vscode-editor-background));
       border-color: var(--vscode-focusBorder, currentColor);
-      box-shadow: 0 0 0 1px color-mix(in srgb, currentColor 32%, transparent) inset, 0 1px 4px rgba(0, 0, 0, 0.16);
-      transform: translateY(-1px);
+      box-shadow: none;
     }
     .composerStatusPill .pillText {
       overflow: hidden;
@@ -852,26 +871,13 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       white-space: nowrap;
     }
     .composerStatusPill.compactRing {
-      width: 22px;
-      min-width: 22px;
-    }
-    .statusIcon {
-      width: 12px;
-      height: 12px;
-      flex: 0 0 auto;
-      pointer-events: none;
-      opacity: 0.86;
-      transition: opacity 120ms ease, transform 120ms ease;
-    }
-    .composerStatusPill:hover .statusIcon,
-    .composerStatusPill.open .statusIcon {
-      opacity: 1;
-      transform: scale(1.08);
+      width: 30px;
+      min-width: 30px;
     }
     .statusRing {
       position: relative;
-      width: 14px;
-      height: 14px;
+      width: 18px;
+      height: 18px;
       display: inline-flex;
       align-items: center;
       justify-content: center;
@@ -893,14 +899,6 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       border-radius: inherit;
       background: var(--vscode-editor-background);
       box-shadow: 0 0 0 1px rgba(127, 127, 127, 0.08);
-    }
-    .statusRingIcon {
-      position: relative;
-      z-index: 1;
-      width: 8px;
-      height: 8px;
-      flex: 0 0 auto;
-      pointer-events: none;
     }
     .statusBadge {
       position: absolute;
@@ -927,19 +925,19 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       --ring-progress: 32%;
     }
     .composerStatusPill.panel { color: var(--vscode-foreground); }
-    .composerStatusPill.context { color: var(--vscode-charts-blue, #4da3ff); border-color: rgba(77, 163, 255, 0.52); background: rgba(77, 163, 255, 0.08); }
-    .composerStatusPill.index.ready { color: var(--vscode-testing-iconPassed, #73c991); border-color: rgba(115, 201, 145, 0.56); background: rgba(115, 201, 145, 0.08); --ring-fill: var(--vscode-testing-iconPassed, #73c991); --ring-empty: rgba(115, 201, 145, 0.22); --ring-border: rgba(115, 201, 145, 0.34); }
+    .composerStatusPill.context { --ring-fill: var(--vscode-focusBorder); }
+    .composerStatusPill.index.ready { color: var(--vscode-testing-iconPassed, #73c991); --ring-fill: var(--vscode-testing-iconPassed, #73c991); --ring-empty: color-mix(in srgb, var(--vscode-testing-iconPassed, #73c991) 20%, transparent); --ring-border: color-mix(in srgb, var(--vscode-testing-iconPassed, #73c991) 42%, transparent); }
     .composerStatusPill.index.indexing,
-    .composerStatusPill.index.info { color: var(--vscode-charts-blue, #4da3ff); border-color: rgba(77, 163, 255, 0.52); background: rgba(77, 163, 255, 0.08); --ring-fill: var(--vscode-charts-blue, #4da3ff); --ring-empty: rgba(77, 163, 255, 0.22); --ring-border: rgba(77, 163, 255, 0.34); }
+    .composerStatusPill.index.info { --ring-fill: var(--vscode-focusBorder); --ring-empty: color-mix(in srgb, var(--vscode-focusBorder) 20%, transparent); --ring-border: color-mix(in srgb, var(--vscode-focusBorder) 34%, transparent); }
     .composerStatusPill.index.warning,
     .composerStatusPill.guard.warning,
-    .composerStatusPill.usage.warning { color: var(--vscode-editorWarning-foreground, #cca700); border-color: rgba(204, 167, 0, 0.62); background: rgba(204, 167, 0, 0.08); --ring-fill: var(--vscode-editorWarning-foreground, #cca700); --ring-empty: rgba(204, 167, 0, 0.22); --ring-border: rgba(204, 167, 0, 0.36); }
+    .composerStatusPill.usage.warning { color: var(--vscode-editorWarning-foreground, #cca700); --ring-fill: var(--vscode-editorWarning-foreground, #cca700); --ring-empty: color-mix(in srgb, var(--vscode-editorWarning-foreground, #cca700) 20%, transparent); --ring-border: color-mix(in srgb, var(--vscode-editorWarning-foreground, #cca700) 34%, transparent); }
     .composerStatusPill.index.error,
-    .composerStatusPill.usage.error { color: var(--vscode-errorForeground, #f48771); border-color: rgba(244, 135, 113, 0.62); background: rgba(244, 135, 113, 0.08); --ring-fill: var(--vscode-errorForeground, #f48771); --ring-empty: rgba(244, 135, 113, 0.22); --ring-border: rgba(244, 135, 113, 0.36); }
-    .composerStatusPill.guard.ok { color: var(--vscode-testing-iconPassed, #73c991); border-color: rgba(115, 201, 145, 0.56); background: rgba(115, 201, 145, 0.08); }
+    .composerStatusPill.usage.error { color: var(--vscode-errorForeground, #f48771); --ring-fill: var(--vscode-errorForeground, #f48771); --ring-empty: color-mix(in srgb, var(--vscode-errorForeground, #f48771) 20%, transparent); --ring-border: color-mix(in srgb, var(--vscode-errorForeground, #f48771) 34%, transparent); }
+    .composerStatusPill.guard.ok { color: var(--vscode-testing-iconPassed, #73c991); }
     .composerStatusPill.guard.off { color: var(--vscode-descriptionForeground); }
     .composerStatusPill.usage.normal,
-    .composerStatusPill.usage.pending { color: var(--vscode-charts-purple, #b180d7); border-color: rgba(177, 128, 215, 0.56); background: rgba(177, 128, 215, 0.08); --ring-fill: var(--vscode-charts-purple, #b180d7); --ring-empty: rgba(177, 128, 215, 0.22); --ring-border: rgba(177, 128, 215, 0.34); }
+    .composerStatusPill.usage.pending { --ring-fill: var(--vscode-focusBorder); --ring-empty: color-mix(in srgb, var(--vscode-focusBorder) 20%, transparent); --ring-border: color-mix(in srgb, var(--vscode-focusBorder) 34%, transparent); }
     .composerStatusPopover {
       display: none;
       position: absolute;
@@ -954,7 +952,7 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       padding: 8px;
       color: var(--vscode-foreground);
       background: var(--vscode-dropdown-background);
-      box-shadow: 0 10px 28px rgba(0, 0, 0, 0.3);
+      box-shadow: 0 2px 8px color-mix(in srgb, black 16%, transparent);
       font-size: 11px;
       line-height: 1.35;
     }
@@ -1034,7 +1032,7 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       padding: 7px;
       color: var(--vscode-descriptionForeground);
       background: var(--vscode-dropdown-background);
-      box-shadow: 0 8px 22px rgba(0, 0, 0, 0.26);
+      box-shadow: 0 2px 8px color-mix(in srgb, black 16%, transparent);
       white-space: pre-wrap;
       overflow-wrap: anywhere;
     }
@@ -1318,26 +1316,20 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
     }
     .composerToolbar {
       display: grid;
-      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, max-content) auto;
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
       align-items: center;
-      gap: 4px;
+      gap: 6px;
       min-width: 0;
-      padding: 0 4px 4px;
+      padding: 0 5px 5px;
     }
-    .send {
-      min-width: 44px;
-      height: 22px;
-      border-radius: 5px;
-      padding: 0 8px;
-      color: var(--vscode-button-foreground);
-      background: var(--vscode-button-background);
-      border: 1px solid var(--vscode-focusBorder, transparent);
-      font-weight: 700;
-      font-size: 10px;
-      box-shadow: 0 0 0 1px rgba(77, 163, 255, 0.18) inset;
-    }
-    .send:hover { background: var(--vscode-button-hoverBackground); }
-    .composerHint {
+	    .send {
+	      width: 30px;
+	      min-width: 30px;
+	      height: 30px;
+	      border-radius: 6px;
+	    }
+	    .composerHint {
+      display: none;
       min-width: 0;
       color: var(--vscode-descriptionForeground);
       font-size: 9px;
@@ -1346,44 +1338,30 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       white-space: nowrap;
       pointer-events: none;
     }
-    .modelTrigger {
-      position: relative;
-      z-index: 2;
-      width: 100%;
-      min-width: 0;
-      height: 22px;
-      border-radius: 5px;
-      border: 1px solid var(--vscode-button-border, var(--vscode-widget-border, var(--vscode-panel-border)));
-      padding: 0 18px 0 7px;
-      color: var(--vscode-foreground);
-      background: var(--vscode-dropdown-background, var(--vscode-editor-background));
-      font-size: 9px;
-      line-height: 20px;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-      text-align: left;
-      box-shadow: 0 1px 0 rgba(255, 255, 255, 0.04) inset;
-    }
-    .modelTrigger::after {
-      content: "";
-      position: absolute;
-      right: 7px;
-      top: 50%;
-      margin-top: -1px;
-      border-left: 3px solid transparent;
-      border-right: 3px solid transparent;
-      border-top: 4px solid currentColor;
-      opacity: 0.85;
-      pointer-events: none;
-    }
-    .modelTrigger:hover,
+	    .modelTrigger {
+	      position: relative;
+	      z-index: 2;
+	      width: 100%;
+	      min-width: 0;
+	      height: 30px;
+	      border: 1px solid var(--vscode-panel-border);
+	      border-radius: 6px;
+	      color: var(--vscode-foreground);
+	      background: transparent;
+	      padding: 0 8px;
+	      text-align: left;
+	      font-size: 11px;
+	      line-height: 1;
+	      overflow: hidden;
+	      text-overflow: ellipsis;
+	      white-space: nowrap;
+	    }
+	    .modelTrigger::after { content: ""; display: none; }
+	    .modelTrigger:hover,
     .modelTrigger.open {
       color: var(--vscode-foreground);
       border-color: var(--vscode-focusBorder);
-      background: var(--vscode-toolbar-hoverBackground);
     }
-    .modelTrigger:active { background: var(--vscode-list-activeSelectionBackground, var(--vscode-toolbar-hoverBackground)); }
     .agentTrigger.ready { border-color: var(--vscode-testing-iconPassed); }
     .agentTrigger.warning {
       color: var(--vscode-editorWarning-foreground);
@@ -1404,7 +1382,7 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       border: 1px solid var(--vscode-widget-border, var(--vscode-panel-border));
       border-radius: 7px;
       background: var(--vscode-dropdown-background);
-      box-shadow: 0 8px 22px rgba(0, 0, 0, 0.26);
+      box-shadow: 0 2px 8px color-mix(in srgb, black 16%, transparent);
     }
     .modelMenu.open { display: block; }
     .modelMenuItem {
@@ -1437,7 +1415,7 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       border: 1px solid var(--vscode-widget-border, var(--vscode-panel-border));
       border-radius: 7px;
       background: var(--vscode-dropdown-background);
-      box-shadow: 0 8px 22px rgba(0, 0, 0, 0.26);
+      box-shadow: 0 2px 8px color-mix(in srgb, black 16%, transparent);
       z-index: 30;
     }
     .suggestions.open { display: block; }
@@ -1462,7 +1440,17 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       flex-wrap: wrap;
       min-width: 0;
     }
-    .toggles { display: contents; color: var(--vscode-descriptionForeground); font-size: 9px; }
+    .toggles { display: inline-flex; align-items: center; gap: 6px; color: var(--vscode-descriptionForeground); font-size: 9px; }
+    .toggleInput {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      margin: -1px;
+      padding: 0;
+      overflow: hidden;
+      clip: rect(0, 0, 0, 0);
+      border: 0;
+    }
     .toggles label {
       display: inline-flex;
       align-items: center;
@@ -1488,46 +1476,36 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       background: var(--vscode-button-secondaryHoverBackground, var(--vscode-toolbar-hoverBackground));
     }
     .composerIconButton {
-      width: 18px;
-      min-width: 18px;
-      height: 18px;
-      min-height: 18px;
+      width: 30px;
+      min-width: 30px;
+      height: 30px;
+      min-height: 30px;
       display: inline-flex;
       align-items: center;
       justify-content: center;
-      border: 0;
-      border-radius: 4px;
+      border-radius: 6px;
       padding: 0;
       color: var(--vscode-icon-foreground, var(--vscode-foreground));
-      background: transparent;
       line-height: 1;
     }
-    .composerIconButton .buttonIcon {
-      width: 13px;
-      height: 13px;
+    .composerIconButton .oc-liquid-icon {
+      width: 18px;
+      height: 18px;
       flex: 0 0 auto;
       pointer-events: none;
     }
-    .composerIconButton.loading .buttonIcon { animation: statusRingSpin 900ms linear infinite; }
-    .exportButton {
-      color: var(--vscode-charts-purple, #b180d7);
-    }
-    .attachButton {
-      color: var(--vscode-charts-blue, #4da3ff);
-    }
-    .refreshButton {
-      color: var(--vscode-descriptionForeground);
-    }
+    .composerIconButton.loading .oc-liquid-icon,
+    .oc-liquid-btn.is-spinning:not(.send) .oc-liquid-icon { animation: statusRingSpin 900ms linear infinite; }
     .notice { min-height: 0; color: var(--vscode-descriptionForeground); font-size: 10px; overflow-wrap: anywhere; }
     .notice:empty { display: none; }
     @media (max-width: 479px) {
       .topbar { gap: 6px; padding: 7px; }
       .icon { max-width: 52px; padding: 0 6px; }
       .primary, .secondary { padding-inline: 7px; }
-      .composerActionRow { gap: 7px; }
-      .toggles label { font-size: 9px; }
-      .toggles input { width: 10px; height: 10px; }
-      .composerIconButton { width: 18px; min-width: 18px; height: 18px; padding: 0; }
+	      .composerActionRow { gap: 7px; }
+	      .toggles label { font-size: 9px; }
+	      .toggles input { width: 10px; height: 10px; }
+	      .composerIconButton { width: 30px; min-width: 30px; height: 30px; padding: 0; }
       .composerToolbar {
         grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
         gap: 4px;
@@ -1538,8 +1516,8 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       }
       .settingsActions { justify-content: flex-start; }
     }
-    @media (max-width: 360px) {
-      .composerStatusToggle { width: 26px; min-width: 26px; padding-inline: 0; }
+	    @media (max-width: 360px) {
+	      .composerStatusToggle { width: 30px; min-width: 30px; padding-inline: 0; }
       .composerToggleFull { display: none; }
       .composerToggleShort { display: inline; }
       .composerActionRow { gap: 6px; }
@@ -1551,28 +1529,38 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       .mark { width: 22px; height: 22px; }
       .icon { min-width: 24px; max-width: 34px; height: 24px; padding: 0 5px; }
       .primary, .secondary { min-height: 24px; padding-inline: 6px; }
-      .composerWrap { padding: 3px 4px; }
-      .composerActionRow { gap: 5px 7px; }
-      .composerIconButton { width: 18px; min-width: 18px; height: 18px; min-height: 18px; padding: 0; }
-      .composerHint { display: none; }
-      .send { min-width: 40px; padding: 0 6px; }
-      .modelTrigger { height: 24px; }
+	      .composerWrap { padding: 3px 4px; }
+	      .composerActionRow { gap: 5px 7px; }
+	      .composerIconButton { width: 30px; min-width: 30px; height: 30px; min-height: 30px; padding: 0; }
+	      .composerHint { display: none; }
+	      .send { min-width: 30px; padding: 0; }
+	      .modelTrigger { height: 30px; }
     }
     @media (min-width: 760px) {
       .app.history-open.history-wide .body { grid-template-columns: 230px minmax(0, 1fr); }
       .app.history-open.history-wide .historyPane { position: relative; inset: auto; width: auto; z-index: auto; transform: none; box-shadow: none; }
       .app.history-open.history-wide .historyBackdrop { display: none; }
     }
-    @media (prefers-reduced-motion: no-preference) {
-      .timelineItem { animation: messageIn 150ms ease both; }
-      .dots span { animation: pulse 900ms ease-in-out infinite; }
-      .dots span:nth-child(2) { animation-delay: 130ms; }
-      .dots span:nth-child(3) { animation-delay: 260ms; }
-      .statusRing.indeterminate { animation: statusRingSpin 900ms linear infinite; }
-      @keyframes messageIn { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: translateY(0); } }
-      @keyframes pulse { 0%, 80%, 100% { opacity: 0.35; transform: translateY(0); } 40% { opacity: 1; transform: translateY(-2px); } }
-      @keyframes statusRingSpin { to { transform: rotate(360deg); } }
-    }
+	    @media (prefers-reduced-motion: no-preference) {
+	      .timelineItem { animation: messageIn 150ms ease both; }
+	      .dots span { animation: pulse 900ms ease-in-out infinite; }
+	      .dots span:nth-child(2) { animation-delay: 130ms; }
+	      .dots span:nth-child(3) { animation-delay: 260ms; }
+	      .statusRing.indeterminate { animation: statusRingSpin 900ms linear infinite; }
+	      @keyframes messageIn { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: translateY(0); } }
+	      @keyframes pulse { 0%, 80%, 100% { opacity: 0.35; transform: translateY(0); } 40% { opacity: 1; transform: translateY(-2px); } }
+	      @keyframes statusRingSpin { to { transform: rotate(360deg); } }
+	    }
+      @media (prefers-reduced-motion: reduce) {
+        .oc-liquid-btn,
+        .oc-liquid-toggle,
+        .oc-liquid-chip,
+        .composerStatusPill,
+        .timelineItem {
+          transition: none;
+          animation: none;
+        }
+      }
     @media (forced-colors: active) {
       .messageAction,
       .messageOutlineButton,
@@ -1583,17 +1571,799 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       .toggleTableRaw,
       .composerStatusPill,
       .statusRing,
-      .statusActionButton,
-      .contextRemoveButton,
-      .composerIconButton {
-        border-color: CanvasText;
-        forced-color-adjust: auto;
+	      .statusActionButton,
+	      .contextRemoveButton,
+	      .composerIconButton,
+	      .oc-liquid-btn,
+	      .oc-liquid-toggle,
+	      .oc-liquid-chip,
+	      .oc-liquid-card {
+	        border-color: CanvasText;
+	        forced-color-adjust: auto;
+	      }
+      .oc-liquid-btn,
+      .oc-liquid-toggle,
+      .oc-liquid-chip,
+      .oc-liquid-card {
+        background: Canvas;
+        box-shadow: none;
       }
       .messageAction:hover,
       .messageOutlineButton:hover,
       .copyTable:hover,
       .toggleTableRaw:hover {
         outline: 1px solid Highlight;
+      }
+    }
+
+    /* Quiet Premium / VS Code Native Plus */
+    :root {
+      --oc-radius: 6px;
+      --oc-radius-lg: 8px;
+      --oc-border: var(--vscode-panel-border, var(--vscode-sideBarSectionHeader-border));
+      --oc-muted: var(--vscode-descriptionForeground);
+      --oc-icon: var(--vscode-icon-foreground, var(--vscode-foreground));
+      --oc-hover-bg: var(--vscode-toolbar-hoverBackground, color-mix(in srgb, var(--vscode-foreground) 9%, transparent));
+      --oc-active-bg: color-mix(in srgb, var(--vscode-focusBorder) 16%, transparent);
+      --oc-soft-bg: color-mix(in srgb, var(--vscode-foreground) 4%, transparent);
+      --oc-warning-soft: color-mix(in srgb, var(--vscode-editorWarning-foreground) 12%, transparent);
+      --oc-error-soft: color-mix(in srgb, var(--vscode-errorForeground) 12%, transparent);
+    }
+    .topbar {
+      min-height: 52px;
+      padding: 8px 8px 7px;
+      gap: 8px;
+      border-bottom-color: var(--oc-border);
+      background: var(--vscode-sideBar-background);
+    }
+    .mark {
+      width: 24px;
+      height: 24px;
+      border-radius: var(--oc-radius);
+      color: var(--vscode-foreground);
+      border: 1px solid var(--oc-border);
+      background: transparent;
+      box-shadow: none;
+      font-size: 9px;
+      letter-spacing: 0;
+    }
+    .name {
+      font-size: 13px;
+      font-weight: 650;
+      letter-spacing: 0;
+    }
+    .meta {
+      font-size: 11px;
+      color: var(--oc-muted);
+    }
+    .headerStatus { gap: 6px; font-size: 11px; }
+    .iconbar { gap: 2px; }
+    .oc-tool-btn,
+    .oc-icon-btn,
+    .oc-icon-toggle,
+    .oc-liquid-btn,
+    .oc-liquid-toggle {
+      position: relative;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 26px;
+      min-width: 26px;
+      height: 26px;
+      min-height: 26px;
+      padding: 0;
+      border: 1px solid transparent;
+      border-radius: var(--oc-radius);
+      color: var(--oc-icon);
+      background: transparent;
+      box-shadow: none;
+      transform: none;
+      overflow: visible;
+      user-select: none;
+      transition: background 100ms ease, border-color 100ms ease, color 100ms ease;
+    }
+    .topbar .oc-tool-btn,
+    .topbar .oc-icon-btn,
+    .topbar .oc-liquid-btn {
+      width: 24px;
+      min-width: 24px;
+      height: 24px;
+      min-height: 24px;
+    }
+    .oc-tool-btn::before,
+    .oc-icon-btn::before,
+    .oc-icon-toggle::before,
+    .oc-liquid-btn::before,
+    .oc-liquid-toggle::before {
+      display: none;
+    }
+    .oc-tool-btn:hover,
+    .oc-icon-btn:hover,
+    .oc-icon-toggle:hover,
+    .oc-liquid-btn:hover,
+    .oc-liquid-toggle:hover {
+      color: var(--vscode-foreground);
+      background: var(--oc-hover-bg);
+      border-color: transparent;
+      box-shadow: none;
+      transform: none;
+    }
+    .oc-tool-btn:active,
+    .oc-icon-btn:active,
+    .oc-icon-toggle:active,
+    .oc-liquid-btn:active,
+    .oc-liquid-toggle:active,
+    .oc-tool-btn.is-active,
+    .oc-icon-btn.is-active,
+    .oc-icon-toggle.is-active,
+    .oc-icon-toggle[aria-pressed="true"],
+    .oc-liquid-btn.is-active,
+    .oc-liquid-toggle.is-active,
+    .oc-liquid-toggle[aria-pressed="true"] {
+      background: var(--oc-active-bg);
+      border-color: color-mix(in srgb, var(--vscode-focusBorder) 52%, transparent);
+      box-shadow: none;
+      transform: none;
+    }
+    .oc-tool-btn[disabled],
+    .oc-icon-btn[disabled],
+    .oc-icon-toggle[disabled],
+    .oc-liquid-btn[disabled],
+    .oc-liquid-toggle[disabled] {
+      opacity: 0.45;
+      background: transparent;
+      border-color: transparent;
+      transform: none;
+    }
+    .oc-liquid-icon {
+      width: 16px;
+      height: 16px;
+      flex: 0 0 auto;
+      pointer-events: none;
+    }
+    .oc-chip,
+    .oc-liquid-chip {
+      position: relative;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      min-width: 0;
+      max-width: 160px;
+      min-height: 26px;
+      padding: 0 8px;
+      border: 1px solid var(--oc-border);
+      border-radius: var(--oc-radius);
+      color: var(--vscode-foreground);
+      background: transparent;
+      box-shadow: none;
+      overflow: hidden;
+    }
+    .oc-chip:hover,
+    .oc-liquid-chip:hover,
+    .oc-chip.open,
+    .oc-liquid-chip.open {
+      background: var(--oc-hover-bg);
+      border-color: var(--vscode-widget-border, var(--oc-border));
+    }
+    .oc-chip.is-active,
+    .oc-liquid-chip.is-active {
+      background: var(--oc-active-bg);
+      border-color: color-mix(in srgb, var(--vscode-focusBorder) 62%, var(--oc-border));
+      box-shadow: none;
+    }
+    .oc-chip .oc-liquid-icon,
+    .oc-liquid-chip .oc-liquid-icon {
+      width: 16px;
+      height: 16px;
+    }
+    .oc-chip-label,
+    .oc-liquid-chip-label {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      font-size: 12px;
+      line-height: 1;
+    }
+    .oc-badge,
+    .oc-liquid-badge,
+    .statusBadge {
+      position: absolute;
+      top: -4px;
+      right: -4px;
+      min-width: 14px;
+      height: 14px;
+      padding: 0 4px;
+      border-radius: 999px;
+      border: 1px solid var(--vscode-sideBar-background);
+      color: var(--vscode-badge-foreground);
+      background: var(--vscode-badge-background);
+      font-size: 9px;
+      font-weight: 650;
+      line-height: 12px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      box-shadow: none;
+    }
+    .statusBadgeText { color: inherit; }
+    .oc-status-dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 999px;
+      background: var(--oc-muted);
+      box-shadow: 0 0 0 1px var(--vscode-sideBar-background);
+    }
+    .oc-status-dot.connected { background: var(--vscode-testing-iconPassed); }
+    .oc-status-dot.connecting { background: var(--vscode-progressBar-background); }
+    .oc-status-dot.authFailed,
+    .oc-status-dot.error { background: var(--vscode-errorForeground); }
+    .oc-primary-btn,
+    .primary {
+      min-height: 32px;
+      padding: 0 12px;
+      border: 1px solid transparent;
+      border-radius: var(--oc-radius);
+      color: var(--vscode-button-foreground);
+      background: var(--vscode-button-background);
+      font-weight: 500;
+    }
+    .oc-primary-btn:hover,
+    .primary:hover { background: var(--vscode-button-hoverBackground); }
+    .oc-settings-tile,
+    .settingsEntry {
+      min-height: 42px;
+      display: flex;
+      align-items: center;
+      justify-content: flex-start;
+      gap: 8px;
+      padding: 0 10px;
+      border: 1px solid var(--oc-border);
+      border-radius: var(--oc-radius-lg);
+      color: var(--vscode-foreground);
+      background: transparent;
+      text-align: left;
+      box-shadow: none;
+    }
+    .oc-settings-tile:hover,
+    .settingsEntry:hover { background: var(--oc-hover-bg); }
+    .oc-settings-tile.is-active,
+    .settingsEntry.is-active {
+      border-color: color-mix(in srgb, var(--vscode-focusBorder) 70%, var(--oc-border));
+      box-shadow: inset 2px 0 0 var(--vscode-focusBorder);
+      background: transparent;
+    }
+    .settingsEntry .oc-liquid-icon {
+      width: 16px;
+      height: 16px;
+    }
+    .settingsEntryLabel {
+      font-size: 12px;
+      font-weight: 600;
+    }
+    .oc-liquid-card {
+      border-radius: var(--oc-radius-lg);
+      border: 1px solid var(--oc-border);
+      background: transparent;
+      box-shadow: none;
+    }
+    .oc-liquid-actionbar,
+    .ragActionbar {
+      display: flex;
+      align-items: center;
+      justify-content: flex-start;
+      gap: 6px;
+      background: var(--vscode-sideBar-background);
+      box-shadow: none;
+    }
+    .settings {
+      padding: 10px;
+      gap: 10px;
+      border-bottom-color: var(--oc-border);
+      background: var(--vscode-sideBar-background);
+    }
+    .settingsHeader {
+      min-height: 24px;
+      align-items: center;
+    }
+    .sectionTitle {
+      color: var(--vscode-foreground);
+      font-size: 13px;
+      font-weight: 650;
+      text-transform: none;
+    }
+    .sectionMeta {
+      color: var(--oc-muted);
+      font-size: 11px;
+    }
+    .settingsHome {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 8px;
+    }
+    .settingsSection { gap: 10px; }
+    .settingsGrid { gap: 8px; }
+    .field {
+      gap: 4px;
+      color: var(--oc-muted);
+      font-size: 11px;
+    }
+    .field input,
+    .field select,
+    .manualModel input {
+      height: 32px;
+      padding: 0 8px;
+      border: 1px solid var(--vscode-input-border, var(--oc-border));
+      border-radius: var(--oc-radius);
+      color: var(--vscode-input-foreground);
+      background: var(--vscode-input-background);
+    }
+    .field.checkbox {
+      min-height: 24px;
+      color: var(--vscode-foreground);
+    }
+    .settingsActions {
+      gap: 8px;
+      justify-content: flex-start;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+    .settingsActions > .row { flex: 0 0 auto; }
+    #connect {
+      min-height: 32px;
+      color: var(--vscode-button-foreground);
+      background: var(--vscode-button-background);
+      border-color: transparent;
+    }
+    #connect:hover { background: var(--vscode-button-hoverBackground); }
+    .detail {
+      padding-left: 9px;
+      border-left: 2px solid var(--oc-border);
+      color: var(--oc-muted);
+      font-size: 12px;
+      line-height: 1.35;
+    }
+    .detail.authFailed,
+    .detail.error { color: var(--vscode-errorForeground); border-left-color: var(--vscode-errorForeground); background: transparent; }
+    .detail.success { color: var(--vscode-testing-iconPassed); border-left-color: var(--vscode-testing-iconPassed); }
+    .settingsStatusChip {
+      min-height: 22px;
+      max-width: 148px;
+      color: var(--oc-muted);
+    }
+    .settingsStatusChip.warning,
+    .settingsStatusChip.error {
+      color: var(--vscode-editorWarning-foreground);
+      border-color: var(--vscode-inputValidation-warningBorder, var(--oc-border));
+      background: var(--oc-warning-soft);
+    }
+    .ragAdvanced {
+      border: 1px solid var(--oc-border);
+      border-radius: var(--oc-radius);
+      background: transparent;
+    }
+    .ragAdvanced summary {
+      min-height: 28px;
+      padding: 6px 8px;
+      color: var(--vscode-foreground);
+      font-size: 12px;
+    }
+    .ragActionbar {
+      position: sticky;
+      bottom: 0;
+      padding: 8px 0 0;
+    }
+    .messages {
+      padding: 14px 10px;
+      gap: 12px;
+      background: var(--vscode-editor-background, var(--vscode-sideBar-background));
+    }
+    .empty {
+      width: min(100%, 300px);
+      padding: 10px 8px;
+      color: var(--oc-muted);
+      text-align: center;
+    }
+    .emptyHeroIcon {
+      width: 36px;
+      height: 36px;
+      margin: 0 auto 8px;
+      border: 0;
+      background: transparent;
+      color: var(--oc-muted);
+    }
+    .emptyHeroIcon .oc-liquid-icon {
+      width: 30px;
+      height: 30px;
+    }
+    .emptyTitle {
+      margin: 0;
+      color: var(--vscode-foreground);
+      font-size: 15px;
+      font-weight: 650;
+    }
+    .emptyPrompts {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr);
+      gap: 6px;
+      margin-top: 14px;
+    }
+    .emptyPrompt {
+      width: 100%;
+      max-width: none;
+      min-height: 30px;
+      justify-content: flex-start;
+      border-color: transparent;
+      color: var(--vscode-foreground);
+      background: transparent;
+    }
+    .emptyPrompt:hover { background: var(--oc-hover-bg); }
+    .recentSessions { display: none; }
+    .timelineItem {
+      grid-template-columns: 22px minmax(0, 1fr);
+      gap: 6px;
+    }
+    .avatar {
+      width: 18px;
+      height: 18px;
+      border-radius: var(--oc-radius);
+      color: var(--oc-muted);
+      background: transparent;
+      border: 1px solid var(--oc-border);
+      font-size: 8px;
+      box-shadow: none;
+    }
+    .timelineItem.user .avatar,
+    .timelineItem.error .avatar {
+      color: var(--oc-muted);
+      background: transparent;
+      border-color: var(--oc-border);
+    }
+    .messageCard,
+    .timelineItem.user .messageCard {
+      border: 0;
+      border-radius: 0;
+      background: transparent;
+      overflow: visible;
+    }
+    .timelineItem.error .messageCard {
+      border-left: 2px solid var(--vscode-errorForeground);
+      padding-left: 8px;
+    }
+    .messageMeta {
+      padding: 0 0 4px;
+      border-bottom: 0;
+      color: var(--oc-muted);
+      background: transparent;
+      font-size: 10px;
+    }
+    .messageBody {
+      padding: 0;
+      line-height: 1.55;
+    }
+    .timelineItem.user .messageBody {
+      padding: 0;
+      color: var(--vscode-foreground);
+      font-size: var(--chat-user-font-size);
+    }
+    .messageActions,
+    .tableActions {
+      opacity: 0;
+      transition: opacity 100ms ease;
+    }
+    .timelineItem:hover .messageActions,
+    .timelineItem:focus-within .messageActions,
+    .tableBlock:hover .tableActions,
+    .tableBlock:focus-within .tableActions {
+      opacity: 1;
+    }
+    .messageAction,
+    .copyCode,
+    .copyTable,
+    .toggleTableRaw {
+      width: 24px;
+      min-width: 24px;
+      height: 24px;
+      min-height: 24px;
+      padding: 0;
+      border: 1px solid transparent;
+      border-radius: var(--oc-radius);
+      color: var(--oc-muted);
+      background: transparent;
+      opacity: 1;
+    }
+    .messageAction:hover,
+    .copyCode:hover,
+    .copyTable:hover,
+    .toggleTableRaw:hover {
+      color: var(--vscode-foreground);
+      background: var(--oc-hover-bg);
+    }
+    .codeBlock,
+    .tableBlock,
+    .toolCard {
+      border: 1px solid var(--oc-border);
+      border-radius: var(--oc-radius);
+      background: var(--vscode-textCodeBlock-background, var(--vscode-editor-background));
+      box-shadow: none;
+    }
+    .codeHead,
+    .tableToolbar {
+      min-height: 28px;
+      padding: 3px 6px;
+      border-bottom: 1px solid var(--oc-border);
+      background: var(--vscode-sideBar-background);
+    }
+    .copyCode { opacity: 0; }
+    .codeBlock:hover .copyCode,
+    .codeBlock:focus-within .copyCode,
+    .copyCode:focus-visible { opacity: 1; }
+    .composerWrap {
+      gap: 4px;
+      padding: 5px 6px 6px;
+      border-top-color: var(--oc-border);
+      background: var(--vscode-sideBar-background);
+    }
+    .composerStatusBar {
+      min-height: 28px;
+      gap: 4px;
+    }
+    .composerStatusToggle,
+    .composerStatusPill,
+    .composerIconButton,
+    .send,
+    .toggles .oc-liquid-toggle,
+    .toggles .oc-icon-toggle {
+      width: 26px;
+      min-width: 26px;
+      height: 26px;
+      min-height: 26px;
+      border-radius: var(--oc-radius);
+    }
+    .composerStatusPill:hover,
+    .composerStatusPill.open {
+      background: var(--oc-hover-bg);
+      border-color: transparent;
+      box-shadow: none;
+      transform: none;
+    }
+    .statusRing {
+      width: 16px;
+      height: 16px;
+      background: conic-gradient(var(--ring-fill, currentColor) var(--ring-progress, 0%), var(--ring-empty, color-mix(in srgb, currentColor 18%, transparent)) 0);
+      box-shadow: 0 0 0 1px var(--ring-border, color-mix(in srgb, currentColor 30%, transparent)) inset;
+    }
+    .statusRing::after {
+      display: block;
+      inset: 2px;
+      z-index: 0;
+      background: var(--vscode-sideBar-background);
+      box-shadow: 0 0 0 1px color-mix(in srgb, currentColor 10%, transparent);
+    }
+    .statusRing .oc-liquid-icon {
+      position: relative;
+      z-index: 1;
+      width: 12px;
+      height: 12px;
+    }
+    .composerPanel { gap: 5px; }
+    .composer {
+      gap: 0;
+      border: 1px solid var(--vscode-input-border, var(--oc-border));
+      border-radius: var(--oc-radius-lg);
+      background: var(--vscode-input-background);
+    }
+    .composer textarea {
+      min-height: 38px;
+      max-height: 108px;
+      padding: 8px 9px 4px;
+      font-size: var(--chat-content-font-size);
+      line-height: 1.35;
+    }
+    .composerToolbar {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      min-width: 0;
+      padding: 0 6px 6px;
+    }
+    .composerToolbar .modelTrigger {
+      flex: 0 1 160px;
+      width: auto;
+      max-width: min(180px, 42%);
+    }
+    .composerToolbar .agentTrigger {
+      flex: 0 1 160px;
+      width: auto;
+      max-width: min(180px, 42%);
+    }
+    .composerToolbar .send {
+      flex: 0 0 26px;
+      margin-left: auto;
+    }
+    .composerToolbar .oc-liquid-chip-label {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .modelTrigger {
+      height: 28px;
+      min-height: 28px;
+      padding: 0 8px;
+      border-color: var(--oc-border);
+      background: transparent;
+    }
+    .modelTrigger:hover,
+    .modelTrigger.open { background: var(--oc-hover-bg); }
+    .agentTrigger.ready { border-color: var(--oc-border); }
+    .agentTrigger.warning {
+      color: var(--vscode-editorWarning-foreground);
+      border-color: var(--vscode-inputValidation-warningBorder, var(--oc-border));
+      background: var(--oc-warning-soft);
+    }
+    .composerActionRow {
+      gap: 5px;
+      justify-content: flex-start;
+      width: auto;
+      min-width: 0;
+    }
+    .toggles {
+      flex: 0 0 auto;
+      gap: 3px;
+      padding: 0;
+    }
+    .toggles .oc-liquid-toggle,
+    .toggles .oc-icon-toggle,
+    .composerIconButton {
+      flex: 0 0 26px;
+    }
+    .composerActions {
+      flex: 0 0 auto;
+      min-width: 0;
+      padding-top: 1px;
+    }
+    .notice {
+      min-height: 14px;
+      color: var(--oc-muted);
+      font-size: 11px;
+    }
+    .send.is-active::after,
+    .composerIconButton.loading::after,
+    .oc-liquid-btn.is-spinning::after {
+      content: "";
+      position: absolute;
+      inset: 4px;
+      border-radius: 999px;
+      border: 1px solid color-mix(in srgb, currentColor 38%, transparent);
+      border-top-color: currentColor;
+      animation: statusRingSpin 800ms linear infinite;
+      pointer-events: none;
+    }
+    .modelMenu,
+    .suggestions,
+    .composerStatusPopover {
+      border: 1px solid var(--vscode-widget-border, var(--oc-border));
+      border-radius: var(--oc-radius);
+      background: var(--vscode-dropdown-background);
+      box-shadow: 0 2px 8px color-mix(in srgb, black 16%, transparent);
+    }
+    .suggestion {
+      width: 100%;
+      border: 0;
+      border-radius: 0;
+      color: var(--vscode-foreground);
+      background: transparent;
+      text-align: left;
+    }
+    .suggestion:hover,
+    .suggestion.active,
+    .suggestion:focus-visible {
+      background: var(--vscode-list-hoverBackground);
+    }
+    .codeIntel,
+    .codeGraph {
+      border-color: var(--oc-border);
+      border-radius: var(--oc-radius);
+      background: transparent;
+      box-shadow: none;
+    }
+    .codeIntelAction,
+    .codeIntelJump,
+    .statusActionButton,
+    .statusActionButton.primary,
+    .contextRemoveButton {
+      min-height: 24px;
+      border: 1px solid transparent;
+      border-radius: var(--oc-radius);
+      color: var(--oc-icon);
+      background: transparent;
+    }
+    .codeIntelAction:hover,
+    .codeIntelJump:hover,
+    .statusActionButton:hover,
+    .statusActionButton.primary:hover,
+    .contextRemoveButton:hover {
+      color: var(--vscode-foreground);
+      background: var(--oc-hover-bg);
+    }
+    @media (max-width: 479px) {
+      .composerToolbar {
+        display: flex;
+        gap: 4px;
+      }
+      .composerToolbar .modelTrigger,
+      .composerToolbar .agentTrigger {
+        flex-basis: 136px;
+        max-width: min(136px, 40%);
+      }
+      .composerToolbar .send {
+        flex-basis: 26px;
+        margin-left: auto;
+      }
+      .composerActionRow {
+        justify-content: flex-start;
+        gap: 4px;
+      }
+      .composerIconButton,
+      .send,
+      .toggles .oc-liquid-toggle,
+      .toggles .oc-icon-toggle {
+        width: 26px;
+        min-width: 26px;
+        height: 26px;
+        min-height: 26px;
+      }
+      .settingsActions { justify-content: flex-start; }
+    }
+    @media (max-width: 300px) {
+      .topbar .oc-liquid-btn,
+      .topbar .oc-icon-btn {
+        width: 24px;
+        min-width: 24px;
+        height: 24px;
+      }
+      .composerStatusToggle,
+      .composerStatusPill,
+      .composerIconButton,
+      .send,
+      .toggles .oc-liquid-toggle {
+        width: 26px;
+        min-width: 26px;
+        height: 26px;
+      }
+    }
+    @media (forced-colors: active) {
+      .oc-tool-btn,
+      .oc-icon-btn,
+      .oc-icon-toggle,
+      .oc-chip,
+      .oc-badge,
+      .oc-primary-btn,
+      .oc-settings-tile,
+      .oc-liquid-btn,
+      .oc-liquid-toggle,
+      .oc-liquid-chip,
+      .settingsEntry,
+      .messageCard,
+      .codeBlock,
+      .tableBlock,
+      .composer {
+        forced-color-adjust: auto;
+        border-color: CanvasText;
+        box-shadow: none;
+      }
+      .oc-tool-btn:hover,
+      .oc-icon-btn:hover,
+      .oc-icon-toggle:hover,
+      .oc-liquid-btn:hover,
+      .oc-liquid-toggle:hover,
+      .emptyPrompt:hover {
+        background: Highlight;
+        color: HighlightText;
+      }
+      .oc-status-dot {
+        border: 1px solid CanvasText;
+        box-shadow: none;
       }
     }
   </style>
@@ -1605,132 +2375,152 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       <div class="title">
         <div class="name">OpenCode</div>
         <div class="meta">
-          <span class="statusPill"><span id="statusDot" class="dot"></span><span id="server" class="server">OpenCode Remote UI loading...</span></span>
+          <span class="headerStatus"><span id="statusDot" class="oc-status-dot"></span><span id="server" class="server headerStatusText">OpenCode Remote UI loading...</span></span>
         </div>
       </div>
       <div class="iconbar">
-        <button id="historyToggle" class="icon" title="History" aria-label="History">${topbarIcon(lucideIcons.history)}<span class="srOnly">History</span></button>
-        <button id="newSession" class="icon" title="New session" aria-label="New session">${topbarIcon(lucideIcons.plus)}<span class="srOnly">New session</span></button>
-        <button id="settingsToggle" class="icon" title="Connection settings" aria-label="Connection settings">
-          ${topbarIcon(lucideIcons.settings2)}
-          <span class="srOnly">Connection settings</span>
-        </button>
+        <button id="historyToggle" class="oc-icon-btn oc-liquid-btn" type="button" title="History" aria-label="History">${liquidIcons.history}<span class="srOnly">History</span></button>
+        <button id="newSession" class="oc-icon-btn oc-liquid-btn" type="button" title="New session" aria-label="New session">${liquidIcons.add}<span class="srOnly">New session</span></button>
+        <button id="syncState" class="oc-icon-btn oc-liquid-btn" type="button" title="Refresh chat state" aria-label="Refresh chat state">${liquidIcons.sync}<span class="srOnly">Refresh chat state</span></button>
+        <button id="settingsToggle" class="oc-icon-btn oc-liquid-btn" type="button" title="Connection settings" aria-label="Connection settings">${liquidIcons.settings}<span class="srOnly">Connection settings</span></button>
       </div>
     </header>
     <section id="settings" class="settings" aria-label="OpenCode Remote settings">
       <div class="settingsHeader">
-        <div class="sectionTitle">Connection</div>
-        <div class="sectionMeta">Remote endpoint</div>
+        <div class="sectionTitle">Settings</div>
+        <div class="sectionMeta">OpenCode</div>
       </div>
-      <div class="settingsGrid">
-        <label class="field">Server URL<input id="serverUrl" type="url" spellcheck="false" placeholder="http://localhost:4096"></label>
-        <label class="field">Username<input id="username" type="text" spellcheck="false" autocomplete="username" placeholder="opencode"></label>
-        <label class="field">Password<input id="password" type="password" autocomplete="current-password" placeholder="Leave empty for no password"></label>
+      <div class="settingsHome" role="tablist" aria-label="Settings sections">
+        <button type="button" class="settingsEntry oc-settings-tile oc-liquid-card" data-settings-section="connect" role="tab" aria-selected="true">${liquidIcons.server}<span class="settingsEntryLabel">Connect</span></button>
+        <button type="button" class="settingsEntry oc-settings-tile oc-liquid-card" data-settings-section="complete" role="tab" aria-selected="false">${liquidIcons.sparkle}<span class="settingsEntryLabel">Complete</span></button>
+        <button type="button" class="settingsEntry oc-settings-tile oc-liquid-card" data-settings-section="rag" role="tab" aria-selected="false">${liquidIcons.database}<span class="settingsEntryLabel">RAG</span></button>
+        <button type="button" class="settingsEntry oc-settings-tile oc-liquid-card" data-settings-section="guard" role="tab" aria-selected="false">${liquidIcons.shield}<span class="settingsEntryLabel">Guard</span></button>
       </div>
-      <div class="row settingsActions">
-        <div class="row">
-          <button id="connect" class="primary" title="Connect to this remote OpenCode server">Connect</button>
-          <button id="test" class="secondary" title="Test this remote OpenCode server without connecting" aria-label="Test remote OpenCode connection without connecting">Test</button>
+      <div id="connectionSettingsGroup" class="settingsSection active" data-settings-panel="connect" role="tabpanel">
+        <div class="settingsHeader">
+          <div class="sectionTitle">Connect</div>
+          <div class="sectionMeta">Remote endpoint</div>
         </div>
-        <div class="row">
-          <button id="refresh" class="secondary" title="Refresh chat state">Refresh</button>
-          <button id="openOutput" class="secondary" title="Open output log">Output</button>
+        <div class="settingsGrid">
+          <label class="field">Server URL<input id="serverUrl" type="url" spellcheck="false" placeholder="http://localhost:4096"></label>
+          <label class="field">Username<input id="username" type="text" spellcheck="false" autocomplete="username" placeholder="opencode"></label>
+          <label class="field">Password<input id="password" type="password" autocomplete="current-password" placeholder="Leave empty for no password"></label>
         </div>
-	      </div>
-	      <div id="connectionDetail" class="detail visible">If this message does not change, the Webview script did not start.</div>
-	      <div id="completionSettingsGroup" class="completionSettingsGroup">
-	        <div class="settingsHeader">
-	          <div class="sectionTitle">Inline Completion</div>
-	          <div class="sectionMeta">Completion model</div>
-	        </div>
-	        <div class="settingsGrid">
-	          <label class="field checkbox"><input id="completionEnabled" type="checkbox"><span>Enable inline completion</span></label>
-	          <label class="field">Provider<select id="completionProvider">
-	            <option value="opencode">OpenCode</option>
-	            <option value="openai-compatible">Direct Model API</option>
-	          </select></label>
-	          <div id="completionDirectFields" class="completionDirectFields hidden">
-	            <label class="field">Profile<select id="completionProfile">
-	              <option value="generic-chat">Generic Chat</option>
-	              <option value="qwen-coder-fim">Qwen Coder FIM</option>
-	            </select></label>
-	            <label class="field">API Base URL<input id="completionApiBaseUrl" type="url" spellcheck="false" placeholder="http://localhost:8000/v1"></label>
-	            <label class="field">Model<input id="completionModel" type="text" spellcheck="false" placeholder="Qwen/Qwen3.6-27B-FP8"></label>
-	            <label class="field">Max tokens<input id="completionMaxTokens" type="number" min="1" max="4096" step="1"></label>
-	            <label class="field">Temperature<input id="completionTemperature" type="number" min="0" max="2" step="0.1"></label>
-	            <label class="field">Top P<input id="completionTopP" type="number" min="0" max="1" step="0.05"></label>
-	          </div>
-	        </div>
-	        <div class="row settingsActions">
-	          <div class="row">
-	            <button id="saveCompletionSettings" class="secondary">Save completion</button>
-	            <button id="testCompletionApi" class="secondary">Test completion API</button>
-	          </div>
-	          <button id="setCompletionApiKey" class="secondary">Set API key</button>
-	        </div>
-	        <div id="completionDetail" class="detail"></div>
-	      </div>
-	      <div id="ragSettingsGroup" class="ragSettingsGroup">
-	        <div class="settingsHeader">
-	          <div class="sectionTitle">Code RAG</div>
-	          <div class="sectionMeta">Embedding and rerank</div>
-	        </div>
-	        <div class="settingsGrid">
-	          <label class="field">Embedding endpoint<input id="ragEmbeddingEndpoint" type="url" spellcheck="false" placeholder="http://127.0.0.1:8000/v1/embeddings"></label>
-	          <label class="field">Embedding model<input id="ragEmbeddingModel" type="text" spellcheck="false" placeholder="local-embedding-model"></label>
-	          <label class="field">Embedding batch size<input id="ragEmbeddingBatchSize" type="number" min="1" max="256" step="1"></label>
-	          <label class="field">Embedding timeout ms<input id="ragEmbeddingTimeoutMs" type="number" min="250" max="120000" step="250"></label>
-	          <label class="field">Embedding request delay ms<input id="ragEmbeddingRequestDelayMs" type="number" min="0" max="60000" step="100"></label>
-	          <label class="field">Embedding max requests per run<input id="ragEmbeddingMaxRequestsPerRun" type="number" min="0" max="100000" step="1"></label>
-	          <label class="field">Embedding max retries<input id="ragEmbeddingMaxRetries" type="number" min="0" max="10" step="1"></label>
-	          <label class="field">Embedding retry backoff ms<input id="ragEmbeddingRetryBackoffMs" type="number" min="0" max="120000" step="500"></label>
-	          <label class="field checkbox"><input id="ragEmbeddingResumeAutomatically" type="checkbox"><span>Resume embedding index automatically</span></label>
-	          <label class="field">Embedding resume delay ms<input id="ragEmbeddingResumeDelayMs" type="number" min="0" max="3600000" step="1000"></label>
-	          <label class="field">Rerank endpoint<input id="ragRerankEndpoint" type="url" spellcheck="false" placeholder="http://127.0.0.1:8000/rerank"></label>
-	          <label class="field">Rerank model<input id="ragRerankModel" type="text" spellcheck="false" placeholder="local-rerank-model"></label>
-	          <label class="field">Allowed hosts<input id="ragAllowedHosts" type="text" spellcheck="false" placeholder="rag.internal, 10.0.0.20"></label>
-	          <label class="field">Vector top K<input id="ragVectorTopK" type="number" min="0" max="200" step="1"></label>
-	          <label class="field">Rerank top K<input id="ragRerankTopK" type="number" min="0" max="200" step="1"></label>
-	        </div>
-	        <div class="row settingsActions">
-	          <div class="row">
-	            <button id="saveRagSettings" class="secondary">Save RAG</button>
-	            <button id="testRagSettings" class="secondary">Test RAG</button>
-	          </div>
-	          <button id="setRagApiKey" class="secondary">Set RAG API key</button>
-	        </div>
-	        <div id="ragDetail" class="detail"></div>
-	      </div>
-	    </section>
+        <div class="row settingsActions">
+          <div class="row">
+            <button id="connect" class="oc-primary-btn oc-liquid-chip" type="button" title="Connect to this remote OpenCode server">${liquidIcons.server}<span class="oc-liquid-chip-label">Connect</span></button>
+            <button id="test" class="oc-icon-btn oc-liquid-btn" type="button" title="Test this remote OpenCode server without connecting" aria-label="Test remote OpenCode connection without connecting">${liquidIcons.beaker}<span class="srOnly">Test remote OpenCode connection without connecting</span></button>
+          </div>
+          <div class="row">
+            <button id="refresh" class="oc-icon-btn oc-liquid-btn" type="button" title="Refresh chat state" aria-label="Refresh chat state">${liquidIcons.refresh}<span class="srOnly">Refresh chat state</span></button>
+            <button id="openOutput" class="oc-icon-btn oc-liquid-btn" type="button" title="Open output log" aria-label="Open output log">${liquidIcons.file}<span class="srOnly">Open output log</span></button>
+          </div>
+        </div>
+        <div id="connectionDetail" class="detail visible" aria-live="polite">If this message does not change, the Webview script did not start.</div>
+      </div>
+      <div id="completionSettingsGroup" class="settingsSection completionSettingsGroup" data-settings-panel="complete" role="tabpanel">
+        <div class="settingsHeader">
+          <div class="sectionTitle">Complete</div>
+          <div class="sectionMeta">Completion model</div>
+        </div>
+        <div class="settingsGrid">
+          <label class="field checkbox"><input id="completionEnabled" type="checkbox"><span>Enable inline completion</span></label>
+          <label class="field">Provider<select id="completionProvider">
+            <option value="opencode">OpenCode</option>
+            <option value="openai-compatible">Direct Model API</option>
+          </select></label>
+          <div id="completionDirectFields" class="completionDirectFields hidden">
+            <label class="field">Profile<select id="completionProfile">
+              <option value="generic-chat">Generic Chat</option>
+              <option value="qwen-coder-fim">Qwen Coder FIM</option>
+            </select></label>
+            <label class="field">API Base URL<input id="completionApiBaseUrl" type="url" spellcheck="false" placeholder="http://localhost:8000/v1"></label>
+            <label class="field">Model<input id="completionModel" type="text" spellcheck="false" placeholder="Qwen/Qwen3.6-27B-FP8"></label>
+            <label class="field">Max tokens<input id="completionMaxTokens" type="number" min="1" max="4096" step="1"></label>
+            <label class="field">Temperature<input id="completionTemperature" type="number" min="0" max="2" step="0.1"></label>
+            <label class="field">Top P<input id="completionTopP" type="number" min="0" max="1" step="0.05"></label>
+          </div>
+        </div>
+        <div class="row settingsActions">
+          <div class="row">
+            <button id="saveCompletionSettings" class="oc-icon-btn oc-liquid-btn" type="button" title="Save inline completion settings" aria-label="Save inline completion settings">${liquidIcons.save}<span class="srOnly">Save inline completion settings</span></button>
+            <button id="testCompletionApi" class="oc-icon-btn oc-liquid-btn" type="button" title="Test completion API" aria-label="Test completion API">${liquidIcons.beaker}<span class="srOnly">Test completion API</span></button>
+          </div>
+          <button id="setCompletionApiKey" class="oc-icon-btn oc-liquid-btn" type="button" title="Set inline completion API key" aria-label="Set inline completion API key">${liquidIcons.key}<span class="srOnly">Set inline completion API key</span></button>
+        </div>
+        <div id="completionDetail" class="detail" aria-live="polite"></div>
+      </div>
+      <div id="ragSettingsGroup" class="settingsSection ragSettingsGroup" data-settings-panel="rag" role="tabpanel">
+        <div class="settingsHeader">
+          <div class="settingsCompactLine">${liquidIcons.database}<div class="sectionTitle">RAG</div></div>
+          <span id="ragCompactStatus" class="settingsStatusChip oc-chip oc-liquid-chip" title="RAG status">${liquidIcons.diagnostics}<span class="oc-liquid-chip-label">off</span></span>
+        </div>
+        <div class="settingsGrid">
+          <label class="field">Embedding endpoint<input id="ragEmbeddingEndpoint" type="url" spellcheck="false" placeholder="http://127.0.0.1:8000/v1/embeddings"></label>
+          <label class="field">Embedding model<input id="ragEmbeddingModel" type="text" spellcheck="false" placeholder="local-embedding-model"></label>
+          <label class="field">Rerank endpoint<input id="ragRerankEndpoint" type="url" spellcheck="false" placeholder="http://127.0.0.1:8000/rerank"></label>
+          <label class="field">Rerank model<input id="ragRerankModel" type="text" spellcheck="false" placeholder="local-rerank-model"></label>
+        </div>
+        <details class="ragAdvanced">
+          <summary>Advanced</summary>
+          <div class="settingsGrid">
+            <label class="field">Batch size<select id="ragEmbeddingBatchSize" title="Embedding request timeout is automatic: 32-256 use 30s, 512 uses 90s"><option value="32">32</option><option value="64">64</option><option value="128">128</option><option value="256">256</option><option value="512">512</option></select></label>
+            <label class="field">Request delay ms<input id="ragEmbeddingRequestDelayMs" type="number" min="0" max="60000" step="100"></label>
+            <label class="field">Max requests per run<input id="ragEmbeddingMaxRequestsPerRun" type="number" min="0" max="100000" step="1"></label>
+            <label class="field">Max retries<input id="ragEmbeddingMaxRetries" type="number" min="0" max="10" step="1"></label>
+            <label class="field">Retry backoff ms<input id="ragEmbeddingRetryBackoffMs" type="number" min="0" max="120000" step="500"></label>
+            <label class="field checkbox"><input id="ragEmbeddingResumeAutomatically" type="checkbox"><span>Resume automatically</span></label>
+            <label class="field">Resume delay ms<input id="ragEmbeddingResumeDelayMs" type="number" min="0" max="3600000" step="1000"></label>
+            <label class="field">Allowed hosts<input id="ragAllowedHosts" type="text" spellcheck="false" placeholder="rag.internal, 10.0.0.20"></label>
+            <label class="field">Vector top K<input id="ragVectorTopK" type="number" min="0" max="200" step="1"></label>
+            <label class="field">Rerank top K<input id="ragRerankTopK" type="number" min="0" max="200" step="1"></label>
+          </div>
+        </details>
+        <div id="ragDetail" class="detail" aria-live="polite"></div>
+        <div class="ragActionbar oc-liquid-actionbar">
+          <button id="saveRagSettings" class="oc-icon-btn oc-liquid-btn" type="button" title="Save RAG settings" aria-label="Save RAG settings">${liquidIcons.save}<span class="srOnly">Save RAG settings</span></button>
+          <button id="testRagSettings" class="oc-icon-btn oc-liquid-btn" type="button" title="Test RAG configuration" aria-label="Test RAG configuration">${liquidIcons.beaker}<span class="srOnly">Test RAG configuration</span></button>
+          <button id="setRagApiKey" class="oc-icon-btn oc-liquid-btn" type="button" title="Set RAG API key" aria-label="Set RAG API key">${liquidIcons.key}<span class="srOnly">Set RAG API key</span></button>
+          <button id="discardRagSettings" class="oc-icon-btn oc-liquid-btn" type="button" title="Reset RAG edits" aria-label="Reset RAG edits">${liquidIcons.discard}<span class="srOnly">Reset RAG edits</span></button>
+        </div>
+      </div>
+      <div id="guardSettingsGroup" class="settingsSection" data-settings-panel="guard" role="tabpanel">
+        <div class="settingsHeader">
+          <div class="settingsCompactLine">${liquidIcons.shield}<div class="sectionTitle">Guard</div></div>
+          <div id="guardSettingsStatus" class="sectionMeta">Local-only</div>
+        </div>
+        <div id="guardSettingsDetail" class="detail visible" aria-live="polite">Local-only guard status will appear here.</div>
+      </div>
+    </section>
     <div class="body">
-      <button id="historyBackdrop" class="historyBackdrop" title="Close history"></button>
+      <button id="historyBackdrop" class="historyBackdrop" type="button" title="Close history" aria-label="Close history"></button>
       <aside id="historyPane" class="historyPane">
         <div class="historyHeader">
           <div class="historyTitle">History</div>
           <div class="row">
-            <button id="refreshHistory" class="icon" title="Refresh sessions" aria-label="Refresh sessions">${topbarIcon(lucideIcons.refreshCw)}<span class="srOnly">Refresh sessions</span></button>
-            <button id="closeHistory" class="icon" title="Close history" aria-label="Close history">${topbarIcon(lucideIcons.x)}<span class="srOnly">Close history</span></button>
+            <button id="refreshHistory" class="oc-icon-btn oc-liquid-btn" type="button" title="Refresh sessions" aria-label="Refresh sessions">${liquidIcons.refresh}<span class="srOnly">Refresh sessions</span></button>
+            <button id="closeHistory" class="oc-icon-btn oc-liquid-btn" type="button" title="Close history" aria-label="Close history">${liquidIcons.discard}<span class="srOnly">Close history</span></button>
           </div>
         </div>
         <div id="sessionList" class="sessionList"></div>
       </aside>
       <section class="chatMain">
         <main id="messages" class="messages">
-          <div class="empty">Ask about your code. Type @ to attach workspace files as context.</div>
+          <div class="empty">Ask with context</div>
         </main>
         <footer class="composerWrap">
-          <div id="composerStatusBar" class="composerStatusBar">
-            <button id="composerStatusToggle" class="composerStatusToggle" type="button" aria-expanded="true" aria-controls="composerPanel" title="Hide input panel">
-              <span class="composerToggleIcon" aria-hidden="true">${statusIcon(lucideIcons.panelBottomClose)}</span>
+          <div id="composerStatusBar" class="composerStatusBar" aria-live="polite">
+            <button id="composerStatusToggle" class="composerStatusToggle oc-icon-toggle oc-liquid-toggle" type="button" aria-expanded="true" aria-controls="composerPanel" title="Hide input panel">
+              <span class="composerToggleIcon" aria-hidden="true">${liquidIcons.more}</span>
               <span class="composerToggleLabel">
                 <span id="composerToggleFull" class="composerToggleFull">Hide input</span>
                 <span id="composerToggleShort" class="composerToggleShort">Hide</span>
               </span>
             </button>
-            <button id="contextStatusPill" class="composerStatusPill context" type="button" title="Show context details"><span class="pillText">${statusIcon(lucideIcons.bookOpen)}</span></button>
-            <button id="indexStatusPill" class="composerStatusPill index info compactRing" type="button" title="Show index details"><span class="pillText statusRing" aria-hidden="true">${statusRingIcon(lucideIcons.radar)}</span></button>
-            <button id="guardStatusPill" class="composerStatusPill guard ok" type="button" title="Show guard details"><span class="pillText">${statusIcon(lucideIcons.shieldCheck)}</span></button>
-            <button id="usageStatusPill" class="composerStatusPill usage pending compactRing" type="button" title="Show usage details"><span class="pillText statusRing" aria-hidden="true">${statusRingIcon(lucideIcons.gauge)}</span></button>
+            <button id="contextStatusPill" class="composerStatusPill oc-icon-btn oc-liquid-btn context" type="button" title="Show context details"><span class="pillText">${liquidIcons.references}</span></button>
+            <button id="indexStatusPill" class="composerStatusPill oc-icon-btn oc-liquid-btn index info compactRing" type="button" title="Show index details"><span class="pillText statusRing" aria-hidden="true">${liquidIcons.database}</span></button>
+            <button id="guardStatusPill" class="composerStatusPill oc-icon-btn oc-liquid-btn guard ok" type="button" title="Show guard details"><span class="pillText">${liquidIcons.shield}</span></button>
+            <button id="usageStatusPill" class="composerStatusPill oc-icon-btn oc-liquid-btn usage pending compactRing" type="button" title="Show usage details"><span class="pillText statusRing" aria-hidden="true">${liquidIcons.sparkle}</span></button>
           </div>
           <div id="composerStatusPopover" class="composerStatusPopover" aria-hidden="true"></div>
           <div id="composerPanel" class="composerPanel">
@@ -1740,62 +2530,62 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
               <div id="suggestions" class="suggestions"></div>
               <div id="modelMenu" class="modelMenu" role="listbox" aria-label="Model" aria-hidden="true"></div>
               <div id="agentMenu" class="modelMenu agentMenu" role="listbox" aria-label="Agent" aria-hidden="true"></div>
-              <textarea id="input" placeholder="Ask OpenCode... Use @ to reference files."></textarea>
+              <textarea id="input" placeholder="Ask OpenCode…"></textarea>
               <div class="composerToolbar">
-                <button id="modelTrigger" class="modelTrigger" type="button" title="Model" aria-haspopup="listbox" aria-expanded="false" aria-controls="modelMenu">Model</button>
-                <button id="agentTrigger" class="modelTrigger agentTrigger" type="button" title="Agent" aria-haspopup="listbox" aria-expanded="false" aria-controls="agentMenu">Agent</button>
+                <button id="modelTrigger" class="modelTrigger oc-chip oc-liquid-chip" type="button" title="Model" aria-haspopup="listbox" aria-expanded="false" aria-controls="modelMenu">${liquidIcons.server}<span class="oc-liquid-chip-label">Model</span></button>
+                <button id="agentTrigger" class="modelTrigger agentTrigger oc-chip oc-liquid-chip" type="button" title="Agent" aria-haspopup="listbox" aria-expanded="false" aria-controls="agentMenu">${liquidIcons.agent}<span class="oc-liquid-chip-label">Agent</span></button>
                 <div id="composerHint" class="composerHint">@ files, Ctrl+Enter send</div>
-                <button id="send" class="send" title="Send">Send</button>
+                <button id="send" class="send oc-icon-btn oc-liquid-btn" type="button" title="Send" aria-label="Send message">${liquidIcons.send}<span class="srOnly">Send message</span></button>
               </div>
             </div>
             <div class="composerActions">
               <div class="composerActionRow">
                 <div class="toggles">
-                  <label><input id="sel" type="checkbox" checked><span class="toggleFull">Selection</span><span class="toggleShort">Selection</span></label>
-                  <label><input id="file" type="checkbox" checked><span class="toggleFull">Current file</span><span class="toggleShort">Current</span></label>
-                  <label><input id="diag" type="checkbox"><span class="toggleFull">Diagnostics</span><span class="toggleShort">Diag</span></label>
-                  <label><input id="diff" type="checkbox"><span class="toggleFull">Git diff</span><span class="toggleShort">Diff</span></label>
+                  <input id="sel" class="toggleInput" type="checkbox" checked>
+                  <button id="selToggle" class="oc-icon-toggle oc-liquid-toggle" type="button" title="Include editor selection" aria-label="Include editor selection" aria-pressed="true">${liquidIcons.selection}<span class="srOnly">Include editor selection</span></button>
+                  <input id="file" class="toggleInput" type="checkbox" checked>
+                  <button id="fileToggle" class="oc-icon-toggle oc-liquid-toggle" type="button" title="Include current file" aria-label="Include current file" aria-pressed="true">${liquidIcons.file}<span class="srOnly">Include current file</span></button>
+                  <input id="diag" class="toggleInput" type="checkbox">
+                  <button id="diagToggle" class="oc-icon-toggle oc-liquid-toggle" type="button" title="Include diagnostics" aria-label="Include diagnostics" aria-pressed="false">${liquidIcons.diagnostics}<span class="srOnly">Include diagnostics</span></button>
+                  <input id="diff" class="toggleInput" type="checkbox">
+                  <button id="diffToggle" class="oc-icon-toggle oc-liquid-toggle" type="button" title="Include git diff" aria-label="Include git diff" aria-pressed="false">${liquidIcons.diff}<span class="srOnly">Include git diff</span></button>
                 </div>
-                <button id="exportMarkdown" class="secondary exportButton composerIconButton" title="Export current chat to Markdown" aria-label="Export current chat to Markdown">
-                  ${composerIcon(lucideIcons.download)}
-                  <span class="srOnly">Export current chat to Markdown</span>
-                </button>
-                <button id="attach" class="secondary attachButton composerIconButton" title="Attach file as persistent context" aria-label="Attach file as persistent context">
-                  ${composerIcon(lucideIcons.paperclip)}
-                  <span class="srOnly">Attach file as persistent context</span>
-                </button>
-                <button id="refreshModels" class="secondary refreshButton composerIconButton" title="Refresh models" aria-label="Refresh models">
-                  ${composerIcon(lucideIcons.rotateCw)}
-                  <span class="srOnly">Refresh models</span>
-                </button>
+                <button id="exportMarkdown" class="composerIconButton oc-icon-btn oc-liquid-btn" type="button" title="Export current chat to Markdown" aria-label="Export current chat to Markdown">${liquidIcons.save}<span class="srOnly">Export current chat to Markdown</span></button>
+                <button id="attach" class="composerIconButton oc-icon-btn oc-liquid-btn" type="button" title="Attach file as persistent context" aria-label="Attach file as persistent context">${liquidIcons.attach}<span class="srOnly">Attach file as persistent context</span></button>
+                <button id="refreshModels" class="composerIconButton oc-icon-btn oc-liquid-btn" type="button" title="Refresh models" aria-label="Refresh models">${liquidIcons.refresh}<span class="srOnly">Refresh models</span></button>
               </div>
             </div>
             <div id="manualModelRow" class="manualModel">
               <input id="manualModel" spellcheck="false" placeholder="provider/model">
-              <button id="saveManualModel" class="secondary">Use</button>
+              <button id="saveManualModel" class="oc-chip oc-liquid-chip" type="button" title="Use manual model">${liquidIcons.apply}<span class="oc-liquid-chip-label">Use</span></button>
             </div>
-            <div id="notice" class="notice"></div>
+            <div id="notice" class="notice" aria-live="polite"></div>
           </div>
         </footer>
       </section>
     </div>
   </div>
   <script nonce="${nonce}">
-    const vscode = acquireVsCodeApi();
-    const el = (id) => document.getElementById(id);
-    const STATUS_ICONS = ${JSON.stringify({
-      bookOpen: statusIcon(lucideIcons.bookOpen),
-      gauge: statusRingIcon(lucideIcons.gauge),
-      panelBottomClose: statusIcon(lucideIcons.panelBottomClose),
-      panelBottomOpen: statusIcon(lucideIcons.panelBottomOpen),
-      radar: statusRingIcon(lucideIcons.radar),
-      shieldAlert: statusIcon(lucideIcons.shieldAlert),
-      shieldCheck: statusIcon(lucideIcons.shieldCheck),
-      shieldOff: statusIcon(lucideIcons.shieldOff),
-    })};
+	    const vscode = acquireVsCodeApi();
+	    const el = (id) => document.getElementById(id);
+	    const LIQUID_ICONS = ${liquidIconForScript};
+	    const STATUS_ICONS = {
+	      context: LIQUID_ICONS.references,
+	      database: LIQUID_ICONS.database,
+	      panelBottomClose: LIQUID_ICONS.more,
+	      panelBottomOpen: LIQUID_ICONS.chat,
+	      shieldAlert: LIQUID_ICONS.diagnostics,
+	      shieldCheck: LIQUID_ICONS.shield,
+	      shieldOff: LIQUID_ICONS.shield,
+	      usage: LIQUID_ICONS.sparkle,
+	    };
+    const RAG_EMBEDDING_BATCH_SIZE_DEFAULT = 128;
+    const RAG_EMBEDDING_BATCH_SIZE_OPTIONS = [32, 64, 128, 256, 512];
+    const RAG_EMBEDDING_BATCH_SIZE_ERROR = "Embedding batch size must be one of 32, 64, 128, 256, or 512.";
     let state = {};
-	    let pendingAction = "";
-	    let settingsOpen = false;
+		    let pendingAction = "";
+		    let settingsOpen = false;
+        let activeSettingsSection = "connect";
 	    let lastConnectionState = "";
 	    let userEditedConnection = false;
 	    let userEditedCompletionSettings = false;
@@ -1844,7 +2634,7 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
 	        renderCompletionSettings();
 	      });
 	    }
-	    for (const id of ["ragEmbeddingEndpoint", "ragEmbeddingModel", "ragEmbeddingBatchSize", "ragEmbeddingTimeoutMs", "ragEmbeddingRequestDelayMs", "ragEmbeddingMaxRequestsPerRun", "ragEmbeddingMaxRetries", "ragEmbeddingRetryBackoffMs", "ragEmbeddingResumeAutomatically", "ragEmbeddingResumeDelayMs", "ragRerankEndpoint", "ragRerankModel", "ragAllowedHosts", "ragVectorTopK", "ragRerankTopK"]) {
+	    for (const id of ["ragEmbeddingEndpoint", "ragEmbeddingModel", "ragEmbeddingBatchSize", "ragEmbeddingRequestDelayMs", "ragEmbeddingMaxRequestsPerRun", "ragEmbeddingMaxRetries", "ragEmbeddingRetryBackoffMs", "ragEmbeddingResumeAutomatically", "ragEmbeddingResumeDelayMs", "ragRerankEndpoint", "ragRerankModel", "ragAllowedHosts", "ragVectorTopK", "ragRerankTopK"]) {
 	      el(id).addEventListener("input", () => {
 	        userEditedRagSettings = true;
 	      });
@@ -1876,22 +2666,31 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       historyOpen = false;
       renderShell();
     });
-    el("refreshHistory").addEventListener("click", () => vscode.postMessage({ type: "refreshSessions" }));
-    el("settingsToggle").addEventListener("click", () => {
-      settingsOpen = !settingsOpen;
-      render();
-    });
-	    el("connect").addEventListener("click", () => connectOrTest("connectWithSettings"));
-	    el("test").addEventListener("click", () => connectOrTest("testWithSettings"));
-	    el("saveCompletionSettings").addEventListener("click", saveCompletionSettings);
-	    el("setCompletionApiKey").addEventListener("click", () => vscode.postMessage({ type: "setCompletionApiKey" }));
-	    el("testCompletionApi").addEventListener("click", testCompletionApi);
-	    el("saveRagSettings").addEventListener("click", saveRagSettings);
-	    el("testRagSettings").addEventListener("click", testRagSettings);
-	    el("setRagApiKey").addEventListener("click", () => vscode.postMessage({ type: "setRagApiKey" }));
-    el("refresh").addEventListener("click", () => vscode.postMessage({ type: "refresh" }));
-    el("openOutput").addEventListener("click", () => vscode.postMessage({ type: "openOutput" }));
-    el("newSession").addEventListener("click", () => vscode.postMessage({ type: "newSession" }));
+	    el("refreshHistory").addEventListener("click", () => vscode.postMessage({ type: "refreshSessions" }));
+	    el("settingsToggle").addEventListener("click", () => {
+	      settingsOpen = !settingsOpen;
+	      render();
+	    });
+      for (const button of Array.from(document.querySelectorAll("[data-settings-section]"))) {
+        button.addEventListener("click", () => {
+          activeSettingsSection = button.dataset.settingsSection || "connect";
+          settingsOpen = true;
+          renderSettings();
+        });
+      }
+		    el("connect").addEventListener("click", () => connectOrTest("connectWithSettings"));
+		    el("test").addEventListener("click", () => connectOrTest("testWithSettings"));
+		    el("saveCompletionSettings").addEventListener("click", saveCompletionSettings);
+		    el("setCompletionApiKey").addEventListener("click", () => vscode.postMessage({ type: "setCompletionApiKey" }));
+		    el("testCompletionApi").addEventListener("click", testCompletionApi);
+		    el("saveRagSettings").addEventListener("click", saveRagSettings);
+		    el("testRagSettings").addEventListener("click", testRagSettings);
+		    el("setRagApiKey").addEventListener("click", () => vscode.postMessage({ type: "setRagApiKey" }));
+    el("discardRagSettings").addEventListener("click", discardRagSettings);
+	    el("refresh").addEventListener("click", () => vscode.postMessage({ type: "refresh" }));
+    el("syncState").addEventListener("click", () => vscode.postMessage({ type: "refresh" }));
+	    el("openOutput").addEventListener("click", () => vscode.postMessage({ type: "openOutput" }));
+	    el("newSession").addEventListener("click", () => vscode.postMessage({ type: "newSession" }));
     el("composerStatusToggle").addEventListener("click", toggleComposerPanel);
     bindComposerStatusPill("contextStatusPill", "context", true);
     bindComposerStatusPill("indexStatusPill", "index", true);
@@ -1960,14 +2759,22 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
         saveManualModel();
       }
     });
-    el("codeIntelligence").addEventListener("click", onCodeIntelligenceAction);
-    el("exportMarkdown").addEventListener("click", () => vscode.postMessage({ type: "exportMarkdown", scope: "session" }));
-    el("attach").addEventListener("click", () => vscode.postMessage({ type: "addFile" }));
-    el("send").addEventListener("click", send);
-    el("input").addEventListener("input", onComposerInput);
-    el("input").addEventListener("keydown", onComposerKeydown);
-    el("sel").addEventListener("change", renderMentionChips);
-    el("file").addEventListener("change", renderMentionChips);
+	    el("codeIntelligence").addEventListener("click", onCodeIntelligenceAction);
+	    el("exportMarkdown").addEventListener("click", () => vscode.postMessage({ type: "exportMarkdown", scope: "session" }));
+	    el("attach").addEventListener("click", () => vscode.postMessage({ type: "addFile" }));
+	    el("send").addEventListener("click", onSendButtonClick);
+	    el("input").addEventListener("input", onComposerInput);
+	    el("input").addEventListener("keydown", onComposerKeydown);
+	    el("sel").addEventListener("change", renderMentionChips);
+	    el("file").addEventListener("change", renderMentionChips);
+    for (const item of [
+      ["sel", "selToggle"],
+      ["file", "fileToggle"],
+      ["diag", "diagToggle"],
+      ["diff", "diffToggle"],
+    ]) {
+      bindContextToggle(item[0], item[1]);
+    }
 
     window.addEventListener("message", (event) => {
       if (event.data.type === "state") {
@@ -2040,6 +2847,7 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
 	    }
 
 	    function saveRagSettings() {
+	      if (!validateRagEmbeddingBatchSizeInput()) return;
 	      userEditedRagSettings = false;
 	      renderRagStatus("Saving RAG settings...", "info");
 	      vscode.postMessage({
@@ -2048,14 +2856,21 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
 	      });
 	    }
 
-	    function testRagSettings() {
-	      userEditedRagSettings = false;
-	      renderRagStatus("Testing RAG configuration...", "info");
+		    function testRagSettings() {
+		      if (!validateRagEmbeddingBatchSizeInput()) return;
+		      userEditedRagSettings = false;
+		      renderRagStatus("Testing RAG configuration...", "info");
 	      vscode.postMessage({
 	        type: "testRagSettings",
 	        settings: ragSettingsPayload()
-	      });
-	    }
+		      });
+		    }
+
+        function discardRagSettings() {
+          userEditedRagSettings = false;
+          renderRagSettings();
+          renderRagStatus("RAG edits discarded.", "info");
+        }
 
 	    function completionSettingsPayload() {
 	      return {
@@ -2071,11 +2886,12 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
 	    }
 
 	    function ragSettingsPayload() {
+        const embeddingBatchSize = numberInputValue("ragEmbeddingBatchSize", RAG_EMBEDDING_BATCH_SIZE_DEFAULT);
 	      return {
 	        embeddingEndpoint: el("ragEmbeddingEndpoint").value,
 	        embeddingModel: el("ragEmbeddingModel").value,
-	        embeddingBatchSize: numberInputValue("ragEmbeddingBatchSize", 32),
-	        embeddingTimeoutMs: numberInputValue("ragEmbeddingTimeoutMs", 30000),
+	        embeddingBatchSize,
+	        embeddingTimeoutMs: ragEmbeddingTimeoutMsForBatchSize(embeddingBatchSize),
 	        embeddingRequestDelayMs: numberInputValue("ragEmbeddingRequestDelayMs", 500),
 	        embeddingMaxRequestsPerRun: numberInputValue("ragEmbeddingMaxRequestsPerRun", 100),
 	        embeddingMaxRetries: numberInputValue("ragEmbeddingMaxRetries", 3),
@@ -2100,6 +2916,25 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
 	    function numberInputValue(id, fallback) {
 	      const value = Number(el(id).value);
 	      return Number.isFinite(value) ? value : fallback;
+	    }
+
+      function ragEmbeddingTimeoutMsForBatchSize(batchSize) {
+        return Number(batchSize) === 512 ? 90000 : 30000;
+      }
+
+      function ragEmbeddingBatchSizeSelectValue(batchSize) {
+        const value = Number(batchSize);
+        return RAG_EMBEDDING_BATCH_SIZE_OPTIONS.includes(value) ? value : RAG_EMBEDDING_BATCH_SIZE_DEFAULT;
+      }
+
+	    function validateRagEmbeddingBatchSizeInput() {
+	      const value = Number(el("ragEmbeddingBatchSize").value);
+	      if (!Number.isFinite(value) || !RAG_EMBEDDING_BATCH_SIZE_OPTIONS.includes(value)) {
+	        renderRagStatus(RAG_EMBEDDING_BATCH_SIZE_ERROR, "error");
+	        el("ragEmbeddingBatchSize").focus();
+	        return false;
+	      }
+	      return true;
 	    }
 
 	    function toggleComposerPanel() {
@@ -2148,14 +2983,35 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       vscode.postMessage({ type: "selectModel", model: value });
     }
 
-    function saveManualModel() {
+	    function saveManualModel() {
       const value = el("manualModel").value.trim();
       vscode.postMessage({ type: "selectModel", model: value });
       el("manualModelRow").className = "manualModel";
       modelMenuOpen = false;
       renderModelMenu();
-      renderModelTrigger();
-    }
+	      renderModelTrigger();
+	    }
+
+      function onSendButtonClick() {
+        if (state.sending) {
+          vscode.postMessage({ type: "cancelSend" });
+          setNotice("Stopping current request...");
+          return;
+        }
+        send();
+      }
+
+      function bindContextToggle(inputId, buttonId) {
+        const input = el(inputId);
+        const button = el(buttonId);
+        if (!input || !button) return;
+        button.addEventListener("click", () => {
+          input.checked = !input.checked;
+          input.dispatchEvent(new Event("change", { bubbles: true }));
+          renderComposerToggles();
+        });
+        input.addEventListener("change", renderComposerToggles);
+      }
 
     function send() {
       let text = el("input").value.trim();
@@ -2303,23 +3159,31 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       renderSettings();
       renderSessions();
       renderMessages();
-      renderCodeIntelligence();
-	      renderModelSelector();
-	      renderAgentSelector();
-	      renderCompletionSettings();
-	      renderRagSettings();
-	      renderConnectionButtons();
-      el("diag").checked = Boolean(state.defaults && state.defaults.includeDiagnostics);
-      el("diff").checked = Boolean(state.defaults && state.defaults.includeGitDiff);
-      renderSendButton();
-      renderComposerStatusBar();
-    }
+	      renderCodeIntelligence();
+		      renderModelSelector();
+		      renderAgentSelector();
+		      renderCompletionSettings();
+		      renderRagSettings();
+          renderGuardSettings();
+		      renderConnectionButtons();
+	      el("diag").checked = Boolean(state.defaults && state.defaults.includeDiagnostics);
+	      el("diff").checked = Boolean(state.defaults && state.defaults.includeGitDiff);
+        renderComposerToggles();
+	      renderSendButton();
+	      renderComposerStatusBar();
+	    }
 
-    function renderSendButton() {
-      const blockedByGuard = localOnlyAgentBlocked() && !looksLikeExportRequest(el("input").value);
-      el("send").disabled = Boolean(state.sending || blockedByGuard);
-      el("send").textContent = state.sending ? "..." : "Send";
-    }
+	    function renderSendButton() {
+	      const blockedByGuard = localOnlyAgentBlocked() && !looksLikeExportRequest(el("input").value);
+        const button = el("send");
+	      button.disabled = Boolean(!state.sending && blockedByGuard);
+        const label = state.sending ? "Stop current request" : "Send message";
+        button.title = label;
+        button.setAttribute("aria-label", label);
+        button.classList.toggle("is-active", Boolean(state.sending));
+        button.classList.toggle("is-spinning", Boolean(state.sending));
+        setIconOnlyButton(button, state.sending ? "stop" : "send", label);
+	    }
 
     function renderShell() {
       const widthClass = window.innerWidth >= 760 ? "history-wide" : "history-narrow";
@@ -2332,13 +3196,16 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       return (state.connectionState || "disconnected") === "connected" ? "chat" : "connection-only";
     }
 
-	    function renderConnection() {
-	      const stateName = state.connectionState || "disconnected";
-	      const dot = el("statusDot");
-	      dot.className = "dot " + stateName;
-      const statusText = state.serverUrl ? stateName + " - " + state.serverUrl : stateName;
-      el("server").textContent = statusText;
-      el("server").title = statusText;
+		    function renderConnection() {
+		      const stateName = state.connectionState || "disconnected";
+		      const dot = el("statusDot");
+		      dot.className = "oc-status-dot " + stateName;
+        const metaParts = [shortConnectionStateLabel(stateName)];
+        if (state.selectedModel) metaParts.push(shortModelName(state.selectedModel));
+        if (state.selectedAgent || state.localOnlyAgent) metaParts.push(state.selectedAgent || state.localOnlyAgent);
+        const statusText = metaParts.join(" · ");
+	      el("server").textContent = statusText;
+	      el("server").title = state.serverUrl ? statusText + " · " + state.serverUrl : statusText;
       if (!userEditedConnection) {
         el("serverUrl").value = state.serverUrl || "";
         el("username").value = state.username || "";
@@ -2348,9 +3215,14 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
         el("password").value = "";
       }
       const detail = el("connectionDetail");
-      detail.className = "detail " + stateName + (state.connectionDetail ? " visible" : "");
+	      detail.className = "detail " + stateName + (state.connectionDetail ? " visible" : "");
 	      detail.textContent = state.connectionDetail || "";
 	    }
+
+      function shortConnectionStateLabel(stateName) {
+        if (stateName === "authFailed") return "auth failed";
+        return stateName;
+      }
 
 	    function renderCompletionSettings() {
 	      const completion = state.completion || {};
@@ -2375,15 +3247,14 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
 	      detail.textContent = message || "";
 	    }
 
-	    function renderRagSettings() {
+		    function renderRagSettings() {
 	      const rag = state.rag || {};
 	      const embedding = rag.embedding || {};
 	      const rerank = rag.rerank || {};
 	      if (!userEditedRagSettings) {
 	        el("ragEmbeddingEndpoint").value = embedding.endpoint || "";
 	        el("ragEmbeddingModel").value = embedding.model || "";
-	        el("ragEmbeddingBatchSize").value = String(embedding.batchSize || 32);
-	        el("ragEmbeddingTimeoutMs").value = String(embedding.timeoutMs || 30000);
+	        el("ragEmbeddingBatchSize").value = String(ragEmbeddingBatchSizeSelectValue(embedding.batchSize));
 	        el("ragEmbeddingRequestDelayMs").value = String(embedding.requestDelayMs ?? 500);
 	        el("ragEmbeddingMaxRequestsPerRun").value = String(embedding.maxRequestsPerRun ?? 100);
 	        el("ragEmbeddingMaxRetries").value = String(embedding.maxRetries ?? 3);
@@ -2396,9 +3267,11 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
 	        el("ragVectorTopK").value = String(rag.vectorTopK ?? 24);
 	        el("ragRerankTopK").value = String(rag.rerankTopK ?? 16);
 	      }
-	      const statusText = codeGraphRagMeta(state.codeGraph && state.codeGraph.rag);
-	      if (statusText) renderRagStatus(statusText, statusText.includes("unavailable") ? "error" : "info");
-	    }
+		      const statusText = codeGraphRagMeta(state.codeGraph && state.codeGraph.rag);
+          renderRagCompactStatus(state.codeGraph && state.codeGraph.rag, statusText);
+		      if (statusText && !statusText.startsWith("RAG not configured")) renderRagStatus(statusText, statusText.includes("unavailable") ? "error" : "info");
+          else renderRagStatus("", "info");
+		    }
 
 	    function renderRagStatus(message, status) {
 	      const detail = el("ragDetail");
@@ -2412,23 +3285,129 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
 	      return "";
 	    }
 
-	    function renderSettings() {
-      const mode = currentViewMode();
-      const title = mode === "settings-page" ? "Close full settings" : "Open full settings";
-      el("settings").className = "settings " + mode;
-      el("settingsToggle").title = title;
-      el("settingsToggle").setAttribute("aria-label", title);
-    }
+		    function renderSettings() {
+	      const mode = currentViewMode();
+	      const title = mode === "settings-page" ? "Close full settings" : "Open full settings";
+        if (mode === "connection-only") activeSettingsSection = "connect";
+	      el("settings").className = "settings " + mode;
+	      el("settingsToggle").title = title;
+	      el("settingsToggle").setAttribute("aria-label", title);
+        for (const button of Array.from(document.querySelectorAll("[data-settings-section]"))) {
+          const active = (button.dataset.settingsSection || "") === activeSettingsSection;
+          button.classList.toggle("is-active", active);
+          button.setAttribute("aria-selected", active ? "true" : "false");
+        }
+        for (const panel of Array.from(document.querySelectorAll("[data-settings-panel]"))) {
+          const active = (panel.dataset.settingsPanel || "") === activeSettingsSection;
+          panel.classList.toggle("active", active);
+        }
+	    }
 
-    function renderConnectionButtons() {
-      const pending = Boolean(pendingAction) || state.connectionState === "connecting";
-      const connectPending = pendingAction === "connect" || (!pendingAction && state.connectionState === "connecting");
-      const testPending = pendingAction === "test";
-      el("connect").disabled = pending;
-      el("test").disabled = pending;
-      el("connect").textContent = connectPending ? "Connecting..." : "Connect";
-      el("test").textContent = testPending ? "Testing..." : "Test";
-    }
+	    function renderConnectionButtons() {
+	      const pending = Boolean(pendingAction) || state.connectionState === "connecting";
+	      const connectPending = pendingAction === "connect" || (!pendingAction && state.connectionState === "connecting");
+	      const testPending = pendingAction === "test";
+	      el("connect").disabled = pending;
+	      el("test").disabled = pending;
+        el("connect").classList.toggle("is-active", connectPending);
+        el("test").classList.toggle("is-spinning", testPending);
+        setChipLabel(el("connect"), "server", connectPending ? "Connecting" : "Connect");
+        setIconOnlyButton(el("test"), "beaker", testPending ? "Testing remote OpenCode connection" : "Test remote OpenCode connection without connecting");
+	    }
+
+      function renderComposerToggles() {
+        const configs = [
+          { input: "sel", button: "selToggle", label: "Include editor selection", icon: "selection" },
+          { input: "file", button: "fileToggle", label: "Include current file", icon: "file" },
+          { input: "diag", button: "diagToggle", label: "Include diagnostics", icon: "diagnostics", badge: diagnosticsBadgeText() },
+          { input: "diff", button: "diffToggle", label: "Include git diff", icon: "diff" },
+        ];
+        for (const config of configs) {
+          const input = el(config.input);
+          const button = el(config.button);
+          if (!input || !button) continue;
+          const pressed = Boolean(input.checked);
+          button.setAttribute("aria-pressed", pressed ? "true" : "false");
+          button.classList.toggle("is-active", pressed);
+          setIconOnlyButton(button, config.icon, config.label);
+          renderLiquidBadge(button, config.badge);
+        }
+      }
+
+      function diagnosticsBadgeText() {
+        const count = state.autoContext && Number(state.autoContext.diagnosticCount || 0);
+        if (!count) return "";
+        return String(Math.min(count, 99));
+      }
+
+      function renderRagCompactStatus(rag, statusText) {
+        const chip = el("ragCompactStatus");
+        if (!chip) return;
+        let label = "off";
+        let title = statusText || "RAG not configured";
+        let statusClass = "warning";
+        if (rag && rag.availability === "indexing") label = "indexing";
+        else if (rag && rag.embeddingEnabled) label = rag.availability === "partial" ? "partial" : rag.availability === "paused" ? "paused" : "ready";
+        else if (rag && rag.availability === "checking") label = "checking";
+        else if (rag && rag.availability === "unavailable") label = "error";
+        if (label === "ready") statusClass = "ready";
+        else if (label === "error") statusClass = "error";
+        setChipLabel(chip, label === "ready" ? "database" : "diagnostics", label === "off" ? "Not configured" : label);
+        chip.title = title;
+        chip.classList.toggle("is-active", label === "ready");
+        chip.classList.toggle("warning", statusClass === "warning");
+        chip.classList.toggle("error", statusClass === "error");
+      }
+
+      function renderGuardSettings() {
+        const status = el("guardSettingsStatus");
+        const detail = el("guardSettingsDetail");
+        if (!status || !detail) return;
+        status.textContent = composerGuardSummary();
+        detail.textContent = guardStatusDetail();
+      }
+
+      function setIconOnlyButton(button, iconName, label) {
+        if (!button) return;
+        button.textContent = "";
+        if (button.tagName === "BUTTON" && !button.getAttribute("type")) button.type = "button";
+        appendLiquidIcon(button, iconName);
+        const sr = document.createElement("span");
+        sr.className = "srOnly";
+        sr.textContent = label;
+        button.appendChild(sr);
+        button.title = label;
+        button.setAttribute("aria-label", label);
+      }
+
+      function setChipLabel(button, iconName, label) {
+        if (!button) return;
+        button.textContent = "";
+        if (button.tagName === "BUTTON" && !button.getAttribute("type")) button.type = "button";
+        appendLiquidIcon(button, iconName);
+        const text = document.createElement("span");
+        text.className = "oc-chip-label oc-liquid-chip-label";
+        text.textContent = label;
+        button.appendChild(text);
+        button.title = label;
+        if (button.tagName === "BUTTON") button.setAttribute("aria-label", label);
+      }
+
+      function appendLiquidIcon(root, iconName) {
+        const holder = document.createElement("span");
+        holder.innerHTML = LIQUID_ICONS[iconName] || LIQUID_ICONS.more;
+        while (holder.firstChild) root.appendChild(holder.firstChild);
+      }
+
+      function renderLiquidBadge(node, text) {
+        for (const badge of Array.from(node.querySelectorAll(".oc-liquid-badge"))) badge.remove();
+        if (!text) return;
+        const badge = document.createElement("span");
+        badge.className = "oc-badge oc-liquid-badge";
+        badge.setAttribute("aria-hidden", "true");
+        badge.textContent = text;
+        node.appendChild(badge);
+      }
 
     function renderComposerStatusBar() {
       const wrap = document.querySelector(".composerWrap");
@@ -2440,7 +3419,7 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       const toggleShortLabel = composerCollapsed ? "Show" : "Hide";
       wrap.className = "composerWrap" + (composerCollapsed ? " collapsed" : "");
       panel.hidden = composerCollapsed;
-      toggle.className = "composerStatusToggle" + (composerCollapsed ? " collapsed" : " expanded");
+	      toggle.className = "composerStatusToggle oc-icon-toggle oc-liquid-toggle" + (composerCollapsed ? " collapsed" : " expanded");
       toggle.setAttribute("aria-expanded", composerCollapsed ? "false" : "true");
       toggle.setAttribute("aria-label", composerCollapsed ? "Show input and context panel" : "Hide input and context panel");
       toggle.title = composerCollapsed ? "Show input and context panel" : "Hide input and context panel";
@@ -2571,10 +3550,10 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       return {
         text: "Ctx " + count,
         title: detail,
-        className: "composerStatusPill context",
+	        className: "composerStatusPill oc-icon-btn oc-liquid-btn context",
         popover: "context",
         ariaLabel: "Context: " + count + ". " + detail,
-        icon: STATUS_ICONS.bookOpen,
+	        icon: STATUS_ICONS.context,
         badgeText: count > 0 ? String(Math.min(count, 99)) : "",
       };
     }
@@ -2593,11 +3572,11 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       return {
         text: view.shortLabel,
         title,
-        className: "composerStatusPill index " + view.kind,
+	        className: "composerStatusPill oc-icon-btn oc-liquid-btn index " + view.kind,
         popover: "index",
         ariaLabel: "Index status: " + view.shortLabel + ". " + title,
         ring: indexStatusRing(graph, stateName, view.kind),
-        ringIcon: STATUS_ICONS.radar,
+	        ringIcon: STATUS_ICONS.database,
       };
     }
 
@@ -2632,7 +3611,7 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
         return {
           text: "Guard warn",
           title: detail,
-          className: "composerStatusPill guard warning",
+	          className: "composerStatusPill oc-icon-btn oc-liquid-btn guard warning",
           popover: "guard",
           ariaLabel: "Guard warning: " + detail,
           icon: STATUS_ICONS.shieldAlert,
@@ -2642,7 +3621,7 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
         return {
           text: "Guard off",
           title: detail,
-          className: "composerStatusPill guard off",
+	          className: "composerStatusPill oc-icon-btn oc-liquid-btn guard off",
           popover: "guard",
           ariaLabel: "Guard off: " + detail,
           icon: STATUS_ICONS.shieldOff,
@@ -2651,7 +3630,7 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       return {
         text: "Guard ok",
         title: detail,
-        className: "composerStatusPill guard ok",
+	        className: "composerStatusPill oc-icon-btn oc-liquid-btn guard ok",
         popover: "guard",
         ariaLabel: "Guard ok: " + detail,
         icon: STATUS_ICONS.shieldCheck,
@@ -2663,11 +3642,11 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
         return {
           text: "Usage",
           title: "Connect to load usage.",
-          className: "composerStatusPill usage pending",
+	          className: "composerStatusPill oc-icon-btn oc-liquid-btn usage pending",
           popover: "usage",
           ariaLabel: "Context usage: connect to load usage.",
           ring: { progress: 0 },
-          ringIcon: STATUS_ICONS.gauge,
+	          ringIcon: STATUS_ICONS.usage,
         };
       }
       const usage = state.usage || {};
@@ -2678,11 +3657,11 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       return {
         text: usage.summary || "Usage pending",
         title,
-        className: "composerStatusPill usage " + kind,
+	        className: "composerStatusPill oc-icon-btn oc-liquid-btn usage " + kind,
         popover: "usage",
         ariaLabel: "Context usage: " + title,
         ring: { progress: contextUsageRatio(usage) ?? 0 },
-        ringIcon: STATUS_ICONS.gauge,
+	        ringIcon: STATUS_ICONS.usage,
       };
     }
 
@@ -2939,36 +3918,41 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       return (item.parts || []).some((part) => part.text || part.detail || part.status);
     }
 
-    function emptyState() {
-      const node = document.createElement("div");
-      node.className = "empty";
-      const title = document.createElement("div");
-      title.className = "emptyTitle";
-      title.textContent = state.connectionState === "connected" ? "Start a focused code conversation" : "Connect OpenCode to start";
-      const copy = document.createElement("div");
-      copy.textContent = "Use @ to reference files, attach context, then ask OpenCode to explain, refactor, or complete code.";
-      node.append(title, copy);
-      const prompts = document.createElement("div");
-      prompts.className = "emptyPrompts";
-      for (const label of ["Explain current file", "Refactor safely", "Review changes"]) {
-        const prompt = document.createElement("span");
-        prompt.className = "emptyPrompt";
-        prompt.textContent = label;
-        prompts.appendChild(prompt);
-      }
+	    function emptyState() {
+	      const node = document.createElement("div");
+	      node.className = "empty";
+        const hero = document.createElement("div");
+        hero.className = "emptyHeroIcon";
+        appendLiquidIcon(hero, "chat");
+	      const title = document.createElement("div");
+	      title.className = "emptyTitle";
+	      title.textContent = state.connectionState === "connected" ? "Ask with context" : "Connect OpenCode";
+	      node.append(hero, title);
+	      const prompts = document.createElement("div");
+	      prompts.className = "emptyPrompts";
+	      for (const item of [
+          { label: "Explain file", prompt: "Explain the current file.", icon: "file" },
+          { label: "Refactor", prompt: "Refactor this safely.", icon: "sparkle" },
+          { label: "Review diff", prompt: "Review the current diff.", icon: "diff" },
+        ]) {
+	        const prompt = document.createElement("button");
+          prompt.type = "button";
+	        prompt.className = "emptyPrompt oc-chip oc-liquid-chip";
+          prompt.title = item.label;
+          prompt.setAttribute("aria-label", item.label);
+          appendLiquidIcon(prompt, item.icon);
+          const label = document.createElement("span");
+          label.className = "oc-chip-label oc-liquid-chip-label";
+	        label.textContent = item.label;
+          prompt.appendChild(label);
+          prompt.addEventListener("click", () => {
+            el("input").value = item.prompt;
+            onComposerInput();
+            el("input").focus();
+          });
+	        prompts.appendChild(prompt);
+	      }
       node.appendChild(prompts);
-      const sessions = (state.sessions || []).slice(0, 3);
-      if (sessions.length > 0) {
-        const recent = document.createElement("div");
-        recent.className = "recentSessions";
-        for (const session of sessions) {
-          const button = document.createElement("button");
-          button.textContent = session.title || "Untitled chat";
-          button.addEventListener("click", () => vscode.postMessage({ type: "selectSession", sessionID: session.id }));
-          recent.appendChild(button);
-        }
-        node.appendChild(recent);
-      }
       return node;
     }
 
@@ -3066,19 +4050,26 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       return actions;
     }
 
-    function messageActionButton(label, title, className, onClick) {
-      const button = document.createElement("button");
-      button.type = "button";
-      button.className = "messageAction " + className;
-      button.textContent = label;
-      button.title = title;
-      button.setAttribute("aria-label", title);
-      button.addEventListener("click", (event) => {
-        event.stopPropagation();
-        onClick(button);
-      });
-      return button;
-    }
+	    function messageActionButton(label, title, className, onClick) {
+	      const button = document.createElement("button");
+	      button.type = "button";
+	      button.className = "messageAction oc-icon-btn oc-liquid-btn " + className;
+        const icon = messageActionIcon(className, label);
+        setIconOnlyButton(button, icon, title);
+	      button.addEventListener("click", (event) => {
+	        event.stopPropagation();
+	        onClick(button);
+	      });
+	      return button;
+	    }
+
+      function messageActionIcon(className, label) {
+        if (className === "copyAnswer" || className === "copyMarkdown") return "copy";
+        if (className === "jumpStructure") return "references";
+        if (className === "expandLong") return label === "Limit" ? "stop" : "more";
+        if (className === "collapseMessage") return label === "Expand" ? "add" : "discard";
+        return "more";
+      }
 
     function toggleMessageCollapse(messageKey) {
       if (collapsedMessages.has(messageKey)) collapsedMessages.delete(messageKey);
@@ -3574,13 +4565,12 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       label.textContent = tableKindLabel(tableData) + " - " + tableData.rows.length + " rows";
       const actions = document.createElement("span");
       actions.className = "tableActions";
-      const copyMarkdown = tableButton("Copy Markdown", "Copy table as Markdown", "copyTable copyTableMarkdown", () => copyTextWithFeedback(tableToMarkdown(tableData), copyMarkdown, "Copied table Markdown."));
-      const copyCsv = tableButton("Copy CSV", "Copy table as CSV", "copyTable copyTableCsv", () => copyTextWithFeedback(tableToCsv(tableData), copyCsv, "Copied table CSV."));
-      const raw = tableButton("Raw", "Show raw table text", "toggleTableRaw", () => {
+      const copyMarkdown = tableButton("copy", "Copy table as Markdown", "copyTable copyTableMarkdown", () => copyTextWithFeedback(tableToMarkdown(tableData), copyMarkdown, "Copied table Markdown."));
+      const copyCsv = tableButton("copy", "Copy table as CSV", "copyTable copyTableCsv", () => copyTextWithFeedback(tableToCsv(tableData), copyCsv, "Copied table CSV."));
+      const raw = tableButton("more", "Show raw table text", "toggleTableRaw", () => {
         const isRaw = block.classList.toggle("raw");
-        raw.textContent = isRaw ? "Table" : "Raw";
-        raw.title = isRaw ? "Show rendered table" : "Show raw table text";
-        raw.setAttribute("aria-label", raw.title);
+        const nextTitle = isRaw ? "Show rendered table" : "Show raw table text";
+        setIconOnlyButton(raw, "more", nextTitle);
         raw.setAttribute("aria-pressed", isRaw ? "true" : "false");
       });
       raw.setAttribute("aria-pressed", "false");
@@ -3603,13 +4593,11 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       return block;
     }
 
-    function tableButton(label, title, className, onClick) {
+    function tableButton(iconName, title, className, onClick) {
       const button = document.createElement("button");
       button.type = "button";
-      button.className = className;
-      button.textContent = label;
-      button.title = title;
-      button.setAttribute("aria-label", title);
+      button.className = className + " oc-icon-btn oc-liquid-btn";
+      setIconOnlyButton(button, iconName, title);
       button.addEventListener("click", (event) => {
         event.stopPropagation();
         onClick();
@@ -3777,12 +4765,11 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       const label = document.createElement("span");
       label.className = "codeLanguage";
       label.textContent = language || "plain text";
-      const copy = document.createElement("button");
-      copy.className = "copyCode";
-      copy.type = "button";
-      copy.title = "Copy code block";
-      copy.textContent = "Copy";
-      copy.addEventListener("click", () => copyCode(codeText, copy));
+	      const copy = document.createElement("button");
+	      copy.className = "copyCode oc-icon-btn oc-liquid-btn";
+	      copy.type = "button";
+	      setIconOnlyButton(copy, "copy", "Copy code block");
+	      copy.addEventListener("click", () => copyCode(codeText, copy));
       head.append(label, copy);
       const pre = document.createElement("pre");
       const code = document.createElement("code");
@@ -3972,27 +4959,37 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       return "";
     }
 
-    async function copyTextWithFeedback(text, button, successMessage) {
-      const previousLabel = button ? button.textContent : "";
-      try {
-        await navigator.clipboard.writeText(String(text || ""));
-        if (button) {
-          button.textContent = "Copied";
+	    async function copyTextWithFeedback(text, button, successMessage) {
+	      const previousLabel = button ? (button.getAttribute("aria-label") || button.title || button.textContent || "Copy") : "";
+	      try {
+	        await navigator.clipboard.writeText(String(text || ""));
+	        if (button) setButtonTemporaryLabel(button, "Copied", previousLabel);
+	        setNotice(successMessage || "Copied.");
+	      } catch {
+	        if (button) setButtonTemporaryLabel(button, "Failed", previousLabel);
+	        setNotice("Copy failed.");
+	      }
+	    }
+
+      function setButtonTemporaryLabel(button, label, fallback) {
+        const sr = button.querySelector(".srOnly");
+        if (sr) {
+          sr.textContent = label;
+          button.title = label;
+          button.setAttribute("aria-label", label);
           window.setTimeout(() => {
-            button.textContent = previousLabel || "Copy";
+            sr.textContent = fallback || "Copy";
+            button.title = fallback || "Copy";
+            button.setAttribute("aria-label", fallback || "Copy");
           }, 1200);
+          return;
         }
-        setNotice(successMessage || "Copied.");
-      } catch {
-        if (button) {
-          button.textContent = "Failed";
-          window.setTimeout(() => {
-            button.textContent = previousLabel || "Copy";
-          }, 1200);
-        }
-        setNotice("Copy failed.");
+        const previousText = button.textContent || fallback || "Copy";
+        button.textContent = label;
+        window.setTimeout(() => {
+          button.textContent = previousText;
+        }, 1200);
       }
-    }
 
     async function copyCode(text, button) {
       await copyTextWithFeedback(text, button, "Copied code.");
@@ -4422,6 +5419,7 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
           ? ", rerank unavailable" + (rag.rerankLastError ? ": " + rag.rerankLastError : "")
           : "";
       if (rag.embeddingEnabled) {
+        if (rag.availability === "indexing") return ragIndexingMeta(rag) + rerank;
         if (rag.availability === "partial") {
           return "RAG partial: " + formatCount(rag.embeddedChunks || 0) + "/" + formatCount(rag.chunks || 0) + " chunks, " + formatCount(rag.pendingChunkCount || Math.max(0, (rag.chunks || 0) - (rag.embeddedChunks || 0))) + " pending" + ragResumeScheduleMeta(rag) + rerank;
         }
@@ -4431,11 +5429,26 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
         return "RAG ready: " + formatCount(rag.embeddedChunks || 0) + "/" + formatCount(rag.chunks || 0) + " chunks" + rerank;
       }
       if (rag.availability === "checking") return "RAG checking" + rerank;
+      if (rag.availability === "indexing") return ragIndexingMeta(rag) + rerank;
       if (rag.availability === "partial") return "RAG partial: " + formatCount(rag.embeddedChunks || 0) + "/" + formatCount(rag.chunks || 0) + " chunks" + ragResumeScheduleMeta(rag) + rerank;
       if (rag.availability === "paused") return "RAG indexing paused: " + ragPausedReasonMeta(rag) + ragResumeScheduleMeta(rag) + rerank;
       if (rag.availability === "not-indexed") return "RAG not indexed" + (rag.fallbackReason ? ": " + rag.fallbackReason : "") + rerank;
       if (rag.availability === "unavailable") return "RAG unavailable" + (rag.fallbackReason ? ": " + rag.fallbackReason : "") + rerank;
       return "RAG not configured" + rerank;
+    }
+
+    function ragIndexingMeta(rag) {
+      const progress = rag.indexProgress || {};
+      const chunks = formatCount(rag.embeddedChunks || 0) + "/" + formatCount(rag.chunks || 0) + " chunks";
+      const pending = formatCount(rag.pendingChunkCount || Math.max(0, (rag.chunks || 0) - (rag.embeddedChunks || 0))) + " pending";
+      if (progress.phase === "batch") {
+        const requestLimit = progress.requestLimit && progress.requestLimit > 0 ? String(progress.requestLimit) : "unlimited";
+        return "RAG indexing: " + chunks + ", batch " + progress.batchIndex + "/" + progress.batchCount + ", request " + progress.requestNumber + "/" + requestLimit + ", " + pending;
+      }
+      if (progress.phase === "delay") return "RAG indexing: " + chunks + ", waiting " + progress.delayMs + "ms, " + pending;
+      if (progress.phase === "rate-limit") return "RAG indexing: " + chunks + ", rate limited retry " + progress.retry + "/" + progress.maxRetries + ", " + pending;
+      if (progress.phase === "paused") return "RAG indexing paused: " + chunks + ", " + pending;
+      return "RAG indexing: " + chunks + ", " + pending;
     }
 
     function ragPausedReasonMeta(rag) {
@@ -4502,14 +5515,11 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       if (state.modelError) setNotice(state.modelError);
     }
 
-    function setIconButtonState(button, input) {
-      button.disabled = Boolean(input.disabled);
-      button.classList.toggle("loading", Boolean(input.loading));
-      button.title = input.label;
-      button.setAttribute("aria-label", input.label);
-      const label = button.querySelector(".srOnly");
-      if (label) label.textContent = input.label;
-    }
+	    function setIconButtonState(button, input) {
+	      button.disabled = Boolean(input.disabled);
+	      button.classList.toggle("loading", Boolean(input.loading));
+        setIconOnlyButton(button, "refresh", input.label);
+	    }
 
     function modelOption(value, label) {
       const option = document.createElement("option");
@@ -4518,14 +5528,14 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       return option;
     }
 
-    function renderModelTrigger() {
-      const trigger = el("modelTrigger");
-      const label = state.loadingModels ? "Loading models" : currentModelLabel();
-      trigger.textContent = shortModelName(label);
-      trigger.title = label;
-      trigger.setAttribute("aria-expanded", modelMenuOpen ? "true" : "false");
-      trigger.className = "modelTrigger" + (modelMenuOpen ? " open" : "");
-    }
+	    function renderModelTrigger() {
+	      const trigger = el("modelTrigger");
+	      const label = state.loadingModels ? "Loading models" : currentModelLabel();
+        setChipLabel(trigger, "server", shortModelName(label));
+	      trigger.title = label;
+	      trigger.setAttribute("aria-expanded", modelMenuOpen ? "true" : "false");
+	      trigger.className = "modelTrigger oc-chip oc-liquid-chip" + (modelMenuOpen ? " open is-active" : "");
+	    }
 
     function toggleModelMenu() {
       modelMenuOpen = !modelMenuOpen;
@@ -4568,16 +5578,16 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       renderAgentMenu();
     }
 
-    function renderAgentTrigger() {
-      const trigger = el("agentTrigger");
-      const label = state.loadingAgents ? "Loading agents" : currentAgentLabel();
-      trigger.textContent = label;
-      trigger.title = agentTitle();
-      trigger.setAttribute("aria-expanded", agentMenuOpen ? "true" : "false");
-      trigger.className = "modelTrigger agentTrigger"
-        + (agentMenuOpen ? " open" : "")
-        + (localOnlyAgentBlocked() ? " warning" : " ready");
-    }
+	    function renderAgentTrigger() {
+	      const trigger = el("agentTrigger");
+	      const label = state.loadingAgents ? "Loading agents" : currentAgentLabel();
+        setChipLabel(trigger, localOnlyAgentBlocked() ? "diagnostics" : "agent", label);
+	      trigger.title = agentTitle();
+	      trigger.setAttribute("aria-expanded", agentMenuOpen ? "true" : "false");
+	      trigger.className = "modelTrigger agentTrigger oc-chip oc-liquid-chip"
+	        + (agentMenuOpen ? " open" : "")
+	        + (localOnlyAgentBlocked() ? " warning" : " ready");
+	    }
 
     function toggleAgentMenu() {
       agentMenuOpen = !agentMenuOpen;
@@ -4739,7 +5749,7 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       if (!state.localOnlyMode && !state.selectedAgent) return "No agent";
       const current = state.selectedAgent || state.localOnlyAgent || "vscode-local";
       if (state.loadingAgents) return "Loading agent";
-      if (localOnlyAgentBlocked()) return "Missing " + current;
+      if (localOnlyAgentBlocked()) return "Missing";
       return current;
     }
 
@@ -4834,8 +5844,11 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
         root.appendChild(row);
       }
       mentionResults.forEach((file, index) => {
-        const node = document.createElement("div");
+        const node = document.createElement("button");
+        node.type = "button";
         node.className = "suggestion " + (index === activeSuggestion ? "active" : "");
+        node.title = file.label;
+        node.setAttribute("aria-label", file.label);
         const icon = document.createElement("span");
         icon.className = "suggestionIcon";
         icon.textContent = file.type === "folder" ? "dir" : "file";

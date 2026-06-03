@@ -29,8 +29,9 @@ describe("model selection flow", () => {
     expect(chatHtmlSource).toContain('id="modelMenu"')
     expect(chatHtmlSource).toContain('id="refreshModels"')
     expect(chatHtmlSource).toContain('class="composerActionRow"')
-    expect(chatHtmlSource).toContain('class="secondary refreshButton composerIconButton"')
-    expect(chatHtmlSource).toContain('class="toggleShort">Diff</span>')
+    expect(chatHtmlSource).toContain('class="composerIconButton oc-icon-btn oc-liquid-btn" type="button" title="Refresh models"')
+    expect(chatHtmlSource).toContain('id="diffToggle" class="oc-icon-toggle oc-liquid-toggle"')
+    expect(chatHtmlSource).toContain('aria-label="Include git diff" aria-pressed="false"')
     expect(chatHtmlSource).not.toContain("composerIconActions")
     expect(chatHtmlSource).toContain("setIconButtonState")
     expect(chatHtmlSource).toContain("Refreshing models")
@@ -49,12 +50,29 @@ describe("model selection flow", () => {
       chatHtmlSource.indexOf("    .composer:focus-within"),
     )
     const triggerRule = chatHtmlSource.slice(
-      chatHtmlSource.indexOf("    .modelTrigger {"),
-      chatHtmlSource.indexOf("    .modelTrigger::after"),
+      chatHtmlSource.lastIndexOf("    .modelTrigger {"),
+      chatHtmlSource.indexOf("    .modelTrigger:hover", chatHtmlSource.lastIndexOf("    .modelTrigger {")),
+    )
+    const toolbarModelRuleStart = chatHtmlSource.indexOf("    .composerToolbar .modelTrigger {")
+    const toolbarRule = chatHtmlSource.slice(
+      chatHtmlSource.lastIndexOf("    .composerToolbar {", toolbarModelRuleStart),
+      toolbarModelRuleStart,
+    )
+    const toolbarModelRule = chatHtmlSource.slice(
+      toolbarModelRuleStart,
+      chatHtmlSource.indexOf("    .composerToolbar .agentTrigger"),
+    )
+    const toolbarSendRule = chatHtmlSource.slice(
+      chatHtmlSource.indexOf("    .composerToolbar .send {"),
+      chatHtmlSource.indexOf("    .composerToolbar .oc-liquid-chip-label"),
+    )
+    const actionRowRule = chatHtmlSource.slice(
+      chatHtmlSource.lastIndexOf("    .composerActionRow {"),
+      chatHtmlSource.indexOf("    .toggles {", chatHtmlSource.lastIndexOf("    .composerActionRow {")),
     )
     const sendRule = chatHtmlSource.slice(
       chatHtmlSource.indexOf("    .send {"),
-      chatHtmlSource.indexOf("    .send:hover"),
+      chatHtmlSource.indexOf("    .composerHint"),
     )
     const menuRule = chatHtmlSource.slice(
       chatHtmlSource.indexOf("    .modelMenu {"),
@@ -67,13 +85,21 @@ describe("model selection flow", () => {
     expect(composerRule).not.toContain("overflow: hidden;")
     expect(chatHtmlSource).toContain("composerToolbar")
     expect(chatHtmlSource).toContain("composerHint")
-    expect(triggerRule).toContain("z-index: 2;")
-    expect(triggerRule).toContain("position: relative;")
-    expect(triggerRule).toContain("width: 100%;")
-    expect(triggerRule).toContain("min-width: 0;")
+    expect(toolbarRule).toContain("display: flex;")
+    expect(toolbarRule).toContain("align-items: center;")
+    expect(toolbarRule).not.toContain("grid-template-columns")
+    expect(toolbarModelRule).toContain("flex: 0 1 160px;")
+    expect(toolbarModelRule).toContain("max-width: min(180px, 42%);")
+    expect(toolbarSendRule).toContain("flex: 0 0 26px;")
+    expect(toolbarSendRule).toContain("margin-left: auto;")
+    expect(actionRowRule).toContain("justify-content: flex-start;")
+    expect(actionRowRule).not.toContain("justify-content: space-between;")
+    expect(triggerRule).toContain("height: 28px;")
+    expect(triggerRule).toContain("min-height: 28px;")
+    expect(triggerRule).toContain("padding: 0 8px;")
+    expect(triggerRule).toContain("border-color: var(--oc-border);")
     expect(triggerRule).not.toContain("position: absolute;")
-    expect(triggerRule).toContain("border: 1px solid")
-    expect(triggerRule).toContain("background: var(--vscode-dropdown-background")
+    expect(triggerRule).toContain("background: transparent;")
     expect(sendRule).not.toContain("position: absolute;")
     expect(chatHtmlSource).toContain(".modelTrigger::after")
     expect(chatHtmlSource).toContain('aria-haspopup="listbox"')
@@ -90,8 +116,8 @@ describe("model selection flow", () => {
     expect(menuRule).toContain("scrollbar-gutter: stable;")
     expect(menuRule).not.toContain("right: 36px;")
     expect(menuRule).not.toContain("bottom: calc(100% + 6px);")
-    expect(chatHtmlSource).toContain("function positionModelMenu()")
-    expect(chatHtmlSource).toContain("positionModelMenu();")
+    expect(chatHtmlSource).toContain("function positionPopupMenu")
+    expect(chatHtmlSource).toContain('positionPopupMenu("modelMenu", "modelTrigger", modelMenuOpen)')
     expect(chatHtmlSource).toContain('root.style.maxHeight = Math.floor(maxHeight) + "px";')
     expect(chatHtmlSource).toContain('root.style.bottom = Math.round(bottom) + "px";')
   })

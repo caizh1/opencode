@@ -115,19 +115,19 @@ export async function activate(context: vscode.ExtensionContext) {
   let chatProvider: RemoteChatViewProvider
   const codeGraph = new LocalCodeGraphService(context, output, getSettings, () => readRagApiKey(context), () => chatProvider?.refreshCodeGraphStatus())
   context.subscriptions.push(codeGraph)
-  let ragConfigurationRefreshTimer: ReturnType<typeof setTimeout> | undefined
-  const scheduleRagConfigurationRefresh = () => {
-    if (ragConfigurationRefreshTimer) clearTimeout(ragConfigurationRefreshTimer)
-    ragConfigurationRefreshTimer = setTimeout(() => {
-      ragConfigurationRefreshTimer = undefined
-      void codeGraph.refreshRagConfiguration().catch((error) => {
+  let ragConfigurationApplyTimer: ReturnType<typeof setTimeout> | undefined
+  const scheduleRagConfigurationApply = () => {
+    if (ragConfigurationApplyTimer) clearTimeout(ragConfigurationApplyTimer)
+    ragConfigurationApplyTimer = setTimeout(() => {
+      ragConfigurationApplyTimer = undefined
+      void codeGraph.applyRagConfiguration().catch((error) => {
         const message = error instanceof Error ? error.message : String(error)
-        output.appendLine(`[rag] configuration refresh failed: ${message}`)
+        output.appendLine(`[rag] configuration apply failed: ${message}`)
       })
     }, RAG_CONFIG_REFRESH_DEBOUNCE_MS)
   }
   context.subscriptions.push(new vscode.Disposable(() => {
-    if (ragConfigurationRefreshTimer) clearTimeout(ragConfigurationRefreshTimer)
+    if (ragConfigurationApplyTimer) clearTimeout(ragConfigurationApplyTimer)
   }))
   const analysisBridge = new LocalAnalysisBridge(
     output,
@@ -152,7 +152,7 @@ export async function activate(context: vscode.ExtensionContext) {
     promptRagApiKey: async () => {
       const saved = await promptAndSaveRagApiKey(context)
       if (saved) vscode.window.setStatusBarMessage("RAG API key saved", 2000)
-      if (saved) await codeGraph.refreshRagConfiguration()
+      if (saved) await codeGraph.applyRagConfiguration()
       return saved
     },
     connectWithSettings,
@@ -166,7 +166,7 @@ export async function activate(context: vscode.ExtensionContext) {
   context.subscriptions.push(
     vscode.workspace.onDidChangeConfiguration((event) => {
       if (!event.affectsConfiguration("opencode.remote.rag")) return
-      scheduleRagConfigurationRefresh()
+      scheduleRagConfigurationApply()
     }),
   )
 

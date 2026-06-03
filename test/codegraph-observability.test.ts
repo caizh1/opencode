@@ -5,6 +5,7 @@ import { join } from "node:path"
 describe("code graph query observability", () => {
   const serviceSource = readFileSync(join(import.meta.dir, "..", "src", "codegraph-service.ts"), "utf8")
   const querySource = readFileSync(join(import.meta.dir, "..", "src", "codegraph-query.ts"), "utf8")
+  const typesSource = readFileSync(join(import.meta.dir, "..", "src", "types.ts"), "utf8")
 
   test("logs query metrics to the output channel", () => {
     expect(serviceSource).toContain("[codegraph-query]")
@@ -38,6 +39,8 @@ describe("code graph query observability", () => {
 
   test("separates lightweight RAG probes from vector index rebuilds", () => {
     expect(serviceSource).toContain("async testRagConfiguration()")
+    expect(serviceSource).toContain("async refreshRagConfiguration()")
+    expect(serviceSource).toContain("await this.testRagConfiguration()")
     expect(serviceSource).toContain("private async probeRagConfiguration()")
     expect(serviceSource).toContain("private async rebuildRagIndex")
     expect(serviceSource).toContain("async applyRagConfiguration()")
@@ -52,7 +55,14 @@ describe("code graph query observability", () => {
     expect(serviceSource).toContain("runPendingRagRefreshWhenReady(\"RAG configuration changed\"")
     expect(serviceSource).toContain("Waiting for local code graph indexing before RAG rebuild.")
     expect(serviceSource).toContain("availability: \"not-indexed\"")
+    expect(serviceSource).toContain("availability: \"indexing\"")
+    expect(serviceSource).toContain("private setAbortedRagIndexStatus")
+    expect(serviceSource).toContain("this.setAbortedRagIndexStatus(policy.kind, rerankProbe, message)")
+    expect(serviceSource).toContain("RAG vector index build was interrupted before vectors were saved")
     expect(serviceSource).toContain("[rag-index] embedding")
+    expect(serviceSource).toContain("chunks=${event.embeddedChunks}/${event.chunks}")
+    expect(typesSource).toContain('"checking" | "indexing"')
+    expect(typesSource).toContain("export type RagIndexProgress")
   })
 
   test("marks code graph ready before scheduling dependent RAG rebuilds", () => {

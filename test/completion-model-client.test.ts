@@ -191,7 +191,7 @@ function settings(baseUrl: string, input: { completionModel?: string; defaultMod
         enabled: false,
         endpoint: "",
         model: "",
-        batchSize: 32,
+        batchSize: 128,
         timeoutMs: 30000,
         requestDelayMs: 500,
         maxRequestsPerRun: 100,

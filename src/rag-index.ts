@@ -40,7 +40,15 @@ export type RagSerializedShardMetadata = {
   chunks: RagChunk[]
 }
 
-export type RagIndexBuildProgress =
+type RagIndexBuildProgressCounts = {
+  embeddedChunks: number
+  chunks: number
+  pendingChunkCount: number
+}
+
+type RagRateLimitProgressInput = Omit<Extract<RagIndexBuildProgress, { phase: "rate-limit" }>, keyof RagIndexBuildProgressCounts>
+
+export type RagIndexBuildProgress = (
   | {
     phase: "batch"
     batchIndex: number
@@ -68,6 +76,7 @@ export type RagIndexBuildProgress =
     requestLimit: number
     message?: string
   }
+) & RagIndexBuildProgressCounts
 
 export async function buildRagVectorIndex(input: {
   index: CodeGraphIndex
@@ -136,6 +145,7 @@ export async function buildRagVectorIndex(input: {
           requestsUsed,
           requestLimit,
           message: "request budget reached",
+          ...progressCounts(chunks.length, nextChunks.length),
         })
         break
       }
@@ -160,10 +170,14 @@ export async function buildRagVectorIndex(input: {
             requestNumber: requestsUsed,
             requestLimit,
             inputCount: batch.length,
+            ...progressCounts(chunks.length, nextChunks.length),
           })
           return true
         },
-        onRateLimit: (event) => input.onProgress?.(event),
+        onRateLimit: (event) => input.onProgress?.({
+          ...event,
+          ...progressCounts(chunks.length, nextChunks.length),
+        }),
       })
       throwIfAborted(input.signal)
 
@@ -177,6 +191,7 @@ export async function buildRagVectorIndex(input: {
           requestsUsed,
           requestLimit,
           message: lastError,
+          ...progressCounts(chunks.length, nextChunks.length),
         })
         break
       }
@@ -190,6 +205,7 @@ export async function buildRagVectorIndex(input: {
           requestsUsed,
           requestLimit,
           message: lastError,
+          ...progressCounts(chunks.length, nextChunks.length),
         })
         break
       }
@@ -214,7 +230,11 @@ export async function buildRagVectorIndex(input: {
 
       const hasMore = offset + batchSize < pending.length
       if (hasMore && requestDelayMs > 0 && (requestLimit <= 0 || requestsUsed < requestLimit)) {
-        input.onProgress?.({ phase: "delay", delayMs: requestDelayMs })
+        input.onProgress?.({
+          phase: "delay",
+          delayMs: requestDelayMs,
+          ...progressCounts(chunks.length, nextChunks.length),
+        })
         await sleepWithAbort(requestDelayMs, input.signal, sleep)
       }
     }
@@ -366,6 +386,14 @@ function createVectorIndex(input: {
   }
 }
 
+function progressCounts(totalChunks: number, embeddedChunks: number): RagIndexBuildProgressCounts {
+  return {
+    embeddedChunks,
+    chunks: totalChunks,
+    pendingChunkCount: Math.max(0, totalChunks - embeddedChunks),
+  }
+}
+
 async function embedBatchWithRetry(input: {
   provider: EmbeddingProvider
   batch: RagChunk[]
@@ -375,7 +403,7 @@ async function embedBatchWithRetry(input: {
   retryBackoffMs: number
   sleep: (ms: number) => Promise<void>
   onBeforeRequest: () => boolean
-  onRateLimit: (event: Extract<RagIndexBuildProgress, { phase: "rate-limit" }>) => void
+  onRateLimit: (event: RagRateLimitProgressInput) => void
 }): Promise<{ vectors: number[][]; pausedReason?: RagIndexPausedReason; lastError?: string; resumeDelayMs?: number }> {
   for (let retry = 0; retry <= input.maxRetries; retry++) {
     throwIfAborted(input.signal)

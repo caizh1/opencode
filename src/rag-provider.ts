@@ -65,6 +65,7 @@ export function checkRagEndpoint(endpoint: string, allowedHosts: string[] = []):
 
 export function createHttpEmbeddingProvider(settings: RagSettings, apiKey?: string, diagnostics?: RagHttpDiagnostics): EmbeddingProvider | undefined {
   if (!settings.embedding.endpoint) return undefined
+  if (settings.embedding.configError) throw new Error(settings.embedding.configError)
   const policy = checkRagEndpoint(settings.embedding.endpoint, settings.allowedHosts)
   if (!policy.ok || !policy.url) throw new Error(policy.reason ?? "embedding endpoint is not allowed")
   return {

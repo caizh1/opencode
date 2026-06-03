@@ -4,6 +4,13 @@ import type { CodeGraphAnalysisMode, CompletionLogLevel, CompletionProfile, Comp
 export const PASSWORD_SECRET_KEY = "opencode.remote.password"
 export const COMPLETION_API_KEY_SECRET_KEY = "opencode.remote.completion.apiKey"
 export const RAG_API_KEY_SECRET_KEY = "opencode.remote.rag.apiKey"
+export const RAG_EMBEDDING_BATCH_SIZE_DEFAULT = 128
+export const RAG_EMBEDDING_BATCH_SIZE_OPTIONS = [32, 64, 128, 256, 512] as const
+export const RAG_EMBEDDING_BATCH_SIZE_MIN = 32
+export const RAG_EMBEDDING_BATCH_SIZE_MAX = 512
+export const RAG_EMBEDDING_BATCH_SIZE_ERROR = "Embedding batch size must be one of 32, 64, 128, 256, or 512."
+export const RAG_EMBEDDING_TIMEOUT_DEFAULT_MS = 30000
+export const RAG_EMBEDDING_TIMEOUT_LARGE_BATCH_MS = 90000
 
 export type ConnectionSettingsInput = {
   serverUrl: string
@@ -26,7 +33,7 @@ export type RagSettingsInput = {
   embeddingEndpoint: string
   embeddingModel: string
   embeddingBatchSize: number
-  embeddingTimeoutMs: number
+  embeddingTimeoutMs?: number
   embeddingRequestDelayMs: number
   embeddingMaxRequestsPerRun: number
   embeddingMaxRetries: number
@@ -40,10 +47,16 @@ export type RagSettingsInput = {
   rerankTopK: number
 }
 
+export type SettingsUpdate = {
+  key: string
+  value: unknown
+}
+
 export function readRemoteSettings(): RemoteSettings {
   const config = vscode.workspace.getConfiguration("opencode.remote")
   const ragEmbeddingEndpoint = normalizeServerUrl(config.get<string>("rag.embedding.endpoint", ""))
   const ragRerankEndpoint = normalizeServerUrl(config.get<string>("rag.rerank.endpoint", ""))
+  const ragEmbeddingBatchSize = readRagEmbeddingBatchSize(config.get<unknown>("rag.embedding.batchSize", RAG_EMBEDDING_BATCH_SIZE_DEFAULT))
   return {
     serverUrl: normalizeServerUrl(config.get<string>("serverUrl", "http://localhost:4096")),
     username: config.get<string>("username", "opencode"),
@@ -100,11 +113,12 @@ export function readRemoteSettings(): RemoteSettings {
     },
     rag: {
       embedding: {
-        enabled: Boolean(ragEmbeddingEndpoint),
+        enabled: Boolean(ragEmbeddingEndpoint) && !ragEmbeddingBatchSize.configError,
         endpoint: ragEmbeddingEndpoint,
         model: config.get<string>("rag.embedding.model", "").trim(),
-        batchSize: Math.max(1, Math.min(256, config.get<number>("rag.embedding.batchSize", 32))),
-        timeoutMs: Math.max(250, Math.min(120000, config.get<number>("rag.embedding.timeoutMs", 30000))),
+        batchSize: ragEmbeddingBatchSize.batchSize,
+        configError: ragEmbeddingBatchSize.configError,
+        timeoutMs: ragEmbeddingTimeoutMsForBatchSize(ragEmbeddingBatchSize.batchSize),
         requestDelayMs: Math.max(0, Math.min(60000, config.get<number>("rag.embedding.requestDelayMs", 500))),
         maxRequestsPerRun: Math.max(0, Math.min(100000, config.get<number>("rag.embedding.maxRequestsPerRun", 100))),
         maxRetries: Math.max(0, Math.min(10, config.get<number>("rag.embedding.maxRetries", 3))),
@@ -238,22 +252,32 @@ export async function saveCompletionSettings(input: CompletionSettingsInput) {
 }
 
 export async function saveRagSettings(input: RagSettingsInput) {
+  const updates = ragSettingsUpdates(input)
   const config = vscode.workspace.getConfiguration("opencode.remote")
-  await config.update("rag.embedding.endpoint", normalizeServerUrl(input.embeddingEndpoint), vscode.ConfigurationTarget.Global)
-  await config.update("rag.embedding.model", input.embeddingModel.trim(), vscode.ConfigurationTarget.Global)
-  await config.update("rag.embedding.batchSize", clampInteger(input.embeddingBatchSize, 1, 256, 32), vscode.ConfigurationTarget.Global)
-  await config.update("rag.embedding.timeoutMs", clampInteger(input.embeddingTimeoutMs, 250, 120000, 30000), vscode.ConfigurationTarget.Global)
-  await config.update("rag.embedding.requestDelayMs", clampInteger(input.embeddingRequestDelayMs, 0, 60000, 500), vscode.ConfigurationTarget.Global)
-  await config.update("rag.embedding.maxRequestsPerRun", clampInteger(input.embeddingMaxRequestsPerRun, 0, 100000, 100), vscode.ConfigurationTarget.Global)
-  await config.update("rag.embedding.maxRetries", clampInteger(input.embeddingMaxRetries, 0, 10, 3), vscode.ConfigurationTarget.Global)
-  await config.update("rag.embedding.retryBackoffMs", clampInteger(input.embeddingRetryBackoffMs, 0, 120000, 2000), vscode.ConfigurationTarget.Global)
-  await config.update("rag.embedding.resumeAutomatically", Boolean(input.embeddingResumeAutomatically), vscode.ConfigurationTarget.Global)
-  await config.update("rag.embedding.resumeDelayMs", clampInteger(input.embeddingResumeDelayMs, 0, 3600000, 60000), vscode.ConfigurationTarget.Global)
-  await config.update("rag.rerank.endpoint", normalizeServerUrl(input.rerankEndpoint), vscode.ConfigurationTarget.Global)
-  await config.update("rag.rerank.model", input.rerankModel.trim(), vscode.ConfigurationTarget.Global)
-  await config.update("rag.allowedHosts", cleanStringArray(input.allowedHosts), vscode.ConfigurationTarget.Global)
-  await config.update("rag.vectorTopK", clampInteger(input.vectorTopK, 0, 200, 24), vscode.ConfigurationTarget.Global)
-  await config.update("rag.rerankTopK", clampInteger(input.rerankTopK, 0, 200, 16), vscode.ConfigurationTarget.Global)
+  for (const update of updates) {
+    await config.update(update.key, update.value, vscode.ConfigurationTarget.Global)
+  }
+}
+
+export function ragSettingsUpdates(input: RagSettingsInput): SettingsUpdate[] {
+  const embeddingBatchSize = validateRagEmbeddingBatchSize(input.embeddingBatchSize)
+  return [
+    { key: "rag.embedding.endpoint", value: normalizeServerUrl(input.embeddingEndpoint) },
+    { key: "rag.embedding.model", value: input.embeddingModel.trim() },
+    { key: "rag.embedding.batchSize", value: embeddingBatchSize },
+    { key: "rag.embedding.timeoutMs", value: ragEmbeddingTimeoutMsForBatchSize(embeddingBatchSize) },
+    { key: "rag.embedding.requestDelayMs", value: clampInteger(input.embeddingRequestDelayMs, 0, 60000, 500) },
+    { key: "rag.embedding.maxRequestsPerRun", value: clampInteger(input.embeddingMaxRequestsPerRun, 0, 100000, 100) },
+    { key: "rag.embedding.maxRetries", value: clampInteger(input.embeddingMaxRetries, 0, 10, 3) },
+    { key: "rag.embedding.retryBackoffMs", value: clampInteger(input.embeddingRetryBackoffMs, 0, 120000, 2000) },
+    { key: "rag.embedding.resumeAutomatically", value: Boolean(input.embeddingResumeAutomatically) },
+    { key: "rag.embedding.resumeDelayMs", value: clampInteger(input.embeddingResumeDelayMs, 0, 3600000, 60000) },
+    { key: "rag.rerank.endpoint", value: normalizeServerUrl(input.rerankEndpoint) },
+    { key: "rag.rerank.model", value: input.rerankModel.trim() },
+    { key: "rag.allowedHosts", value: cleanStringArray(input.allowedHosts) },
+    { key: "rag.vectorTopK", value: clampInteger(input.vectorTopK, 0, 200, 24) },
+    { key: "rag.rerankTopK", value: clampInteger(input.rerankTopK, 0, 200, 16) },
+  ]
 }
 
 export function settingsFromConnectionInput(input: ConnectionSettingsInput): RemoteSettings {
@@ -302,6 +326,40 @@ function cleanStringArray(input: unknown[]) {
     .filter((item): item is string => typeof item === "string")
     .map((item) => item.trim())
     .filter((item) => item.length > 0)
+}
+
+export function readRagEmbeddingBatchSize(input: unknown) {
+  const value = Number(input)
+  if (!Number.isFinite(value)) {
+    return {
+      batchSize: RAG_EMBEDDING_BATCH_SIZE_DEFAULT,
+      configError: RAG_EMBEDDING_BATCH_SIZE_ERROR,
+    }
+  }
+  if (!Number.isInteger(value) || !isAllowedRagEmbeddingBatchSize(value)) {
+    return {
+      batchSize: Math.floor(value),
+      configError: RAG_EMBEDDING_BATCH_SIZE_ERROR,
+    }
+  }
+  return { batchSize: value }
+}
+
+export function validateRagEmbeddingBatchSize(input: unknown) {
+  const value = Number(input)
+  if (!Number.isFinite(value)) return RAG_EMBEDDING_BATCH_SIZE_DEFAULT
+  if (!Number.isInteger(value) || !isAllowedRagEmbeddingBatchSize(value)) {
+    throw new Error(RAG_EMBEDDING_BATCH_SIZE_ERROR)
+  }
+  return value
+}
+
+export function ragEmbeddingTimeoutMsForBatchSize(input: unknown) {
+  return Number(input) === RAG_EMBEDDING_BATCH_SIZE_MAX ? RAG_EMBEDDING_TIMEOUT_LARGE_BATCH_MS : RAG_EMBEDDING_TIMEOUT_DEFAULT_MS
+}
+
+function isAllowedRagEmbeddingBatchSize(value: number) {
+  return RAG_EMBEDDING_BATCH_SIZE_OPTIONS.includes(value as typeof RAG_EMBEDDING_BATCH_SIZE_OPTIONS[number])
 }
 
 function clampInteger(input: number, min: number, max: number, fallback: number) {
