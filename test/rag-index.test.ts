@@ -157,6 +157,45 @@ describe("local RAG vector index", () => {
     expect(createRagSerializedManifest(vectorIndex).sourceIndexUpdatedAt).toBe(99)
   })
 
+  test("records elapsed time and worker status in progress, checkpoints, and manifests", async () => {
+    const index = sampleIndex()
+    const progressElapsed: number[] = []
+    const partials: Array<{ buildElapsedMs?: number; activeWorkers?: number; maxWorkers?: number }> = []
+    const vectorIndex = await buildRagVectorIndex({
+      index,
+      provider: recordingEmbeddingProvider(),
+      initialElapsedMs: 1234,
+      batchSize: 1,
+      concurrentRequests: 1,
+      maxRequestsPerRun: 2,
+      requestDelayMs: 0,
+      checkpointChunkInterval: 1,
+      checkpointIntervalMs: 0,
+      onProgress: (event) => {
+        progressElapsed.push(event.elapsedMs)
+        expect(event.workerStatus.activeWorkers).toBe(1)
+        expect(event.workerStatus.maxWorkers).toBe(2)
+      },
+      onIndexUpdate: async (partial) => {
+        partials.push({
+          buildElapsedMs: partial.buildElapsedMs,
+          activeWorkers: partial.workerStatus?.activeWorkers,
+          maxWorkers: partial.workerStatus?.maxWorkers,
+        })
+      },
+    })
+
+    expect(progressElapsed.length).toBeGreaterThan(0)
+    expect(progressElapsed.every((elapsedMs) => elapsedMs >= 1234)).toBe(true)
+    expect(partials[0]).toMatchObject({ activeWorkers: 1, maxWorkers: 2 })
+    expect(partials[0].buildElapsedMs).toBeGreaterThanOrEqual(1234)
+    expect(vectorIndex.buildElapsedMs).toBeGreaterThanOrEqual(1234)
+    expect(vectorIndex.workerStatus).toMatchObject({ activeWorkers: 1, maxWorkers: 2 })
+    const manifest = createRagSerializedManifest(vectorIndex)
+    expect(manifest.buildElapsedMs).toBe(vectorIndex.buildElapsedMs)
+    expect(manifest.workerStatus).toMatchObject({ activeWorkers: 1, maxWorkers: 2 })
+  })
+
   test("pauses at the embedding request budget and resumes missing chunks", async () => {
     const index = sampleIndex()
     const provider = recordingEmbeddingProvider()
@@ -177,6 +216,7 @@ describe("local RAG vector index", () => {
       index,
       provider,
       previous: first,
+      initialElapsedMs: 4567,
       batchSize: 1,
       requestDelayMs: 0,
     })
@@ -184,6 +224,7 @@ describe("local RAG vector index", () => {
     expect(second.indexPausedReason).toBeUndefined()
     expect(second.chunks).toHaveLength(buildRagChunks(index).length)
     expect(second.pendingChunkCount).toBe(0)
+    expect(second.buildElapsedMs).toBeGreaterThanOrEqual(4567)
     expect(provider.batches.length).toBe(buildRagChunks(index).length)
   })
 
@@ -194,6 +235,7 @@ describe("local RAG vector index", () => {
       index,
       provider: fakeEmbeddingProvider(),
       batchSize: 1,
+      concurrentRequests: 1,
       maxRequestsPerRun: 2,
       requestDelayMs: 25,
       sleep: async (ms) => {
@@ -204,14 +246,105 @@ describe("local RAG vector index", () => {
     expect(sleeps).toContain(25)
   })
 
+  test("starts with three concurrent embedding requests by default", async () => {
+    const provider = delayedEmbeddingProvider()
+
+    await buildRagVectorIndex({
+      index: sampleIndex(),
+      provider,
+      batchSize: 1,
+      requestDelayMs: 0,
+    })
+
+    expect(provider.maxActive).toBe(3)
+  })
+
+  test("upgrades adaptive concurrency after stable batches", async () => {
+    const provider = delayedEmbeddingProvider()
+    const activeConcurrency: number[] = []
+    const workerChanges: string[] = []
+
+    const vectorIndex = await buildRagVectorIndex({
+      index: generatedIndex(12),
+      provider,
+      batchSize: 1,
+      requestDelayMs: 0,
+      onBatchProfile: (event) => {
+        activeConcurrency.push(event.activeConcurrency)
+        if (event.workerStatus.lastChange) {
+          workerChanges.push(`${event.workerStatus.lastChange.direction}:${event.workerStatus.lastChange.fromWorkers}->${event.workerStatus.lastChange.toWorkers}:${event.workerStatus.lastChange.reason}`)
+        }
+      },
+    })
+
+    expect(activeConcurrency).toContain(4)
+    expect(provider.maxActive).toBe(4)
+    expect(workerChanges).toContain("upgrade:3->4:stable batches")
+    expect(vectorIndex.workerStatus?.lastChange).toMatchObject({
+      direction: "upgrade",
+      fromWorkers: 3,
+      toWorkers: 4,
+      reason: "stable batches",
+    })
+  })
+
+  test("falls back from three to two concurrent requests after rate limit pressure", async () => {
+    let attempts = 0
+    const profiles: Array<{ status: string; activeConcurrency: number; change?: string }> = []
+    const provider: EmbeddingProvider = {
+      id: "pressure",
+      model: "pressure",
+      async embed(input) {
+        attempts += 1
+        if (attempts === 1) throw new RagHttpError("429 Too Many Requests: slow down", 429, "Too Many Requests", "slow down", 0)
+        return input.map(embedText)
+      },
+    }
+
+    await buildRagVectorIndex({
+      index: sampleIndex(),
+      provider,
+      batchSize: 1,
+      maxRetries: 1,
+      requestDelayMs: 0,
+      sleep: async () => {},
+      onBatchProfile: (event) => {
+        const change = event.workerStatus.lastChange
+        profiles.push({
+          status: event.batchStatus,
+          activeConcurrency: event.activeConcurrency,
+          change: change ? `${change.direction}:${change.fromWorkers}->${change.toWorkers}:${change.reason}` : undefined,
+        })
+      },
+    })
+
+    expect(profiles.some((event) => event.status === "retry" && event.activeConcurrency === 2)).toBe(true)
+    expect(profiles.some((event) => event.change === "degrade:3->2:retry/rate-limit")).toBe(true)
+  })
+
+  test("limits concurrent starts by max in-flight estimated tokens", async () => {
+    const provider = delayedEmbeddingProvider()
+
+    await buildRagVectorIndex({
+      index: sampleIndex(),
+      provider,
+      batchSize: 1,
+      requestDelayMs: 0,
+      maxInFlightTokens: 1,
+    })
+
+    expect(provider.maxActive).toBe(1)
+  })
+
   test("reports chunk counts with embedding progress events", async () => {
     const index = sampleIndex()
     const totalChunks = buildRagChunks(index).length
-    const events: Array<{ phase: string; embeddedChunks: number; chunks: number; pendingChunkCount: number }> = []
+    const events: Array<{ phase: string; embeddedChunks: number; chunks: number; pendingChunkCount: number; elapsedMs?: number; workerStatus?: { activeWorkers: number } }> = []
     await buildRagVectorIndex({
       index,
       provider: fakeEmbeddingProvider(),
       batchSize: 1,
+      concurrentRequests: 1,
       maxRequestsPerRun: 2,
       requestDelayMs: 25,
       sleep: async () => {},
@@ -225,6 +358,8 @@ describe("local RAG vector index", () => {
     expect(events[0]).toMatchObject({ embeddedChunks: 0, pendingChunkCount: totalChunks })
     expect(events[1]).toMatchObject({ embeddedChunks: 1, pendingChunkCount: totalChunks - 1 })
     expect(events[3]).toMatchObject({ embeddedChunks: 2, pendingChunkCount: totalChunks - 2 })
+    expect(events[0].elapsedMs).toBeGreaterThanOrEqual(0)
+    expect(events[0].workerStatus).toMatchObject({ activeWorkers: 1 })
   })
 
   test("aborts while waiting between embedding index requests", async () => {
@@ -235,6 +370,7 @@ describe("local RAG vector index", () => {
       index: sampleIndex(),
       provider,
       batchSize: 1,
+      concurrentRequests: 1,
       requestDelayMs: 25,
       checkpointChunkInterval: 1,
       checkpointIntervalMs: 0,
@@ -293,6 +429,7 @@ describe("local RAG vector index", () => {
       index,
       provider,
       batchSize: 1,
+      concurrentRequests: 1,
       maxRetries: 1,
       retryBackoffMs: 1000,
       requestDelayMs: 0,
@@ -336,6 +473,8 @@ describe("local RAG vector index", () => {
     expect(manifest.resumeDelayMs).toBe(60000)
     expect(manifest.resumeReason).toBe("request-budget")
     expect(manifest.sourceIndexUpdatedAt).toBe(vectorIndex.sourceIndexUpdatedAt)
+    expect(manifest.buildElapsedMs).toBe(vectorIndex.buildElapsedMs)
+    expect(manifest.workerStatus).toEqual(vectorIndex.workerStatus)
   })
 })
 
@@ -364,6 +503,26 @@ int nand_read_page(void) { return ecc_check(); }
     updatedAt: 1,
     truncated: false,
     files: Object.fromEntries(files.map((file) => [file.path, file])),
+  }
+}
+
+function generatedIndex(functionCount: number): CodeGraphIndex {
+  const functions = Array.from({ length: functionCount }, (_, index) => `int generated_${index}(void) { return ${index}; }`).join("\n")
+  const file = parseCFile({
+    path: "generated/many.c",
+    hash: `generated-${functionCount}`,
+    size: functions.length,
+    text: functions,
+  })
+  return {
+    version: 1,
+    rootPath: "/repo",
+    rootName: "repo",
+    updatedAt: 1,
+    truncated: false,
+    files: {
+      [file.path]: file,
+    },
   }
 }
 
@@ -398,10 +557,25 @@ function recordingEmbeddingProvider(): EmbeddingProvider & { batches: string[][]
   }
 }
 
+function delayedEmbeddingProvider(): EmbeddingProvider & { active: number; maxActive: number } {
+  return {
+    ...fakeEmbeddingProvider(),
+    active: 0,
+    maxActive: 0,
+    async embed(input) {
+      this.active += 1
+      this.maxActive = Math.max(this.maxActive, this.active)
+      await new Promise<void>((resolve) => setTimeout(resolve, 1))
+      this.active -= 1
+      return input.map(embedText)
+    },
+  }
+}
+
 function embedText(text: string) {
   const lower = text.toLowerCase()
   return normalize([
-    /nand|flash|page|ecc/.test(lower) ? 1 : 0,
+    /nand|flash|page|ecc|generated/.test(lower) ? 1 : 0,
     /storage|boot/.test(lower) ? 1 : 0,
     /module|file/.test(lower) ? 1 : 0,
   ])

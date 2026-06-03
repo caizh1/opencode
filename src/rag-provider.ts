@@ -11,11 +11,14 @@ const RAG_RERANK_PROBE_DOCUMENTS = [
 ]
 
 export type RagHttpDiagnosticEvent = {
-  phase: "request" | "response" | "normalize"
+  phase: "request" | "response" | "normalize" | "encoding"
   kind: "embedding" | "rerank"
   method: "POST"
   endpoint: string
   model?: string
+  encodingFormat?: "float" | "base64" | "auto"
+  effectiveEncodingFormat?: "float" | "base64"
+  base64Capability?: "unknown" | "supported" | "unsupported"
   estimatedTokens?: number
   timeoutMs: number
   authorizationPresent: boolean
@@ -32,6 +35,7 @@ export type RagHttpDiagnosticEvent = {
   parseElapsedMs?: number
   normalizeElapsedMs?: number
   errorPreview?: string
+  message?: string
 }
 
 export type RagHttpDiagnostics = (event: RagHttpDiagnosticEvent) => void
@@ -48,6 +52,12 @@ export class RagHttpError extends Error {
     this.name = "RagHttpError"
   }
 }
+
+type EmbeddingEndpointCapabilities = {
+  base64: "unknown" | "supported" | "unsupported"
+}
+
+const embeddingEndpointCapabilities = new Map<string, EmbeddingEndpointCapabilities>()
 
 export function checkRagEndpoint(endpoint: string, allowedHosts: string[] = []): RagEndpointPolicyResult {
   const value = endpoint.trim()
@@ -73,38 +83,101 @@ export function createHttpEmbeddingProvider(settings: RagSettings, apiKey?: stri
   if (settings.embedding.configError) throw new Error(settings.embedding.configError)
   const policy = checkRagEndpoint(settings.embedding.endpoint, settings.allowedHosts)
   if (!policy.ok || !policy.url) throw new Error(policy.reason ?? "embedding endpoint is not allowed")
+  const capabilityKey = `${policy.url.toString()}\0${settings.embedding.model}`
   return {
     id: `http:${policy.kind}:${policy.url.host}`,
     model: settings.embedding.model,
     async embed(input, signal) {
-      if (input.length === 0) return []
+      const detailed = await this.embedDetailed?.(input, signal)
+      return detailed?.vectors ?? []
+    },
+    async embedDetailed(input, signal) {
+      if (input.length === 0) return { vectors: [] }
       const batchSize = Math.max(1, settings.embedding.batchSize)
       const estimatedTokens = input.reduce((sum, text) => sum + estimateEmbeddingTokens(text), 0)
-      const requestBody = {
-        model: settings.embedding.model || undefined,
-        input,
-      }
+      const requestedEncoding = settings.embedding.encodingFormat
+      const capabilities = embeddingEndpointCapabilities.get(capabilityKey) ?? { base64: "unknown" as const }
       const diagnosticBase = {
         kind: "embedding" as const,
         model: settings.embedding.model || undefined,
+        encodingFormat: requestedEncoding,
+        base64Capability: capabilities.base64,
         inputCount: input.length,
         batchSize,
         estimatedTokens,
       }
-      const response = await fetchJsonWithTimeout(policy.url!, requestBody, settings.embedding.timeoutMs, diagnosticBase, signal, apiKey, diagnostics)
-      const normalizeStarted = Date.now()
-      const embeddings = normalizeEmbeddingResponse(response, input.length)
-      emitRagHttpDiagnostic(diagnostics, {
-        method: "POST",
-        endpoint: policy.url!.toString(),
-        timeoutMs: settings.embedding.timeoutMs,
-        authorizationPresent: Boolean(apiKey?.trim()),
-        apiKeyFingerprint: apiKeyFingerprint(apiKey),
-        ...diagnosticBase,
-        phase: "normalize",
-        normalizeElapsedMs: Date.now() - normalizeStarted,
-      })
-      return embeddings
+      const preferredEncoding = chooseEmbeddingEncoding(requestedEncoding, capabilities)
+      try {
+        const response = await postEmbeddingWithEncoding(policy.url!, settings.embedding.model, input, preferredEncoding, settings.embedding.timeoutMs, diagnosticBase, signal, apiKey, diagnostics)
+        if (preferredEncoding === "base64" && capabilities.base64 !== "supported") {
+          embeddingEndpointCapabilities.set(capabilityKey, { base64: "supported" })
+          emitRagHttpDiagnostic(diagnostics, {
+            method: "POST",
+            endpoint: policy.url!.toString(),
+            timeoutMs: settings.embedding.timeoutMs,
+            authorizationPresent: Boolean(apiKey?.trim()),
+            apiKeyFingerprint: apiKeyFingerprint(apiKey),
+            ...diagnosticBase,
+            phase: "encoding",
+            effectiveEncodingFormat: "base64",
+            base64Capability: "supported",
+            message: "embedding encoding base64 supported",
+          })
+        }
+        const normalizeStarted = Date.now()
+        const embeddings = normalizeEmbeddingResponse(response.value, input.length)
+        emitRagHttpDiagnostic(diagnostics, {
+          method: "POST",
+          endpoint: policy.url!.toString(),
+          timeoutMs: settings.embedding.timeoutMs,
+          authorizationPresent: Boolean(apiKey?.trim()),
+          apiKeyFingerprint: apiKeyFingerprint(apiKey),
+          ...diagnosticBase,
+          phase: "normalize",
+          effectiveEncodingFormat: preferredEncoding,
+          base64Capability: embeddingEndpointCapabilities.get(capabilityKey)?.base64 ?? capabilities.base64,
+          responseBytes: response.responseBytes,
+          normalizeElapsedMs: Date.now() - normalizeStarted,
+        })
+        return { vectors: embeddings, responseBytes: response.responseBytes, effectiveEncodingFormat: preferredEncoding }
+      } catch (error) {
+        if (preferredEncoding === "base64" && isEncodingFormatUnsupported(error)) {
+          embeddingEndpointCapabilities.set(capabilityKey, { base64: "unsupported" })
+          emitRagHttpDiagnostic(diagnostics, {
+            method: "POST",
+            endpoint: policy.url!.toString(),
+            timeoutMs: settings.embedding.timeoutMs,
+            authorizationPresent: Boolean(apiKey?.trim()),
+            apiKeyFingerprint: apiKeyFingerprint(apiKey),
+            ...diagnosticBase,
+            phase: "encoding",
+            effectiveEncodingFormat: "float",
+            base64Capability: "unsupported",
+            message: "embedding encoding base64 unsupported; retrying float",
+          })
+          const response = await postEmbeddingWithEncoding(policy.url!, settings.embedding.model, input, "float", settings.embedding.timeoutMs, {
+            ...diagnosticBase,
+            base64Capability: "unsupported" as const,
+          }, signal, apiKey, diagnostics)
+          const normalizeStarted = Date.now()
+          const embeddings = normalizeEmbeddingResponse(response.value, input.length)
+          emitRagHttpDiagnostic(diagnostics, {
+            method: "POST",
+            endpoint: policy.url!.toString(),
+            timeoutMs: settings.embedding.timeoutMs,
+            authorizationPresent: Boolean(apiKey?.trim()),
+            apiKeyFingerprint: apiKeyFingerprint(apiKey),
+            ...diagnosticBase,
+            phase: "normalize",
+            effectiveEncodingFormat: "float",
+            base64Capability: "unsupported",
+            responseBytes: response.responseBytes,
+            normalizeElapsedMs: Date.now() - normalizeStarted,
+          })
+          return { vectors: embeddings, responseBytes: response.responseBytes, effectiveEncodingFormat: "float" }
+        }
+        throw error
+      }
     },
   }
 }
@@ -129,7 +202,7 @@ export function createHttpRerankProvider(settings: RagSettings, apiKey?: string,
         documentCount: input.documents.length,
         topN: input.topN,
       }, input.signal, apiKey, diagnostics)
-      return normalizeRerankResponse(response, input.documents.length)
+      return normalizeRerankResponse(response.value, input.documents.length)
     },
   }
 }
@@ -138,13 +211,12 @@ export function normalizeEmbeddingResponse(input: unknown, expected: number): nu
   const root = objectRecord(input)
   const data = Array.isArray(root.data) ? root.data : Array.isArray(input) ? input : []
   const rows = data
-    .map((item) => {
-      if (Array.isArray(item)) return item
+    .map((item): number[] | undefined => {
+      if (Array.isArray(item)) return readEmbeddingValue(item)
       const record = objectRecord(item)
-      return Array.isArray(record.embedding) ? record.embedding : undefined
+      return readEmbeddingValue(record.embedding)
     })
-    .filter((item): item is unknown[] => Array.isArray(item))
-    .map((item) => item.map((value) => Number(value)))
+    .filter((item): item is number[] => Array.isArray(item))
     .filter((item) => item.length > 0 && item.every(Number.isFinite))
   if (rows.length !== expected) throw new Error(`embedding response returned ${rows.length} vector(s), expected ${expected}`)
   const dimension = rows[0]?.length ?? 0
@@ -182,17 +254,43 @@ export async function probeRagRerankProvider(provider: RerankProvider, signal?: 
   return first
 }
 
+async function postEmbeddingWithEncoding(
+  url: URL,
+  model: string,
+  input: string[],
+  effectiveEncodingFormat: "float" | "base64",
+  timeoutMs: number,
+  detail: Pick<RagHttpDiagnosticEvent, "kind" | "model" | "encodingFormat" | "base64Capability" | "estimatedTokens" | "inputCount" | "batchSize">,
+  signal?: AbortSignal,
+  apiKey?: string,
+  diagnostics?: RagHttpDiagnostics,
+) {
+  const requestBody = {
+    model: model || undefined,
+    input,
+    ...(effectiveEncodingFormat === "base64" ? { encoding_format: "base64" } : {}),
+  }
+  return fetchJsonWithTimeout(url, requestBody, timeoutMs, {
+    ...detail,
+    effectiveEncodingFormat,
+  }, signal, apiKey, diagnostics)
+}
+
 async function fetchJsonWithTimeout(
   url: URL,
   body: unknown,
   timeoutMs: number,
-  detail: Pick<RagHttpDiagnosticEvent, "kind" | "model" | "estimatedTokens" | "inputCount" | "batchSize" | "documentCount" | "topN">,
+  detail: Pick<RagHttpDiagnosticEvent, "kind" | "model" | "encodingFormat" | "effectiveEncodingFormat" | "base64Capability" | "estimatedTokens" | "inputCount" | "batchSize" | "documentCount" | "topN">,
   signal?: AbortSignal,
   apiKey?: string,
   diagnostics?: RagHttpDiagnostics,
 ) {
   const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(), timeoutMs)
+  let timedOut = false
+  const timer = setTimeout(() => {
+    timedOut = true
+    controller.abort()
+  }, timeoutMs)
   const onAbort = () => controller.abort()
   signal?.addEventListener("abort", onAbort, { once: true })
   const started = Date.now()
@@ -232,7 +330,27 @@ async function fetchJsonWithTimeout(
       errorPreview: response.ok ? undefined : errorPreview,
     })
     if (!response.ok) throw new RagHttpError(`${response.status} ${response.statusText}: ${errorPreview}`, response.status, response.statusText, errorPreview, retryAfterMs)
-    return parsed
+    return { value: parsed, responseBytes: Buffer.byteLength(text) }
+  } catch (error) {
+    if (timedOut && !signal?.aborted && isFetchAbortError(error)) {
+      const message = `embedding request timed out after ${timeoutMs}ms`
+      emitRagHttpDiagnostic(diagnostics, {
+        method: "POST",
+        endpoint: url.toString(),
+        timeoutMs,
+        authorizationPresent: Boolean(apiKey?.trim()),
+        apiKeyFingerprint: apiKeyFingerprint(apiKey),
+        ...detail,
+        phase: "response",
+        status: 408,
+        statusText: "Request Timeout",
+        ok: false,
+        elapsedMs: Date.now() - started,
+        errorPreview: message,
+      })
+      throw new RagHttpError(`408 Request Timeout: ${message}`, 408, "Request Timeout", message)
+    }
+    throw error
   } finally {
     clearTimeout(timer)
     signal?.removeEventListener("abort", onAbort)
@@ -246,6 +364,47 @@ function parseRetryAfterMs(value: string | null) {
   const timestamp = Date.parse(value)
   if (!Number.isFinite(timestamp)) return undefined
   return Math.max(0, timestamp - Date.now())
+}
+
+function chooseEmbeddingEncoding(format: RagSettings["embedding"]["encodingFormat"], capabilities: EmbeddingEndpointCapabilities): "float" | "base64" {
+  if (format === "float") return "float"
+  if (capabilities.base64 === "unsupported") return "float"
+  if (format === "base64") return "base64"
+  return capabilities.base64 === "supported" || capabilities.base64 === "unknown" ? "base64" : "float"
+}
+
+function isEncodingFormatUnsupported(error: unknown) {
+  if (!(error instanceof RagHttpError)) return false
+  if (error.status !== 400 && error.status !== 422) return false
+  const text = `${error.message} ${error.bodyPreview}`.toLowerCase()
+  return (
+    (text.includes("encoding_format") || text.includes("base64"))
+    && (
+      text.includes("unsupported")
+      || text.includes("invalid_request")
+      || text.includes("invalid request")
+      || text.includes("bad request")
+      || text.includes("unknown")
+      || text.includes("not support")
+    )
+  )
+}
+
+function readEmbeddingValue(value: unknown): number[] | undefined {
+  if (typeof value === "string") return Array.from(decodeBase64Float32(value))
+  if (Array.isArray(value)) return value.map((item) => Number(item))
+  return undefined
+}
+
+function decodeBase64Float32(input: string): Float32Array {
+  const buffer = Buffer.from(input, "base64")
+  if (buffer.byteLength % 4 !== 0) throw new Error("Invalid base64 embedding byte length.")
+  const view = new Float32Array(buffer.buffer, buffer.byteOffset, buffer.byteLength / 4)
+  return new Float32Array(view)
+}
+
+function isFetchAbortError(error: unknown) {
+  return error instanceof Error && error.name === "AbortError"
 }
 
 function apiKeyFingerprint(apiKey?: string) {

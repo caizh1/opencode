@@ -142,6 +142,14 @@ describe("extension manifest", () => {
     expect(properties["opencode.remote.rag.embedding.batchSize"]?.maximum).toBe(512)
     expect(properties["opencode.remote.rag.embedding.dimensions"]).toBeUndefined()
     expect(properties["opencode.remote.rag.embedding.maxTokensPerRequest"]?.default).toBe(65536)
+    expect(properties["opencode.remote.rag.embedding.concurrentRequests"]?.default).toBe(3)
+    expect(properties["opencode.remote.rag.embedding.concurrentRequests"]?.maximum).toBe(4)
+    expect(properties["opencode.remote.rag.embedding.maxInFlightTokens"]?.default).toBe(180000)
+    expect(properties["opencode.remote.rag.embedding.encodingFormat"]).toMatchObject({
+      type: "string",
+      enum: ["float", "base64", "auto"],
+      default: "float",
+    })
     expect(properties["opencode.remote.rag.embedding.checkpointMode"]).toMatchObject({
       type: "string",
       enum: ["off", "interval", "safe"],
@@ -151,7 +159,7 @@ describe("extension manifest", () => {
     expect(properties["opencode.remote.rag.embedding.checkpointIntervalMs"]?.default).toBe(120000)
     expect(properties["opencode.remote.rag.embedding.timeoutMs"]?.default).toBe(30000)
     expect(properties["opencode.remote.rag.embedding.timeoutMs"]?.deprecationMessage).toContain("managed automatically from batch size")
-    expect(properties["opencode.remote.rag.embedding.requestDelayMs"]?.default).toBe(500)
+    expect(properties["opencode.remote.rag.embedding.requestDelayMs"]?.default).toBe(0)
     expect(properties["opencode.remote.rag.embedding.maxRequestsPerRun"]?.default).toBe(100)
     expect(properties["opencode.remote.rag.embedding.maxRetries"]?.default).toBe(3)
     expect(properties["opencode.remote.rag.embedding.retryBackoffMs"]?.default).toBe(2000)

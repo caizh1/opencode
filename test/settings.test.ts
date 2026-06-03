@@ -35,6 +35,10 @@ const {
   RAG_EMBEDDING_CHECKPOINT_CHUNK_INTERVAL_DEFAULT,
   RAG_EMBEDDING_CHECKPOINT_INTERVAL_DEFAULT_MS,
   RAG_EMBEDDING_CHECKPOINT_MODE_DEFAULT,
+  RAG_EMBEDDING_CONCURRENT_REQUESTS_DEFAULT,
+  RAG_EMBEDDING_ENCODING_FORMAT_DEFAULT,
+  RAG_EMBEDDING_MAX_IN_FLIGHT_TOKENS_DEFAULT,
+  RAG_EMBEDDING_REQUEST_DELAY_DEFAULT_MS,
   RAG_EMBEDDING_TIMEOUT_DEFAULT_MS,
   RAG_EMBEDDING_TIMEOUT_LARGE_BATCH_MS,
   PASSWORD_SECRET_KEY,
@@ -94,10 +98,14 @@ describe("RAG settings validation", () => {
     expect(settings.rag.embedding.batchSize).toBe(RAG_EMBEDDING_BATCH_SIZE_DEFAULT)
     expect(settings.rag.embedding.batchSize).toBe(128)
     expect(settings.rag.embedding.maxTokensPerRequest).toBe(65536)
+    expect(settings.rag.embedding.concurrentRequests).toBe(RAG_EMBEDDING_CONCURRENT_REQUESTS_DEFAULT)
+    expect(settings.rag.embedding.maxInFlightTokens).toBe(RAG_EMBEDDING_MAX_IN_FLIGHT_TOKENS_DEFAULT)
+    expect(settings.rag.embedding.encodingFormat).toBe(RAG_EMBEDDING_ENCODING_FORMAT_DEFAULT)
     expect(settings.rag.embedding.checkpointMode).toBe(RAG_EMBEDDING_CHECKPOINT_MODE_DEFAULT)
     expect(settings.rag.embedding.checkpointChunkInterval).toBe(RAG_EMBEDDING_CHECKPOINT_CHUNK_INTERVAL_DEFAULT)
     expect(settings.rag.embedding.checkpointIntervalMs).toBe(RAG_EMBEDDING_CHECKPOINT_INTERVAL_DEFAULT_MS)
     expect(settings.rag.embedding.timeoutMs).toBe(RAG_EMBEDDING_TIMEOUT_DEFAULT_MS)
+    expect(settings.rag.embedding.requestDelayMs).toBe(RAG_EMBEDDING_REQUEST_DELAY_DEFAULT_MS)
     expect(settings.rag.embedding.configError).toBeUndefined()
   })
 
@@ -167,6 +175,20 @@ describe("RAG settings validation", () => {
     expect(configUpdates.find((update) => update.key === "rag.embedding.maxTokensPerRequest")?.value).toBe(32768)
   })
 
+  test("saves adaptive embedding concurrency settings", async () => {
+    await saveRagSettings(ragInput({
+      embeddingConcurrentRequests: 9,
+      embeddingMaxInFlightTokens: 12000,
+      embeddingEncodingFormat: "auto",
+      embeddingRequestDelayMs: Number.NaN,
+    }))
+
+    expect(configUpdates.find((update) => update.key === "rag.embedding.concurrentRequests")?.value).toBe(4)
+    expect(configUpdates.find((update) => update.key === "rag.embedding.maxInFlightTokens")?.value).toBe(32768)
+    expect(configUpdates.find((update) => update.key === "rag.embedding.encodingFormat")?.value).toBe("auto")
+    expect(configUpdates.find((update) => update.key === "rag.embedding.requestDelayMs")?.value).toBe(RAG_EMBEDDING_REQUEST_DELAY_DEFAULT_MS)
+  })
+
   test("saves checkpoint settings as optional RAG embedding updates", async () => {
     await saveRagSettings(ragInput({
       embeddingCheckpointMode: "safe",
@@ -182,12 +204,18 @@ describe("RAG settings validation", () => {
   test("skips optional embedding optimization saves when the active manifest has not registered them", async () => {
     configUpdates = []
     updateFailures.set("rag.embedding.maxTokensPerRequest", new Error("opencode.remote.rag.embedding.maxTokensPerRequest is not a registered configuration"))
+    updateFailures.set("rag.embedding.concurrentRequests", new Error("opencode.remote.rag.embedding.concurrentRequests is not a registered configuration"))
+    updateFailures.set("rag.embedding.maxInFlightTokens", new Error("opencode.remote.rag.embedding.maxInFlightTokens is not a registered configuration"))
+    updateFailures.set("rag.embedding.encodingFormat", new Error("opencode.remote.rag.embedding.encodingFormat is not a registered configuration"))
     updateFailures.set("rag.embedding.checkpointMode", new Error("opencode.remote.rag.embedding.checkpointMode is not a registered configuration"))
     updateFailures.set("rag.embedding.checkpointChunkInterval", new Error("opencode.remote.rag.embedding.checkpointChunkInterval is not a registered configuration"))
     updateFailures.set("rag.embedding.checkpointIntervalMs", new Error("opencode.remote.rag.embedding.checkpointIntervalMs is not a registered configuration"))
 
     await saveRagSettings(ragInput({
       embeddingMaxTokensPerRequest: 32768,
+      embeddingConcurrentRequests: 4,
+      embeddingMaxInFlightTokens: 180000,
+      embeddingEncodingFormat: "base64",
       embeddingCheckpointMode: "safe",
       embeddingCheckpointChunkInterval: 4096,
       embeddingCheckpointIntervalMs: 45000,
@@ -195,6 +223,9 @@ describe("RAG settings validation", () => {
 
     expect(configUpdates.some((update) => update.key === "rag.embedding.endpoint")).toBe(true)
     expect(configUpdates.some((update) => update.key === "rag.embedding.maxTokensPerRequest")).toBe(false)
+    expect(configUpdates.some((update) => update.key === "rag.embedding.concurrentRequests")).toBe(false)
+    expect(configUpdates.some((update) => update.key === "rag.embedding.maxInFlightTokens")).toBe(false)
+    expect(configUpdates.some((update) => update.key === "rag.embedding.encodingFormat")).toBe(false)
     expect(configUpdates.some((update) => update.key === "rag.embedding.checkpointMode")).toBe(false)
     expect(configUpdates.some((update) => update.key === "rag.embedding.checkpointChunkInterval")).toBe(false)
     expect(configUpdates.some((update) => update.key === "rag.embedding.checkpointIntervalMs")).toBe(false)
@@ -207,11 +238,14 @@ function ragInput(overrides: Partial<Parameters<typeof saveRagSettings>[0]> = {}
     embeddingModel: "local-embedding",
     embeddingBatchSize: RAG_EMBEDDING_BATCH_SIZE_DEFAULT,
     embeddingMaxTokensPerRequest: 65536,
+    embeddingConcurrentRequests: RAG_EMBEDDING_CONCURRENT_REQUESTS_DEFAULT,
+    embeddingMaxInFlightTokens: RAG_EMBEDDING_MAX_IN_FLIGHT_TOKENS_DEFAULT,
+    embeddingEncodingFormat: RAG_EMBEDDING_ENCODING_FORMAT_DEFAULT,
     embeddingCheckpointMode: RAG_EMBEDDING_CHECKPOINT_MODE_DEFAULT,
     embeddingCheckpointChunkInterval: RAG_EMBEDDING_CHECKPOINT_CHUNK_INTERVAL_DEFAULT,
     embeddingCheckpointIntervalMs: RAG_EMBEDDING_CHECKPOINT_INTERVAL_DEFAULT_MS,
     embeddingTimeoutMs: 30000,
-    embeddingRequestDelayMs: 500,
+    embeddingRequestDelayMs: RAG_EMBEDDING_REQUEST_DELAY_DEFAULT_MS,
     embeddingMaxRequestsPerRun: 100,
     embeddingMaxRetries: 3,
     embeddingRetryBackoffMs: 2000,

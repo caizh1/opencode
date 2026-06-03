@@ -37,6 +37,7 @@ import {
   splitRagVectorIndex,
   type RagIndexBatchProfile,
   type RagIndexBuildProgress,
+  type RagIndexBuildSummary,
   type RagSerializedManifest,
   type RagSerializedShardMetadata,
 } from "./rag-index"
@@ -49,7 +50,7 @@ import type {
   CodeGraphShardData,
   CodeGraphShardManifest,
 } from "./codegraph-types"
-import type { CodeGraphStatus, RagIndexProgress, RagResumeReason, RagSettings, RagStatus, RemoteSettings } from "./types"
+import type { CodeGraphStatus, RagIndexProgress, RagResumeReason, RagSettings, RagStatus, RagWorkerStatus, RemoteSettings } from "./types"
 
 const INDEX_VERSION = CURRENT_CODE_GRAPH_INDEX_VERSION
 const INDEX_TIME_SLICE_MS = 35
@@ -1279,6 +1280,21 @@ export class LocalCodeGraphService implements vscode.Disposable {
     )
   }
 
+  private ragIndexCanContinueElapsed() {
+    const providerDimension = this.ragEmbeddingProvider?.dimension && this.ragEmbeddingProvider.dimension > 0
+      ? this.ragEmbeddingProvider.dimension
+      : undefined
+    return Boolean(
+      this.ragIndex
+        && this.ragEmbeddingProvider
+        && this.ragIndex.provider === this.ragEmbeddingProvider.id
+        && this.ragIndex.model === this.ragEmbeddingProvider.model
+        && (!providerDimension || this.ragIndex.dimension <= 0 || this.ragIndex.dimension === providerDimension)
+        && this.ragIndex.sourceIndexUpdatedAt === this.index?.updatedAt
+        && (this.ragIndex.pendingChunkCount ?? 0) > 0,
+    )
+  }
+
   private readyRagStatus(endpointKind: RagStatus["endpointKind"], rerankProbe: RerankProbeStatus, index: RagVectorIndex): RagStatus {
     return this.ragStatusForIndex(endpointKind, rerankProbe, index)
   }
@@ -1307,6 +1323,8 @@ export class LocalCodeGraphService implements vscode.Disposable {
       embeddedChunks: index.vectors.length,
       indexedChunkCount: index.vectors.length,
       pendingChunkCount,
+      indexElapsedMs: index.buildElapsedMs,
+      workerStatus: index.workerStatus,
       indexPausedReason: index.indexPausedReason,
       resumeScheduledAt: index.nextResumeAt,
       resumeDelayMs: index.resumeDelayMs,
@@ -1325,7 +1343,7 @@ export class LocalCodeGraphService implements vscode.Disposable {
   private ragStatusForIndexing(
     endpointKind: RagStatus["endpointKind"],
     rerankProbe: RerankProbeStatus,
-    input: { progress?: RagIndexBuildProgress; index?: RagVectorIndex; fallbackReason?: string } = {},
+    input: { progress?: RagIndexBuildProgress; index?: RagVectorIndex; indexElapsedMs?: number; workerStatus?: RagWorkerStatus; fallbackReason?: string } = {},
   ): RagStatus {
     const index = input.index ?? this.ragIndex
     const progress = input.progress
@@ -1333,6 +1351,8 @@ export class LocalCodeGraphService implements vscode.Disposable {
     const embeddedChunks = progress?.embeddedChunks ?? index?.vectors.length ?? this.ragStatusValue.embeddedChunks ?? 0
     const pendingChunkCount = progress?.pendingChunkCount ?? Math.max(0, totalChunks - embeddedChunks)
     const hasVectors = Boolean(index && index.dimension > 0 && index.vectors.length > 0)
+    const indexElapsedMs = progress?.elapsedMs ?? index?.buildElapsedMs ?? input.indexElapsedMs
+    const workerStatus = progress?.workerStatus ?? index?.workerStatus ?? input.workerStatus
     const previousProgress = this.ragStatusValue.indexProgress
     const indexProgress = progress
       ? this.ragIndexProgress(progress)
@@ -1358,6 +1378,8 @@ export class LocalCodeGraphService implements vscode.Disposable {
       indexedChunkCount: embeddedChunks,
       pendingChunkCount,
       indexProgress,
+      indexElapsedMs,
+      workerStatus,
       indexPausedReason: undefined,
       resumeScheduledAt: undefined,
       resumeDelayMs: undefined,
@@ -1482,7 +1504,7 @@ export class LocalCodeGraphService implements vscode.Disposable {
     })
   }
 
-  private async refreshRagIndex(changedPaths?: string[], options: { restartInFlight?: boolean; reason?: string } = {}) {
+  private async refreshRagIndex(changedPaths?: string[], options: { restartInFlight?: boolean; reason?: string; continuePreviousElapsed?: boolean } = {}) {
     if (!this.isCodeGraphReadyForRag()) {
       this.queuePendingRagRefresh(changedPaths)
       this.setRagWaitingForCodeGraphStatus()
@@ -1498,7 +1520,9 @@ export class LocalCodeGraphService implements vscode.Disposable {
     this.clearRagIndexResume()
     const controller = new AbortController()
     this.ragIndexController = controller
-    this.ragIndexInFlight = this.rebuildRagIndex(changedPaths, controller.signal).finally(async () => {
+    this.ragIndexInFlight = this.rebuildRagIndex(changedPaths, controller.signal, {
+      continuePreviousElapsed: options.continuePreviousElapsed,
+    }).finally(async () => {
       if (this.ragIndexController === controller) this.ragIndexController = undefined
       this.ragIndexInFlight = undefined
       const pending = this.pendingRagRefresh
@@ -1649,10 +1673,10 @@ export class LocalCodeGraphService implements vscode.Disposable {
     const pending = this.ragIndex?.pendingChunkCount ?? 0
     if (pending <= 0) return
     this.output.appendLine(`[rag-index] auto resume starting reason=${reason} pending=${pending} scheduledPending=${pendingAtSchedule}`)
-    await this.refreshRagIndex()
+    await this.refreshRagIndex(undefined, { reason: `auto-resume:${reason}`, continuePreviousElapsed: true })
   }
 
-  private async rebuildRagIndex(changedPaths?: string[], signal?: AbortSignal) {
+  private async rebuildRagIndex(changedPaths?: string[], signal?: AbortSignal, options: { continuePreviousElapsed?: boolean } = {}) {
     const root = workspaceRoot()
     const settings = this.getSettings().rag
     await this.refreshRagApiKey()
@@ -1710,6 +1734,13 @@ export class LocalCodeGraphService implements vscode.Disposable {
     }
 
     const started = Date.now()
+    const continuePreviousElapsed = Boolean(options.continuePreviousElapsed && !changedPaths && this.ragIndexCanContinueElapsed())
+    const initialElapsedMs = continuePreviousElapsed
+      ? Math.max(0, Math.floor(this.ragIndex?.buildElapsedMs ?? this.ragStatusValue.indexElapsedMs ?? 0))
+      : 0
+    const initialWorkerStatus = continuePreviousElapsed
+      ? this.ragIndex?.workerStatus ?? initialRagWorkerStatus(settings.embedding.concurrentRequests)
+      : initialRagWorkerStatus(settings.embedding.concurrentRequests)
     const existingRagStatus = this.currentRagIndexMatchesProvider()
       ? this.ragStatusForIndex(policy.kind, rerankProbe, this.ragIndex!)
       : this.ragStatusValue
@@ -1737,9 +1768,13 @@ export class LocalCodeGraphService implements vscode.Disposable {
         })
         return
       }
-      this.setRagStatus(this.ragStatusForIndexing(policy.kind, rerankProbe))
+      this.setRagStatus(this.ragStatusForIndexing(policy.kind, rerankProbe, {
+        indexElapsedMs: initialElapsedMs,
+        workerStatus: initialWorkerStatus,
+      }))
       const checkpointPlan = ragEmbeddingCheckpointPlan(settings.embedding)
-      this.output.appendLine(`[rag-index] embedding ${changedPaths ? `${changedPaths.length} changed path(s)` : "full local code graph"} with batchSize=${settings.embedding.batchSize} maxTokensPerRequest=${settings.embedding.maxTokensPerRequest} timeoutMs=${settings.embedding.timeoutMs} requestDelayMs=${settings.embedding.requestDelayMs} maxRequestsPerRun=${settings.embedding.maxRequestsPerRun || "unlimited"} maxRetries=${settings.embedding.maxRetries} retryBackoffMs=${settings.embedding.retryBackoffMs} checkpointMode=${checkpointPlan.mode} checkpointChunkInterval=${checkpointPlan.chunkInterval} checkpointIntervalMs=${checkpointPlan.intervalMs}`)
+      const adaptiveCeiling = Math.min(4, settings.embedding.concurrentRequests + 1)
+      this.output.appendLine(`[rag-index] embedding ${changedPaths ? `${changedPaths.length} changed path(s)` : "full local code graph"} with batchSize=${settings.embedding.batchSize} maxTokensPerRequest=${settings.embedding.maxTokensPerRequest} concurrentRequests=${settings.embedding.concurrentRequests} adaptiveCeiling=${adaptiveCeiling} maxInFlightTokens=${settings.embedding.maxInFlightTokens} encodingFormat=${settings.embedding.encodingFormat} timeoutMs=${settings.embedding.timeoutMs} requestDelayMs=${settings.embedding.requestDelayMs} maxRequestsPerRun=${settings.embedding.maxRequestsPerRun || "unlimited"} maxRetries=${settings.embedding.maxRetries} retryBackoffMs=${settings.embedding.retryBackoffMs} checkpointMode=${checkpointPlan.mode} checkpointChunkInterval=${checkpointPlan.chunkInterval} checkpointIntervalMs=${checkpointPlan.intervalMs}`)
       const next = await buildRagVectorIndex({
         index: activeIndex,
         provider: this.ragEmbeddingProvider,
@@ -1750,10 +1785,13 @@ export class LocalCodeGraphService implements vscode.Disposable {
         stateMachines: extractStateMachines(activeIndex, { maxTransitions: this.getSettings().codeGraph.maxStateTransitions }),
         batchSize: settings.embedding.batchSize,
         maxTokensPerRequest: settings.embedding.maxTokensPerRequest,
+        concurrentRequests: settings.embedding.concurrentRequests,
+        maxInFlightTokens: settings.embedding.maxInFlightTokens,
         requestDelayMs: settings.embedding.requestDelayMs,
         maxRequestsPerRun: settings.embedding.maxRequestsPerRun,
         maxRetries: settings.embedding.maxRetries,
         retryBackoffMs: settings.embedding.retryBackoffMs,
+        initialElapsedMs,
         resumeMissing: settings.embedding.resumeAutomatically || !changedPaths,
         checkpointChunkInterval: checkpointPlan.chunkInterval,
         checkpointIntervalMs: checkpointPlan.intervalMs,
@@ -1763,6 +1801,9 @@ export class LocalCodeGraphService implements vscode.Disposable {
         },
         onBatchProfile: (event) => {
           this.output.appendLine(formatRagIndexBatchProfile(event))
+        },
+        onBuildSummary: (event) => {
+          this.output.appendLine(formatRagIndexBuildSummary(event))
         },
         onIndexUpdate: async (partial) => {
           if (signal?.aborted) return
@@ -1776,15 +1817,15 @@ export class LocalCodeGraphService implements vscode.Disposable {
       if ((next.requestsUsed ?? 0) === 0) await this.probeRagEmbeddingProvider(next.dimension, signal)
       if (signal?.aborted) throw new RagIndexAbortError()
       this.ragIndex = next
-      this.lastRagElapsedMs = Date.now() - started
+      this.lastRagElapsedMs = next.buildElapsedMs ?? initialElapsedMs + Date.now() - started
       await this.saveRagIndex(root, next)
       if (signal?.aborted) throw new RagIndexAbortError()
       this.setRagStatus(this.ragStatusForIndex(policy.kind, rerankProbe, next))
-      this.output.appendLine(`[rag-index] embedded ${next.vectors.length}/${next.totalChunks ?? next.chunks.length} chunk(s) in ${this.lastRagElapsedMs}ms${next.indexPausedReason ? ` paused=${next.indexPausedReason}` : ""}`)
+      this.output.appendLine(`[rag-index] embedded ${next.vectors.length}/${next.totalChunks ?? next.chunks.length} chunk(s) totalElapsedMs=${this.lastRagElapsedMs}${next.indexPausedReason ? ` paused=${next.indexPausedReason}` : ""}`)
       await this.scheduleRagIndexResumeFromStatus("index-build")
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
-      this.lastRagElapsedMs = Date.now() - started
+      this.lastRagElapsedMs = this.ragStatusValue.indexElapsedMs ?? initialElapsedMs + Date.now() - started
       if (error instanceof RagIndexAbortError || signal?.aborted) {
         this.output.appendLine(`[rag-index] embedding index aborted after ${this.lastRagElapsedMs}ms: ${message}`)
         this.setAbortedRagIndexStatus(policy.kind, rerankProbe, message)
@@ -1925,6 +1966,8 @@ export class LocalCodeGraphService implements vscode.Disposable {
         vectors,
         totalChunks: manifest.totalChunks ?? manifest.chunks,
         pendingChunkCount: manifest.pendingChunks ?? Math.max(0, (manifest.totalChunks ?? manifest.chunks) - chunks.length),
+        buildElapsedMs: manifest.buildElapsedMs,
+        workerStatus: manifest.workerStatus,
         indexPausedReason: manifest.indexPausedReason,
         lastError: manifest.lastError,
         nextResumeAt: manifest.nextResumeAt,
@@ -2398,6 +2441,18 @@ function disabledRagStatus(fallbackReason = "embedding endpoint not configured; 
   }
 }
 
+function initialRagWorkerStatus(configuredWorkers: number): RagWorkerStatus {
+  const configured = Math.floor(configuredWorkers)
+  const activeWorkers = Number.isFinite(configured) ? Math.max(1, Math.min(4, configured)) : 3
+  return {
+    configuredWorkers: activeWorkers,
+    activeWorkers,
+    maxWorkers: Math.min(4, activeWorkers + 1),
+    inFlightRequests: 0,
+    queuePending: 0,
+  }
+}
+
 function formatRagStatus(status?: RagStatus) {
   if (!status) return " RAG: not configured; BM25/graph/state-machine fallback active."
   const rerankReason = status.rerankLastError
@@ -2406,30 +2461,30 @@ function formatRagStatus(status?: RagStatus) {
     : status.rerankProvider || rerankReason
       ? ` Rerank: unavailable${rerankReason ? `, ${rerankReason}` : ""}.`
       : ""
-  if (status.embeddingEnabled) {
-    if (status.availability === "indexing") {
-      return ` RAG: ${ragIndexingStatusMessage(status)}, ${status.endpointKind}.${rerank}`
-    }
-    if (status.availability === "partial") {
-      return ` RAG: partial, ${status.embeddedChunks}/${status.chunks} chunk(s), ${status.pendingChunkCount ?? Math.max(0, status.chunks - status.embeddedChunks)} pending${ragResumeScheduleMessage(status)}, ${status.vectorShards} shard(s), ${status.endpointKind}.${rerank}`
-    }
-    if (status.availability === "paused") {
-      return ` RAG: indexing paused, ${status.embeddedChunks}/${status.chunks} chunk(s), ${status.fallbackReason ?? ragPausedReasonMessage(status.indexPausedReason, status.lastError)}${ragResumeScheduleMessage(status)}, ${status.vectorShards} shard(s), ${status.endpointKind}.${rerank}`
-    }
-    return ` RAG: ready, ${status.embeddedChunks}/${status.chunks} chunk(s), ${status.vectorShards} shard(s), ${status.endpointKind}.${rerank}`
-  }
+	  if (status.embeddingEnabled) {
+	    if (status.availability === "indexing") {
+	      return ` RAG: ${ragIndexingStatusMessage(status)}, ${status.endpointKind}.${rerank}`
+	    }
+	    if (status.availability === "partial") {
+	      return ` RAG: partial, ${status.embeddedChunks}/${status.chunks} chunk(s), ${status.pendingChunkCount ?? Math.max(0, status.chunks - status.embeddedChunks)} pending${ragElapsedStatusMessage(status)}${ragWorkerStatusMessage(status)}${ragResumeScheduleMessage(status)}, ${status.vectorShards} shard(s), ${status.endpointKind}.${rerank}`
+	    }
+	    if (status.availability === "paused") {
+	      return ` RAG: indexing paused, ${status.embeddedChunks}/${status.chunks} chunk(s), ${status.fallbackReason ?? ragPausedReasonMessage(status.indexPausedReason, status.lastError)}${ragElapsedStatusMessage(status)}${ragWorkerStatusMessage(status)}${ragResumeScheduleMessage(status)}, ${status.vectorShards} shard(s), ${status.endpointKind}.${rerank}`
+	    }
+	    return ` RAG: ready, ${status.embeddedChunks}/${status.chunks} chunk(s)${ragElapsedStatusMessage(status, "total")}${ragWorkerStatusMessage(status)}, ${status.vectorShards} shard(s), ${status.endpointKind}.${rerank}`
+	  }
   if (status.availability === "checking") {
     return ` RAG: checking ${status.endpointKind} embedding endpoint; BM25/graph/state-machine fallback active.${rerank}`
   }
   if (status.availability === "indexing") {
     return ` RAG: ${ragIndexingStatusMessage(status)}; BM25/graph/state-machine fallback active.${rerank}`
   }
-  if (status.availability === "paused") {
-    return ` RAG: indexing paused, ${status.fallbackReason ?? ragPausedReasonMessage(status.indexPausedReason, status.lastError)}${ragResumeScheduleMessage(status)}; BM25/graph/state-machine fallback active.${rerank}`
-  }
-  if (status.availability === "partial") {
-    return ` RAG: partial, ${status.embeddedChunks}/${status.chunks} chunk(s), ${status.pendingChunkCount ?? Math.max(0, status.chunks - status.embeddedChunks)} pending${ragResumeScheduleMessage(status)}.${rerank}`
-  }
+	  if (status.availability === "paused") {
+	    return ` RAG: indexing paused, ${status.fallbackReason ?? ragPausedReasonMessage(status.indexPausedReason, status.lastError)}${ragElapsedStatusMessage(status)}${ragWorkerStatusMessage(status)}${ragResumeScheduleMessage(status)}; BM25/graph/state-machine fallback active.${rerank}`
+	  }
+	  if (status.availability === "partial") {
+	    return ` RAG: partial, ${status.embeddedChunks}/${status.chunks} chunk(s), ${status.pendingChunkCount ?? Math.max(0, status.chunks - status.embeddedChunks)} pending${ragElapsedStatusMessage(status)}${ragWorkerStatusMessage(status)}${ragResumeScheduleMessage(status)}.${rerank}`
+	  }
   if (status.availability === "not-indexed") {
     return ` RAG: not indexed${status.fallbackReason ? `, ${status.fallbackReason}` : ""}; BM25/graph/state-machine fallback active.${rerank}`
   }
@@ -2443,14 +2498,30 @@ function ragIndexingStatusMessage(status: RagStatus) {
   const progress = status.indexProgress
   const chunks = `${status.embeddedChunks}/${status.chunks} chunk(s)`
   const pending = `${status.pendingChunkCount ?? Math.max(0, status.chunks - status.embeddedChunks)} pending`
-  if (!progress) return `indexing, ${chunks}, ${pending}`
+  const telemetry = `${ragElapsedStatusMessage(status)}${ragWorkerStatusMessage(status)}`
+  if (!progress) return `indexing, ${chunks}, ${pending}${telemetry}`
   if (progress.phase === "batch") {
     const requestLimit = progress.requestLimit && progress.requestLimit > 0 ? String(progress.requestLimit) : "unlimited"
-    return `indexing, ${chunks}, batch ${progress.batchIndex}/${progress.batchCount}, request ${progress.requestNumber}/${requestLimit}, ${pending}`
+    return `indexing, ${chunks}, batch ${progress.batchIndex}/${progress.batchCount}, request ${progress.requestNumber}/${requestLimit}, ${pending}${telemetry}`
   }
-  if (progress.phase === "delay") return `indexing, ${chunks}, waiting ${progress.delayMs}ms, ${pending}`
-  if (progress.phase === "rate-limit") return `indexing, ${chunks}, rate limited retry ${progress.retry}/${progress.maxRetries}, ${pending}`
-  return `indexing paused, ${chunks}, ${pending}`
+  if (progress.phase === "delay") return `indexing, ${chunks}, waiting ${progress.delayMs}ms, ${pending}${telemetry}`
+  if (progress.phase === "rate-limit") return `indexing, ${chunks}, rate limited retry ${progress.retry}/${progress.maxRetries}, ${pending}${telemetry}`
+  return `indexing paused, ${chunks}, ${pending}${telemetry}`
+}
+
+function ragElapsedStatusMessage(status: RagStatus, label = "elapsed") {
+  const elapsedMs = status.indexElapsedMs ?? status.indexProgress?.elapsedMs
+  if (elapsedMs === undefined) return ""
+  return `, ${label} ${formatDuration(elapsedMs)}`
+}
+
+function ragWorkerStatusMessage(status: RagStatus) {
+  const worker = status.workerStatus ?? status.indexProgress?.workerStatus
+  if (!worker) return ""
+  const change = worker.lastChange
+    ? `; ${worker.lastChange.direction === "upgrade" ? "upgraded" : "degraded"} ${worker.lastChange.fromWorkers}->${worker.lastChange.toWorkers}: ${worker.lastChange.reason}`
+    : ""
+  return `, workers ${worker.activeWorkers}/${worker.maxWorkers}, ${worker.inFlightRequests} in flight, ${worker.queuePending} queued${change}`
 }
 
 function formatRagHttpDiagnosticEvent(event: RagHttpDiagnosticEvent) {
@@ -2465,6 +2536,9 @@ function formatRagHttpDiagnosticEvent(event: RagHttpDiagnosticEvent) {
     event.kind,
     `${event.method} ${event.endpoint}`,
     event.model ? `model=${event.model}` : undefined,
+    event.encodingFormat ? `encodingFormat=${event.encodingFormat}` : undefined,
+    event.effectiveEncodingFormat ? `effectiveEncodingFormat=${event.effectiveEncodingFormat}` : undefined,
+    event.base64Capability ? `base64Capability=${event.base64Capability}` : undefined,
     event.inputCount !== undefined ? `inputCount=${event.inputCount}` : undefined,
     event.batchSize !== undefined ? `batchSize=${event.batchSize}` : undefined,
     event.estimatedTokens !== undefined ? `estimatedTokens=${event.estimatedTokens}` : undefined,
@@ -2482,30 +2556,47 @@ function formatRagHttpDiagnosticEvent(event: RagHttpDiagnosticEvent) {
     if (event.parseElapsedMs !== undefined) common.push(`parseSec=${formatSeconds(event.parseElapsedMs)}`)
     if (event.errorPreview) common.push(`errorPreview=${compactLogValue(event.errorPreview)}`)
   } else if (event.phase === "normalize") {
+    if (event.responseBytes !== undefined) common.push(`responseBytes=${event.responseBytes}`)
     if (event.normalizeElapsedMs !== undefined) common.push(`normalizeSec=${formatSeconds(event.normalizeElapsedMs)}`)
+  } else if (event.phase === "encoding") {
+    if (event.message) common.push(`message=${compactLogValue(event.message)}`)
   }
   return common.join(" ")
 }
 
 function formatRagIndexBuildProgress(event: RagIndexBuildProgress) {
   const chunks = ` chunks=${event.embeddedChunks}/${event.chunks} pending=${event.pendingChunkCount}`
+  const telemetry = ` elapsedMs=${event.elapsedMs} ${formatRagWorkerTelemetry(event.workerStatus)}`
   if (event.phase === "batch") {
     const requestLimit = event.requestLimit > 0 ? String(event.requestLimit) : "unlimited"
     const estimatedTokens = event.estimatedTokens !== undefined ? ` estimatedTokens=${event.estimatedTokens}` : ""
-    return `[rag-index] embedding batch ${event.batchIndex}/${event.batchCount} request ${event.requestNumber}/${requestLimit} inputCount=${event.inputCount}${estimatedTokens}${chunks}`
+    const concurrency = [
+      event.activeConcurrency !== undefined ? `activeConcurrency=${event.activeConcurrency}` : undefined,
+      event.adaptiveCeiling !== undefined ? `adaptiveCeiling=${event.adaptiveCeiling}` : undefined,
+      event.inFlightRequests !== undefined ? `inFlightRequests=${event.inFlightRequests}` : undefined,
+      event.inFlightEstimatedTokens !== undefined ? `inFlightEstimatedTokens=${event.inFlightEstimatedTokens}` : undefined,
+      event.queuePending !== undefined ? `queuePending=${event.queuePending}` : undefined,
+    ].filter(Boolean).join(" ")
+    return `[rag-index] embedding batch ${event.batchIndex}/${event.batchCount} request ${event.requestNumber}/${requestLimit} inputCount=${event.inputCount}${estimatedTokens}${concurrency ? ` ${concurrency}` : ""}${chunks}${telemetry}`
   }
-  if (event.phase === "delay") return `[rag-index] delay ${event.delayMs}ms before next embedding request${chunks}`
+  if (event.phase === "delay") return `[rag-index] delay ${event.delayMs}ms before next embedding request${chunks}${telemetry}`
   if (event.phase === "rate-limit") {
     const retryAfter = event.retryAfterMs !== undefined ? ` retryAfterMs=${event.retryAfterMs}` : ""
-    return `[rag-index] rate limited status=${event.status}${retryAfter} retry=${event.retry}/${event.maxRetries} delayMs=${event.delayMs}${chunks}`
+    return `[rag-index] rate limited status=${event.status}${retryAfter} retry=${event.retry}/${event.maxRetries} delayMs=${event.delayMs}${chunks}${telemetry}`
   }
   const requestLimit = event.requestLimit > 0 ? String(event.requestLimit) : "unlimited"
-  return `[rag-index] paused: ${ragPausedReasonMessage(event.reason, event.message)} used=${event.requestsUsed} limit=${requestLimit}${chunks}`
+  return `[rag-index] paused: ${ragPausedReasonMessage(event.reason, event.message)} used=${event.requestsUsed} limit=${requestLimit}${chunks}${telemetry}`
 }
 
 function formatRagIndexBatchProfile(event: RagIndexBatchProfile) {
   const checkpoint = event.checkpointElapsedMs !== undefined ? ` checkpointSec=${formatSeconds(event.checkpointElapsedMs)}` : " checkpoint=skipped"
-  return `[rag-index-profile] batch ${event.batchIndex}/${event.batchCount} request=${event.requestNumber} inputCount=${event.inputCount} estimatedTokens=${event.estimatedTokens} embeddingRequestSec=${formatSeconds(event.embeddingElapsedMs)} vectorNormalizeSec=${formatSeconds(event.vectorNormalizeElapsedMs)}${checkpoint} chunks=${event.embeddedChunks}/${event.chunks} pending=${event.pendingChunkCount}`
+  const responseBytes = event.responseBytes !== undefined ? ` responseBytes=${event.responseBytes}` : ""
+  const encoding = event.effectiveEncodingFormat ? ` effectiveEncodingFormat=${event.effectiveEncodingFormat}` : ""
+  return `[rag-index-profile] batch ${event.batchIndex}/${event.batchCount} request=${event.requestNumber} inputCount=${event.inputCount} estimatedTokens=${event.estimatedTokens} embeddingRequestSec=${formatSeconds(event.embeddingElapsedMs)} vectorNormalizeSec=${formatSeconds(event.vectorNormalizeElapsedMs)}${checkpoint} batchStatus=${event.batchStatus} activeConcurrency=${event.activeConcurrency} configuredConcurrency=${event.configuredConcurrency} adaptiveCeiling=${event.adaptiveCeiling} inFlightRequests=${event.inFlightRequests} inFlightEstimatedTokens=${event.inFlightEstimatedTokens} queuePending=${event.queuePending} retries=${event.retries} rateLimits=${event.rateLimits} timeouts=${event.timeouts}${responseBytes}${encoding} chunks=${event.embeddedChunks}/${event.chunks} pending=${event.pendingChunkCount} elapsedMs=${event.elapsedMs} ${formatRagWorkerTelemetry(event.workerStatus)}`
+}
+
+function formatRagIndexBuildSummary(event: RagIndexBuildSummary) {
+  return `[rag-index-summary] wallSec=${formatSeconds(event.wallElapsedMs)} buildElapsedMs=${event.buildElapsedMs} requestSecTotal=${formatSeconds(event.requestElapsedMsTotal)} requestSecP50=${formatSeconds(event.requestElapsedMsP50)} requestSecP95=${formatSeconds(event.requestElapsedMsP95)} responseBytesTotal=${event.responseBytesTotal} retries=${event.retries} rateLimits=${event.rateLimits} timeouts=${event.timeouts} effectiveConcurrency=${event.effectiveConcurrency.toFixed(2)} chunksPerMin=${event.chunksPerMinute.toFixed(1)} tokensPerMin=${event.tokensPerMinute.toFixed(1)} configuredConcurrency=${event.configuredConcurrency} adaptiveCeiling=${event.adaptiveCeiling} ${formatRagWorkerTelemetry(event.workerStatus)}`
 }
 
 function ragEmbeddingCheckpointPlan(settings: RagSettings["embedding"]) {
@@ -2528,6 +2619,26 @@ function ragEmbeddingCheckpointPlan(settings: RagSettings["embedding"]) {
 
 function formatSeconds(ms: number) {
   return (Math.max(0, ms) / 1000).toFixed(2)
+}
+
+function formatDuration(ms: number) {
+  const safeMs = Math.max(0, Math.floor(ms))
+  if (safeMs < 1000) return `${safeMs}ms`
+  const totalSeconds = Math.floor(safeMs / 1000)
+  const seconds = totalSeconds % 60
+  const totalMinutes = Math.floor(totalSeconds / 60)
+  const minutes = totalMinutes % 60
+  const hours = Math.floor(totalMinutes / 60)
+  if (hours > 0) return `${hours}h ${minutes}m ${seconds}s`
+  if (minutes > 0) return `${minutes}m ${seconds}s`
+  return `${(safeMs / 1000).toFixed(safeMs < 10000 ? 1 : 0)}s`
+}
+
+function formatRagWorkerTelemetry(worker: RagWorkerStatus) {
+  const change = worker.lastChange
+    ? ` workerChange=${worker.lastChange.direction}:${worker.lastChange.fromWorkers}->${worker.lastChange.toWorkers}:${worker.lastChange.reason}`
+    : ""
+  return `workers=${worker.activeWorkers}/${worker.maxWorkers} configuredWorkers=${worker.configuredWorkers} inFlightRequests=${worker.inFlightRequests} queuePending=${worker.queuePending}${change}`
 }
 
 function ragPausedReasonMessage(reason?: RagStatus["indexPausedReason"], detail?: string) {

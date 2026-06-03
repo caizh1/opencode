@@ -2715,6 +2715,9 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
           <div class="settingsGrid">
             <label class="field">Batch size<select id="ragEmbeddingBatchSize" title="Embedding request timeout is automatic: 32-256 use 30s, 512 uses 90s"><option value="32">32</option><option value="64">64</option><option value="128">128</option><option value="256">256</option><option value="512">512</option></select></label>
             <label class="field">Max tokens/request<input id="ragEmbeddingMaxTokensPerRequest" type="number" min="1" max="1000000" step="1024"></label>
+            <label class="field">Concurrent requests<input id="ragEmbeddingConcurrentRequests" type="number" min="1" max="4" step="1"></label>
+            <label class="field">Max in-flight tokens<input id="ragEmbeddingMaxInFlightTokens" type="number" min="32768" max="1000000" step="1024"></label>
+            <label class="field">Encoding<select id="ragEmbeddingEncodingFormat"><option value="float">Float</option><option value="base64">Base64</option><option value="auto">Auto</option></select></label>
             <label class="field">Checkpoint mode<select id="ragEmbeddingCheckpointMode"><option value="interval">Interval</option><option value="off">Off</option><option value="safe">Safe</option></select></label>
             <label class="field">Checkpoint chunks<input id="ragEmbeddingCheckpointChunkInterval" type="number" min="0" max="1000000" step="512"></label>
             <label class="field">Checkpoint interval ms<input id="ragEmbeddingCheckpointIntervalMs" type="number" min="0" max="3600000" step="1000"></label>
@@ -2847,6 +2850,11 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
     const RAG_EMBEDDING_BATCH_SIZE_OPTIONS = [32, 64, 128, 256, 512];
     const RAG_EMBEDDING_BATCH_SIZE_ERROR = "Embedding batch size must be one of 32, 64, 128, 256, or 512.";
     const RAG_EMBEDDING_MAX_TOKENS_PER_REQUEST_DEFAULT = 65536;
+    const RAG_EMBEDDING_CONCURRENT_REQUESTS_DEFAULT = 3;
+    const RAG_EMBEDDING_MAX_IN_FLIGHT_TOKENS_DEFAULT = 180000;
+    const RAG_EMBEDDING_ENCODING_FORMAT_DEFAULT = "float";
+    const RAG_EMBEDDING_ENCODING_FORMATS = ["float", "base64", "auto"];
+    const RAG_EMBEDDING_REQUEST_DELAY_DEFAULT_MS = 0;
     const RAG_EMBEDDING_CHECKPOINT_MODE_DEFAULT = "interval";
     const RAG_EMBEDDING_CHECKPOINT_MODES = ["off", "interval", "safe"];
     const RAG_EMBEDDING_CHECKPOINT_CHUNK_INTERVAL_DEFAULT = 8192;
@@ -2904,7 +2912,7 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
 	        renderCompletionSettings();
 	      });
 	    }
-	    for (const id of ["ragEmbeddingEndpoint", "ragEmbeddingModel", "ragEmbeddingBatchSize", "ragEmbeddingMaxTokensPerRequest", "ragEmbeddingCheckpointMode", "ragEmbeddingCheckpointChunkInterval", "ragEmbeddingCheckpointIntervalMs", "ragEmbeddingRequestDelayMs", "ragEmbeddingMaxRequestsPerRun", "ragEmbeddingMaxRetries", "ragEmbeddingRetryBackoffMs", "ragEmbeddingResumeAutomatically", "ragEmbeddingResumeDelayMs", "ragRerankEndpoint", "ragRerankModel", "ragAllowedHosts", "ragVectorTopK", "ragRerankTopK"]) {
+	    for (const id of ["ragEmbeddingEndpoint", "ragEmbeddingModel", "ragEmbeddingBatchSize", "ragEmbeddingMaxTokensPerRequest", "ragEmbeddingConcurrentRequests", "ragEmbeddingMaxInFlightTokens", "ragEmbeddingEncodingFormat", "ragEmbeddingCheckpointMode", "ragEmbeddingCheckpointChunkInterval", "ragEmbeddingCheckpointIntervalMs", "ragEmbeddingRequestDelayMs", "ragEmbeddingMaxRequestsPerRun", "ragEmbeddingMaxRetries", "ragEmbeddingRetryBackoffMs", "ragEmbeddingResumeAutomatically", "ragEmbeddingResumeDelayMs", "ragRerankEndpoint", "ragRerankModel", "ragAllowedHosts", "ragVectorTopK", "ragRerankTopK"]) {
 	      el(id).addEventListener("input", () => {
 	        userEditedRagSettings = true;
 	      });
@@ -3181,11 +3189,14 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
 	        embeddingModel: el("ragEmbeddingModel").value,
 	        embeddingBatchSize,
 	        embeddingMaxTokensPerRequest: numberInputValue("ragEmbeddingMaxTokensPerRequest", RAG_EMBEDDING_MAX_TOKENS_PER_REQUEST_DEFAULT),
+	        embeddingConcurrentRequests: numberInputValue("ragEmbeddingConcurrentRequests", RAG_EMBEDDING_CONCURRENT_REQUESTS_DEFAULT),
+	        embeddingMaxInFlightTokens: numberInputValue("ragEmbeddingMaxInFlightTokens", RAG_EMBEDDING_MAX_IN_FLIGHT_TOKENS_DEFAULT),
+	        embeddingEncodingFormat: ragEmbeddingEncodingFormatSelectValue(el("ragEmbeddingEncodingFormat").value),
 	        embeddingCheckpointMode: ragEmbeddingCheckpointModeSelectValue(el("ragEmbeddingCheckpointMode").value),
 	        embeddingCheckpointChunkInterval: numberInputValue("ragEmbeddingCheckpointChunkInterval", RAG_EMBEDDING_CHECKPOINT_CHUNK_INTERVAL_DEFAULT),
 	        embeddingCheckpointIntervalMs: numberInputValue("ragEmbeddingCheckpointIntervalMs", RAG_EMBEDDING_CHECKPOINT_INTERVAL_DEFAULT_MS),
 	        embeddingTimeoutMs: ragEmbeddingTimeoutMsForBatchSize(embeddingBatchSize),
-	        embeddingRequestDelayMs: numberInputValue("ragEmbeddingRequestDelayMs", 500),
+	        embeddingRequestDelayMs: numberInputValue("ragEmbeddingRequestDelayMs", RAG_EMBEDDING_REQUEST_DELAY_DEFAULT_MS),
 	        embeddingMaxRequestsPerRun: numberInputValue("ragEmbeddingMaxRequestsPerRun", 100),
 	        embeddingMaxRetries: numberInputValue("ragEmbeddingMaxRetries", 3),
 	        embeddingRetryBackoffMs: numberInputValue("ragEmbeddingRetryBackoffMs", 2000),
@@ -3220,9 +3231,13 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
         return RAG_EMBEDDING_BATCH_SIZE_OPTIONS.includes(value) ? value : RAG_EMBEDDING_BATCH_SIZE_DEFAULT;
       }
 
-      function ragEmbeddingCheckpointModeSelectValue(mode) {
-        return RAG_EMBEDDING_CHECKPOINT_MODES.includes(mode) ? mode : RAG_EMBEDDING_CHECKPOINT_MODE_DEFAULT;
-      }
+	    function ragEmbeddingCheckpointModeSelectValue(mode) {
+	      return RAG_EMBEDDING_CHECKPOINT_MODES.includes(mode) ? mode : RAG_EMBEDDING_CHECKPOINT_MODE_DEFAULT;
+	    }
+
+	    function ragEmbeddingEncodingFormatSelectValue(format) {
+	      return RAG_EMBEDDING_ENCODING_FORMATS.includes(format) ? format : RAG_EMBEDDING_ENCODING_FORMAT_DEFAULT;
+	    }
 
 	    function validateRagEmbeddingBatchSizeInput() {
 	      const value = Number(el("ragEmbeddingBatchSize").value);
@@ -3571,10 +3586,13 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
 	        el("ragEmbeddingModel").value = embedding.model || "";
 	        el("ragEmbeddingBatchSize").value = String(ragEmbeddingBatchSizeSelectValue(embedding.batchSize));
 	        el("ragEmbeddingMaxTokensPerRequest").value = String(embedding.maxTokensPerRequest ?? RAG_EMBEDDING_MAX_TOKENS_PER_REQUEST_DEFAULT);
+	        el("ragEmbeddingConcurrentRequests").value = String(embedding.concurrentRequests ?? RAG_EMBEDDING_CONCURRENT_REQUESTS_DEFAULT);
+	        el("ragEmbeddingMaxInFlightTokens").value = String(embedding.maxInFlightTokens ?? RAG_EMBEDDING_MAX_IN_FLIGHT_TOKENS_DEFAULT);
+	        el("ragEmbeddingEncodingFormat").value = ragEmbeddingEncodingFormatSelectValue(embedding.encodingFormat);
 	        el("ragEmbeddingCheckpointMode").value = ragEmbeddingCheckpointModeSelectValue(embedding.checkpointMode);
 	        el("ragEmbeddingCheckpointChunkInterval").value = String(embedding.checkpointChunkInterval ?? RAG_EMBEDDING_CHECKPOINT_CHUNK_INTERVAL_DEFAULT);
 	        el("ragEmbeddingCheckpointIntervalMs").value = String(embedding.checkpointIntervalMs ?? RAG_EMBEDDING_CHECKPOINT_INTERVAL_DEFAULT_MS);
-	        el("ragEmbeddingRequestDelayMs").value = String(embedding.requestDelayMs ?? 500);
+	        el("ragEmbeddingRequestDelayMs").value = String(embedding.requestDelayMs ?? RAG_EMBEDDING_REQUEST_DELAY_DEFAULT_MS);
 	        el("ragEmbeddingMaxRequestsPerRun").value = String(embedding.maxRequestsPerRun ?? 100);
 	        el("ragEmbeddingMaxRetries").value = String(embedding.maxRetries ?? 3);
 	        el("ragEmbeddingRetryBackoffMs").value = String(embedding.retryBackoffMs ?? 2000);
@@ -5892,38 +5910,54 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
         : (rag.rerankProvider || rag.rerankLastError)
           ? ", rerank unavailable" + (rag.rerankLastError ? ": " + rag.rerankLastError : "")
           : "";
-      if (rag.embeddingEnabled) {
-        if (rag.availability === "indexing") return ragIndexingMeta(rag) + rerank;
-        if (rag.availability === "partial") {
-          return "RAG partial: " + formatCount(rag.embeddedChunks || 0) + "/" + formatCount(rag.chunks || 0) + " chunks, " + formatCount(rag.pendingChunkCount || Math.max(0, (rag.chunks || 0) - (rag.embeddedChunks || 0))) + " pending" + ragResumeScheduleMeta(rag) + rerank;
-        }
-        if (rag.availability === "paused") {
-          return "RAG indexing paused: " + ragPausedReasonMeta(rag) + ragResumeScheduleMeta(rag) + ", " + formatCount(rag.embeddedChunks || 0) + "/" + formatCount(rag.chunks || 0) + " chunks" + rerank;
-        }
-        return "RAG ready: " + formatCount(rag.embeddedChunks || 0) + "/" + formatCount(rag.chunks || 0) + " chunks" + rerank;
-      }
-      if (rag.availability === "checking") return "RAG checking" + rerank;
-      if (rag.availability === "indexing") return ragIndexingMeta(rag) + rerank;
-      if (rag.availability === "partial") return "RAG partial: " + formatCount(rag.embeddedChunks || 0) + "/" + formatCount(rag.chunks || 0) + " chunks" + ragResumeScheduleMeta(rag) + rerank;
-      if (rag.availability === "paused") return "RAG indexing paused: " + ragPausedReasonMeta(rag) + ragResumeScheduleMeta(rag) + rerank;
+	      if (rag.embeddingEnabled) {
+	        if (rag.availability === "indexing") return ragIndexingMeta(rag) + rerank;
+	        if (rag.availability === "partial") {
+	          return "RAG partial: " + formatCount(rag.embeddedChunks || 0) + "/" + formatCount(rag.chunks || 0) + " chunks, " + formatCount(rag.pendingChunkCount || Math.max(0, (rag.chunks || 0) - (rag.embeddedChunks || 0))) + " pending" + ragElapsedMeta(rag) + ragWorkerMeta(rag) + ragResumeScheduleMeta(rag) + rerank;
+	        }
+	        if (rag.availability === "paused") {
+	          return "RAG indexing paused: " + ragPausedReasonMeta(rag) + ragElapsedMeta(rag) + ragWorkerMeta(rag) + ragResumeScheduleMeta(rag) + ", " + formatCount(rag.embeddedChunks || 0) + "/" + formatCount(rag.chunks || 0) + " chunks" + rerank;
+	        }
+	        return "RAG ready: " + formatCount(rag.embeddedChunks || 0) + "/" + formatCount(rag.chunks || 0) + " chunks" + ragElapsedMeta(rag, "total") + ragWorkerMeta(rag) + rerank;
+	      }
+	      if (rag.availability === "checking") return "RAG checking" + rerank;
+	      if (rag.availability === "indexing") return ragIndexingMeta(rag) + rerank;
+	      if (rag.availability === "partial") return "RAG partial: " + formatCount(rag.embeddedChunks || 0) + "/" + formatCount(rag.chunks || 0) + " chunks" + ragElapsedMeta(rag) + ragWorkerMeta(rag) + ragResumeScheduleMeta(rag) + rerank;
+	      if (rag.availability === "paused") return "RAG indexing paused: " + ragPausedReasonMeta(rag) + ragElapsedMeta(rag) + ragWorkerMeta(rag) + ragResumeScheduleMeta(rag) + rerank;
       if (rag.availability === "not-indexed") return "RAG not indexed" + (rag.fallbackReason ? ": " + rag.fallbackReason : "") + rerank;
       if (rag.availability === "unavailable") return "RAG unavailable" + (rag.fallbackReason ? ": " + rag.fallbackReason : "") + rerank;
       return "RAG not configured" + rerank;
     }
 
     function ragIndexingMeta(rag) {
-      const progress = rag.indexProgress || {};
-      const chunks = formatCount(rag.embeddedChunks || 0) + "/" + formatCount(rag.chunks || 0) + " chunks";
-      const pending = formatCount(rag.pendingChunkCount || Math.max(0, (rag.chunks || 0) - (rag.embeddedChunks || 0))) + " pending";
-      if (progress.phase === "batch") {
-        const requestLimit = progress.requestLimit && progress.requestLimit > 0 ? String(progress.requestLimit) : "unlimited";
-        return "RAG indexing: " + chunks + ", batch " + progress.batchIndex + "/" + progress.batchCount + ", request " + progress.requestNumber + "/" + requestLimit + ", " + pending;
-      }
-      if (progress.phase === "delay") return "RAG indexing: " + chunks + ", waiting " + progress.delayMs + "ms, " + pending;
-      if (progress.phase === "rate-limit") return "RAG indexing: " + chunks + ", rate limited retry " + progress.retry + "/" + progress.maxRetries + ", " + pending;
-      if (progress.phase === "paused") return "RAG indexing paused: " + chunks + ", " + pending;
-      return "RAG indexing: " + chunks + ", " + pending;
-    }
+	      const progress = rag.indexProgress || {};
+	      const chunks = formatCount(rag.embeddedChunks || 0) + "/" + formatCount(rag.chunks || 0) + " chunks";
+	      const pending = formatCount(rag.pendingChunkCount || Math.max(0, (rag.chunks || 0) - (rag.embeddedChunks || 0))) + " pending";
+	      const telemetry = ragElapsedMeta(rag) + ragWorkerMeta(rag);
+	      if (progress.phase === "batch") {
+	        const requestLimit = progress.requestLimit && progress.requestLimit > 0 ? String(progress.requestLimit) : "unlimited";
+	        return "RAG indexing: " + chunks + ", batch " + progress.batchIndex + "/" + progress.batchCount + ", request " + progress.requestNumber + "/" + requestLimit + ", " + pending + telemetry;
+	      }
+	      if (progress.phase === "delay") return "RAG indexing: " + chunks + ", waiting " + progress.delayMs + "ms, " + pending + telemetry;
+	      if (progress.phase === "rate-limit") return "RAG indexing: " + chunks + ", rate limited retry " + progress.retry + "/" + progress.maxRetries + ", " + pending + telemetry;
+	      if (progress.phase === "paused") return "RAG indexing paused: " + chunks + ", " + pending + telemetry;
+	      return "RAG indexing: " + chunks + ", " + pending + telemetry;
+	    }
+
+	    function ragElapsedMeta(rag, label) {
+	      const elapsedMs = rag.indexElapsedMs ?? (rag.indexProgress && rag.indexProgress.elapsedMs);
+	      if (elapsedMs === undefined) return "";
+	      return ", " + (label || "elapsed") + " " + formatDuration(elapsedMs);
+	    }
+
+	    function ragWorkerMeta(rag) {
+	      const worker = rag.workerStatus || (rag.indexProgress && rag.indexProgress.workerStatus);
+	      if (!worker) return "";
+	      const change = worker.lastChange
+	        ? "; " + (worker.lastChange.direction === "upgrade" ? "upgraded" : "degraded") + " " + worker.lastChange.fromWorkers + "->" + worker.lastChange.toWorkers + ": " + worker.lastChange.reason
+	        : "";
+	      return ", workers " + worker.activeWorkers + "/" + worker.maxWorkers + ", " + worker.inFlightRequests + " in flight, " + worker.queuePending + " queued" + change;
+	    }
 
     function ragPausedReasonMeta(rag) {
       if (rag.fallbackReason) return rag.fallbackReason;
@@ -5941,9 +5975,22 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       return "; " + label + " in " + Math.ceil(remainingMs / 1000) + "s";
     }
 
-    function formatCount(value) {
-      return Number(value || 0).toLocaleString();
-    }
+	    function formatCount(value) {
+	      return Number(value || 0).toLocaleString();
+	    }
+
+	    function formatDuration(value) {
+	      const safeMs = Math.max(0, Math.floor(Number(value || 0)));
+	      if (safeMs < 1000) return safeMs + "ms";
+	      const totalSeconds = Math.floor(safeMs / 1000);
+	      const seconds = totalSeconds % 60;
+	      const totalMinutes = Math.floor(totalSeconds / 60);
+	      const minutes = totalMinutes % 60;
+	      const hours = Math.floor(totalMinutes / 60);
+	      if (hours > 0) return hours + "h " + minutes + "m " + seconds + "s";
+	      if (minutes > 0) return minutes + "m " + seconds + "s";
+	      return (safeMs / 1000).toFixed(safeMs < 10000 ? 1 : 0) + "s";
+	    }
 
     function formatCompactCount(value) {
       const number = Number(value || 0);

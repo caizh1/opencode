@@ -10,6 +10,22 @@ export type RagIndexAvailability = "none" | "partial" | "ready" | "paused"
 export type RagIndexPausedReason = "request-budget" | "rate-limit" | "provider-error"
 export type RagResumeReason = "request-budget" | "rate-limit"
 export type RagEmbeddingCheckpointMode = "off" | "interval" | "safe"
+export type RagEmbeddingEncodingFormat = "float" | "base64" | "auto"
+
+export type RagWorkerStatus = {
+  configuredWorkers: number
+  activeWorkers: number
+  maxWorkers: number
+  inFlightRequests: number
+  queuePending: number
+  lastChange?: {
+    direction: "upgrade" | "degrade"
+    fromWorkers: number
+    toWorkers: number
+    reason: string
+    at: number
+  }
+}
 
 export type RagIndexProgress = {
   phase: "batch" | "delay" | "rate-limit" | "paused"
@@ -30,6 +46,8 @@ export type RagIndexProgress = {
   embeddedChunks: number
   chunks: number
   pendingChunkCount: number
+  elapsedMs?: number
+  workerStatus?: RagWorkerStatus
   updatedAt: number
 }
 
@@ -40,6 +58,9 @@ export type RagSettings = {
     model: string
     batchSize: number
     maxTokensPerRequest: number
+    concurrentRequests: number
+    maxInFlightTokens: number
+    encodingFormat: RagEmbeddingEncodingFormat
     checkpointMode: RagEmbeddingCheckpointMode
     checkpointChunkInterval: number
     checkpointIntervalMs: number
@@ -74,6 +95,8 @@ export type RagStatus = {
   indexedChunkCount?: number
   pendingChunkCount?: number
   indexProgress?: RagIndexProgress
+  indexElapsedMs?: number
+  workerStatus?: RagWorkerStatus
   indexPausedReason?: RagIndexPausedReason
   resumeScheduledAt?: number
   resumeDelayMs?: number

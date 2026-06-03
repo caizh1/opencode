@@ -2,7 +2,7 @@
   "name": "opencode-remote",
   "displayName": "OpenCode Remote",
   "description": "Remote opencode serve client for VS Code",
-  "version": "0.0.98",
+  "version": "0.0.100",
   "icon": "media/opencode-icon.png",
   "publisher": "local",
   "repository": {
@@ -478,6 +478,30 @@
           "maximum": 1000000,
           "description": "Estimated maximum embedding tokens sent in one RAG embedding HTTP request. This is a lightweight safety cap for large chunks."
         },
+        "opencode.remote.rag.embedding.concurrentRequests": {
+          "type": "number",
+          "default": 3,
+          "minimum": 1,
+          "maximum": 4,
+          "description": "Initial maximum concurrent embedding requests during RAG indexing. The indexer can temporarily lower this under provider pressure and raise it by one after stable success."
+        },
+        "opencode.remote.rag.embedding.maxInFlightTokens": {
+          "type": "number",
+          "default": 180000,
+          "minimum": 32768,
+          "maximum": 1000000,
+          "description": "Approximate maximum embedding input tokens across in-flight RAG embedding requests."
+        },
+        "opencode.remote.rag.embedding.encodingFormat": {
+          "type": "string",
+          "default": "float",
+          "enum": [
+            "float",
+            "base64",
+            "auto"
+          ],
+          "description": "Embedding response encoding format. Float is most compatible; base64 and auto are used only when the endpoint supports them."
+        },
         "opencode.remote.rag.embedding.checkpointMode": {
           "type": "string",
           "default": "interval",
@@ -512,10 +536,10 @@
         },
         "opencode.remote.rag.embedding.requestDelayMs": {
           "type": "number",
-          "default": 500,
+          "default": 0,
           "minimum": 0,
           "maximum": 60000,
-          "description": "Delay between RAG embedding index HTTP requests. This protects rate-limited internal embedding services."
+          "description": "Optional delay before starting the next RAG embedding HTTP request. Usually 0 when adaptive concurrency is enabled."
         },
         "opencode.remote.rag.embedding.maxRequestsPerRun": {
           "type": "number",

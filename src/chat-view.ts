@@ -1895,18 +1895,18 @@ function ragStatusMessage(rag: RagStatus | undefined, fallback: string) {
         ? `, rerank unavailable: ${rag.rerankLastError || "endpoint test failed"}`
         : ""
     if (rag.availability === "indexing") return `${ragIndexingMessage(rag)}${rerank}.`
-    if (rag.availability === "partial") {
-      return `RAG partial: ${rag.embeddedChunks}/${rag.chunks} chunk(s), ${rag.pendingChunkCount ?? Math.max(0, rag.chunks - rag.embeddedChunks)} pending${ragResumeScheduleMessage(rag)}${rerank}.`
-    }
-    if (rag.availability === "paused") {
-      return `RAG indexing paused: ${rag.fallbackReason ?? ragPausedReasonMessage(rag.indexPausedReason, rag.lastError)}${ragResumeScheduleMessage(rag)}, ${rag.embeddedChunks}/${rag.chunks} chunk(s) indexed${rerank}.`
-    }
-    return `RAG ready: ${rag.embeddedChunks}/${rag.chunks} chunk(s), ${rag.vectorShards} shard(s)${rerank}.`
-  }
+	    if (rag.availability === "partial") {
+	      return `RAG partial: ${rag.embeddedChunks}/${rag.chunks} chunk(s), ${rag.pendingChunkCount ?? Math.max(0, rag.chunks - rag.embeddedChunks)} pending${ragElapsedMessage(rag)}${ragWorkerMessage(rag)}${ragResumeScheduleMessage(rag)}${rerank}.`
+	    }
+	    if (rag.availability === "paused") {
+	      return `RAG indexing paused: ${rag.fallbackReason ?? ragPausedReasonMessage(rag.indexPausedReason, rag.lastError)}${ragElapsedMessage(rag)}${ragWorkerMessage(rag)}${ragResumeScheduleMessage(rag)}, ${rag.embeddedChunks}/${rag.chunks} chunk(s) indexed${rerank}.`
+	    }
+	    return `RAG ready: ${rag.embeddedChunks}/${rag.chunks} chunk(s)${ragElapsedMessage(rag, "total")}${ragWorkerMessage(rag)}, ${rag.vectorShards} shard(s)${rerank}.`
+	  }
   if (rag.availability === "checking") return "RAG checking embedding endpoint and vector index."
   if (rag.availability === "indexing") return `${ragIndexingMessage(rag)}.`
-  if (rag.availability === "partial") return `RAG partial: ${rag.embeddedChunks}/${rag.chunks} chunk(s), ${rag.pendingChunkCount ?? Math.max(0, rag.chunks - rag.embeddedChunks)} pending${ragResumeScheduleMessage(rag)}.`
-  if (rag.availability === "paused") return `RAG indexing paused: ${rag.fallbackReason ?? ragPausedReasonMessage(rag.indexPausedReason, rag.lastError)}${ragResumeScheduleMessage(rag)}`
+  if (rag.availability === "partial") return `RAG partial: ${rag.embeddedChunks}/${rag.chunks} chunk(s), ${rag.pendingChunkCount ?? Math.max(0, rag.chunks - rag.embeddedChunks)} pending${ragElapsedMessage(rag)}${ragWorkerMessage(rag)}${ragResumeScheduleMessage(rag)}.`
+  if (rag.availability === "paused") return `RAG indexing paused: ${rag.fallbackReason ?? ragPausedReasonMessage(rag.indexPausedReason, rag.lastError)}${ragElapsedMessage(rag)}${ragWorkerMessage(rag)}${ragResumeScheduleMessage(rag)}`
   if (rag.availability === "not-indexed") return `RAG not indexed: ${rag.fallbackReason || "rebuild the local code graph to enable vector retrieval"}`
   if (rag.availability === "unavailable") return `RAG unavailable: ${rag.fallbackReason || rag.lastError || "endpoint test failed"}`
   return "RAG not configured. Add an embedding endpoint to enable vector retrieval."
@@ -1915,14 +1915,43 @@ function ragStatusMessage(rag: RagStatus | undefined, fallback: string) {
 function ragIndexingMessage(rag: RagStatus) {
   const progress = rag.indexProgress
   const pending = rag.pendingChunkCount ?? Math.max(0, rag.chunks - rag.embeddedChunks)
-  if (!progress) return `RAG indexing: ${rag.embeddedChunks}/${rag.chunks} chunk(s), ${pending} pending`
+  const telemetry = `${ragElapsedMessage(rag)}${ragWorkerMessage(rag)}`
+  if (!progress) return `RAG indexing: ${rag.embeddedChunks}/${rag.chunks} chunk(s), ${pending} pending${telemetry}`
   if (progress.phase === "batch") {
     const requestLimit = progress.requestLimit && progress.requestLimit > 0 ? String(progress.requestLimit) : "unlimited"
-    return `RAG indexing: ${rag.embeddedChunks}/${rag.chunks} chunk(s), batch ${progress.batchIndex}/${progress.batchCount}, request ${progress.requestNumber}/${requestLimit}, ${pending} pending`
+    return `RAG indexing: ${rag.embeddedChunks}/${rag.chunks} chunk(s), batch ${progress.batchIndex}/${progress.batchCount}, request ${progress.requestNumber}/${requestLimit}, ${pending} pending${telemetry}`
   }
-  if (progress.phase === "delay") return `RAG indexing: ${rag.embeddedChunks}/${rag.chunks} chunk(s), waiting ${progress.delayMs}ms, ${pending} pending`
-  if (progress.phase === "rate-limit") return `RAG indexing: ${rag.embeddedChunks}/${rag.chunks} chunk(s), rate limited retry ${progress.retry}/${progress.maxRetries}, ${pending} pending`
-  return `RAG indexing paused: ${rag.embeddedChunks}/${rag.chunks} chunk(s), ${pending} pending`
+  if (progress.phase === "delay") return `RAG indexing: ${rag.embeddedChunks}/${rag.chunks} chunk(s), waiting ${progress.delayMs}ms, ${pending} pending${telemetry}`
+  if (progress.phase === "rate-limit") return `RAG indexing: ${rag.embeddedChunks}/${rag.chunks} chunk(s), rate limited retry ${progress.retry}/${progress.maxRetries}, ${pending} pending${telemetry}`
+  return `RAG indexing paused: ${rag.embeddedChunks}/${rag.chunks} chunk(s), ${pending} pending${telemetry}`
+}
+
+function ragElapsedMessage(rag: RagStatus, label = "elapsed") {
+  const elapsedMs = rag.indexElapsedMs ?? rag.indexProgress?.elapsedMs
+  if (elapsedMs === undefined) return ""
+  return `, ${label} ${formatDuration(elapsedMs)}`
+}
+
+function ragWorkerMessage(rag: RagStatus) {
+  const worker = rag.workerStatus ?? rag.indexProgress?.workerStatus
+  if (!worker) return ""
+  const change = worker.lastChange
+    ? `; ${worker.lastChange.direction === "upgrade" ? "upgraded" : "degraded"} ${worker.lastChange.fromWorkers}->${worker.lastChange.toWorkers}: ${worker.lastChange.reason}`
+    : ""
+  return `, workers ${worker.activeWorkers}/${worker.maxWorkers}, ${worker.inFlightRequests} in flight, ${worker.queuePending} queued${change}`
+}
+
+function formatDuration(ms: number) {
+  const safeMs = Math.max(0, Math.floor(ms))
+  if (safeMs < 1000) return `${safeMs}ms`
+  const totalSeconds = Math.floor(safeMs / 1000)
+  const seconds = totalSeconds % 60
+  const totalMinutes = Math.floor(totalSeconds / 60)
+  const minutes = totalMinutes % 60
+  const hours = Math.floor(totalMinutes / 60)
+  if (hours > 0) return `${hours}h ${minutes}m ${seconds}s`
+  if (minutes > 0) return `${minutes}m ${seconds}s`
+  return `${(safeMs / 1000).toFixed(safeMs < 10000 ? 1 : 0)}s`
 }
 
 function ragTestResultMessage(rag: RagStatus | undefined) {

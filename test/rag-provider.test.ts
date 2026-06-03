@@ -109,6 +109,57 @@ describe("offline RAG HTTP provider policy", () => {
     expect(auth).toBeUndefined()
   })
 
+  test("decodes base64 embedding responses when requested", async () => {
+    let body: Record<string, unknown> | undefined
+    const baseUrl = await listen((request, response) => {
+      let raw = ""
+      request.on("data", (chunk) => {
+        raw += chunk
+      })
+      request.on("end", () => {
+        body = JSON.parse(raw)
+        json(response, 200, { data: [{ embedding: base64Float32([1, 0, 0]) }] })
+      })
+    })
+    const settings = ragSettings(`${baseUrl}/v1/embeddings`)
+    settings.embedding.encodingFormat = "base64"
+
+    const result = await createHttpEmbeddingProvider(settings)?.embedDetailed?.(["query"])
+
+    expect(body?.encoding_format).toBe("base64")
+    expect(result?.effectiveEncodingFormat).toBe("base64")
+    expect(result?.vectors).toEqual([[1, 0, 0]])
+  })
+
+  test("falls back from auto base64 to float and caches unsupported endpoints", async () => {
+    const bodies: Array<Record<string, unknown>> = []
+    const baseUrl = await listen((request, response) => {
+      let raw = ""
+      request.on("data", (chunk) => {
+        raw += chunk
+      })
+      request.on("end", () => {
+        const body = JSON.parse(raw) as Record<string, unknown>
+        bodies.push(body)
+        if (body.encoding_format === "base64") {
+          json(response, 400, { error: "encoding_format base64 unsupported" })
+          return
+        }
+        json(response, 200, { data: [{ embedding: [1, 0, 0] }] })
+      })
+    })
+    const settings = ragSettings(`${baseUrl}/v1/embeddings`)
+    settings.embedding.encodingFormat = "auto"
+    const provider = createHttpEmbeddingProvider(settings)
+
+    const first = await provider?.embedDetailed?.(["query"])
+    const second = await provider?.embedDetailed?.(["query again"])
+
+    expect(first?.effectiveEncodingFormat).toBe("float")
+    expect(second?.effectiveEncodingFormat).toBe("float")
+    expect(bodies.map((body) => body.encoding_format ?? "float")).toEqual(["base64", "float", "float"])
+  })
+
   test("reports sanitized embedding HTTP diagnostics", async () => {
     const events: RagHttpDiagnosticEvent[] = []
     const baseUrl = await listen((request, response) => {
@@ -234,11 +285,14 @@ function ragSettings(embeddingEndpoint = "http://127.0.0.1:8000/v1/embeddings", 
       model: "local-embedding",
       batchSize: 128,
       maxTokensPerRequest: 65536,
+      concurrentRequests: 3,
+      maxInFlightTokens: 180000,
+      encodingFormat: "float",
       checkpointMode: "interval",
       checkpointChunkInterval: 8192,
       checkpointIntervalMs: 120000,
       timeoutMs: 30000,
-      requestDelayMs: 500,
+      requestDelayMs: 0,
       maxRequestsPerRun: 100,
       maxRetries: 3,
       retryBackoffMs: 2000,
@@ -269,4 +323,9 @@ function listen(handler: http.RequestListener) {
 
 function json(response: http.ServerResponse, status: number, body: unknown) {
   response.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify(body))
+}
+
+function base64Float32(values: number[]) {
+  const array = new Float32Array(values)
+  return Buffer.from(array.buffer).toString("base64")
 }

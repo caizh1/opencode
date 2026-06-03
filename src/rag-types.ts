@@ -1,5 +1,5 @@
 import type { CodeGraphEvidence } from "./codegraph-types"
-import type { RagEndpointKind, RagIndexPausedReason, RagResumeReason, RagSettings, RagStatus } from "./types"
+import type { RagEndpointKind, RagIndexPausedReason, RagResumeReason, RagSettings, RagStatus, RagWorkerStatus } from "./types"
 
 export type RagChunkKind = "function" | "file-summary" | "module-summary" | "state-transition" | "text-window"
 
@@ -27,6 +27,8 @@ export type RagVectorIndex = {
   vectors: number[][]
   totalChunks?: number
   pendingChunkCount?: number
+  buildElapsedMs?: number
+  workerStatus?: RagWorkerStatus
   indexPausedReason?: RagIndexPausedReason
   lastError?: string
   requestsUsed?: number
@@ -53,11 +55,18 @@ export type RagEndpointPolicyResult = {
   reason?: string
 }
 
+export type RagEmbeddingDetailedResult = {
+  vectors: number[][]
+  responseBytes?: number
+  effectiveEncodingFormat?: "float" | "base64"
+}
+
 export type EmbeddingProvider = {
   id: string
   model: string
   dimension?: number
   embed(input: string[], signal?: AbortSignal): Promise<number[][]>
+  embedDetailed?(input: string[], signal?: AbortSignal): Promise<RagEmbeddingDetailedResult>
 }
 
 export type RerankInput = {
