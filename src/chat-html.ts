@@ -2715,6 +2715,9 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
           <div class="settingsGrid">
             <label class="field">Batch size<select id="ragEmbeddingBatchSize" title="Embedding request timeout is automatic: 32-256 use 30s, 512 uses 90s"><option value="32">32</option><option value="64">64</option><option value="128">128</option><option value="256">256</option><option value="512">512</option></select></label>
             <label class="field">Max tokens/request<input id="ragEmbeddingMaxTokensPerRequest" type="number" min="1" max="1000000" step="1024"></label>
+            <label class="field">Checkpoint mode<select id="ragEmbeddingCheckpointMode"><option value="interval">Interval</option><option value="off">Off</option><option value="safe">Safe</option></select></label>
+            <label class="field">Checkpoint chunks<input id="ragEmbeddingCheckpointChunkInterval" type="number" min="0" max="1000000" step="512"></label>
+            <label class="field">Checkpoint interval ms<input id="ragEmbeddingCheckpointIntervalMs" type="number" min="0" max="3600000" step="1000"></label>
             <label class="field">Request delay ms<input id="ragEmbeddingRequestDelayMs" type="number" min="0" max="60000" step="100"></label>
             <label class="field">Max requests per run<input id="ragEmbeddingMaxRequestsPerRun" type="number" min="0" max="100000" step="1"></label>
             <label class="field">Max retries<input id="ragEmbeddingMaxRetries" type="number" min="0" max="10" step="1"></label>
@@ -2844,6 +2847,10 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
     const RAG_EMBEDDING_BATCH_SIZE_OPTIONS = [32, 64, 128, 256, 512];
     const RAG_EMBEDDING_BATCH_SIZE_ERROR = "Embedding batch size must be one of 32, 64, 128, 256, or 512.";
     const RAG_EMBEDDING_MAX_TOKENS_PER_REQUEST_DEFAULT = 65536;
+    const RAG_EMBEDDING_CHECKPOINT_MODE_DEFAULT = "interval";
+    const RAG_EMBEDDING_CHECKPOINT_MODES = ["off", "interval", "safe"];
+    const RAG_EMBEDDING_CHECKPOINT_CHUNK_INTERVAL_DEFAULT = 8192;
+    const RAG_EMBEDDING_CHECKPOINT_INTERVAL_DEFAULT_MS = 120000;
     let state = {};
 		    let pendingAction = "";
 		    let settingsOpen = false;
@@ -2897,7 +2904,7 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
 	        renderCompletionSettings();
 	      });
 	    }
-	    for (const id of ["ragEmbeddingEndpoint", "ragEmbeddingModel", "ragEmbeddingBatchSize", "ragEmbeddingMaxTokensPerRequest", "ragEmbeddingRequestDelayMs", "ragEmbeddingMaxRequestsPerRun", "ragEmbeddingMaxRetries", "ragEmbeddingRetryBackoffMs", "ragEmbeddingResumeAutomatically", "ragEmbeddingResumeDelayMs", "ragRerankEndpoint", "ragRerankModel", "ragAllowedHosts", "ragVectorTopK", "ragRerankTopK"]) {
+	    for (const id of ["ragEmbeddingEndpoint", "ragEmbeddingModel", "ragEmbeddingBatchSize", "ragEmbeddingMaxTokensPerRequest", "ragEmbeddingCheckpointMode", "ragEmbeddingCheckpointChunkInterval", "ragEmbeddingCheckpointIntervalMs", "ragEmbeddingRequestDelayMs", "ragEmbeddingMaxRequestsPerRun", "ragEmbeddingMaxRetries", "ragEmbeddingRetryBackoffMs", "ragEmbeddingResumeAutomatically", "ragEmbeddingResumeDelayMs", "ragRerankEndpoint", "ragRerankModel", "ragAllowedHosts", "ragVectorTopK", "ragRerankTopK"]) {
 	      el(id).addEventListener("input", () => {
 	        userEditedRagSettings = true;
 	      });
@@ -3174,6 +3181,9 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
 	        embeddingModel: el("ragEmbeddingModel").value,
 	        embeddingBatchSize,
 	        embeddingMaxTokensPerRequest: numberInputValue("ragEmbeddingMaxTokensPerRequest", RAG_EMBEDDING_MAX_TOKENS_PER_REQUEST_DEFAULT),
+	        embeddingCheckpointMode: ragEmbeddingCheckpointModeSelectValue(el("ragEmbeddingCheckpointMode").value),
+	        embeddingCheckpointChunkInterval: numberInputValue("ragEmbeddingCheckpointChunkInterval", RAG_EMBEDDING_CHECKPOINT_CHUNK_INTERVAL_DEFAULT),
+	        embeddingCheckpointIntervalMs: numberInputValue("ragEmbeddingCheckpointIntervalMs", RAG_EMBEDDING_CHECKPOINT_INTERVAL_DEFAULT_MS),
 	        embeddingTimeoutMs: ragEmbeddingTimeoutMsForBatchSize(embeddingBatchSize),
 	        embeddingRequestDelayMs: numberInputValue("ragEmbeddingRequestDelayMs", 500),
 	        embeddingMaxRequestsPerRun: numberInputValue("ragEmbeddingMaxRequestsPerRun", 100),
@@ -3208,6 +3218,10 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       function ragEmbeddingBatchSizeSelectValue(batchSize) {
         const value = Number(batchSize);
         return RAG_EMBEDDING_BATCH_SIZE_OPTIONS.includes(value) ? value : RAG_EMBEDDING_BATCH_SIZE_DEFAULT;
+      }
+
+      function ragEmbeddingCheckpointModeSelectValue(mode) {
+        return RAG_EMBEDDING_CHECKPOINT_MODES.includes(mode) ? mode : RAG_EMBEDDING_CHECKPOINT_MODE_DEFAULT;
       }
 
 	    function validateRagEmbeddingBatchSizeInput() {
@@ -3557,6 +3571,9 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
 	        el("ragEmbeddingModel").value = embedding.model || "";
 	        el("ragEmbeddingBatchSize").value = String(ragEmbeddingBatchSizeSelectValue(embedding.batchSize));
 	        el("ragEmbeddingMaxTokensPerRequest").value = String(embedding.maxTokensPerRequest ?? RAG_EMBEDDING_MAX_TOKENS_PER_REQUEST_DEFAULT);
+	        el("ragEmbeddingCheckpointMode").value = ragEmbeddingCheckpointModeSelectValue(embedding.checkpointMode);
+	        el("ragEmbeddingCheckpointChunkInterval").value = String(embedding.checkpointChunkInterval ?? RAG_EMBEDDING_CHECKPOINT_CHUNK_INTERVAL_DEFAULT);
+	        el("ragEmbeddingCheckpointIntervalMs").value = String(embedding.checkpointIntervalMs ?? RAG_EMBEDDING_CHECKPOINT_INTERVAL_DEFAULT_MS);
 	        el("ragEmbeddingRequestDelayMs").value = String(embedding.requestDelayMs ?? 500);
 	        el("ragEmbeddingMaxRequestsPerRun").value = String(embedding.maxRequestsPerRun ?? 100);
 	        el("ragEmbeddingMaxRetries").value = String(embedding.maxRetries ?? 3);

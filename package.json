@@ -2,7 +2,7 @@
   "name": "opencode-remote",
   "displayName": "OpenCode Remote",
   "description": "Remote opencode serve client for VS Code",
-  "version": "0.0.97",
+  "version": "0.0.98",
   "icon": "media/opencode-icon.png",
   "publisher": "local",
   "repository": {
@@ -477,6 +477,30 @@
           "minimum": 1,
           "maximum": 1000000,
           "description": "Estimated maximum embedding tokens sent in one RAG embedding HTTP request. This is a lightweight safety cap for large chunks."
+        },
+        "opencode.remote.rag.embedding.checkpointMode": {
+          "type": "string",
+          "default": "interval",
+          "enum": [
+            "off",
+            "interval",
+            "safe"
+          ],
+          "description": "How often RAG embedding indexing writes recoverable partial checkpoints before the final index save."
+        },
+        "opencode.remote.rag.embedding.checkpointChunkInterval": {
+          "type": "number",
+          "default": 8192,
+          "minimum": 0,
+          "maximum": 1000000,
+          "description": "Number of newly embedded chunks between partial RAG checkpoint saves when checkpoint mode is interval. Set to 0 to disable chunk-based checkpoints."
+        },
+        "opencode.remote.rag.embedding.checkpointIntervalMs": {
+          "type": "number",
+          "default": 120000,
+          "minimum": 0,
+          "maximum": 3600000,
+          "description": "Milliseconds between partial RAG checkpoint saves when checkpoint mode is interval. Set to 0 to disable time-based checkpoints."
         },
         "opencode.remote.rag.embedding.timeoutMs": {
           "type": "number",

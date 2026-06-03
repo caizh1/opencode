@@ -60,6 +60,7 @@ describe("code graph query observability", () => {
     expect(serviceSource).toContain("this.setAbortedRagIndexStatus(policy.kind, rerankProbe, message)")
     expect(serviceSource).toContain("RAG vector index build was interrupted before vectors were saved")
     expect(serviceSource).toContain("[rag-index] embedding")
+    expect(serviceSource).toContain("checkpointMode=${checkpointPlan.mode}")
     expect(serviceSource).toContain("chunks=${event.embeddedChunks}/${event.chunks}")
     expect(serviceSource).toContain("requestSec=${formatSeconds(event.elapsedMs)}")
     expect(serviceSource).toContain("embeddingRequestSec=${formatSeconds(event.embeddingElapsedMs)}")

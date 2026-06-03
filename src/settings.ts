@@ -1,6 +1,6 @@
 import * as vscode from "vscode"
 import { RAG_EMBEDDING_MAX_TOKENS_PER_REQUEST_DEFAULT } from "./rag-token"
-import type { CodeGraphAnalysisMode, CompletionLogLevel, CompletionProfile, CompletionProvider, RemoteSettings } from "./types"
+import type { CodeGraphAnalysisMode, CompletionLogLevel, CompletionProfile, CompletionProvider, RagEmbeddingCheckpointMode, RemoteSettings } from "./types"
 
 export const PASSWORD_SECRET_KEY = "opencode.remote.password"
 export const COMPLETION_API_KEY_SECRET_KEY = "opencode.remote.completion.apiKey"
@@ -12,6 +12,10 @@ export const RAG_EMBEDDING_BATCH_SIZE_MAX = 512
 export const RAG_EMBEDDING_BATCH_SIZE_ERROR = "Embedding batch size must be one of 32, 64, 128, 256, or 512."
 export const RAG_EMBEDDING_TIMEOUT_DEFAULT_MS = 30000
 export const RAG_EMBEDDING_TIMEOUT_LARGE_BATCH_MS = 90000
+export const RAG_EMBEDDING_CHECKPOINT_MODE_DEFAULT: RagEmbeddingCheckpointMode = "interval"
+export const RAG_EMBEDDING_CHECKPOINT_MODES = ["off", "interval", "safe"] as const
+export const RAG_EMBEDDING_CHECKPOINT_CHUNK_INTERVAL_DEFAULT = 8192
+export const RAG_EMBEDDING_CHECKPOINT_INTERVAL_DEFAULT_MS = 120000
 
 export type ConnectionSettingsInput = {
   serverUrl: string
@@ -35,6 +39,9 @@ export type RagSettingsInput = {
   embeddingModel: string
   embeddingBatchSize: number
   embeddingMaxTokensPerRequest: number
+  embeddingCheckpointMode: RagEmbeddingCheckpointMode | string
+  embeddingCheckpointChunkInterval: number
+  embeddingCheckpointIntervalMs: number
   embeddingTimeoutMs?: number
   embeddingRequestDelayMs: number
   embeddingMaxRequestsPerRun: number
@@ -121,6 +128,9 @@ export function readRemoteSettings(): RemoteSettings {
         model: config.get<string>("rag.embedding.model", "").trim(),
         batchSize: ragEmbeddingBatchSize.batchSize,
         maxTokensPerRequest: clampInteger(config.get<number>("rag.embedding.maxTokensPerRequest", RAG_EMBEDDING_MAX_TOKENS_PER_REQUEST_DEFAULT), 1, 1_000_000, RAG_EMBEDDING_MAX_TOKENS_PER_REQUEST_DEFAULT),
+        checkpointMode: readRagEmbeddingCheckpointMode(config.get<unknown>("rag.embedding.checkpointMode", RAG_EMBEDDING_CHECKPOINT_MODE_DEFAULT)),
+        checkpointChunkInterval: clampInteger(config.get<number>("rag.embedding.checkpointChunkInterval", RAG_EMBEDDING_CHECKPOINT_CHUNK_INTERVAL_DEFAULT), 0, 1_000_000, RAG_EMBEDDING_CHECKPOINT_CHUNK_INTERVAL_DEFAULT),
+        checkpointIntervalMs: clampInteger(config.get<number>("rag.embedding.checkpointIntervalMs", RAG_EMBEDDING_CHECKPOINT_INTERVAL_DEFAULT_MS), 0, 3_600_000, RAG_EMBEDDING_CHECKPOINT_INTERVAL_DEFAULT_MS),
         configError: ragEmbeddingBatchSize.configError,
         timeoutMs: ragEmbeddingTimeoutMsForBatchSize(ragEmbeddingBatchSize.batchSize),
         requestDelayMs: Math.max(0, Math.min(60000, config.get<number>("rag.embedding.requestDelayMs", 500))),
@@ -285,6 +295,9 @@ export function ragSettingsUpdates(input: RagSettingsInput): SettingsUpdate[] {
     { key: "rag.embedding.model", value: input.embeddingModel.trim() },
     { key: "rag.embedding.batchSize", value: embeddingBatchSize },
     { key: "rag.embedding.maxTokensPerRequest", value: clampInteger(input.embeddingMaxTokensPerRequest, 1, 1_000_000, RAG_EMBEDDING_MAX_TOKENS_PER_REQUEST_DEFAULT), optional: true },
+    { key: "rag.embedding.checkpointMode", value: readRagEmbeddingCheckpointMode(input.embeddingCheckpointMode), optional: true },
+    { key: "rag.embedding.checkpointChunkInterval", value: clampInteger(input.embeddingCheckpointChunkInterval, 0, 1_000_000, RAG_EMBEDDING_CHECKPOINT_CHUNK_INTERVAL_DEFAULT), optional: true },
+    { key: "rag.embedding.checkpointIntervalMs", value: clampInteger(input.embeddingCheckpointIntervalMs, 0, 3_600_000, RAG_EMBEDDING_CHECKPOINT_INTERVAL_DEFAULT_MS), optional: true },
     { key: "rag.embedding.timeoutMs", value: ragEmbeddingTimeoutMsForBatchSize(embeddingBatchSize) },
     { key: "rag.embedding.requestDelayMs", value: clampInteger(input.embeddingRequestDelayMs, 0, 60000, 500) },
     { key: "rag.embedding.maxRequestsPerRun", value: clampInteger(input.embeddingMaxRequestsPerRun, 0, 100000, 100) },
@@ -376,6 +389,10 @@ export function validateRagEmbeddingBatchSize(input: unknown) {
 
 export function ragEmbeddingTimeoutMsForBatchSize(input: unknown) {
   return Number(input) === RAG_EMBEDDING_BATCH_SIZE_MAX ? RAG_EMBEDDING_TIMEOUT_LARGE_BATCH_MS : RAG_EMBEDDING_TIMEOUT_DEFAULT_MS
+}
+
+export function readRagEmbeddingCheckpointMode(input: unknown): RagEmbeddingCheckpointMode {
+  return input === "off" || input === "safe" ? input : RAG_EMBEDDING_CHECKPOINT_MODE_DEFAULT
 }
 
 function isUnregisteredConfigurationError(error: unknown) {

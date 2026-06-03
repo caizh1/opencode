@@ -9,6 +9,7 @@ export type RagAvailability = "not-configured" | "not-indexed" | "checking" | "i
 export type RagIndexAvailability = "none" | "partial" | "ready" | "paused"
 export type RagIndexPausedReason = "request-budget" | "rate-limit" | "provider-error"
 export type RagResumeReason = "request-budget" | "rate-limit"
+export type RagEmbeddingCheckpointMode = "off" | "interval" | "safe"
 
 export type RagIndexProgress = {
   phase: "batch" | "delay" | "rate-limit" | "paused"
@@ -39,6 +40,9 @@ export type RagSettings = {
     model: string
     batchSize: number
     maxTokensPerRequest: number
+    checkpointMode: RagEmbeddingCheckpointMode
+    checkpointChunkInterval: number
+    checkpointIntervalMs: number
     configError?: string
     timeoutMs: number
     requestDelayMs: number

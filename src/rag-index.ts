@@ -163,7 +163,6 @@ export async function buildRagVectorIndex(input: {
   const batchCount = batches.length
   let lastCheckpointChunks = nextChunks.length
   let lastCheckpointAt = Date.now()
-  let hasCheckpointed = false
 
   if (pending.length > 0) {
     for (let batchOffset = 0; batchOffset < batches.length; batchOffset++) {
@@ -252,8 +251,9 @@ export async function buildRagVectorIndex(input: {
       }
       const vectorNormalizeElapsedMs = Date.now() - normalizeStarted
       throwIfAborted(input.signal)
+      const hasMore = batchOffset + 1 < batches.length
       const checkpoint = shouldCheckpoint({
-        hasCheckpointed,
+        hasMore,
         embeddedChunks: nextChunks.length,
         lastCheckpointChunks,
         lastCheckpointAt,
@@ -279,7 +279,6 @@ export async function buildRagVectorIndex(input: {
         checkpointElapsedMs = Date.now() - checkpointStarted
         lastCheckpointChunks = nextChunks.length
         lastCheckpointAt = Date.now()
-        hasCheckpointed = true
       }
       input.onBatchProfile?.({
         batchIndex,
@@ -293,7 +292,6 @@ export async function buildRagVectorIndex(input: {
         ...progressCounts(chunks.length, nextChunks.length),
       })
 
-      const hasMore = batchOffset + 1 < batches.length
       if (hasMore && requestDelayMs > 0 && (requestLimit <= 0 || requestsUsed < requestLimit)) {
         input.onProgress?.({
           phase: "delay",
@@ -474,14 +472,14 @@ function planEmbeddingBatches(chunks: RagChunk[], maxInputs: number, maxTokensPe
 }
 
 function shouldCheckpoint(input: {
-  hasCheckpointed: boolean
+  hasMore: boolean
   embeddedChunks: number
   lastCheckpointChunks: number
   lastCheckpointAt: number
   checkpointChunkInterval: number
   checkpointIntervalMs: number
 }) {
-  if (!input.hasCheckpointed) return true
+  if (!input.hasMore) return false
   if (input.checkpointChunkInterval > 0 && input.embeddedChunks - input.lastCheckpointChunks >= input.checkpointChunkInterval) return true
   if (input.checkpointIntervalMs > 0 && Date.now() - input.lastCheckpointAt >= input.checkpointIntervalMs) return true
   return false

@@ -94,8 +94,45 @@ describe("local RAG vector index", () => {
       },
     })
 
-    expect(updates[0]).toBe(1)
-    expect(updates.length).toBeLessThan(buildRagChunks(index).length)
+    const totalChunks = buildRagChunks(index).length
+    expect(updates).toEqual([3, 6])
+    expect(updates[updates.length - 1]).toBeLessThan(totalChunks)
+  })
+
+  test("skips intermediate checkpoints before the interval and on the final batch", async () => {
+    const index = sampleIndex()
+    const updates: number[] = []
+    const vectorIndex = await buildRagVectorIndex({
+      index,
+      provider: fakeEmbeddingProvider(),
+      batchSize: 1,
+      requestDelayMs: 0,
+      checkpointChunkInterval: 9999,
+      checkpointIntervalMs: 0,
+      onIndexUpdate: async (partial) => {
+        updates.push(partial.chunks.length)
+      },
+    })
+
+    expect(updates).toEqual([])
+    expect(vectorIndex.chunks).toHaveLength(buildRagChunks(index).length)
+  })
+
+  test("supports turning intermediate checkpoints off", async () => {
+    const updates: number[] = []
+    await buildRagVectorIndex({
+      index: sampleIndex(),
+      provider: fakeEmbeddingProvider(),
+      batchSize: 1,
+      requestDelayMs: 0,
+      checkpointChunkInterval: 0,
+      checkpointIntervalMs: 0,
+      onIndexUpdate: async (partial) => {
+        updates.push(partial.chunks.length)
+      },
+    })
+
+    expect(updates).toEqual([])
   })
 
   test("records the source code graph snapshot timestamp in full and partial indexes", async () => {
@@ -108,6 +145,8 @@ describe("local RAG vector index", () => {
       batchSize: 1,
       maxRequestsPerRun: 1,
       requestDelayMs: 0,
+      checkpointChunkInterval: 1,
+      checkpointIntervalMs: 0,
       onIndexUpdate: async (partial) => {
         partialSourceTimestamps.push(partial.sourceIndexUpdatedAt)
       },
@@ -197,6 +236,8 @@ describe("local RAG vector index", () => {
       provider,
       batchSize: 1,
       requestDelayMs: 25,
+      checkpointChunkInterval: 1,
+      checkpointIntervalMs: 0,
       signal: controller.signal,
       sleep: async () => {
         controller.abort()

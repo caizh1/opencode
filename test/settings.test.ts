@@ -32,6 +32,9 @@ const {
   RAG_EMBEDDING_BATCH_SIZE_ERROR,
   RAG_EMBEDDING_BATCH_SIZE_MAX,
   RAG_EMBEDDING_BATCH_SIZE_OPTIONS,
+  RAG_EMBEDDING_CHECKPOINT_CHUNK_INTERVAL_DEFAULT,
+  RAG_EMBEDDING_CHECKPOINT_INTERVAL_DEFAULT_MS,
+  RAG_EMBEDDING_CHECKPOINT_MODE_DEFAULT,
   RAG_EMBEDDING_TIMEOUT_DEFAULT_MS,
   RAG_EMBEDDING_TIMEOUT_LARGE_BATCH_MS,
   PASSWORD_SECRET_KEY,
@@ -91,6 +94,9 @@ describe("RAG settings validation", () => {
     expect(settings.rag.embedding.batchSize).toBe(RAG_EMBEDDING_BATCH_SIZE_DEFAULT)
     expect(settings.rag.embedding.batchSize).toBe(128)
     expect(settings.rag.embedding.maxTokensPerRequest).toBe(65536)
+    expect(settings.rag.embedding.checkpointMode).toBe(RAG_EMBEDDING_CHECKPOINT_MODE_DEFAULT)
+    expect(settings.rag.embedding.checkpointChunkInterval).toBe(RAG_EMBEDDING_CHECKPOINT_CHUNK_INTERVAL_DEFAULT)
+    expect(settings.rag.embedding.checkpointIntervalMs).toBe(RAG_EMBEDDING_CHECKPOINT_INTERVAL_DEFAULT_MS)
     expect(settings.rag.embedding.timeoutMs).toBe(RAG_EMBEDDING_TIMEOUT_DEFAULT_MS)
     expect(settings.rag.embedding.configError).toBeUndefined()
   })
@@ -161,14 +167,37 @@ describe("RAG settings validation", () => {
     expect(configUpdates.find((update) => update.key === "rag.embedding.maxTokensPerRequest")?.value).toBe(32768)
   })
 
-  test("skips optional max token cap saves when the active manifest has not registered it", async () => {
+  test("saves checkpoint settings as optional RAG embedding updates", async () => {
+    await saveRagSettings(ragInput({
+      embeddingCheckpointMode: "safe",
+      embeddingCheckpointChunkInterval: 4096,
+      embeddingCheckpointIntervalMs: 45000,
+    }))
+
+    expect(configUpdates.find((update) => update.key === "rag.embedding.checkpointMode")?.value).toBe("safe")
+    expect(configUpdates.find((update) => update.key === "rag.embedding.checkpointChunkInterval")?.value).toBe(4096)
+    expect(configUpdates.find((update) => update.key === "rag.embedding.checkpointIntervalMs")?.value).toBe(45000)
+  })
+
+  test("skips optional embedding optimization saves when the active manifest has not registered them", async () => {
     configUpdates = []
     updateFailures.set("rag.embedding.maxTokensPerRequest", new Error("opencode.remote.rag.embedding.maxTokensPerRequest is not a registered configuration"))
+    updateFailures.set("rag.embedding.checkpointMode", new Error("opencode.remote.rag.embedding.checkpointMode is not a registered configuration"))
+    updateFailures.set("rag.embedding.checkpointChunkInterval", new Error("opencode.remote.rag.embedding.checkpointChunkInterval is not a registered configuration"))
+    updateFailures.set("rag.embedding.checkpointIntervalMs", new Error("opencode.remote.rag.embedding.checkpointIntervalMs is not a registered configuration"))
 
-    await saveRagSettings(ragInput({ embeddingMaxTokensPerRequest: 32768 }))
+    await saveRagSettings(ragInput({
+      embeddingMaxTokensPerRequest: 32768,
+      embeddingCheckpointMode: "safe",
+      embeddingCheckpointChunkInterval: 4096,
+      embeddingCheckpointIntervalMs: 45000,
+    }))
 
     expect(configUpdates.some((update) => update.key === "rag.embedding.endpoint")).toBe(true)
     expect(configUpdates.some((update) => update.key === "rag.embedding.maxTokensPerRequest")).toBe(false)
+    expect(configUpdates.some((update) => update.key === "rag.embedding.checkpointMode")).toBe(false)
+    expect(configUpdates.some((update) => update.key === "rag.embedding.checkpointChunkInterval")).toBe(false)
+    expect(configUpdates.some((update) => update.key === "rag.embedding.checkpointIntervalMs")).toBe(false)
   })
 })
 
@@ -178,6 +207,9 @@ function ragInput(overrides: Partial<Parameters<typeof saveRagSettings>[0]> = {}
     embeddingModel: "local-embedding",
     embeddingBatchSize: RAG_EMBEDDING_BATCH_SIZE_DEFAULT,
     embeddingMaxTokensPerRequest: 65536,
+    embeddingCheckpointMode: RAG_EMBEDDING_CHECKPOINT_MODE_DEFAULT,
+    embeddingCheckpointChunkInterval: RAG_EMBEDDING_CHECKPOINT_CHUNK_INTERVAL_DEFAULT,
+    embeddingCheckpointIntervalMs: RAG_EMBEDDING_CHECKPOINT_INTERVAL_DEFAULT_MS,
     embeddingTimeoutMs: 30000,
     embeddingRequestDelayMs: 500,
     embeddingMaxRequestsPerRun: 100,

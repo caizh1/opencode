@@ -58,8 +58,8 @@ const SOURCE_GLOB = "**/*.{c,h,cc,cpp,cxx,hpp,hxx}"
 const SOURCE_EXTENSIONS = new Set([".c", ".h", ".cc", ".cpp", ".cxx", ".hpp", ".hxx"])
 const LARGE_INDEX_LAZY_FILE_THRESHOLD = 100000
 const JOB_CHECKPOINT_VERSION = 1
-const RAG_INDEX_CHECKPOINT_CHUNK_INTERVAL = 2048
-const RAG_INDEX_CHECKPOINT_INTERVAL_MS = 10000
+const RAG_INDEX_SAFE_CHECKPOINT_CHUNK_INTERVAL = 2048
+const RAG_INDEX_SAFE_CHECKPOINT_INTERVAL_MS = 30000
 const DEFAULT_EXCLUDES = [
   "**/.git/**",
   "**/node_modules/**",
@@ -1738,7 +1738,8 @@ export class LocalCodeGraphService implements vscode.Disposable {
         return
       }
       this.setRagStatus(this.ragStatusForIndexing(policy.kind, rerankProbe))
-      this.output.appendLine(`[rag-index] embedding ${changedPaths ? `${changedPaths.length} changed path(s)` : "full local code graph"} with batchSize=${settings.embedding.batchSize} maxTokensPerRequest=${settings.embedding.maxTokensPerRequest} timeoutMs=${settings.embedding.timeoutMs} requestDelayMs=${settings.embedding.requestDelayMs} maxRequestsPerRun=${settings.embedding.maxRequestsPerRun || "unlimited"} maxRetries=${settings.embedding.maxRetries} retryBackoffMs=${settings.embedding.retryBackoffMs}`)
+      const checkpointPlan = ragEmbeddingCheckpointPlan(settings.embedding)
+      this.output.appendLine(`[rag-index] embedding ${changedPaths ? `${changedPaths.length} changed path(s)` : "full local code graph"} with batchSize=${settings.embedding.batchSize} maxTokensPerRequest=${settings.embedding.maxTokensPerRequest} timeoutMs=${settings.embedding.timeoutMs} requestDelayMs=${settings.embedding.requestDelayMs} maxRequestsPerRun=${settings.embedding.maxRequestsPerRun || "unlimited"} maxRetries=${settings.embedding.maxRetries} retryBackoffMs=${settings.embedding.retryBackoffMs} checkpointMode=${checkpointPlan.mode} checkpointChunkInterval=${checkpointPlan.chunkInterval} checkpointIntervalMs=${checkpointPlan.intervalMs}`)
       const next = await buildRagVectorIndex({
         index: activeIndex,
         provider: this.ragEmbeddingProvider,
@@ -1754,8 +1755,8 @@ export class LocalCodeGraphService implements vscode.Disposable {
         maxRetries: settings.embedding.maxRetries,
         retryBackoffMs: settings.embedding.retryBackoffMs,
         resumeMissing: settings.embedding.resumeAutomatically || !changedPaths,
-        checkpointChunkInterval: RAG_INDEX_CHECKPOINT_CHUNK_INTERVAL,
-        checkpointIntervalMs: RAG_INDEX_CHECKPOINT_INTERVAL_MS,
+        checkpointChunkInterval: checkpointPlan.chunkInterval,
+        checkpointIntervalMs: checkpointPlan.intervalMs,
         onProgress: (event) => {
           this.output.appendLine(formatRagIndexBuildProgress(event))
           this.setRagStatus(this.ragStatusForIndexing(policy.kind, rerankProbe, { progress: event }))
@@ -2505,6 +2506,24 @@ function formatRagIndexBuildProgress(event: RagIndexBuildProgress) {
 function formatRagIndexBatchProfile(event: RagIndexBatchProfile) {
   const checkpoint = event.checkpointElapsedMs !== undefined ? ` checkpointSec=${formatSeconds(event.checkpointElapsedMs)}` : " checkpoint=skipped"
   return `[rag-index-profile] batch ${event.batchIndex}/${event.batchCount} request=${event.requestNumber} inputCount=${event.inputCount} estimatedTokens=${event.estimatedTokens} embeddingRequestSec=${formatSeconds(event.embeddingElapsedMs)} vectorNormalizeSec=${formatSeconds(event.vectorNormalizeElapsedMs)}${checkpoint} chunks=${event.embeddedChunks}/${event.chunks} pending=${event.pendingChunkCount}`
+}
+
+function ragEmbeddingCheckpointPlan(settings: RagSettings["embedding"]) {
+  if (settings.checkpointMode === "off") {
+    return { mode: settings.checkpointMode, chunkInterval: 0, intervalMs: 0 }
+  }
+  if (settings.checkpointMode === "safe") {
+    return {
+      mode: settings.checkpointMode,
+      chunkInterval: RAG_INDEX_SAFE_CHECKPOINT_CHUNK_INTERVAL,
+      intervalMs: RAG_INDEX_SAFE_CHECKPOINT_INTERVAL_MS,
+    }
+  }
+  return {
+    mode: "interval" as const,
+    chunkInterval: Math.max(0, Math.floor(settings.checkpointChunkInterval)),
+    intervalMs: Math.max(0, Math.floor(settings.checkpointIntervalMs)),
+  }
 }
 
 function formatSeconds(ms: number) {
