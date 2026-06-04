@@ -122,6 +122,34 @@ describe("completion postprocessor", () => {
     })
   })
 
+  test("rejects middle-of-line output that starts by echoing the suffix", () => {
+    expect(postprocessCompletion({
+      rawText: ";\n}",
+      linePrefix: "    return ",
+      lineSuffix: ";",
+      languageId: "c",
+      plan: ordinaryPlan(),
+      indent: indent("    ", "    "),
+    })).toEqual({
+      text: "",
+      rejected: true,
+      reason: "suffix-duplicated-output",
+    })
+  })
+
+  test("strips trailing semicolon that would duplicate the current suffix", () => {
+    expect(postprocessCompletion({
+      rawText: "ret + 10;",
+      linePrefix: "    return ",
+      lineSuffix: ";",
+      languageId: "c",
+      plan: ordinaryPlan(),
+      indent: indent("    ", "    "),
+    })).toEqual({
+      text: "ret + 10",
+    })
+  })
+
   test("normalizes common indentation in multiline output", () => {
     expect(postprocessCompletion({
       rawText: "        EXPECT_EQ(0, call());\n        return;",

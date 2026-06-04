@@ -61,6 +61,14 @@ export function planCompletion(input: CompletionPlanInput): CompletionPlan {
     }
   }
 
+  if (isInsideStringLiteral(input.linePrefix, input.languageId)) {
+    return disabledPlan()
+  }
+
+  if (isLowSignalInput(trimmed, currentWord)) {
+    return disabledPlan()
+  }
+
   if (currentWord.length >= 3 && /^[A-Za-z_][A-Za-z0-9_]*$/.test(currentWord)) {
     return {
       kind: "symbol-completion",
@@ -128,6 +136,71 @@ function looksLikeCodeCommentPrompt(trimmed: string) {
   const text = stripSingleLineCommentMarker(trimmed).trim()
   if (text.length < 6) return false
   return /\b(?:add|create|generate|implement|write|fix|return|test|function|method|class)\b/i.test(text)
+}
+
+function isInsideStringLiteral(linePrefix: string, languageId: string) {
+  if (!supportsStringContextSkip(languageId)) return false
+
+  let quote: "'" | "\"" | "`" | undefined
+  let escaped = false
+  for (let index = 0; index < linePrefix.length; index += 1) {
+    const char = linePrefix[index]
+    const next = linePrefix[index + 1]
+
+    if (!quote && char === "/" && next === "/" && supportsSlashComments(languageId)) break
+    if (!quote && char === "#") break
+
+    if (escaped) {
+      escaped = false
+      continue
+    }
+    if (char === "\\") {
+      escaped = Boolean(quote)
+      continue
+    }
+
+    if (quote) {
+      if (char === quote) quote = undefined
+      continue
+    }
+
+    if (char === "\"" || char === "'" || (char === "`" && supportsBacktickStrings(languageId))) {
+      quote = char
+    }
+  }
+
+  return Boolean(quote)
+}
+
+function isLowSignalInput(trimmed: string, currentWord: string) {
+  if (!trimmed) return false
+  if (/^[;,.()[\]{}]+$/.test(trimmed)) return true
+  if (currentWord && trimmed === currentWord && currentWord.length < 3 && !isControlFlowStem(currentWord)) return true
+  return false
+}
+
+function isControlFlowStem(input: string) {
+  return input === "if"
+}
+
+function supportsStringContextSkip(languageId: string) {
+  return new Set([
+    "c",
+    "cpp",
+    "csharp",
+    "go",
+    "java",
+    "javascript",
+    "javascriptreact",
+    "python",
+    "rust",
+    "typescript",
+    "typescriptreact",
+  ]).has(languageId)
+}
+
+function supportsBacktickStrings(languageId: string) {
+  return new Set(["javascript", "javascriptreact", "typescript", "typescriptreact"]).has(languageId)
 }
 
 function supportsSlashComments(languageId: string) {

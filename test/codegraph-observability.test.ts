@@ -14,12 +14,27 @@ describe("code graph query observability", () => {
     expect(serviceSource).toContain("elapsed=")
   })
 
-  test("auto-starts background indexing and exposes a send readiness gate", () => {
+  test("loads an existing index before auto-starting background indexing", () => {
     expect(serviceSource).toContain("async maybePromptAndIndex()")
-    expect(serviceSource).toContain("void this.indexWorkspace(false)")
+    const start = serviceSource.indexOf("async maybePromptAndIndex()")
+    const end = serviceSource.indexOf("async indexWorkspace", start)
+    const body = serviceSource.slice(start, end)
+    expect(body).toContain("await this.ensureIndexLoaded()")
+    expect(body).toContain("if (this.status().state === \"ready\") return")
+    expect(body).toContain("if (!settings.codeGraph.promptOnWorkspaceOpen) return")
+    expect(body).toContain("void this.indexWorkspace(false)")
+    expect(body.indexOf("await this.ensureIndexLoaded()")).toBeLessThan(body.indexOf("void this.indexWorkspace(false)"))
     expect(serviceSource).toContain("async waitForReady()")
     expect(serviceSource).toContain("private async runQueuedIndexJobs")
     expect(serviceSource).toContain("class WorkBudget")
+  })
+
+  test("status notifications do not block command completion", () => {
+    const start = serviceSource.indexOf("async showStatus()")
+    const end = serviceSource.indexOf("async refreshRagConfiguration", start)
+    const body = serviceSource.slice(start, end)
+    expect(body).toContain("void vscode.window.showInformationMessage")
+    expect(body).not.toContain("await vscode.window.showInformationMessage")
   })
 
   test("keeps large indexes lazy-loadable and durable across job recovery", () => {

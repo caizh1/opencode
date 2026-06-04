@@ -103,6 +103,7 @@ describe("RAG settings validation", () => {
     expect(settings.rag.embedding.concurrentRequests).toBe(RAG_EMBEDDING_CONCURRENT_REQUESTS_DEFAULT)
     expect(settings.rag.embedding.maxInFlightTokens).toBe(RAG_EMBEDDING_MAX_IN_FLIGHT_TOKENS_DEFAULT)
     expect(settings.rag.embedding.encodingFormat).toBe(RAG_EMBEDDING_ENCODING_FORMAT_DEFAULT)
+    expect(settings.rag.embedding.encodingFormat).toBe("auto")
     expect(settings.rag.embedding.checkpointMode).toBe(RAG_EMBEDDING_CHECKPOINT_MODE_DEFAULT)
     expect(settings.rag.embedding.checkpointChunkInterval).toBe(RAG_EMBEDDING_CHECKPOINT_CHUNK_INTERVAL_DEFAULT)
     expect(settings.rag.embedding.checkpointIntervalMs).toBe(RAG_EMBEDDING_CHECKPOINT_INTERVAL_DEFAULT_MS)
@@ -112,7 +113,7 @@ describe("RAG settings validation", () => {
   })
 
   test("derives embedding timeout from the configured batch size", () => {
-    for (const batchSize of [32, 64, 128, 256]) {
+    for (const batchSize of [1, 5, 10, 32, 64, 128, 256]) {
       configValues = new Map<string, unknown>([
         ["rag.embedding.batchSize", batchSize],
         ["rag.embedding.timeoutMs", 120000],
@@ -147,7 +148,7 @@ describe("RAG settings validation", () => {
   })
 
   test("rejects saved batch sizes outside the fixed options", async () => {
-    expect(RAG_EMBEDDING_BATCH_SIZE_OPTIONS).toEqual([32, 64, 128, 256, 512])
+    expect(RAG_EMBEDDING_BATCH_SIZE_OPTIONS).toEqual([1, 5, 10, 32, 64, 128, 256, 512])
     await expect(saveRagSettings(ragInput({ embeddingBatchSize: RAG_EMBEDDING_BATCH_SIZE_MAX + 1 }))).rejects.toThrow(RAG_EMBEDDING_BATCH_SIZE_ERROR)
     await expect(() => ragSettingsUpdates(ragInput({ embeddingBatchSize: 16 }))).toThrow(RAG_EMBEDDING_BATCH_SIZE_ERROR)
     await expect(() => ragSettingsUpdates(ragInput({ embeddingBatchSize: 200 }))).toThrow(RAG_EMBEDDING_BATCH_SIZE_ERROR)
@@ -161,6 +162,17 @@ describe("RAG settings validation", () => {
     expect(configUpdates.find((update) => update.key === "rag.embedding.batchSize")?.value).toBe(128)
     expect(configUpdates.find((update) => update.key === "rag.embedding.timeoutMs")?.value).toBe(RAG_EMBEDDING_TIMEOUT_DEFAULT_MS)
     expect(validateRagEmbeddingBatchSize(Number.NaN)).toBe(128)
+  })
+
+  test("saves small embedding batch sizes for provider input limits", async () => {
+    for (const batchSize of [1, 5, 10]) {
+      configUpdates = []
+      await saveRagSettings(ragInput({ embeddingBatchSize: batchSize, embeddingTimeoutMs: 90000 }))
+
+      expect(configUpdates.find((update) => update.key === "rag.embedding.batchSize")?.value).toBe(batchSize)
+      expect(configUpdates.find((update) => update.key === "rag.embedding.timeoutMs")?.value).toBe(RAG_EMBEDDING_TIMEOUT_DEFAULT_MS)
+      expect(validateRagEmbeddingBatchSize(batchSize)).toBe(batchSize)
+    }
   })
 
   test("saves 512 batch size with a ninety second embedding timeout", async () => {

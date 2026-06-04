@@ -6,6 +6,7 @@ export type CompletionPostprocessRejectReason =
   | "repeated-comment"
   | "explanation-only"
   | "low-confidence-output"
+  | "suffix-duplicated-output"
 
 export type CompletionPostprocessPlan = Pick<CompletionPlan, "kind" | "replaceCurrentWord" | "confidenceFloor">
 
@@ -71,6 +72,15 @@ export function postprocessCompletion(input: CompletionPostprocessInput): Comple
   text = stripLeadingMetaLines(suffix.text)
   text = stripExplanatoryLeadIn(text)
   text = normalizeCommonIndent(text)
+  const middleOfLine = sanitizeMiddleOfLineCompletion(text, input.lineSuffix)
+  if (middleOfLine.rejected) {
+    return {
+      text: "",
+      rejected: true,
+      reason: middleOfLine.reason,
+    }
+  }
+  text = middleOfLine.text
 
   const fallbackReason = rejectionReason({
     planKind: input.plan.kind,
@@ -178,6 +188,58 @@ function stripSuffixOverlap(text: string, lineSuffix: string) {
     }
   }
   return { text, stripped: false }
+}
+
+function sanitizeMiddleOfLineCompletion(text: string, lineSuffix: string): CompletionPostprocessResult {
+  if (!lineSuffix.trim()) return { text }
+
+  let candidate = text
+  if (candidate.includes("\n")) {
+    candidate = candidate.split("\n")[0] ?? ""
+  }
+  candidate = candidate.trimEnd()
+
+  if (startsWithSuffixEcho(candidate, lineSuffix)) {
+    return {
+      text: "",
+      rejected: true,
+      reason: "suffix-duplicated-output",
+    }
+  }
+
+  if (shouldStripRepeatedSingleCharacterSuffix(lineSuffix)) {
+    candidate = stripSuffixOverlap(candidate, lineSuffix).text
+  }
+
+  if (!candidate.trim()) {
+    return {
+      text: "",
+      rejected: true,
+      reason: "suffix-duplicated-output",
+    }
+  }
+
+  return { text: candidate }
+}
+
+function startsWithSuffixEcho(text: string, lineSuffix: string) {
+  const firstSuffix = firstNonWhitespaceCharacter(lineSuffix)
+  if (!firstSuffix || !isClosingPunctuation(firstSuffix)) return false
+  const firstText = firstNonWhitespaceCharacter(text)
+  return firstText === firstSuffix
+}
+
+function firstNonWhitespaceCharacter(input: string) {
+  return input.trimStart()[0]
+}
+
+function isClosingPunctuation(input: string) {
+  return input === ")" || input === "]" || input === "}" || input === ";" || input === ","
+}
+
+function shouldStripRepeatedSingleCharacterSuffix(lineSuffix: string) {
+  const trimmed = lineSuffix.trimStart()
+  return trimmed.startsWith(";") || trimmed.startsWith(",") || trimmed.startsWith("]")
 }
 
 function stripLeadingMetaLines(input: string) {

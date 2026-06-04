@@ -73,6 +73,58 @@ describe("completion planner", () => {
     })
   })
 
+  test("keeps short identifiers when there is clear expression context", () => {
+    expect(planCompletion({
+      languageId: "typescript",
+      linePrefix: "  const message = na",
+      lineSuffix: "",
+      currentWord: "na",
+    })).toMatchObject({
+      kind: "ordinary-code",
+      useFim: true,
+      useInstruction: false,
+    })
+  })
+
+  test("disables bare low-signal identifiers instead of calling FIM", () => {
+    for (const linePrefix of ["t", "re"]) {
+      expect(planCompletion({
+        languageId: "typescript",
+        linePrefix,
+        lineSuffix: "",
+        currentWord: linePrefix,
+      })).toMatchObject({
+        kind: "disabled",
+        useFim: false,
+        useInstruction: false,
+      })
+    }
+  })
+
+  test("disables punctuation-only requests instead of calling FIM", () => {
+    expect(planCompletion({
+      languageId: "typescript",
+      linePrefix: ";",
+      lineSuffix: "",
+    })).toMatchObject({
+      kind: "disabled",
+      useFim: false,
+      useInstruction: false,
+    })
+  })
+
+  test("disables requests inside an active string literal", () => {
+    expect(planCompletion({
+      languageId: "typescript",
+      linePrefix: "const title = \"hello ",
+      lineSuffix: "\";",
+    })).toMatchObject({
+      kind: "disabled",
+      useFim: false,
+      useInstruction: false,
+    })
+  })
+
   test("routes non-test comment prompts as comment-to-code instructions", () => {
     expect(planCompletion({
       languageId: "typescript",

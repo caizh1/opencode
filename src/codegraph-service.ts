@@ -252,6 +252,10 @@ export class LocalCodeGraphService implements vscode.Disposable {
     }
 
     this.startWatcher()
+    await this.ensureIndexLoaded()
+    if (this.status().state === "ready") return
+    if (!settings.codeGraph.promptOnWorkspaceOpen) return
+
     this.setStatus({
       state: "indexingFull",
       enabled: true,
@@ -326,7 +330,7 @@ export class LocalCodeGraphService implements vscode.Disposable {
       : ""
     const degraded = status.analyzerDegradedReason ? ` ${status.analyzerDegradedReason}` : ""
     const rag = formatRagStatus(status.rag)
-    await vscode.window.showInformationMessage(
+    void vscode.window.showInformationMessage(
       `Local code graph: ${status.state}. ${status.indexedFiles} file(s), ${status.indexedFunctions} function(s), ${status.indexedMacros} macro(s). ${status.detail}${updated}${truncated}${storage}${schema}${queue}${errors}${size}${skipped}${analyzer}${degraded}${rag}`.trim(),
     )
   }

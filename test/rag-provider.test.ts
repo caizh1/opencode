@@ -47,9 +47,9 @@ describe("offline RAG HTTP provider policy", () => {
 
   test("rejects embedding providers when batch size configuration is invalid", () => {
     const settings = ragSettings()
-    settings.embedding.configError = "Embedding batch size must be one of 32, 64, 128, 256, or 512."
+    settings.embedding.configError = "Embedding batch size must be one of 1, 5, 10, 32, 64, 128, 256, or 512."
 
-    expect(() => createHttpEmbeddingProvider(settings)).toThrow("Embedding batch size must be one of 32, 64, 128, 256, or 512.")
+    expect(() => createHttpEmbeddingProvider(settings)).toThrow("Embedding batch size must be one of 1, 5, 10, 32, 64, 128, 256, or 512.")
   })
 
   test("sends optional bearer API keys to embedding and rerank endpoints", async () => {

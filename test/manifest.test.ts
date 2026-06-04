@@ -142,7 +142,7 @@ describe("extension manifest", () => {
     expect(properties["opencode.remote.rag.embedding.endpoint"]?.type).toBe("string")
     expect(properties["opencode.remote.rag.embedding.model"]?.type).toBe("string")
     expect(properties["opencode.remote.rag.embedding.batchSize"]?.default).toBe(128)
-    expect(properties["opencode.remote.rag.embedding.batchSize"]?.enum).toEqual([32, 64, 128, 256, 512])
+    expect(properties["opencode.remote.rag.embedding.batchSize"]?.enum).toEqual([1, 5, 10, 32, 64, 128, 256, 512])
     expect(properties["opencode.remote.rag.embedding.batchSize"]?.maximum).toBe(512)
     expect(properties["opencode.remote.rag.embedding.dimensions"]).toBeUndefined()
     expect(properties["opencode.remote.rag.embedding.maxTokensPerRequest"]?.default).toBe(65536)
@@ -152,7 +152,7 @@ describe("extension manifest", () => {
     expect(properties["opencode.remote.rag.embedding.encodingFormat"]).toMatchObject({
       type: "string",
       enum: ["float", "base64", "auto"],
-      default: "float",
+      default: "auto",
     })
     expect(properties["opencode.remote.rag.embedding.checkpointMode"]).toMatchObject({
       type: "string",

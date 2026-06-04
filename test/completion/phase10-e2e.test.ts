@@ -132,6 +132,24 @@ describe("phase 10 completion e2e fixtures", () => {
       rejectionReason: undefined,
     })
   })
+
+  test("middle-of-line suffix echo is rejected before it can render bad ghost text", () => {
+    const snapshot = runCompletionE2E({
+      documentText: "    return ;\n",
+      line: 0,
+      character: "    return ".length,
+      rawModelText: ";\n}",
+      languageId: "c",
+      relatedPath: "src/epr/epr_ppn_raw_test.c",
+    })
+
+    expect(snapshot).toMatchObject({
+      normalizedText: "",
+      insertText: undefined,
+      finalLine: undefined,
+      rejectionReason: "suffix-duplicated-output",
+    })
+  })
 })
 
 type E2EInput = {
