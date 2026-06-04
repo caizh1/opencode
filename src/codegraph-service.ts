@@ -36,6 +36,7 @@ import {
   ragManifestStaleReason,
   RagIndexAbortError,
   splitRagVectorIndex,
+  type RagEmbeddingSchedulerBlockedEvent,
   type RagIndexBatchProfile,
   type RagIndexBuildProgress,
   type RagIndexBuildSummary,
@@ -1890,7 +1891,7 @@ export class LocalCodeGraphService implements vscode.Disposable {
         workerStatus: initialWorkerStatus,
       }))
       const checkpointPlan = ragEmbeddingCheckpointPlan(settings.embedding)
-      const adaptiveCeiling = Math.min(4, settings.embedding.concurrentRequests + 1)
+      const adaptiveCeiling = Math.min(8, settings.embedding.concurrentRequests + 1)
       let savedFinalDuringBuild = false
       this.output.appendLine(`[rag-index] embedding ${changedPaths ? `${changedPaths.length} changed path(s)` : "full local code graph"} with batchSize=${settings.embedding.batchSize} maxTokensPerRequest=${settings.embedding.maxTokensPerRequest} concurrentRequests=${settings.embedding.concurrentRequests} adaptiveCeiling=${adaptiveCeiling} maxInFlightTokens=${settings.embedding.maxInFlightTokens} encodingFormat=${settings.embedding.encodingFormat} timeoutMs=${settings.embedding.timeoutMs} requestDelayMs=${settings.embedding.requestDelayMs} maxRequestsPerRun=${settings.embedding.maxRequestsPerRun || "unlimited"} maxRetries=${settings.embedding.maxRetries} retryBackoffMs=${settings.embedding.retryBackoffMs} checkpointMode=${checkpointPlan.mode} checkpointChunkInterval=${checkpointPlan.chunkInterval} checkpointIntervalMs=${checkpointPlan.intervalMs}`)
       const next = await buildRagVectorIndex({
@@ -1922,6 +1923,9 @@ export class LocalCodeGraphService implements vscode.Disposable {
         },
         onBuildSummary: (event) => {
           this.output.appendLine(formatRagIndexBuildSummary(event))
+        },
+        onSchedulerBlocked: (event) => {
+          this.output.appendLine(formatRagEmbeddingSchedulerBlocked(event))
         },
         onIndexUpdate: async (partial) => {
           if (signal?.aborted) return
@@ -2788,6 +2792,11 @@ function formatRagIndexBuildProgress(event: RagIndexBuildProgress) {
   }
   const requestLimit = event.requestLimit > 0 ? String(event.requestLimit) : "unlimited"
   return `[rag-index] paused: ${ragPausedReasonMessage(event.reason, event.message)} used=${event.requestsUsed} limit=${requestLimit}${chunks}${telemetry}`
+}
+
+function formatRagEmbeddingSchedulerBlocked(event: RagEmbeddingSchedulerBlockedEvent) {
+  const requestLimit = event.requestLimit > 0 ? String(event.requestLimit) : "unlimited"
+  return `[rag-index] embedding scheduler blocked reason=${event.reason} activeConcurrency=${event.activeConcurrency} adaptiveCeiling=${event.adaptiveCeiling} active.size=${event.activeSize} inFlightEstimatedTokens=${event.inFlightEstimatedTokens} nextEstimatedTokens=${event.nextEstimatedTokens} maxInFlightTokens=${event.maxInFlightTokens} queuePending=${event.queuePending} requestsUsed=${event.requestsUsed} requestLimit=${requestLimit}`
 }
 
 function formatRagIndexBatchProfile(event: RagIndexBatchProfile) {

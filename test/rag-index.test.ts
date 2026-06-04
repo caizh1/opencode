@@ -271,6 +271,27 @@ describe("local RAG vector index", () => {
     expect(provider.maxActive).toBe(3)
   })
 
+  test("allows eight configured embedding workers without adaptive overflow", async () => {
+    const provider = delayedEmbeddingProvider()
+    const workerCeilings: number[] = []
+
+    const vectorIndex = await buildRagVectorIndex({
+      index: generatedIndex(12),
+      provider,
+      batchSize: 1,
+      concurrentRequests: 8,
+      requestDelayMs: 0,
+      onProgress: (event) => {
+        workerCeilings.push(event.workerStatus.maxWorkers)
+      },
+    })
+
+    expect(provider.maxActive).toBe(8)
+    expect(workerCeilings).toContain(8)
+    expect(vectorIndex.workerStatus?.configuredWorkers).toBe(8)
+    expect(vectorIndex.workerStatus?.maxWorkers).toBe(8)
+  })
+
   test("upgrades adaptive concurrency after stable batches", async () => {
     const provider = delayedEmbeddingProvider()
     const activeConcurrency: number[] = []
@@ -346,6 +367,46 @@ describe("local RAG vector index", () => {
     })
 
     expect(provider.maxActive).toBe(1)
+  })
+
+  test("reports embedding scheduler blocks for max in-flight token budget", async () => {
+    const provider = delayedEmbeddingProvider()
+    const reasons: string[] = []
+
+    await buildRagVectorIndex({
+      index: sampleIndex(),
+      provider,
+      batchSize: 1,
+      requestDelayMs: 0,
+      maxInFlightTokens: 1,
+      onSchedulerBlocked: (event) => {
+        reasons.push(event.reason)
+      },
+    })
+
+    expect(reasons).toContain("max-in-flight-tokens")
+  })
+
+  test("reports embedding scheduler blocks for active worker concurrency", async () => {
+    const provider = delayedEmbeddingProvider()
+    const events: Array<{ reason: string; activeSize: number; activeConcurrency: number }> = []
+
+    await buildRagVectorIndex({
+      index: sampleIndex(),
+      provider,
+      batchSize: 1,
+      concurrentRequests: 1,
+      requestDelayMs: 0,
+      onSchedulerBlocked: (event) => {
+        events.push({
+          reason: event.reason,
+          activeSize: event.activeSize,
+          activeConcurrency: event.activeConcurrency,
+        })
+      },
+    })
+
+    expect(events).toContainEqual({ reason: "concurrency", activeSize: 1, activeConcurrency: 1 })
   })
 
   test("reports chunk counts with embedding progress events", async () => {

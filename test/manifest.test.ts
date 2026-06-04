@@ -21,6 +21,10 @@ describe("extension manifest", () => {
     expect(manifest.extensionKind).toEqual(["workspace"])
   })
 
+  test("activates after startup to surface update reload prompts", () => {
+    expect(manifest.activationEvents).toContain("onStartupFinished")
+  })
+
   test("keeps remote chat commands available", () => {
     const commands = new Set((manifest.contributes?.commands ?? []).map((command: { command: string }) => command.command))
     expect(commands.has("opencode.remote.openChat")).toBe(true)
@@ -143,8 +147,8 @@ describe("extension manifest", () => {
     expect(properties["opencode.remote.rag.embedding.dimensions"]).toBeUndefined()
     expect(properties["opencode.remote.rag.embedding.maxTokensPerRequest"]?.default).toBe(65536)
     expect(properties["opencode.remote.rag.embedding.concurrentRequests"]?.default).toBe(3)
-    expect(properties["opencode.remote.rag.embedding.concurrentRequests"]?.maximum).toBe(4)
-    expect(properties["opencode.remote.rag.embedding.maxInFlightTokens"]?.default).toBe(180000)
+    expect(properties["opencode.remote.rag.embedding.concurrentRequests"]?.maximum).toBe(8)
+    expect(properties["opencode.remote.rag.embedding.maxInFlightTokens"]?.default).toBe(360000)
     expect(properties["opencode.remote.rag.embedding.encodingFormat"]).toMatchObject({
       type: "string",
       enum: ["float", "base64", "auto"],

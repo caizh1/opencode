@@ -2,7 +2,7 @@
   "name": "opencode-remote",
   "displayName": "OpenCode Remote",
   "description": "Remote opencode serve client for VS Code",
-  "version": "0.0.107",
+  "version": "0.0.112",
   "icon": "media/opencode-icon.png",
   "publisher": "local",
   "repository": {
@@ -21,6 +21,7 @@
     "workspace"
   ],
   "activationEvents": [
+    "onStartupFinished",
     "onView:opencodeRemote.sidebar",
     "onCommand:opencode.openTerminal",
     "onCommand:opencode.openNewTerminal",
@@ -482,12 +483,12 @@
           "type": "number",
           "default": 3,
           "minimum": 1,
-          "maximum": 4,
+          "maximum": 8,
           "description": "Initial maximum concurrent embedding requests during RAG indexing. The indexer can temporarily lower this under provider pressure and raise it by one after stable success."
         },
         "opencode.remote.rag.embedding.maxInFlightTokens": {
           "type": "number",
-          "default": 180000,
+          "default": 360000,
           "minimum": 32768,
           "maximum": 1000000,
           "description": "Approximate maximum embedding input tokens across in-flight RAG embedding requests."

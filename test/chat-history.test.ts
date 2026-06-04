@@ -98,6 +98,19 @@ describe("chat history flow", () => {
     expect(chatViewSource).toContain('type: "ragStatus"')
   })
 
+  test("defaults the RAG rebuild confirmation to keeping the existing index", () => {
+    const start = chatViewSource.indexOf("private async confirmForceRagRebuild")
+    const end = chatViewSource.indexOf("private async testRagSettings", start)
+    const body = chatViewSource.slice(start, end)
+    const keep = 'const keep = { title: "否，保留现有索引" }'
+    const force = 'const force = { title: "是，强制重建" }'
+
+    expect(body.indexOf(keep)).toBeGreaterThanOrEqual(0)
+    expect(body.indexOf(force)).toBeGreaterThan(body.indexOf(keep))
+    expect(body).toContain("selected?.title === force.title")
+    expect(body).not.toContain("isCloseAffordance")
+  })
+
   test("streams chat replies through OpenCode events with async polling fallback", () => {
     expect(chatViewSource).toContain("ensureEventSubscription")
     expect(chatViewSource).toContain("subscribeEvents")

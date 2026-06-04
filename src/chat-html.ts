@@ -2713,7 +2713,7 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
           <div class="settingsGrid">
             <label class="field">Batch size<select id="ragEmbeddingBatchSize" title="Embedding request timeout is automatic: 32-256 use 30s, 512 uses 90s"><option value="32">32</option><option value="64">64</option><option value="128">128</option><option value="256">256</option><option value="512">512</option></select></label>
             <label class="field">Max tokens/request<input id="ragEmbeddingMaxTokensPerRequest" type="number" min="1" max="1000000" step="1024"></label>
-            <label class="field">Concurrent requests<input id="ragEmbeddingConcurrentRequests" type="number" min="1" max="4" step="1"></label>
+            <label class="field">Concurrent requests<input id="ragEmbeddingConcurrentRequests" type="number" min="1" max="8" step="1"></label>
             <label class="field">Max in-flight tokens<input id="ragEmbeddingMaxInFlightTokens" type="number" min="32768" max="1000000" step="1024"></label>
             <label class="field">Encoding<select id="ragEmbeddingEncodingFormat"><option value="float">Float</option><option value="base64">Base64</option><option value="auto">Auto</option></select></label>
             <label class="field">Checkpoint mode<select id="ragEmbeddingCheckpointMode"><option value="interval">Interval</option><option value="off">Off</option><option value="safe">Safe</option></select></label>
@@ -2849,7 +2849,7 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
     const RAG_EMBEDDING_BATCH_SIZE_ERROR = "Embedding batch size must be one of 32, 64, 128, 256, or 512.";
     const RAG_EMBEDDING_MAX_TOKENS_PER_REQUEST_DEFAULT = 65536;
     const RAG_EMBEDDING_CONCURRENT_REQUESTS_DEFAULT = 3;
-    const RAG_EMBEDDING_MAX_IN_FLIGHT_TOKENS_DEFAULT = 180000;
+    const RAG_EMBEDDING_MAX_IN_FLIGHT_TOKENS_DEFAULT = 360000;
     const RAG_EMBEDDING_ENCODING_FORMAT_DEFAULT = "float";
     const RAG_EMBEDDING_ENCODING_FORMATS = ["float", "base64", "auto"];
     const RAG_EMBEDDING_REQUEST_DELAY_DEFAULT_MS = 0;

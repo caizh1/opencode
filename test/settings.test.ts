@@ -222,7 +222,7 @@ describe("RAG settings validation", () => {
       embeddingRequestDelayMs: Number.NaN,
     }))
 
-    expect(configUpdates.find((update) => update.key === "rag.embedding.concurrentRequests")?.value).toBe(4)
+    expect(configUpdates.find((update) => update.key === "rag.embedding.concurrentRequests")?.value).toBe(8)
     expect(configUpdates.find((update) => update.key === "rag.embedding.maxInFlightTokens")?.value).toBe(32768)
     expect(configUpdates.find((update) => update.key === "rag.embedding.encodingFormat")?.value).toBe("auto")
     expect(configUpdates.find((update) => update.key === "rag.embedding.requestDelayMs")?.value).toBe(RAG_EMBEDDING_REQUEST_DELAY_DEFAULT_MS)

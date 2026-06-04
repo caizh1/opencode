@@ -28,6 +28,8 @@ const CONNECTION_TEST_TIMEOUT_MS = 8000
 const RAG_CONFIG_REFRESH_DEBOUNCE_MS = 500
 const INTERNAL_RAG_CONFIG_CHANGE_SUPPRESSION_MS = 5000
 const EXTENSION_UPDATE_RELOAD_PROMPT_KEY = "opencode.remote.updateReloadPrompt.version"
+const EXTENSION_UPDATE_RELOAD_ACCEPTED_KEY = "opencode.remote.updateReloadAccepted.version"
+const EXTENSION_UPDATE_LAST_ACTIVATED_KEY = "opencode.remote.updateLastActivated.version"
 const RELOAD_WINDOW_ACTION = "Reload Window"
 
 type ConnectionProbeResult =
@@ -327,25 +329,45 @@ function registerExtensionUpdateReloadPrompt(context: vscode.ExtensionContext, o
   if (!runningVersion) return
 
   let promptInFlightVersion: string | undefined
-  const checkForInstalledUpdate = async () => {
+  const promptedVersionsThisActivation = new Set<string>()
+  const previousActivatedVersion = context.globalState.get<string>(EXTENSION_UPDATE_LAST_ACTIVATED_KEY)
+  const rememberActivatedVersion = () => context.globalState.update(EXTENSION_UPDATE_LAST_ACTIVATED_KEY, runningVersion)
+  const reloadPromptTargetVersion = (acceptedVersion?: string) => {
     const installedVersion = readPackageJsonVersion(vscode.extensions.getExtension(extensionId)?.packageJSON)
-    if (!installedVersion || !shouldPromptReloadForInstalledVersion(installedVersion, runningVersion)) return
+    if (installedVersion && shouldPromptReloadForInstalledVersion(installedVersion, runningVersion)) return installedVersion
+    if (previousActivatedVersion && shouldPromptReloadForInstalledVersion(runningVersion, previousActivatedVersion)) return runningVersion
+    if (acceptedVersion !== runningVersion) return runningVersion
+    return undefined
+  }
+  const checkForInstalledUpdate = async () => {
+    const acceptedVersion = context.globalState.get<string>(EXTENSION_UPDATE_RELOAD_ACCEPTED_KEY)
+    const reloadVersion = reloadPromptTargetVersion(acceptedVersion)
+    if (!reloadVersion) {
+      await rememberActivatedVersion()
+      return
+    }
 
-    const promptedVersion = context.globalState.get<string>(EXTENSION_UPDATE_RELOAD_PROMPT_KEY)
-    if (promptedVersion === installedVersion || promptInFlightVersion === installedVersion) return
+    if (acceptedVersion === reloadVersion) {
+      await rememberActivatedVersion()
+      return
+    }
+    if (promptedVersionsThisActivation.has(reloadVersion) || promptInFlightVersion === reloadVersion) return
 
-    promptInFlightVersion = installedVersion
+    promptInFlightVersion = reloadVersion
+    promptedVersionsThisActivation.add(reloadVersion)
     try {
-      await context.globalState.update(EXTENSION_UPDATE_RELOAD_PROMPT_KEY, installedVersion)
+      await context.globalState.update(EXTENSION_UPDATE_RELOAD_PROMPT_KEY, reloadVersion)
       const selected = await vscode.window.showInformationMessage(
-        `OpenCode Remote 已更新到 ${installedVersion}，重新加载窗口后新版本会生效。`,
+        `OpenCode Remote 已更新到 ${reloadVersion}，重新加载窗口后新版本会生效。`,
         RELOAD_WINDOW_ACTION,
       )
       if (selected === RELOAD_WINDOW_ACTION) {
+        await context.globalState.update(EXTENSION_UPDATE_RELOAD_ACCEPTED_KEY, reloadVersion)
+        await rememberActivatedVersion()
         await vscode.commands.executeCommand("workbench.action.reloadWindow")
       }
     } finally {
-      if (promptInFlightVersion === installedVersion) promptInFlightVersion = undefined
+      if (promptInFlightVersion === reloadVersion) promptInFlightVersion = undefined
     }
   }
 
@@ -355,6 +377,10 @@ function registerExtensionUpdateReloadPrompt(context: vscode.ExtensionContext, o
       output.appendLine(`[update] reload prompt failed: ${message}`)
     })
   }))
+  void checkForInstalledUpdate().catch((error) => {
+    const message = error instanceof Error ? error.message : String(error)
+    output.appendLine(`[update] activation reload prompt failed: ${message}`)
+  })
 }
 
 function shouldPromptReloadForInstalledVersion(installedVersion: string, runningVersion: string) {

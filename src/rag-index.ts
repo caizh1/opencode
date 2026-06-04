@@ -148,6 +148,21 @@ export type RagIndexBuildSummary = {
   workerStatus: RagWorkerStatus
 }
 
+export type RagEmbeddingSchedulerBlockedReason = "paused" | "request-budget" | "concurrency" | "max-in-flight-tokens"
+
+export type RagEmbeddingSchedulerBlockedEvent = {
+  reason: RagEmbeddingSchedulerBlockedReason
+  activeConcurrency: number
+  adaptiveCeiling: number
+  activeSize: number
+  inFlightEstimatedTokens: number
+  nextEstimatedTokens: number
+  maxInFlightTokens: number
+  queuePending: number
+  requestsUsed: number
+  requestLimit: number
+}
+
 export type RagIndexBuildProgress = (
   | {
     phase: "batch"
@@ -207,6 +222,7 @@ export async function buildRagVectorIndex(input: {
   onProgress?: (event: RagIndexBuildProgress) => void
   onBatchProfile?: (event: RagIndexBatchProfile) => void
   onBuildSummary?: (event: RagIndexBuildSummary) => void
+  onSchedulerBlocked?: (event: RagEmbeddingSchedulerBlockedEvent) => void
   onIndexUpdate?: (index: RagVectorIndex) => Promise<void>
   checkpointChunkInterval?: number
   checkpointIntervalMs?: number
@@ -258,8 +274,8 @@ export async function buildRagVectorIndex(input: {
   const retryBackoffMs = Math.max(0, Math.floor(input.retryBackoffMs ?? 0))
   const requestDelayMs = Math.max(0, Math.floor(input.requestDelayMs ?? 0))
   const maxTokensPerRequest = Math.max(0, Math.floor(input.maxTokensPerRequest ?? 0))
-  const configuredConcurrency = clampInteger(input.concurrentRequests ?? 3, 1, 4)
-  const adaptiveCeiling = Math.min(4, configuredConcurrency + 1)
+  const configuredConcurrency = clampInteger(input.concurrentRequests ?? 3, 1, 8)
+  const adaptiveCeiling = Math.min(8, configuredConcurrency + 1)
   let activeConcurrency = configuredConcurrency
   const maxInFlightTokens = Math.max(0, Math.floor(input.maxInFlightTokens ?? 0))
   const checkpointChunkInterval = Math.max(0, Math.floor(input.checkpointChunkInterval ?? 0))
@@ -280,6 +296,7 @@ export async function buildRagVectorIndex(input: {
   let timeouts = 0
   let embeddedTokens = 0
   let lastWorkerChange: RagWorkerStatus["lastChange"]
+  let lastSchedulerBlockedSignature = ""
   const initialElapsedMs = Math.max(0, Math.floor(input.initialElapsedMs ?? 0))
   const currentElapsedMs = () => initialElapsedMs + Math.max(0, Date.now() - buildStarted)
   const currentWorkerStatus = (state: { inFlightRequests?: number; queuePending?: number } = {}): RagWorkerStatus => ({
@@ -339,13 +356,49 @@ export async function buildRagVectorIndex(input: {
       ...progressTelemetry(),
     })
   }
-  const canStartNextJob = () => {
-    if (pausedReason || nextJobOffset >= batches.length) return false
-    if (requestLimit > 0 && requestsUsed >= requestLimit) return false
-    if (active.size >= activeConcurrency) return false
+  const schedulerBlockedEvent = (): RagEmbeddingSchedulerBlockedEvent | undefined => {
+    if (nextJobOffset >= batches.length) return undefined
     const next = batches[nextJobOffset]
-    if (maxInFlightTokens > 0 && active.size > 0 && inFlightEstimatedTokens + next.estimatedTokens > maxInFlightTokens) return false
-    return true
+    let reason: RagEmbeddingSchedulerBlockedReason | undefined
+    if (pausedReason) reason = "paused"
+    else if (requestLimit > 0 && requestsUsed >= requestLimit) reason = "request-budget"
+    else if (active.size >= activeConcurrency) reason = "concurrency"
+    else if (maxInFlightTokens > 0 && active.size > 0 && inFlightEstimatedTokens + next.estimatedTokens > maxInFlightTokens) reason = "max-in-flight-tokens"
+    if (!reason) return undefined
+    return {
+      reason,
+      activeConcurrency,
+      adaptiveCeiling,
+      activeSize: active.size,
+      inFlightEstimatedTokens,
+      nextEstimatedTokens: next.estimatedTokens,
+      maxInFlightTokens,
+      queuePending: Math.max(0, batches.length - nextJobOffset),
+      requestsUsed,
+      requestLimit,
+    }
+  }
+  const canStartNextJob = () => nextJobOffset < batches.length && schedulerBlockedEvent() === undefined
+  const reportSchedulerBlocked = () => {
+    const event = schedulerBlockedEvent()
+    if (!event) {
+      lastSchedulerBlockedSignature = ""
+      return
+    }
+    const signature = [
+      event.reason,
+      event.activeConcurrency,
+      event.activeSize,
+      event.inFlightEstimatedTokens,
+      event.nextEstimatedTokens,
+      event.maxInFlightTokens,
+      event.queuePending,
+      event.requestsUsed,
+      event.requestLimit,
+    ].join(":")
+    if (signature === lastSchedulerBlockedSignature) return
+    lastSchedulerBlockedSignature = signature
+    input.onSchedulerBlocked?.(event)
   }
   const startJob = () => {
     const job = batches[nextJobOffset]
@@ -413,6 +466,7 @@ export async function buildRagVectorIndex(input: {
       }
       startJob()
     }
+    reportSchedulerBlocked()
 
     if (!pausedReason && nextJobOffset < batches.length && active.size === 0 && requestLimit > 0 && requestsUsed >= requestLimit) {
       setPaused("request-budget", "request budget reached")

@@ -38,6 +38,27 @@ describe("connection and stale-session recovery wiring", () => {
     expect(extensionSource).toContain("void restoreSavedConnection().catch")
   })
 
+  test("prompts for a full window reload after extension upgrades", () => {
+    const start = extensionSource.indexOf("function registerExtensionUpdateReloadPrompt")
+    const end = extensionSource.indexOf("function shouldPromptReloadForInstalledVersion", start)
+    const body = extensionSource.slice(start, end)
+
+    expect(body).toContain("vscode.extensions.onDidChange")
+    expect(body).toContain("void checkForInstalledUpdate().catch")
+    expect(body).toContain("EXTENSION_UPDATE_RELOAD_PROMPT_KEY")
+    expect(body).toContain("EXTENSION_UPDATE_RELOAD_ACCEPTED_KEY")
+    expect(body).toContain("EXTENSION_UPDATE_LAST_ACTIVATED_KEY")
+    expect(body).toContain("previousActivatedVersion")
+    expect(body).toContain("reloadPromptTargetVersion")
+    expect(body).toContain("acceptedVersion !== runningVersion")
+    expect(body).toContain("promptedVersionsThisActivation")
+    expect(body).toContain("showInformationMessage")
+    expect(body).toContain("RELOAD_WINDOW_ACTION")
+    expect(body).toContain('executeCommand("workbench.action.reloadWindow")')
+    expect(body).toContain("context.globalState.update(EXTENSION_UPDATE_RELOAD_ACCEPTED_KEY, reloadVersion)")
+    expect(body).not.toContain("restartExtension")
+  })
+
   test("webview connection reuses saved passwords when password is omitted", () => {
     const start = extensionSource.indexOf("const connectWithSettings = async")
     const end = extensionSource.indexOf("const restoreSavedConnection = async", start)

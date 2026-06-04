@@ -1001,7 +1001,7 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   private async confirmForceRagRebuild(reason: RagRebuildConfirmationReason) {
-    const keep = { title: "否，保留现有索引", isCloseAffordance: true }
+    const keep = { title: "否，保留现有索引" }
     const force = { title: "是，强制重建" }
     const message = reason === "embedding-change"
       ? "Embedding endpoint 或 model 已变化，保存后旧 RAG 索引不能继续使用，需要从 0 重建。是否保存并强制重建？"
