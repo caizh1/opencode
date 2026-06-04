@@ -4,7 +4,7 @@ import { RagHttpError } from "./rag-provider"
 import { estimateEmbeddingTokens } from "./rag-token"
 import type { CodeGraphFile, CodeGraphIndex } from "./codegraph-types"
 import type { StateMachine } from "./analysis-types"
-import type { EmbeddingProvider, RagChunk, RagVectorIndex, RagVectorSearchHit, RagVectorShard } from "./rag-types"
+import type { EmbeddingProvider, RagChunk, RagIndexLifecycleState, RagVectorIndex, RagVectorSearchHit, RagVectorShard } from "./rag-types"
 import type { RagIndexPausedReason, RagResumeReason, RagWorkerStatus } from "./types"
 
 export class RagIndexAbortError extends Error {
@@ -33,8 +33,20 @@ export type RagSerializedManifest = {
   nextResumeAt?: number
   resumeDelayMs?: number
   resumeReason?: RagResumeReason
+  extensionVersion?: string
+  buildId?: string
+  state?: RagIndexLifecycleState
+  completed?: boolean
+  staleReason?: string
+  buildStartedAt?: number
+  buildFinishedAt?: number
   shards: { key: string; chunks: number; metadataPath: string; vectorsPath: string }[]
 }
+
+export type RagManifestLifecycleMetadata = Pick<
+  RagVectorIndex,
+  "extensionVersion" | "buildId" | "state" | "completed" | "staleReason" | "buildStartedAt" | "buildFinishedAt"
+>
 
 export type RagSerializedShardMetadata = {
   version: 1
@@ -562,7 +574,18 @@ export async function buildRagVectorIndex(input: {
     buildElapsedMs: currentElapsedMs(),
     workerStatus: currentWorkerStatus(),
   })
-  return buildPartialIndex(true)
+  const finalIndex = buildPartialIndex(false)
+  if (
+    input.onIndexUpdate
+    && batchCount > 0
+    && !pausedReason
+    && (finalIndex.pendingChunkCount ?? 0) === 0
+    && finalIndex.dimension > 0
+    && finalIndex.vectors.length > 0
+  ) {
+    await input.onIndexUpdate(finalIndex)
+  }
+  return finalIndex
 }
 
 export function buildRagChunks(index: CodeGraphIndex, stateMachines: StateMachine[] = []): RagChunk[] {
@@ -611,9 +634,11 @@ export function splitRagVectorIndex(index: RagVectorIndex): RagVectorShard[] {
   return [...byShard.values()].sort((left, right) => left.key.localeCompare(right.key))
 }
 
-export function createRagSerializedManifest(index: RagVectorIndex): RagSerializedManifest {
+export function createRagSerializedManifest(index: RagVectorIndex, metadata: Partial<RagManifestLifecycleMetadata> = {}): RagSerializedManifest {
   const totalChunks = index.totalChunks ?? index.chunks.length
   const pendingChunks = Math.max(0, index.pendingChunkCount ?? totalChunks - index.chunks.length)
+  const state = metadata.state ?? index.state ?? (pendingChunks > 0 ? index.indexPausedReason ? "paused" : "building" : "ready")
+  const completed = metadata.completed ?? index.completed ?? pendingChunks === 0
   return {
     version: 1,
     rootPath: index.rootPath,
@@ -633,6 +658,13 @@ export function createRagSerializedManifest(index: RagVectorIndex): RagSerialize
     nextResumeAt: index.nextResumeAt,
     resumeDelayMs: index.resumeDelayMs,
     resumeReason: index.resumeReason,
+    extensionVersion: metadata.extensionVersion ?? index.extensionVersion,
+    buildId: metadata.buildId ?? index.buildId,
+    state,
+    completed,
+    staleReason: metadata.staleReason ?? index.staleReason,
+    buildStartedAt: metadata.buildStartedAt ?? index.buildStartedAt,
+    buildFinishedAt: metadata.buildFinishedAt ?? index.buildFinishedAt,
     shards: splitRagVectorIndex(index).map((shard) => ({
       key: shard.key,
       chunks: shard.chunks.length,
@@ -640,6 +672,20 @@ export function createRagSerializedManifest(index: RagVectorIndex): RagSerialize
       vectorsPath: `shards/${shard.key}.f32`,
     })),
   }
+}
+
+export function ragManifestStaleReason(manifest: RagSerializedManifest, currentExtensionVersion: string): string | undefined {
+  const manifestVersion = manifest.extensionVersion
+  if (!manifestVersion || manifestVersion === currentExtensionVersion) return undefined
+  if (ragManifestIsCompleted(manifest)) return undefined
+  return `RAG partial index was created by extension ${manifestVersion}; current extension is ${currentExtensionVersion}. Rebuild RAG to avoid resuming an interrupted build across plugin versions.`
+}
+
+export function ragManifestIsCompleted(manifest: RagSerializedManifest) {
+  if (manifest.completed === true || manifest.state === "ready" || manifest.indexAvailability === "ready") return true
+  const totalChunks = manifest.totalChunks ?? manifest.chunks
+  const pendingChunks = Math.max(0, manifest.pendingChunks ?? totalChunks - manifest.chunks)
+  return pendingChunks === 0
 }
 
 export function encodeRagShardVectors(vectors: number[][], dimension: number): Uint8Array {

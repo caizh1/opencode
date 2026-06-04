@@ -415,6 +415,12 @@ export function ragSettingsInputMatchesCurrent(input: RagSettingsInput, current 
   return normalizedRagSettingsEqual(normalizeRagSettingsInput(input), normalizeCurrentRagSettings(current))
 }
 
+export function ragSettingsInputChangesEmbeddingIdentity(input: RagSettingsInput, current = readRemoteSettings().rag) {
+  const next = normalizeRagSettingsInput(input)
+  const previous = normalizeCurrentRagSettings(current)
+  return next.embeddingEndpoint !== previous.embeddingEndpoint || next.embeddingModel !== previous.embeddingModel
+}
+
 function normalizedRagSettingsEqual(left: NormalizedRagSettingsInput, right: NormalizedRagSettingsInput) {
   return JSON.stringify(left) === JSON.stringify(right)
 }

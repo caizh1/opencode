@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import { parseCFile } from "../src/codegraph-c-parser"
 import { RagHttpError } from "../src/rag-provider"
-import { buildRagChunks, buildRagVectorIndex, createRagSerializedManifest, decodeRagShardVectors, encodeRagShardVectors, RagIndexAbortError, searchRagVectorIndex, splitRagVectorIndex } from "../src/rag-index"
+import { buildRagChunks, buildRagVectorIndex, createRagSerializedManifest, decodeRagShardVectors, encodeRagShardVectors, RagIndexAbortError, ragManifestStaleReason, searchRagVectorIndex, splitRagVectorIndex } from "../src/rag-index"
 import type { CodeGraphIndex } from "../src/codegraph-types"
 import type { EmbeddingProvider } from "../src/rag-types"
 
@@ -91,7 +91,7 @@ describe("local RAG vector index", () => {
     expect(cappedProvider.batches.length).toBeGreaterThan(1)
   })
 
-  test("throttles partial vector index checkpoints", async () => {
+  test("throttles intermediate checkpoints and always publishes a final checkpoint", async () => {
     const index = sampleIndex()
     const updates: number[] = []
     await buildRagVectorIndex({
@@ -107,11 +107,10 @@ describe("local RAG vector index", () => {
     })
 
     const totalChunks = buildRagChunks(index).length
-    expect(updates).toEqual([3, 6])
-    expect(updates[updates.length - 1]).toBeLessThan(totalChunks)
+    expect(updates).toEqual([3, 6, totalChunks])
   })
 
-  test("skips intermediate checkpoints before the interval and on the final batch", async () => {
+  test("skips intermediate checkpoints before the interval but still publishes the final batch", async () => {
     const index = sampleIndex()
     const updates: number[] = []
     const vectorIndex = await buildRagVectorIndex({
@@ -126,13 +125,13 @@ describe("local RAG vector index", () => {
       },
     })
 
-    expect(updates).toEqual([])
+    expect(updates).toEqual([buildRagChunks(index).length])
     expect(vectorIndex.chunks).toHaveLength(buildRagChunks(index).length)
   })
 
-  test("supports turning intermediate checkpoints off", async () => {
-    const updates: number[] = []
-    await buildRagVectorIndex({
+  test("supports turning intermediate checkpoints off while keeping the final checkpoint", async () => {
+    const updates: Array<Awaited<ReturnType<typeof buildRagVectorIndex>>> = []
+    const vectorIndex = await buildRagVectorIndex({
       index: sampleIndex(),
       provider: fakeEmbeddingProvider(),
       batchSize: 1,
@@ -140,11 +139,12 @@ describe("local RAG vector index", () => {
       checkpointChunkInterval: 0,
       checkpointIntervalMs: 0,
       onIndexUpdate: async (partial) => {
-        updates.push(partial.chunks.length)
+        updates.push(partial)
       },
     })
 
-    expect(updates).toEqual([])
+    expect(updates.map((partial) => partial.chunks.length)).toEqual([buildRagChunks(sampleIndex()).length])
+    expect(vectorIndex.vectors[0]).toBe(updates[0].vectors[0])
   })
 
   test("records the source code graph snapshot timestamp in full and partial indexes", async () => {
@@ -487,6 +487,61 @@ describe("local RAG vector index", () => {
     expect(manifest.sourceIndexUpdatedAt).toBe(vectorIndex.sourceIndexUpdatedAt)
     expect(manifest.buildElapsedMs).toBe(vectorIndex.buildElapsedMs)
     expect(manifest.workerStatus).toEqual(vectorIndex.workerStatus)
+  })
+
+  test("serializes compatible RAG manifest lifecycle metadata", async () => {
+    const index = sampleIndex()
+    const vectorIndex = await buildRagVectorIndex({
+      index,
+      provider: recordingEmbeddingProvider(),
+      batchSize: 1,
+      requestDelayMs: 0,
+    })
+    const manifest = createRagSerializedManifest(vectorIndex, {
+      extensionVersion: "0.0.106",
+      buildId: "build-1",
+      state: "ready",
+      completed: true,
+      buildStartedAt: 100,
+      buildFinishedAt: 200,
+    })
+
+    expect(manifest.extensionVersion).toBe("0.0.106")
+    expect(manifest.buildId).toBe("build-1")
+    expect(manifest.state).toBe("ready")
+    expect(manifest.completed).toBe(true)
+    expect(manifest.buildStartedAt).toBe(100)
+    expect(manifest.buildFinishedAt).toBe(200)
+  })
+
+  test("marks cross-version partial manifests stale without invalidating ready or legacy manifests", async () => {
+    const index = sampleIndex()
+    const vectorIndex = await buildRagVectorIndex({
+      index,
+      provider: recordingEmbeddingProvider(),
+      batchSize: 1,
+      maxRequestsPerRun: 1,
+      requestDelayMs: 0,
+    })
+    const partialManifest = createRagSerializedManifest(vectorIndex, {
+      extensionVersion: "0.0.105",
+      state: "paused",
+      completed: false,
+    })
+    const readyManifest = createRagSerializedManifest({
+      ...vectorIndex,
+      pendingChunkCount: 0,
+      indexPausedReason: undefined,
+    }, {
+      extensionVersion: "0.0.105",
+      state: "ready",
+      completed: true,
+    })
+    const legacyManifest = createRagSerializedManifest(vectorIndex)
+
+    expect(ragManifestStaleReason(partialManifest, "0.0.106")).toContain("0.0.105")
+    expect(ragManifestStaleReason(readyManifest, "0.0.106")).toBeUndefined()
+    expect(ragManifestStaleReason(legacyManifest, "0.0.106")).toBeUndefined()
   })
 })
 

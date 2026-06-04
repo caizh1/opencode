@@ -44,6 +44,7 @@ const {
   PASSWORD_SECRET_KEY,
   connectionInputHasPassword,
   ragEmbeddingTimeoutMsForBatchSize,
+  ragSettingsInputChangesEmbeddingIdentity,
   ragSettingsInputMatchesCurrent,
   ragSettingsUpdates,
   readRemoteSettings,
@@ -186,6 +187,31 @@ describe("RAG settings validation", () => {
       embeddingTimeoutMs: 90000,
     }))).toBe(true)
     expect(ragSettingsInputMatchesCurrent(ragInput({ embeddingModel: "different-embedding" }))).toBe(false)
+  })
+
+  test("detects only embedding endpoint and model changes as RAG identity changes", () => {
+    for (const update of ragSettingsUpdates(ragInput())) {
+      configValues.set(update.key, update.value)
+    }
+
+    expect(ragSettingsInputChangesEmbeddingIdentity(ragInput({
+      embeddingEndpoint: "http://127.0.0.1:9000/v1/embeddings",
+    }))).toBe(true)
+    expect(ragSettingsInputChangesEmbeddingIdentity(ragInput({
+      embeddingModel: "different-embedding",
+    }))).toBe(true)
+    expect(ragSettingsInputChangesEmbeddingIdentity(ragInput({
+      embeddingEndpoint: "http://127.0.0.1:8000/v1/embeddings/",
+      embeddingBatchSize: 512,
+      embeddingConcurrentRequests: 4,
+      embeddingCheckpointMode: "safe",
+      embeddingRequestDelayMs: 1000,
+      rerankEndpoint: "http://127.0.0.1:8000/other-rerank",
+      rerankModel: "different-rerank",
+      vectorTopK: 48,
+      rerankTopK: 8,
+      allowedHosts: ["rag.internal"],
+    }))).toBe(false)
   })
 
   test("saves adaptive embedding concurrency settings", async () => {

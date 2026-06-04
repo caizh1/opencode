@@ -55,7 +55,7 @@ import type {
   RenderedUsage,
   RemoteSettings,
 } from "./types"
-import { connectionInputHasPassword, ragSettingsInputMatchesCurrent, saveCompletionSettings, saveRagSettings, type CompletionSettingsInput, type ConnectionSettingsInput, type RagSettingsInput } from "./settings"
+import { connectionInputHasPassword, ragSettingsInputChangesEmbeddingIdentity, ragSettingsInputMatchesCurrent, saveCompletionSettings, saveRagSettings, type CompletionSettingsInput, type ConnectionSettingsInput, type RagSettingsInput } from "./settings"
 
 const SESSION_MESSAGE_LIMIT = 100
 const MODEL_REFRESH_TIMEOUT_MS = 8000
@@ -72,6 +72,7 @@ const DIAGNOSTIC_CONTEXT_LIMIT = 60
 const DIAGNOSTIC_PREVIEW_LIMIT = 5
 
 type EventStreamPath = "/event" | "/global/event"
+type RagRebuildConfirmationReason = "ready" | "incomplete" | "embedding-change"
 
 type MentionedFileRef = {
   uri: string
@@ -951,27 +952,43 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
 
   private async saveRagSettings(input: RagSettingsInput) {
     try {
-      const unchanged = ragSettingsInputMatchesCurrent(input, this.deps.getSettings().rag)
+      const currentRagSettings = this.deps.getSettings().rag
+      const unchanged = ragSettingsInputMatchesCurrent(input, currentRagSettings)
+      const embeddingIdentityChanged = ragSettingsInputChangesEmbeddingIdentity(input, currentRagSettings)
+      const existingIndexReason = ragExistingIndexConfirmationReason(this.deps.codeGraph?.status().rag)
+      let forceRebuild = false
+      let preserveExistingIndex = false
+      if (existingIndexReason) {
+        forceRebuild = await this.confirmForceRagRebuild(embeddingIdentityChanged ? "embedding-change" : existingIndexReason)
+        if (!forceRebuild && embeddingIdentityChanged) {
+          this.postState()
+          this.postRagStatus("RAG settings not saved. Existing local RAG index kept.", "success")
+          return
+        }
+        preserveExistingIndex = !forceRebuild
+      }
       if (!unchanged) {
         this.deps.suppressNextRagConfigurationApply?.()
         await saveRagSettings(input)
       }
-      let result = await this.deps.codeGraph?.applyRagConfiguration()
+      const result = await this.deps.codeGraph?.applyRagConfiguration(
+        forceRebuild
+          ? { forceRebuild: true }
+          : preserveExistingIndex
+            ? { preserveExistingIndex: true }
+            : undefined,
+      )
       this.postState()
       if (!result) {
         this.postRagStatus(unchanged ? "RAG settings unchanged." : "RAG settings saved.", "success")
         return
       }
-      if (unchanged && result.hasReusableIndex) {
-        const forceRebuild = await this.confirmForceRagRebuild()
-        if (!forceRebuild) {
-          this.postState()
-          this.postRagStatus(`RAG settings unchanged. Existing local RAG index kept. ${ragStatusMessage(result.status, "RAG status refreshed.")}`, "success")
-          return
-        }
-        result = await this.deps.codeGraph?.applyRagConfiguration({ forceRebuild: true }) ?? result
-        this.postState()
+      if (forceRebuild) {
         this.postRagStatus(ragApplyResultMessage(result, "RAG force rebuild requested."), "success")
+        return
+      }
+      if (preserveExistingIndex) {
+        this.postRagStatus(`${unchanged ? "RAG settings unchanged." : "RAG settings saved."} Existing local RAG index kept. ${ragStatusMessage(result.status, "RAG status refreshed.")}`, "success")
         return
       }
       this.postRagStatus(ragApplyResultMessage(result, unchanged ? "RAG settings unchanged." : "RAG settings saved."), "success")
@@ -983,11 +1000,16 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
     }
   }
 
-  private async confirmForceRagRebuild() {
+  private async confirmForceRagRebuild(reason: RagRebuildConfirmationReason) {
     const keep = { title: "否，保留现有索引", isCloseAffordance: true }
     const force = { title: "是，强制重建" }
+    const message = reason === "embedding-change"
+      ? "Embedding endpoint 或 model 已变化，保存后旧 RAG 索引不能继续使用，需要从 0 重建。是否保存并强制重建？"
+      : reason === "ready"
+        ? "本地已有完整 RAG 索引。通常不需要重新 embedding。是否强制删除现有索引并从 0 重建？"
+        : "本地已有未完成的 RAG 索引。选择否会保留当前进度并继续索引；选择是会删除现有进度并从 0 重建。"
     const selected = await vscode.window.showWarningMessage(
-      "本地已有 RAG 索引。强制重建会从头开始重新 embedding，可能消耗大量时间。确定要从头重建吗？",
+      message,
       { modal: true },
       keep,
       force,
@@ -2042,6 +2064,22 @@ function ragStatusMessage(rag: RagStatus | undefined, fallback: string) {
   if (rag.availability === "not-indexed") return `RAG not indexed: ${rag.fallbackReason || "rebuild the local code graph to enable vector retrieval"}`
   if (rag.availability === "unavailable") return `RAG unavailable: ${rag.fallbackReason || rag.lastError || "endpoint test failed"}`
   return "RAG not configured. Add an embedding endpoint to enable vector retrieval."
+}
+
+function ragExistingIndexConfirmationReason(rag: RagStatus | undefined): Exclude<RagRebuildConfirmationReason, "embedding-change"> | undefined {
+  if (!rag) return undefined
+  if (rag.availability === "ready" || rag.indexAvailability === "ready") return "ready"
+  if (
+    rag.availability === "partial"
+    || rag.availability === "paused"
+    || rag.availability === "indexing"
+    || rag.indexAvailability === "partial"
+    || rag.indexAvailability === "paused"
+    || Boolean(rag.indexProgress)
+  ) {
+    return "incomplete"
+  }
+  return undefined
 }
 
 function ragApplyResultMessage(result: RagConfigurationApplyResult, fallback: string) {

@@ -2,6 +2,7 @@ import type { CodeGraphEvidence } from "./codegraph-types"
 import type { RagEndpointKind, RagIndexPausedReason, RagResumeReason, RagSettings, RagStatus, RagWorkerStatus } from "./types"
 
 export type RagChunkKind = "function" | "file-summary" | "module-summary" | "state-transition" | "text-window"
+export type RagIndexLifecycleState = "building" | "ready" | "paused" | "stale"
 
 export type RagChunk = {
   id: string
@@ -35,6 +36,13 @@ export type RagVectorIndex = {
   nextResumeAt?: number
   resumeDelayMs?: number
   resumeReason?: RagResumeReason
+  extensionVersion?: string
+  buildId?: string
+  state?: RagIndexLifecycleState
+  completed?: boolean
+  staleReason?: string
+  buildStartedAt?: number
+  buildFinishedAt?: number
 }
 
 export type RagVectorShard = {

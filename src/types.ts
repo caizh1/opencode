@@ -120,6 +120,7 @@ export type RagConfigurationApplyAction =
 
 export type RagConfigurationApplyOptions = {
   forceRebuild?: boolean
+  preserveExistingIndex?: boolean
 }
 
 export type RagConfigurationApplyResult = {

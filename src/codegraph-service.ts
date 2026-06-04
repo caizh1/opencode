@@ -33,11 +33,13 @@ import {
   createRagSerializedManifest,
   decodeRagShardVectors,
   encodeRagShardVectors,
+  ragManifestStaleReason,
   RagIndexAbortError,
   splitRagVectorIndex,
   type RagIndexBatchProfile,
   type RagIndexBuildProgress,
   type RagIndexBuildSummary,
+  type RagManifestLifecycleMetadata,
   type RagSerializedManifest,
   type RagSerializedShardMetadata,
 } from "./rag-index"
@@ -71,6 +73,7 @@ const LARGE_INDEX_LAZY_FILE_THRESHOLD = 100000
 const JOB_CHECKPOINT_VERSION = 1
 const RAG_INDEX_SAFE_CHECKPOINT_CHUNK_INTERVAL = 2048
 const RAG_INDEX_SAFE_CHECKPOINT_INTERVAL_MS = 30000
+const RAG_PENDING_READY_RETRY_MS = 100
 const DEFAULT_EXCLUDES = [
   "**/.git/**",
   "**/node_modules/**",
@@ -127,6 +130,7 @@ export class LocalCodeGraphService implements vscode.Disposable {
   private pendingRagRefresh?: Set<string> | "full"
   private pendingRagRefreshIgnorePrevious = false
   private pendingRagResumeTrigger?: string
+  private pendingRagWorkTimer?: ReturnType<typeof setTimeout>
   private ragResumeTimer?: ReturnType<typeof setTimeout>
   private ragResumeInFlight?: Promise<void>
   private lastRagElapsedMs: number | undefined
@@ -151,6 +155,7 @@ export class LocalCodeGraphService implements vscode.Disposable {
   dispose() {
     this.disposed = true
     if (this.changeTimer) clearTimeout(this.changeTimer)
+    if (this.pendingRagWorkTimer) clearTimeout(this.pendingRagWorkTimer)
     this.clearRagIndexResume()
     this.abortRagIndex("service disposed")
     this.watcher?.dispose()
@@ -223,9 +228,7 @@ export class LocalCodeGraphService implements vscode.Disposable {
     })
     if (this.pendingChanges.size > 0 || this.rescanScheduled) void this.applyPendingChanges()
     else if (this.jobs.hasPending() && !this.indexing) {
-      this.indexing = this.runQueuedIndexJobs().finally(() => {
-        this.indexing = undefined
-      })
+      void this.startQueuedIndexJobs()
     }
     this.scheduleRagIndexResumeFromStatus("manual-resume")
   }
@@ -282,10 +285,7 @@ export class LocalCodeGraphService implements vscode.Disposable {
       })
       return this.indexing
     }
-    this.indexing = this.runQueuedIndexJobs().finally(() => {
-      this.indexing = undefined
-    })
-    return this.indexing
+    return this.startQueuedIndexJobs()
   }
 
   async waitForReady() {
@@ -343,7 +343,8 @@ export class LocalCodeGraphService implements vscode.Disposable {
       this.setRagStatus(status)
       return this.ragApplyResult("disabled")
     }
-    if (!workspaceRoot()) {
+    const root = workspaceRoot()
+    if (!root) {
       this.ragIndex = undefined
       const status = disabledRagStatus("No workspace folder is open.")
       this.setRagStatus(status)
@@ -352,12 +353,49 @@ export class LocalCodeGraphService implements vscode.Disposable {
     if (!this.index) await this.ensureIndexLoaded()
     if (options.forceRebuild) {
       this.clearRagIndexResume()
+      this.pendingRagRefresh = undefined
+      this.pendingRagRefreshIgnorePrevious = false
+      this.pendingRagResumeTrigger = undefined
+      this.clearPendingRagWorkTimer()
+      this.abortRagIndex("RAG force rebuild requested")
+      if (this.ragIndexInFlight) {
+        try {
+          await this.ragIndexInFlight
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error)
+          this.output.appendLine(`[rag-index] active build stopped before force rebuild: ${message}`)
+        }
+      }
+      const cleared = await this.clearStoredRagIndex(root)
+      const ready = this.isCodeGraphReadyForRag()
+      if (!cleared) {
+        const message = "Failed to clear stored RAG index before force rebuild."
+        this.ragIndex = undefined
+        const status = {
+          ...this.ragStatusValue,
+          enabled: false,
+          availability: "unavailable" as const,
+          embeddingEnabled: false,
+          indexProgress: undefined,
+          lastError: message,
+          fallbackReason: message,
+        }
+        this.setRagStatus(status)
+        return this.ragApplyResult("unavailable", status)
+      }
       this.ragIndex = undefined
       this.queuePendingRagRefresh(undefined, { ignorePrevious: true })
-      this.abortRagIndex("RAG force rebuild requested")
-      const ready = this.isCodeGraphReadyForRag()
       this.runPendingRagRefreshWhenReady("RAG force rebuild requested", { restartInFlight: true, ignorePrevious: true })
       return this.ragApplyResult(ready ? "build-started" : "build-queued")
+    }
+
+    if (options.preserveExistingIndex) {
+      const status = await this.probeRagConfiguration()
+      if (this.currentRagIndexMatchesProvider()) {
+        await this.scheduleRagIndexResumeFromStatus("configuration-refresh")
+        return this.ragApplyResult("status-refreshed")
+      }
+      return this.ragApplyResult("status-refreshed", status)
     }
 
     const status = await this.probeRagConfiguration()
@@ -767,16 +805,26 @@ export class LocalCodeGraphService implements vscode.Disposable {
         replacePendingKind: "incremental-index",
       })
     }
-    this.indexing = this.runQueuedIndexJobs().finally(() => {
-      this.indexing = undefined
+    const indexing = this.startQueuedIndexJobs()
+    try {
+      await indexing
+    } finally {
       if (this.pendingChanges.size > 0 && !this.changeTimer) {
         this.changeTimer = setTimeout(() => {
           this.changeTimer = undefined
           void this.applyPendingChanges()
         }, 800)
       }
+    }
+  }
+
+  private startQueuedIndexJobs() {
+    if (this.indexing) return this.indexing
+    this.indexing = this.runQueuedIndexJobs().finally(() => {
+      this.indexing = undefined
+      this.schedulePendingRagWorkAfterCodeGraphReady("code graph indexing idle")
     })
-    await this.indexing
+    return this.indexing
   }
 
   private async runIncrementalIndex(changes: { uri: vscode.Uri; deleted: boolean }[], job?: LocalAnalysisJob) {
@@ -1337,12 +1385,16 @@ export class LocalCodeGraphService implements vscode.Disposable {
   private ragStatusForIndex(endpointKind: RagStatus["endpointKind"], rerankProbe: RerankProbeStatus, index: RagVectorIndex): RagStatus {
     const totalChunks = index.totalChunks ?? index.chunks.length
     const pendingChunkCount = Math.max(0, index.pendingChunkCount ?? totalChunks - index.chunks.length)
-    const indexAvailability = pendingChunkCount > 0
+    const indexAvailability = index.state === "stale"
+      ? "paused"
+      : pendingChunkCount > 0
       ? index.indexPausedReason ? "paused" : "partial"
       : "ready"
     const availability = indexAvailability
     const hasVectors = index.dimension > 0 && index.vectors.length > 0
-    const fallbackReason = index.indexPausedReason
+    const fallbackReason = index.staleReason
+      ? index.staleReason
+      : index.indexPausedReason
       ? ragPausedReasonMessage(index.indexPausedReason, index.lastError)
       : pendingChunkCount > 0
         ? "RAG vector index is partially built; remaining chunks will be embedded on the next RAG index run"
@@ -1483,8 +1535,23 @@ export class LocalCodeGraphService implements vscode.Disposable {
     this.schedulePendingRagWorkAfterCodeGraphReady("code graph ready")
   }
 
-  private schedulePendingRagWorkAfterCodeGraphReady(reason: string) {
-    setTimeout(() => this.runPendingRagRefreshWhenReady(reason), 0)
+  private clearPendingRagWorkTimer() {
+    if (!this.pendingRagWorkTimer) return
+    clearTimeout(this.pendingRagWorkTimer)
+    this.pendingRagWorkTimer = undefined
+  }
+
+  private schedulePendingRagWorkAfterCodeGraphReady(reason: string, delayMs = 0) {
+    if (this.disposed) return
+    if (!this.pendingRagRefresh && !this.pendingRagResumeTrigger) {
+      this.clearPendingRagWorkTimer()
+      return
+    }
+    this.clearPendingRagWorkTimer()
+    this.pendingRagWorkTimer = setTimeout(() => {
+      this.pendingRagWorkTimer = undefined
+      this.runPendingRagRefreshWhenReady(reason)
+    }, delayMs)
   }
 
   private runPendingRagRefreshWhenReady(reason: string, options: { restartInFlight?: boolean; ignorePrevious?: boolean } = {}) {
@@ -1493,6 +1560,7 @@ export class LocalCodeGraphService implements vscode.Disposable {
     if (!this.isCodeGraphReadyForRag()) {
       this.setRagWaitingForCodeGraphStatus()
       this.output.appendLine(`[rag-index] waiting for code graph before rebuild reason=${reason}`)
+      if (this.statusValue.state === "ready") this.schedulePendingRagWorkAfterCodeGraphReady(reason, RAG_PENDING_READY_RETRY_MS)
       return
     }
     const pending = this.pendingRagRefresh
@@ -1634,6 +1702,11 @@ export class LocalCodeGraphService implements vscode.Disposable {
       this.clearRagIndexResume()
       return
     }
+    if (index.state === "stale" || index.staleReason) {
+      this.clearRagIndexResume()
+      this.output.appendLine(`[rag-index] auto resume skipped reason=stale pending=${pending}${index.staleReason ? ` detail=${index.staleReason}` : ""}`)
+      return
+    }
     if (!settings.embedding.resumeAutomatically) {
       this.clearRagIndexResume()
       this.output.appendLine(`[rag-index] auto resume skipped reason=disabled pending=${pending}`)
@@ -1684,7 +1757,7 @@ export class LocalCodeGraphService implements vscode.Disposable {
       resumeReason: reason,
     })
     const root = workspaceRoot()
-    if (root) await this.saveRagIndex(root, scheduled)
+    if (root) this.ragIndex = await this.saveRagIndex(root, scheduled)
 
     if (this.ragResumeTimer) clearTimeout(this.ragResumeTimer)
     this.output.appendLine(`[rag-index] resume scheduled reason=${reason} trigger=${trigger} delayMs=${delayMs} pending=${pending}`)
@@ -1776,6 +1849,8 @@ export class LocalCodeGraphService implements vscode.Disposable {
     }
 
     const started = Date.now()
+    const buildId = crypto.randomUUID()
+    const buildStartedAt = Date.now()
     const continuePreviousElapsed = Boolean(options.continuePreviousElapsed && !options.ignorePrevious && !changedPaths && this.ragIndexCanContinueElapsed())
     const initialElapsedMs = continuePreviousElapsed
       ? Math.max(0, Math.floor(this.ragIndex?.buildElapsedMs ?? this.ragStatusValue.indexElapsedMs ?? 0))
@@ -1816,6 +1891,7 @@ export class LocalCodeGraphService implements vscode.Disposable {
       }))
       const checkpointPlan = ragEmbeddingCheckpointPlan(settings.embedding)
       const adaptiveCeiling = Math.min(4, settings.embedding.concurrentRequests + 1)
+      let savedFinalDuringBuild = false
       this.output.appendLine(`[rag-index] embedding ${changedPaths ? `${changedPaths.length} changed path(s)` : "full local code graph"} with batchSize=${settings.embedding.batchSize} maxTokensPerRequest=${settings.embedding.maxTokensPerRequest} concurrentRequests=${settings.embedding.concurrentRequests} adaptiveCeiling=${adaptiveCeiling} maxInFlightTokens=${settings.embedding.maxInFlightTokens} encodingFormat=${settings.embedding.encodingFormat} timeoutMs=${settings.embedding.timeoutMs} requestDelayMs=${settings.embedding.requestDelayMs} maxRequestsPerRun=${settings.embedding.maxRequestsPerRun || "unlimited"} maxRetries=${settings.embedding.maxRetries} retryBackoffMs=${settings.embedding.retryBackoffMs} checkpointMode=${checkpointPlan.mode} checkpointChunkInterval=${checkpointPlan.chunkInterval} checkpointIntervalMs=${checkpointPlan.intervalMs}`)
       const next = await buildRagVectorIndex({
         index: activeIndex,
@@ -1850,20 +1926,31 @@ export class LocalCodeGraphService implements vscode.Disposable {
         onIndexUpdate: async (partial) => {
           if (signal?.aborted) return
           if (partial.dimension <= 0 || partial.vectors.length === 0) return
-          this.ragIndex = partial
-          await this.saveRagIndex(root, partial)
+          this.ragIndex = await this.saveRagIndex(root, partial, {
+            buildId,
+            buildStartedAt,
+          })
+          savedFinalDuringBuild = Boolean((partial.pendingChunkCount ?? 0) === 0 && !partial.indexPausedReason)
           if (signal?.aborted) return
-          this.setRagStatus(this.ragStatusForIndexing(policy.kind, rerankProbe, { index: partial }))
+          this.setRagStatus(this.ragStatusForIndexing(policy.kind, rerankProbe, { index: this.ragIndex }))
         },
       })
       if ((next.requestsUsed ?? 0) === 0) await this.probeRagEmbeddingProvider(next.dimension, signal)
       if (signal?.aborted) throw new RagIndexAbortError()
-      this.ragIndex = next
       this.lastRagElapsedMs = next.buildElapsedMs ?? initialElapsedMs + Date.now() - started
-      await this.saveRagIndex(root, next)
+      if (!savedFinalDuringBuild || next.indexPausedReason || (next.pendingChunkCount ?? 0) > 0) {
+        this.ragIndex = await this.saveRagIndex(root, next, {
+          buildId,
+          buildStartedAt,
+          buildFinishedAt: (next.pendingChunkCount ?? 0) === 0 && !next.indexPausedReason ? Date.now() : undefined,
+        })
+      } else {
+        this.ragIndex = this.ragIndex ?? next
+      }
       if (signal?.aborted) throw new RagIndexAbortError()
-      this.setRagStatus(this.ragStatusForIndex(policy.kind, rerankProbe, next))
-      this.output.appendLine(`[rag-index] embedded ${next.vectors.length}/${next.totalChunks ?? next.chunks.length} chunk(s) totalElapsedMs=${this.lastRagElapsedMs}${next.indexPausedReason ? ` paused=${next.indexPausedReason}` : ""}`)
+      const saved = this.ragIndex ?? next
+      this.setRagStatus(this.ragStatusForIndex(policy.kind, rerankProbe, saved))
+      this.output.appendLine(`[rag-index] embedded ${saved.vectors.length}/${saved.totalChunks ?? saved.chunks.length} chunk(s) totalElapsedMs=${this.lastRagElapsedMs}${saved.indexPausedReason ? ` paused=${saved.indexPausedReason}` : ""}`)
       await this.scheduleRagIndexResumeFromStatus("index-build")
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
@@ -1889,22 +1976,61 @@ export class LocalCodeGraphService implements vscode.Disposable {
     }
   }
 
-  private async saveRagIndex(root: vscode.WorkspaceFolder, index: RagVectorIndex) {
+  private async saveRagIndex(root: vscode.WorkspaceFolder, index: RagVectorIndex, metadata: Partial<RagManifestLifecycleMetadata> = {}) {
     const dir = this.ragDir(root)
     const shardsDir = vscode.Uri.joinPath(dir, "shards")
     await vscode.workspace.fs.createDirectory(shardsDir)
-    const manifest = createRagSerializedManifest(index)
-    for (const shard of splitRagVectorIndex(index)) {
-      const metadata: RagSerializedShardMetadata = {
+    const savedIndex = this.ragIndexWithLifecycle(index, metadata)
+    const manifest = createRagSerializedManifest(savedIndex)
+    for (const shard of splitRagVectorIndex(savedIndex)) {
+      const shardMetadata: RagSerializedShardMetadata = {
         version: 1,
         key: shard.key,
-        dimension: index.dimension,
+        dimension: savedIndex.dimension,
         chunks: shard.chunks,
       }
-      await vscode.workspace.fs.writeFile(vscode.Uri.joinPath(shardsDir, `${shard.key}.json`), encodeJson(metadata))
-      await vscode.workspace.fs.writeFile(vscode.Uri.joinPath(shardsDir, `${shard.key}.f32`), encodeRaw(encodeRagShardVectors(shard.vectors, index.dimension)))
+      await vscode.workspace.fs.writeFile(vscode.Uri.joinPath(shardsDir, `${shard.key}.json`), encodeJson(shardMetadata))
+      await vscode.workspace.fs.writeFile(vscode.Uri.joinPath(shardsDir, `${shard.key}.f32`), encodeRaw(encodeRagShardVectors(shard.vectors, savedIndex.dimension)))
     }
     await vscode.workspace.fs.writeFile(this.ragManifestUri(root), encodeJson(manifest))
+    return savedIndex
+  }
+
+  private async clearStoredRagIndex(root: vscode.WorkspaceFolder) {
+    try {
+      await vscode.workspace.fs.delete(this.ragDir(root), { recursive: true, useTrash: false })
+      this.output.appendLine("[rag-index] cleared stored RAG vector index before force rebuild")
+      return true
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      if (/FileNotFound|ENOENT|does not exist|no such file/i.test(message)) return true
+      this.output.appendLine(`[rag-index] failed to clear stored RAG vector index before force rebuild: ${message}`)
+      return false
+    }
+  }
+
+  private ragIndexWithLifecycle(index: RagVectorIndex, metadata: Partial<RagManifestLifecycleMetadata>): RagVectorIndex {
+    const pending = Math.max(0, index.pendingChunkCount ?? (index.totalChunks ?? index.chunks.length) - index.chunks.length)
+    const completed = metadata.completed ?? index.completed ?? pending === 0
+    const state = metadata.state ?? index.state ?? (
+      index.staleReason ? "stale" : completed ? "ready" : index.indexPausedReason ? "paused" : "building"
+    )
+    const buildFinishedAt = metadata.buildFinishedAt ?? index.buildFinishedAt ?? (completed ? Date.now() : undefined)
+    return {
+      ...index,
+      extensionVersion: metadata.extensionVersion ?? index.extensionVersion ?? this.extensionVersion(),
+      buildId: metadata.buildId ?? index.buildId,
+      state,
+      completed,
+      staleReason: metadata.staleReason ?? index.staleReason,
+      buildStartedAt: metadata.buildStartedAt ?? index.buildStartedAt,
+      buildFinishedAt,
+    }
+  }
+
+  private extensionVersion() {
+    const value = (this.context.extension.packageJSON as { version?: unknown }).version
+    return typeof value === "string" && value.trim() ? value.trim() : "unknown"
   }
 
   private async probeRagEmbeddingProvider(dimension: number, signal?: AbortSignal) {
@@ -1996,6 +2122,7 @@ export class LocalCodeGraphService implements vscode.Disposable {
         chunks.push(...metadata.chunks)
         vectors.push(...decodeRagShardVectors(vectorBytes, manifest.dimension))
       }
+      const staleReason = ragManifestStaleReason(manifest, this.extensionVersion())
       this.ragIndex = {
         version: 1,
         rootPath: manifest.rootPath,
@@ -2015,6 +2142,13 @@ export class LocalCodeGraphService implements vscode.Disposable {
         nextResumeAt: manifest.nextResumeAt,
         resumeDelayMs: manifest.resumeDelayMs,
         resumeReason: manifest.resumeReason,
+        extensionVersion: manifest.extensionVersion,
+        buildId: manifest.buildId,
+        state: staleReason ? "stale" : manifest.state,
+        completed: staleReason ? false : manifest.completed,
+        staleReason: staleReason ?? manifest.staleReason,
+        buildStartedAt: manifest.buildStartedAt,
+        buildFinishedAt: manifest.buildFinishedAt,
       }
       try {
         await this.probeRagEmbeddingProvider(manifest.dimension)
@@ -2032,7 +2166,9 @@ export class LocalCodeGraphService implements vscode.Disposable {
         return
       }
       this.setRagStatus(this.ragStatusForIndex(policy.kind, rerankProbe, this.ragIndex))
-      if (this.currentRagIndexMatchesProvider()) {
+      if (staleReason) {
+        this.output.appendLine(`[rag-index] loaded stale partial vector index; auto resume disabled: ${staleReason}`)
+      } else if (this.currentRagIndexMatchesProvider()) {
         await this.scheduleRagIndexResumeFromStatus("index-load")
       } else {
         this.queuePendingRagRefresh()
