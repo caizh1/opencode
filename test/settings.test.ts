@@ -44,6 +44,7 @@ const {
   PASSWORD_SECRET_KEY,
   connectionInputHasPassword,
   ragEmbeddingTimeoutMsForBatchSize,
+  ragSettingsInputMatchesCurrent,
   ragSettingsUpdates,
   readRemoteSettings,
   saveConnectionSettings,
@@ -173,6 +174,18 @@ describe("RAG settings validation", () => {
 
     expect(configUpdates.some((update) => update.key === "rag.embedding.dimensions")).toBe(false)
     expect(configUpdates.find((update) => update.key === "rag.embedding.maxTokensPerRequest")?.value).toBe(32768)
+  })
+
+  test("compares RAG settings after normalizing effective values", () => {
+    for (const update of ragSettingsUpdates(ragInput())) {
+      configValues.set(update.key, update.value)
+    }
+
+    expect(ragSettingsInputMatchesCurrent(ragInput({
+      embeddingEndpoint: "http://127.0.0.1:8000/v1/embeddings/",
+      embeddingTimeoutMs: 90000,
+    }))).toBe(true)
+    expect(ragSettingsInputMatchesCurrent(ragInput({ embeddingModel: "different-embedding" }))).toBe(false)
   })
 
   test("saves adaptive embedding concurrency settings", async () => {

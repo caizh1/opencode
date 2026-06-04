@@ -40,6 +40,18 @@ describe("local RAG vector index", () => {
     expect(provider.calls).toBeLessThan(first.chunks.length + second.chunks.length)
   })
 
+  test("embeds all chunks when previous vectors are intentionally ignored", async () => {
+    const index = sampleIndex()
+    const provider = countingEmbeddingProvider()
+    await buildRagVectorIndex({ index, provider })
+    provider.calls = 0
+
+    const rebuilt = await buildRagVectorIndex({ index, provider })
+
+    expect(rebuilt.chunks.length).toBe(buildRagChunks(index).length)
+    expect(provider.calls).toBe(buildRagChunks(index).length)
+  })
+
   test("does not reuse previous vectors when provider dimensions change", async () => {
     const index = sampleIndex()
     const firstProvider = countingEmbeddingProvider(3)

@@ -2,7 +2,13 @@ import * as cp from "node:child_process"
 import * as vscode from "vscode"
 import type { CodeGraphContextProvider } from "./codegraph-types"
 import type { TrackedEditorContext } from "./editor-context"
-import type { RetrievedCompletionSnippet } from "./completion-types"
+import {
+  formatInstructionContext,
+  formatRepoContext,
+  packCompletionContext,
+  type CompletionContextPack,
+} from "./completion-context"
+import type { CompletionPlan, RetrievedCompletionSnippet } from "./completion-types"
 import type { ChatContextOptions, RemoteSettings } from "./types"
 
 type FileContext = {
@@ -131,6 +137,9 @@ export async function buildCompletionPrompt(input: {
   position: vscode.Position
   settings: RemoteSettings
   transport?: "opencode" | "openai-compatible"
+  plan?: CompletionPlan
+  retrievedSnippets?: RetrievedCompletionSnippet[]
+  onContextPack?: (pack: CompletionContextPack) => void
 }) {
   const before = Math.max(0, input.position.line - 80)
   const after = Math.min(input.document.lineCount - 1, input.position.line + 60)
@@ -138,7 +147,32 @@ export async function buildCompletionPrompt(input: {
   const suffix = input.document.getText(
     new vscode.Range(input.position.line, input.position.character, after, input.document.lineAt(after).text.length),
   )
+  const path = relativePath(input.document.uri)
+  const contextPack = input.plan
+    ? packCompletionContext({
+        plan: input.plan,
+        languageId: input.document.languageId,
+        currentPath: path,
+        prefix,
+        suffix,
+        retrievedSnippets: input.retrievedSnippets ?? [],
+      })
+    : undefined
+  if (contextPack) input.onContextPack?.(contextPack)
+  if (input.plan?.useInstruction) {
+    return buildInstructionCompletionPrompt({
+      plan: input.plan,
+      path,
+      languageId: input.document.languageId,
+      prefix,
+      suffix,
+      contextPack: contextPack ?? emptyContextPack(),
+      transport: input.transport,
+    })
+  }
+
   const diagnostics = diagnosticsForUri(input.document.uri, 8)
+  const packedContext = contextPack ? formatRepoContext(contextPack) : ""
   return [
     "You are an inline code completion engine.",
     "Return only the exact text to insert at the cursor. Do not use Markdown. Do not explain.",
@@ -148,8 +182,9 @@ export async function buildCompletionPrompt(input: {
       ? "Direct model API contract: if you produce <think> reasoning, put all reasoning inside <think>...</think>; after </think>, output only the exact insertion text."
       : "",
     completionLanguageRules(input.document.languageId),
+    packedContext,
     "",
-    `<file path="${relativePath(input.document.uri)}" language="${input.document.languageId}">`,
+    `<file path="${path}" language="${input.document.languageId}">`,
     "<prefix>",
     limitText(prefix, input.settings.context.maxFileBytes).text,
     "</prefix>",
@@ -167,7 +202,9 @@ export function buildQwenCoderFimPrompt(input: {
   document: vscode.TextDocument
   position: vscode.Position
   settings: RemoteSettings
+  plan?: CompletionPlan
   retrievedSnippets?: RetrievedCompletionSnippet[]
+  onContextPack?: (pack: CompletionContextPack) => void
 }) {
   const before = Math.max(0, input.position.line - 80)
   const after = Math.min(input.document.lineCount - 1, input.position.line + 60)
@@ -177,14 +214,77 @@ export function buildQwenCoderFimPrompt(input: {
   )
   const path = relativePath(input.document.uri)
   const repoName = vscode.workspace.getWorkspaceFolder(input.document.uri)?.name || vscode.workspace.workspaceFolders?.[0]?.name || "workspace"
-  const contextBlock = completionContextBlock(input.retrievedSnippets ?? [], input.document.languageId)
+  const contextPack = input.plan
+    ? packCompletionContext({
+        plan: input.plan,
+        languageId: input.document.languageId,
+        currentPath: path,
+        prefix,
+        suffix,
+        retrievedSnippets: input.retrievedSnippets ?? [],
+      })
+    : undefined
+  if (contextPack) input.onContextPack?.(contextPack)
+  const contextBlock = contextPack ? formatRepoContext(contextPack) : completionContextBlock(input.retrievedSnippets ?? [], input.document.languageId)
   return [
     `<|repo_name|>${repoName}`,
     `<|file_sep|>${path}\n`,
-    `<|fim_prefix|>${contextBlock}${limitText(prefix, input.settings.context.maxFileBytes).text}`,
+    contextBlock,
+    `<|fim_prefix|>${limitText(prefix, input.settings.context.maxFileBytes).text}`,
     `<|fim_suffix|>${limitText(suffix, Math.floor(input.settings.context.maxFileBytes / 2)).text}`,
     "<|fim_middle|>",
   ].join("")
+}
+
+function buildInstructionCompletionPrompt(input: {
+  plan: CompletionPlan
+  path: string
+  languageId: string
+  prefix: string
+  suffix: string
+  contextPack: CompletionContextPack
+  transport?: "opencode" | "openai-compatible"
+}) {
+  const task = input.plan.kind === "comment-to-test" || input.plan.kind === "natural-command"
+    ? "Generate a unit test for the target symbol."
+    : "Generate code for the user's current comment instruction."
+  return [
+    "You are generating code for a VS Code inline completion.",
+    "",
+    "Task:",
+    task,
+    "",
+    "Rules:",
+    "- Do not repeat the user's current line.",
+    "- Do not output markdown.",
+    "- Do not explain.",
+    "- Output only code.",
+    "- Use the target symbol and similar tests from context.",
+    input.transport === "openai-compatible"
+      ? "- If you produce <think> reasoning, put all reasoning inside <think>...</think>; after </think>, output only the exact insertion text."
+      : "",
+    completionLanguageRules(input.languageId),
+    "",
+    formatInstructionContext(input.contextPack),
+    "",
+    `<file path="${input.path}" language="${input.languageId}">`,
+    "<prefix>",
+    input.prefix,
+    "</prefix>",
+    "<suffix>",
+    input.suffix,
+    "</suffix>",
+    "</file>",
+  ].filter(Boolean).join("\n")
+}
+
+function emptyContextPack(): CompletionContextPack {
+  return {
+    selected: [],
+    dropped: [],
+    tokenBudget: 0,
+    tokenEstimate: 0,
+  }
 }
 
 function completionContextBlock(snippets: RetrievedCompletionSnippet[], languageId: string) {

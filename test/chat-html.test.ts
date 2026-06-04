@@ -80,6 +80,10 @@ describe("chat webview html", () => {
     expect(html).toContain('id="composerMoreMenu" class="modelMenu composerMoreMenu"')
     expect(html).not.toContain('class="composerCommandRail"')
     expect(html).toContain('class="composerSupportRail" aria-label="Composer status details"')
+    const usageStatusPill = html.match(/<button id="usageStatusPill"[^>]*>[\s\S]*?<\/button>/)?.[0] || ""
+    expect(usageStatusPill).toContain('class="composerStatusPill oc-icon-btn oc-liquid-btn usage pending"')
+    expect(usageStatusPill).not.toContain("compactRing")
+    expect(usageStatusPill).not.toContain("statusRing")
     expect(html).toContain('id="composerProgress" class="composerProgress" aria-hidden="true"')
     expect(source).toContain("function renderComposerProgress")
     expect(source).toContain("function contextUsageProgress")

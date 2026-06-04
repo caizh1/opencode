@@ -1,7 +1,107 @@
 import { describe, expect, test } from "bun:test"
-import { buildCompletionEdit, buildCompletionEditResult } from "../src/completion-edit"
+import { buildCompletionEdit, buildCompletionEditResult, buildInlineCompletionEditResult } from "../src/completion-edit"
+import type { CompletionInsertMode } from "../src/completion-types"
 
 describe("language-aware completion edits", () => {
+  test("InlineEditBuilder replace-current-word uses the current word range", () => {
+    expect(inlineEdit({
+      insertMode: "replace-current-word",
+      text: "epr_ppn_raw_write_with_cb_dfx",
+      languageId: "c",
+      linePrefix: "    epr_ppn_raw_wr",
+      character: "    epr_ppn_raw_wr".length,
+      currentWord: "epr_ppn_raw_wr",
+    })).toMatchObject({
+      insertText: "epr_ppn_raw_write_with_cb_dfx",
+      replaceRange: {
+        startLine: 0,
+        startCharacter: 4,
+        endLine: 0,
+        endCharacter: "    epr_ppn_raw_wr".length,
+      },
+      filterText: "epr_ppn_raw_write_with_cb_dfx",
+    })
+  })
+
+  test("InlineEditBuilder insert-at-cursor uses a zero-width cursor range", () => {
+    const prefix = "const value = "
+    expect(inlineEdit({
+      insertMode: "insert-at-cursor",
+      text: "computeValue()",
+      languageId: "typescript",
+      linePrefix: prefix,
+      character: prefix.length,
+    })).toMatchObject({
+      insertText: "computeValue()",
+      replaceRange: {
+        startLine: 0,
+        startCharacter: prefix.length,
+        endLine: 0,
+        endCharacter: prefix.length,
+      },
+      filterText: "computeValue()",
+    })
+  })
+
+  test("InlineEditBuilder insert-after-line inserts after the full current line", () => {
+    const prefix = "// unit test for epr_ppn_raw_write_cb_dfx()"
+    const edit = inlineEdit({
+      insertMode: "insert-after-line",
+      text: "TEST(EprPpnRaw, WriteCbDfx) {\nEXPECT_EQ(0, epr_ppn_raw_write_cb_dfx());\n}",
+      languageId: "c",
+      linePrefix: prefix,
+      character: prefix.length,
+    })
+
+    expect(edit).toMatchObject({
+      insertText: "\nTEST(EprPpnRaw, WriteCbDfx) {\n    EXPECT_EQ(0, epr_ppn_raw_write_cb_dfx());\n}",
+      replaceRange: {
+        startLine: 0,
+        startCharacter: prefix.length,
+        endLine: 0,
+        endCharacter: prefix.length,
+      },
+    })
+    expect(edit?.replaceRange?.startLine).toBe(edit?.replaceRange?.endLine)
+    expect(edit?.filterText).not.toContain(prefix)
+  })
+
+  test("InlineEditBuilder replace-whole-line replaces natural-language commands on one line", () => {
+    const prefix = "unit test for epr_ppn_raw_wr"
+    const edit = inlineEdit({
+      insertMode: "replace-whole-line",
+      text: "TEST(EprPpnRaw, WriteWithCbDfx) {\nEXPECT_EQ(0, epr_ppn_raw_write_with_cb_dfx());\n}",
+      languageId: "c",
+      linePrefix: prefix,
+      character: prefix.length,
+      currentWord: "epr_ppn_raw_wr",
+    })
+
+    expect(edit).toMatchObject({
+      insertText: "TEST(EprPpnRaw, WriteWithCbDfx) {\n    EXPECT_EQ(0, epr_ppn_raw_write_with_cb_dfx());\n}",
+      replaceRange: {
+        startLine: 0,
+        startCharacter: 0,
+        endLine: 0,
+        endCharacter: prefix.length,
+      },
+      filterText: "TEST(EprPpnRaw, WriteWithCbDfx) {\n    EXPECT_EQ(0, epr_ppn_raw_write_with_cb_dfx());\n}",
+    })
+    expect(edit?.replaceRange?.startLine).toBe(edit?.replaceRange?.endLine)
+  })
+
+  test("InlineEditBuilder rejects empty insertText for explicit insert modes", () => {
+    expect(inlineEditResult({
+      insertMode: "insert-after-line",
+      text: "",
+      languageId: "c",
+      linePrefix: "// unit test for epr_ppn_raw_write_cb_dfx()",
+      character: "// unit test for epr_ppn_raw_write_cb_dfx()".length,
+    })).toEqual({
+      reason: "empty-model-text",
+    })
+  })
+
   test("replaces C function-signature colons with a brace block", () => {
     expect(edit({
       text: "return 1 - 1;",
@@ -509,6 +609,52 @@ function edit(input: {
   preferCurrentWordReplacement?: boolean
 }) {
   return editResult(input).edit
+}
+
+function inlineEdit(input: {
+  insertMode: CompletionInsertMode
+  text: string
+  languageId: string
+  linePrefix: string
+  character: number
+  lineSuffix?: string
+  currentWord?: string
+}) {
+  return inlineEditResult(input).edit
+}
+
+function inlineEditResult(input: {
+  insertMode: CompletionInsertMode
+  text: string
+  languageId: string
+  linePrefix: string
+  character: number
+  lineSuffix?: string
+  currentWord?: string
+}) {
+  const currentWord = input.currentWord
+  const startCharacter = currentWord ? input.character - currentWord.length : input.character
+  return buildInlineCompletionEditResult({
+    text: input.text,
+    languageId: input.languageId,
+    linePrefix: input.linePrefix,
+    lineSuffix: input.lineSuffix ?? "",
+    position: { line: 0, character: input.character },
+    indent: { indentUnit: "    ", targetIndent: "    " },
+    currentWord,
+    currentWordRange: currentWord
+      ? {
+          startLine: 0,
+          startCharacter,
+          endLine: 0,
+          endCharacter: input.character,
+        }
+      : undefined,
+    plan: {
+      insertMode: input.insertMode,
+      replaceCurrentWord: input.insertMode === "replace-current-word",
+    },
+  })
 }
 
 function editResult(input: {

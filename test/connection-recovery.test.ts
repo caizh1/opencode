@@ -74,8 +74,11 @@ describe("connection and stale-session recovery wiring", () => {
 
   test("debounces RAG configuration apply events", () => {
     expect(extensionSource).toContain("RAG_CONFIG_REFRESH_DEBOUNCE_MS")
+    expect(extensionSource).toContain("INTERNAL_RAG_CONFIG_CHANGE_SUPPRESSION_MS")
     expect(extensionSource).toContain("const scheduleRagConfigurationApply")
     expect(extensionSource).toContain("if (ragConfigurationApplyTimer) clearTimeout(ragConfigurationApplyTimer)")
+    expect(extensionSource).toContain("suppressNextRagConfigurationApply")
+    expect(extensionSource).toContain("Date.now() < ignoreRagConfigurationChangesUntil")
     expect(extensionSource).toContain("void codeGraph.applyRagConfiguration().catch")
     expect(extensionSource).toContain("scheduleRagConfigurationApply()")
     expect(extensionSource).not.toContain("codeGraph.refreshRagConfiguration()")

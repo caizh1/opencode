@@ -26,6 +26,7 @@ import type { ConnectionState } from "./types"
 let client: RemoteOpenCodeClient | undefined
 const CONNECTION_TEST_TIMEOUT_MS = 8000
 const RAG_CONFIG_REFRESH_DEBOUNCE_MS = 500
+const INTERNAL_RAG_CONFIG_CHANGE_SUPPRESSION_MS = 5000
 const EXTENSION_UPDATE_RELOAD_PROMPT_KEY = "opencode.remote.updateReloadPrompt.version"
 const RELOAD_WINDOW_ACTION = "Reload Window"
 
@@ -129,10 +130,19 @@ export async function activate(context: vscode.ExtensionContext) {
   const codeGraph = new LocalCodeGraphService(context, output, getSettings, () => readRagApiKey(context), () => chatProvider?.refreshCodeGraphStatus())
   context.subscriptions.push(codeGraph)
   let ragConfigurationApplyTimer: ReturnType<typeof setTimeout> | undefined
+  let ignoreRagConfigurationChangesUntil = 0
+  const suppressNextRagConfigurationApply = () => {
+    ignoreRagConfigurationChangesUntil = Date.now() + INTERNAL_RAG_CONFIG_CHANGE_SUPPRESSION_MS
+    if (ragConfigurationApplyTimer) {
+      clearTimeout(ragConfigurationApplyTimer)
+      ragConfigurationApplyTimer = undefined
+    }
+  }
   const scheduleRagConfigurationApply = () => {
     if (ragConfigurationApplyTimer) clearTimeout(ragConfigurationApplyTimer)
     ragConfigurationApplyTimer = setTimeout(() => {
       ragConfigurationApplyTimer = undefined
+      if (Date.now() < ignoreRagConfigurationChangesUntil) return
       void codeGraph.applyRagConfiguration().catch((error) => {
         const message = error instanceof Error ? error.message : String(error)
         output.appendLine(`[rag] configuration apply failed: ${message}`)
@@ -173,12 +183,14 @@ export async function activate(context: vscode.ExtensionContext) {
     setConnectionState,
     clearClient,
     openOutput: () => output.show(true),
+    suppressNextRagConfigurationApply,
   })
   context.subscriptions.push(chatProvider)
 
   context.subscriptions.push(
     vscode.workspace.onDidChangeConfiguration((event) => {
       if (!event.affectsConfiguration("opencode.remote.rag")) return
+      if (Date.now() < ignoreRagConfigurationChangesUntil) return
       scheduleRagConfigurationApply()
     }),
   )

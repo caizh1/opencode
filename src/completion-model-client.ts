@@ -1,4 +1,4 @@
-import type { OpenCodeMessage, OpenCodePart, RemoteSettings } from "./types"
+import type { CompletionProfile, OpenCodeMessage, OpenCodePart, RemoteSettings } from "./types"
 
 const QWEN_CODER_FIM_STOP = [
   "<|fim_prefix|>",
@@ -42,13 +42,15 @@ export class CompletionModelClient {
     maxTokens?: number
     temperature?: number
     topP?: number
+    profile?: CompletionProfile
   }): Promise<OpenCodeMessage> {
     const baseUrl = this.settings.completion.apiBaseUrl
     const model = completionModel(this.settings)
     if (!baseUrl) throw new CompletionModelRequestError(0, "Completion API base URL is required.")
     if (!model) throw new CompletionModelRequestError(0, "Completion model is required.")
 
-    if (this.settings.completion.profile === "qwen-coder-fim") {
+    const profile = input.profile ?? this.settings.completion.profile
+    if (profile === "qwen-coder-fim") {
       return this.completeRawFim({
         prompt: input.prompt,
         signal: input.signal,

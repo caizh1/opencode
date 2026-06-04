@@ -930,14 +930,12 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
     .composerStatusPill.index.indexing,
     .composerStatusPill.index.info { --ring-fill: var(--vscode-focusBorder); --ring-empty: color-mix(in srgb, var(--vscode-focusBorder) 20%, transparent); --ring-border: color-mix(in srgb, var(--vscode-focusBorder) 34%, transparent); }
     .composerStatusPill.index.warning,
-    .composerStatusPill.guard.warning,
-    .composerStatusPill.usage.warning { color: var(--vscode-editorWarning-foreground, #cca700); --ring-fill: var(--vscode-editorWarning-foreground, #cca700); --ring-empty: color-mix(in srgb, var(--vscode-editorWarning-foreground, #cca700) 20%, transparent); --ring-border: color-mix(in srgb, var(--vscode-editorWarning-foreground, #cca700) 34%, transparent); }
-    .composerStatusPill.index.error,
-    .composerStatusPill.usage.error { color: var(--vscode-errorForeground, #f48771); --ring-fill: var(--vscode-errorForeground, #f48771); --ring-empty: color-mix(in srgb, var(--vscode-errorForeground, #f48771) 20%, transparent); --ring-border: color-mix(in srgb, var(--vscode-errorForeground, #f48771) 34%, transparent); }
+    .composerStatusPill.guard.warning { color: var(--vscode-editorWarning-foreground, #cca700); --ring-fill: var(--vscode-editorWarning-foreground, #cca700); --ring-empty: color-mix(in srgb, var(--vscode-editorWarning-foreground, #cca700) 20%, transparent); --ring-border: color-mix(in srgb, var(--vscode-editorWarning-foreground, #cca700) 34%, transparent); }
+    .composerStatusPill.usage.warning { color: var(--vscode-editorWarning-foreground, #cca700); }
+    .composerStatusPill.index.error { color: var(--vscode-errorForeground, #f48771); --ring-fill: var(--vscode-errorForeground, #f48771); --ring-empty: color-mix(in srgb, var(--vscode-errorForeground, #f48771) 20%, transparent); --ring-border: color-mix(in srgb, var(--vscode-errorForeground, #f48771) 34%, transparent); }
+    .composerStatusPill.usage.error { color: var(--vscode-errorForeground, #f48771); }
     .composerStatusPill.guard.ok { color: var(--vscode-testing-iconPassed, #73c991); }
     .composerStatusPill.guard.off { color: var(--vscode-descriptionForeground); }
-    .composerStatusPill.usage.normal,
-    .composerStatusPill.usage.pending { --ring-fill: var(--vscode-focusBorder); --ring-empty: color-mix(in srgb, var(--vscode-focusBorder) 20%, transparent); --ring-border: color-mix(in srgb, var(--vscode-focusBorder) 34%, transparent); }
     .composerStatusPopover {
       display: none;
       position: absolute;
@@ -2777,7 +2775,7 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
               <button id="contextStatusPill" class="composerStatusPill oc-icon-btn oc-liquid-btn context" type="button" title="Show context details"><span class="pillText">${liquidIcons.references}</span></button>
               <button id="indexStatusPill" class="composerStatusPill oc-icon-btn oc-liquid-btn index info compactRing" type="button" title="Show index details"><span class="pillText statusRing" aria-hidden="true">${liquidIcons.database}</span></button>
               <button id="guardStatusPill" class="composerStatusPill oc-icon-btn oc-liquid-btn guard ok" type="button" title="Show guard details"><span class="pillText">${liquidIcons.shield}</span></button>
-              <button id="usageStatusPill" class="composerStatusPill oc-icon-btn oc-liquid-btn usage pending compactRing" type="button" title="Show usage details"><span class="pillText statusRing" aria-hidden="true">${liquidIcons.sparkle}</span></button>
+              <button id="usageStatusPill" class="composerStatusPill oc-icon-btn oc-liquid-btn usage pending" type="button" title="Show usage details"><span class="pillText">${liquidIcons.sparkle}</span></button>
             </div>
           </div>
           <div id="composerStatusPopover" class="composerStatusPopover" aria-hidden="true"></div>
@@ -4055,11 +4053,10 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
         return {
           text: "Usage",
           title: "Connect to load usage.",
-	          className: "composerStatusPill oc-icon-btn oc-liquid-btn usage pending",
+          className: "composerStatusPill oc-icon-btn oc-liquid-btn usage pending",
           popover: "usage",
           ariaLabel: "Context usage: connect to load usage.",
-          ring: { progress: 0 },
-	          ringIcon: STATUS_ICONS.usage,
+          icon: STATUS_ICONS.usage,
         };
       }
       const usage = state.usage || {};
@@ -4070,11 +4067,10 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       return {
         text: usage.summary || "Usage pending",
         title,
-	        className: "composerStatusPill oc-icon-btn oc-liquid-btn usage " + kind,
+        className: "composerStatusPill oc-icon-btn oc-liquid-btn usage " + kind,
         popover: "usage",
         ariaLabel: "Context usage: " + title,
-        ring: { progress: contextUsageRatio(usage) ?? 0 },
-	        ringIcon: STATUS_ICONS.usage,
+        icon: STATUS_ICONS.usage,
       };
     }
 
@@ -4086,11 +4082,6 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       if (stateName === "ready") return { progress: 1 };
       if (kind === "warning" || kind === "error") return { progress: progressRatio(graph.progress) ?? 1 };
       return { progress: 0 };
-    }
-
-    function contextUsageRatio(usage) {
-      const ratio = usage && usage.context && usage.context.ratio;
-      return typeof ratio === "number" && Number.isFinite(ratio) ? clamp01(ratio) : undefined;
     }
 
     function progressRatio(progress) {

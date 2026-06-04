@@ -74,6 +74,31 @@ export type SettingsUpdate = {
   optional?: boolean
 }
 
+export type NormalizedRagSettingsInput = {
+  embeddingEndpoint: string
+  embeddingModel: string
+  embeddingBatchSize: number
+  embeddingMaxTokensPerRequest: number
+  embeddingConcurrentRequests: number
+  embeddingMaxInFlightTokens: number
+  embeddingEncodingFormat: RagEmbeddingEncodingFormat
+  embeddingCheckpointMode: RagEmbeddingCheckpointMode
+  embeddingCheckpointChunkInterval: number
+  embeddingCheckpointIntervalMs: number
+  embeddingTimeoutMs: number
+  embeddingRequestDelayMs: number
+  embeddingMaxRequestsPerRun: number
+  embeddingMaxRetries: number
+  embeddingRetryBackoffMs: number
+  embeddingResumeAutomatically: boolean
+  embeddingResumeDelayMs: number
+  rerankEndpoint: string
+  rerankModel: string
+  allowedHosts: string[]
+  vectorTopK: number
+  rerankTopK: number
+}
+
 export function readRemoteSettings(): RemoteSettings {
   const config = vscode.workspace.getConfiguration("opencode.remote")
   const ragEmbeddingEndpoint = normalizeServerUrl(config.get<string>("rag.embedding.endpoint", ""))
@@ -304,31 +329,94 @@ export async function saveRagSettings(input: RagSettingsInput) {
 }
 
 export function ragSettingsUpdates(input: RagSettingsInput): SettingsUpdate[] {
-  const embeddingBatchSize = validateRagEmbeddingBatchSize(input.embeddingBatchSize)
+  const normalized = normalizeRagSettingsInput(input)
   return [
-    { key: "rag.embedding.endpoint", value: normalizeServerUrl(input.embeddingEndpoint) },
-    { key: "rag.embedding.model", value: input.embeddingModel.trim() },
-    { key: "rag.embedding.batchSize", value: embeddingBatchSize },
-    { key: "rag.embedding.maxTokensPerRequest", value: clampInteger(input.embeddingMaxTokensPerRequest, 1, 1_000_000, RAG_EMBEDDING_MAX_TOKENS_PER_REQUEST_DEFAULT), optional: true },
-    { key: "rag.embedding.concurrentRequests", value: clampInteger(input.embeddingConcurrentRequests, RAG_EMBEDDING_CONCURRENT_REQUESTS_MIN, RAG_EMBEDDING_CONCURRENT_REQUESTS_MAX, RAG_EMBEDDING_CONCURRENT_REQUESTS_DEFAULT), optional: true },
-    { key: "rag.embedding.maxInFlightTokens", value: clampInteger(input.embeddingMaxInFlightTokens, RAG_EMBEDDING_MAX_IN_FLIGHT_TOKENS_MIN, RAG_EMBEDDING_MAX_IN_FLIGHT_TOKENS_MAX, RAG_EMBEDDING_MAX_IN_FLIGHT_TOKENS_DEFAULT), optional: true },
-    { key: "rag.embedding.encodingFormat", value: readRagEmbeddingEncodingFormat(input.embeddingEncodingFormat), optional: true },
-    { key: "rag.embedding.checkpointMode", value: readRagEmbeddingCheckpointMode(input.embeddingCheckpointMode), optional: true },
-    { key: "rag.embedding.checkpointChunkInterval", value: clampInteger(input.embeddingCheckpointChunkInterval, 0, 1_000_000, RAG_EMBEDDING_CHECKPOINT_CHUNK_INTERVAL_DEFAULT), optional: true },
-    { key: "rag.embedding.checkpointIntervalMs", value: clampInteger(input.embeddingCheckpointIntervalMs, 0, 3_600_000, RAG_EMBEDDING_CHECKPOINT_INTERVAL_DEFAULT_MS), optional: true },
-    { key: "rag.embedding.timeoutMs", value: ragEmbeddingTimeoutMsForBatchSize(embeddingBatchSize) },
-    { key: "rag.embedding.requestDelayMs", value: clampInteger(input.embeddingRequestDelayMs, 0, 60000, RAG_EMBEDDING_REQUEST_DELAY_DEFAULT_MS) },
-    { key: "rag.embedding.maxRequestsPerRun", value: clampInteger(input.embeddingMaxRequestsPerRun, 0, 100000, 100) },
-    { key: "rag.embedding.maxRetries", value: clampInteger(input.embeddingMaxRetries, 0, 10, 3) },
-    { key: "rag.embedding.retryBackoffMs", value: clampInteger(input.embeddingRetryBackoffMs, 0, 120000, 2000) },
-    { key: "rag.embedding.resumeAutomatically", value: Boolean(input.embeddingResumeAutomatically) },
-    { key: "rag.embedding.resumeDelayMs", value: clampInteger(input.embeddingResumeDelayMs, 0, 3600000, 60000) },
-    { key: "rag.rerank.endpoint", value: normalizeServerUrl(input.rerankEndpoint) },
-    { key: "rag.rerank.model", value: input.rerankModel.trim() },
-    { key: "rag.allowedHosts", value: cleanStringArray(input.allowedHosts) },
-    { key: "rag.vectorTopK", value: clampInteger(input.vectorTopK, 0, 200, 24) },
-    { key: "rag.rerankTopK", value: clampInteger(input.rerankTopK, 0, 200, 16) },
+    { key: "rag.embedding.endpoint", value: normalized.embeddingEndpoint },
+    { key: "rag.embedding.model", value: normalized.embeddingModel },
+    { key: "rag.embedding.batchSize", value: normalized.embeddingBatchSize },
+    { key: "rag.embedding.maxTokensPerRequest", value: normalized.embeddingMaxTokensPerRequest, optional: true },
+    { key: "rag.embedding.concurrentRequests", value: normalized.embeddingConcurrentRequests, optional: true },
+    { key: "rag.embedding.maxInFlightTokens", value: normalized.embeddingMaxInFlightTokens, optional: true },
+    { key: "rag.embedding.encodingFormat", value: normalized.embeddingEncodingFormat, optional: true },
+    { key: "rag.embedding.checkpointMode", value: normalized.embeddingCheckpointMode, optional: true },
+    { key: "rag.embedding.checkpointChunkInterval", value: normalized.embeddingCheckpointChunkInterval, optional: true },
+    { key: "rag.embedding.checkpointIntervalMs", value: normalized.embeddingCheckpointIntervalMs, optional: true },
+    { key: "rag.embedding.timeoutMs", value: normalized.embeddingTimeoutMs },
+    { key: "rag.embedding.requestDelayMs", value: normalized.embeddingRequestDelayMs },
+    { key: "rag.embedding.maxRequestsPerRun", value: normalized.embeddingMaxRequestsPerRun },
+    { key: "rag.embedding.maxRetries", value: normalized.embeddingMaxRetries },
+    { key: "rag.embedding.retryBackoffMs", value: normalized.embeddingRetryBackoffMs },
+    { key: "rag.embedding.resumeAutomatically", value: normalized.embeddingResumeAutomatically },
+    { key: "rag.embedding.resumeDelayMs", value: normalized.embeddingResumeDelayMs },
+    { key: "rag.rerank.endpoint", value: normalized.rerankEndpoint },
+    { key: "rag.rerank.model", value: normalized.rerankModel },
+    { key: "rag.allowedHosts", value: normalized.allowedHosts },
+    { key: "rag.vectorTopK", value: normalized.vectorTopK },
+    { key: "rag.rerankTopK", value: normalized.rerankTopK },
   ]
+}
+
+export function normalizeRagSettingsInput(input: RagSettingsInput): NormalizedRagSettingsInput {
+  const embeddingBatchSize = validateRagEmbeddingBatchSize(input.embeddingBatchSize)
+  return {
+    embeddingEndpoint: normalizeServerUrl(input.embeddingEndpoint),
+    embeddingModel: input.embeddingModel.trim(),
+    embeddingBatchSize,
+    embeddingMaxTokensPerRequest: clampInteger(input.embeddingMaxTokensPerRequest, 1, 1_000_000, RAG_EMBEDDING_MAX_TOKENS_PER_REQUEST_DEFAULT),
+    embeddingConcurrentRequests: clampInteger(input.embeddingConcurrentRequests, RAG_EMBEDDING_CONCURRENT_REQUESTS_MIN, RAG_EMBEDDING_CONCURRENT_REQUESTS_MAX, RAG_EMBEDDING_CONCURRENT_REQUESTS_DEFAULT),
+    embeddingMaxInFlightTokens: clampInteger(input.embeddingMaxInFlightTokens, RAG_EMBEDDING_MAX_IN_FLIGHT_TOKENS_MIN, RAG_EMBEDDING_MAX_IN_FLIGHT_TOKENS_MAX, RAG_EMBEDDING_MAX_IN_FLIGHT_TOKENS_DEFAULT),
+    embeddingEncodingFormat: readRagEmbeddingEncodingFormat(input.embeddingEncodingFormat),
+    embeddingCheckpointMode: readRagEmbeddingCheckpointMode(input.embeddingCheckpointMode),
+    embeddingCheckpointChunkInterval: clampInteger(input.embeddingCheckpointChunkInterval, 0, 1_000_000, RAG_EMBEDDING_CHECKPOINT_CHUNK_INTERVAL_DEFAULT),
+    embeddingCheckpointIntervalMs: clampInteger(input.embeddingCheckpointIntervalMs, 0, 3_600_000, RAG_EMBEDDING_CHECKPOINT_INTERVAL_DEFAULT_MS),
+    embeddingTimeoutMs: ragEmbeddingTimeoutMsForBatchSize(embeddingBatchSize),
+    embeddingRequestDelayMs: clampInteger(input.embeddingRequestDelayMs, 0, 60000, RAG_EMBEDDING_REQUEST_DELAY_DEFAULT_MS),
+    embeddingMaxRequestsPerRun: clampInteger(input.embeddingMaxRequestsPerRun, 0, 100000, 100),
+    embeddingMaxRetries: clampInteger(input.embeddingMaxRetries, 0, 10, 3),
+    embeddingRetryBackoffMs: clampInteger(input.embeddingRetryBackoffMs, 0, 120000, 2000),
+    embeddingResumeAutomatically: Boolean(input.embeddingResumeAutomatically),
+    embeddingResumeDelayMs: clampInteger(input.embeddingResumeDelayMs, 0, 3600000, 60000),
+    rerankEndpoint: normalizeServerUrl(input.rerankEndpoint),
+    rerankModel: input.rerankModel.trim(),
+    allowedHosts: cleanStringArray(input.allowedHosts),
+    vectorTopK: clampInteger(input.vectorTopK, 0, 200, 24),
+    rerankTopK: clampInteger(input.rerankTopK, 0, 200, 16),
+  }
+}
+
+export function normalizeCurrentRagSettings(settings = readRemoteSettings().rag): NormalizedRagSettingsInput {
+  return {
+    embeddingEndpoint: settings.embedding.endpoint,
+    embeddingModel: settings.embedding.model,
+    embeddingBatchSize: settings.embedding.batchSize,
+    embeddingMaxTokensPerRequest: settings.embedding.maxTokensPerRequest,
+    embeddingConcurrentRequests: settings.embedding.concurrentRequests,
+    embeddingMaxInFlightTokens: settings.embedding.maxInFlightTokens,
+    embeddingEncodingFormat: settings.embedding.encodingFormat,
+    embeddingCheckpointMode: settings.embedding.checkpointMode,
+    embeddingCheckpointChunkInterval: settings.embedding.checkpointChunkInterval,
+    embeddingCheckpointIntervalMs: settings.embedding.checkpointIntervalMs,
+    embeddingTimeoutMs: settings.embedding.timeoutMs,
+    embeddingRequestDelayMs: settings.embedding.requestDelayMs,
+    embeddingMaxRequestsPerRun: settings.embedding.maxRequestsPerRun,
+    embeddingMaxRetries: settings.embedding.maxRetries,
+    embeddingRetryBackoffMs: settings.embedding.retryBackoffMs,
+    embeddingResumeAutomatically: settings.embedding.resumeAutomatically,
+    embeddingResumeDelayMs: settings.embedding.resumeDelayMs,
+    rerankEndpoint: settings.rerank.endpoint,
+    rerankModel: settings.rerank.model,
+    allowedHosts: cleanStringArray(settings.allowedHosts),
+    vectorTopK: settings.vectorTopK,
+    rerankTopK: settings.rerankTopK,
+  }
+}
+
+export function ragSettingsInputMatchesCurrent(input: RagSettingsInput, current = readRemoteSettings().rag) {
+  return normalizedRagSettingsEqual(normalizeRagSettingsInput(input), normalizeCurrentRagSettings(current))
+}
+
+function normalizedRagSettingsEqual(left: NormalizedRagSettingsInput, right: NormalizedRagSettingsInput) {
+  return JSON.stringify(left) === JSON.stringify(right)
 }
 
 export function settingsFromConnectionInput(input: ConnectionSettingsInput): RemoteSettings {

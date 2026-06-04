@@ -2,18 +2,22 @@ import { describe, expect, test } from "bun:test"
 import { planCompletion } from "../src/completion-plan"
 
 describe("completion planner", () => {
-  test("routes bare unit-test prompts through comment-to-test symbol replacement", () => {
+  test("routes bare unit-test prompts as natural commands that replace the whole line", () => {
     expect(planCompletion({
       languageId: "c",
       linePrefix: "unit test for epr_ppn_raw_wr",
       lineSuffix: "",
       currentWord: "epr_ppn_raw_wr",
     })).toMatchObject({
-      kind: "comment-to-test",
-      replaceCurrentWord: true,
+      kind: "natural-command",
+      insertMode: "replace-whole-line",
+      targetSymbol: "epr_ppn_raw_wr",
+      replaceCurrentWord: false,
       needsSymbolRetrieval: true,
       needsTestRetrieval: true,
-      maxTokens: 192,
+      useFim: false,
+      useInstruction: true,
+      maxTokens: 768,
     })
   })
 
@@ -24,9 +28,13 @@ describe("completion planner", () => {
       lineSuffix: "",
     })).toMatchObject({
       kind: "comment-to-test",
+      insertMode: "insert-after-line",
+      targetSymbol: "epr_ppn_raw_write_cb_dfx",
       replaceCurrentWord: false,
       needsSymbolRetrieval: true,
       needsTestRetrieval: true,
+      useFim: false,
+      useInstruction: true,
     })
   })
 
@@ -37,10 +45,59 @@ describe("completion planner", () => {
       lineSuffix: "",
       currentWord: "epr_ppn_raw_wr",
     })).toMatchObject({
-      kind: "symbol",
+      kind: "symbol-completion",
+      insertMode: "replace-current-word",
+      targetSymbol: "epr_ppn_raw_wr",
       replaceCurrentWord: true,
       needsSymbolRetrieval: true,
+      needsTestRetrieval: false,
+      useFim: false,
+      useInstruction: false,
       maxTokens: 48,
+    })
+  })
+
+  test("keeps ordinary code on the Qwen FIM path", () => {
+    expect(planCompletion({
+      languageId: "typescript",
+      linePrefix: "const value = ",
+      lineSuffix: "",
+    })).toMatchObject({
+      kind: "ordinary-code",
+      insertMode: "insert-at-cursor",
+      replaceCurrentWord: false,
+      needsSymbolRetrieval: false,
+      needsTestRetrieval: false,
+      useFim: true,
+      useInstruction: false,
+    })
+  })
+
+  test("routes non-test comment prompts as comment-to-code instructions", () => {
+    expect(planCompletion({
+      languageId: "typescript",
+      linePrefix: "// implement add two numbers",
+      lineSuffix: "",
+      currentWord: "numbers",
+    })).toMatchObject({
+      kind: "comment-to-code",
+      insertMode: "insert-after-line",
+      replaceCurrentWord: false,
+      useFim: false,
+      useInstruction: true,
+    })
+  })
+
+  test("disables empty column-zero requests", () => {
+    expect(planCompletion({
+      languageId: "c",
+      linePrefix: "",
+      lineSuffix: "",
+    })).toMatchObject({
+      kind: "disabled",
+      insertMode: "insert-at-cursor",
+      useFim: false,
+      useInstruction: false,
     })
   })
 })

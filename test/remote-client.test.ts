@@ -306,6 +306,50 @@ describe("RemoteOpenCodeClient", () => {
       { type: "message.updated", properties: { info: { id: "m1", sessionID: "s1", role: "assistant" } } },
     ])
   })
+
+  test("can subscribe to the global SSE event stream", async () => {
+    const requestedPaths: string[] = []
+    const baseUrl = await listen((request, response) => {
+      requestedPaths.push(request.url ?? "")
+      if (request.url === "/global/event") {
+        response.writeHead(200, {
+          "content-type": "text/event-stream",
+          "cache-control": "no-cache",
+        })
+        response.write('data: {"type":"server.connected","properties":{}}\n\n')
+        request.on("close", () => response.end())
+        return
+      }
+      response.writeHead(404).end()
+    })
+
+    const client = new RemoteOpenCodeClient(settings(baseUrl))
+    const controller = new AbortController()
+    const events: unknown[] = []
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error("Timed out waiting for global SSE events")), 1000)
+      void client
+        .subscribeEvents(
+          (event) => {
+            events.push(event)
+            clearTimeout(timer)
+            controller.abort()
+            resolve()
+          },
+          controller.signal,
+          undefined,
+          "/global/event",
+        )
+        .catch((error) => {
+          if (controller.signal.aborted) return
+          clearTimeout(timer)
+          reject(error)
+        })
+    })
+
+    expect(requestedPaths).toEqual(["/global/event"])
+    expect(events).toEqual([{ type: "server.connected", properties: {} }])
+  })
 })
 
 describe("model normalization", () => {

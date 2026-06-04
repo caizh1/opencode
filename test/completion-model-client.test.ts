@@ -115,6 +115,52 @@ describe("direct completion model client", () => {
     })
   })
 
+  test("allows per-request profile overrides to raw FIM completions", async () => {
+    let captured: { url?: string; body?: Record<string, unknown> } = {}
+    const baseUrl = await listen(async (request, response) => {
+      captured = {
+        url: request.url,
+        body: await collectJson(request) as Record<string, unknown>,
+      }
+      json(response, 200, {
+        choices: [{ text: "raw" }],
+      })
+    })
+
+    await new CompletionModelClient(settings(baseUrl, { profile: "generic-chat" })).complete({
+      prompt: "<|fim_prefix|>a<|fim_suffix|>b<|fim_middle|>",
+      profile: "qwen-coder-fim",
+    })
+
+    expect(captured.url).toBe("/completions")
+    expect(captured.body).toMatchObject({
+      prompt: "<|fim_prefix|>a<|fim_suffix|>b<|fim_middle|>",
+    })
+  })
+
+  test("allows per-request profile overrides to chat completions", async () => {
+    let captured: { url?: string; body?: Record<string, unknown> } = {}
+    const baseUrl = await listen(async (request, response) => {
+      captured = {
+        url: request.url,
+        body: await collectJson(request) as Record<string, unknown>,
+      }
+      json(response, 200, {
+        choices: [{ message: { content: "chat" } }],
+      })
+    })
+
+    await new CompletionModelClient(settings(baseUrl, { profile: "qwen-coder-fim" })).complete({
+      prompt: "instruction",
+      profile: "generic-chat",
+    })
+
+    expect(captured.url).toBe("/chat/completions")
+    expect(captured.body).toMatchObject({
+      messages: expect.any(Array),
+    })
+  })
+
   test("accepts chat-shaped raw completion responses from compatible servers", async () => {
     const baseUrl = await listen((_request, response) => {
       json(response, 200, {

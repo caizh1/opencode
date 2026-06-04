@@ -1,5 +1,6 @@
 import { formatCompletionBlock, formatCompletionInsertText, formatCompletionReplacementText, isCommentPromptCodeCompletion } from "./completion-format"
 import type { CompletionIndentContext } from "./completion-indent"
+import type { CompletionInsertMode } from "./completion-types"
 
 export type CompletionPosition = {
   line: number
@@ -25,6 +26,13 @@ export type CompletionEditInput = {
   preferCurrentWordReplacement?: boolean
 }
 
+export type InlineCompletionEditInput = CompletionEditInput & {
+  plan: {
+    insertMode: CompletionInsertMode
+    replaceCurrentWord: boolean
+  }
+}
+
 export type CompletionEdit = {
   insertText: string
   replaceRange?: CompletionRange
@@ -46,6 +54,21 @@ export type CompletionEditResult =
 
 export function buildCompletionEdit(input: CompletionEditInput): CompletionEdit | undefined {
   return buildCompletionEditResult(input).edit
+}
+
+export function buildInlineCompletionEditResult(input: InlineCompletionEditInput): CompletionEditResult {
+  if (!input.text) return { reason: "empty-model-text" }
+
+  switch (input.plan.insertMode) {
+    case "replace-current-word":
+      return inlineCurrentWordReplacement(input)
+    case "insert-at-cursor":
+      return inlineCursorInsertion(input)
+    case "insert-after-line":
+      return inlineAfterLineInsertion(input)
+    case "replace-whole-line":
+      return inlineWholeLineReplacement(input)
+  }
 }
 
 export function buildCompletionEditResult(input: CompletionEditInput): CompletionEditResult {
@@ -102,6 +125,61 @@ export function buildCompletionEditResult(input: CompletionEditInput): Completio
 
   return {
     edit: zeroWidthInsertion(input, insertText),
+  }
+}
+
+function inlineCurrentWordReplacement(input: InlineCompletionEditInput): CompletionEditResult {
+  const wordReplacement = currentWordLinePrefixReplacement(input) ?? currentWordReplacement(input)
+  if (wordReplacement) {
+    if (!isSingleLineRange(wordReplacement.replaceRange)) return { reason: "no-insert-text" }
+    return { edit: wordReplacement }
+  }
+  return { reason: "no-insert-text" }
+}
+
+function inlineCursorInsertion(input: InlineCompletionEditInput): CompletionEditResult {
+  if (isMisalignedLeadingNewline(input)) {
+    return { reason: "misaligned-leading-newline" }
+  }
+
+  const insertText = formatCompletionInsertText({
+    text: input.text,
+    linePrefix: input.linePrefix,
+    lineSuffix: input.lineSuffix,
+    targetIndent: input.indent.targetIndent,
+    indentUnit: input.indent.indentUnit,
+    languageId: input.languageId,
+  })
+  if (!insertText.trim()) return { reason: "no-insert-text" }
+  return { edit: zeroWidthInsertion(input, insertText) }
+}
+
+function inlineAfterLineInsertion(input: InlineCompletionEditInput): CompletionEditResult {
+  const insertText = formatAfterLineInsertText(input)
+  if (!insertText.trim()) return { reason: "no-insert-text" }
+  const position = {
+    line: input.position.line,
+    character: input.linePrefix.length + input.lineSuffix.length,
+  }
+  return { edit: zeroWidthInsertionAt(input, position, insertText) }
+}
+
+function inlineWholeLineReplacement(input: InlineCompletionEditInput): CompletionEditResult {
+  const insertText = formatWholeLineReplacementText(input)
+  if (!insertText.trim()) return { reason: "no-insert-text" }
+  const replaceRange = {
+    startLine: input.position.line,
+    startCharacter: firstNonWhitespaceOrZero(input.linePrefix),
+    endLine: input.position.line,
+    endCharacter: input.linePrefix.length + input.lineSuffix.length,
+  }
+  return {
+    edit: {
+      insertText,
+      replaceRange,
+      filterText: insertText,
+      formatRange: formatRangeAfterInsert(input.position.line, replaceRange.startCharacter, insertText),
+    },
   }
 }
 
@@ -217,12 +295,21 @@ function startsBlockCompletionContext(linePrefix: string) {
 }
 
 function zeroWidthInsertion(input: CompletionEditInput, insertText: string, normalized?: "prefix-overlap"): CompletionEdit {
-  const replaceRange = zeroWidthRange(input.position)
+  return zeroWidthInsertionAt(input, input.position, insertText, normalized)
+}
+
+function zeroWidthInsertionAt(
+  input: CompletionEditInput,
+  position: CompletionPosition,
+  insertText: string,
+  normalized?: "prefix-overlap",
+): CompletionEdit {
+  const replaceRange = zeroWidthRange(position)
   return {
     insertText,
     replaceRange,
     filterText: insertText,
-    formatRange: formatRangeAfterInsert(input.position.line, input.position.character, insertText),
+    formatRange: formatRangeAfterInsert(position.line, position.character, insertText),
     ...(normalized ? { normalized } : {}),
   }
 }
@@ -256,6 +343,29 @@ function braceFunctionReplacement(input: CompletionEditInput): CompletionEdit | 
     filterText: input.linePrefix.slice(colon),
     formatRange: formatRangeAfterInsert(input.position.line, 0, input.linePrefix.slice(0, colon) + insertText),
   }
+}
+
+function formatAfterLineInsertText(input: CompletionEditInput) {
+  const fullLine = `${input.linePrefix}${input.lineSuffix}`
+  return formatCompletionBlock(input.text, lineIndent(fullLine), input.indent.indentUnit, input.languageId)
+}
+
+function formatWholeLineReplacementText(input: CompletionEditInput) {
+  return formatCompletionReplacementText(
+    input.text,
+    lineIndent(input.linePrefix),
+    input.indent.indentUnit,
+    input.languageId,
+  )
+}
+
+function firstNonWhitespaceOrZero(input: string) {
+  const match = /\S/.exec(input)
+  return match?.index ?? 0
+}
+
+function isSingleLineRange(range: CompletionRange | undefined) {
+  return !range || range.startLine === range.endLine
 }
 
 function formatRangeAfterInsert(startLine: number, startCharacter: number, insertText: string): CompletionRange {

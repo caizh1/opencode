@@ -1,11 +1,28 @@
-export type CompletionPlanKind = "symbol" | "comment-to-test" | "ordinary-code" | "disabled"
+export type CompletionPlanKind =
+  | "ordinary-code"
+  | "symbol-completion"
+  | "comment-to-code"
+  | "comment-to-test"
+  | "natural-command"
+  | "disabled"
+
+export type CompletionInsertMode =
+  | "replace-current-word"
+  | "insert-at-cursor"
+  | "insert-after-line"
+  | "replace-whole-line"
 
 export type CompletionPlan = {
   kind: CompletionPlanKind
+  insertMode: CompletionInsertMode
+  targetSymbol?: string
   replaceCurrentWord: boolean
   needsSymbolRetrieval: boolean
   needsTestRetrieval: boolean
+  useFim: boolean
+  useInstruction: boolean
   maxTokens: number
+  confidenceFloor: number
 }
 
 export type RetrievedCompletionSnippet = {

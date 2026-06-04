@@ -81,7 +81,9 @@ describe("chat history flow", () => {
     expect(chatViewSource).toContain("private async testRagSettings")
     expect(chatViewSource).toContain("private async setRagApiKey")
     expect(chatViewSource).toContain("await saveRagSettings(input)")
-    expect(chatViewSource).toContain("this.deps.codeGraph?.applyRagConfiguration()")
+    expect(chatViewSource).toContain("ragSettingsInputMatchesCurrent(input")
+    expect(chatViewSource).toContain("confirmForceRagRebuild")
+    expect(chatViewSource).toContain("applyRagConfiguration({ forceRebuild: true })")
     expect(chatViewSource).toContain("this.deps.codeGraph?.testRagConfiguration()")
     expect(chatViewSource).toContain("[rag-test] testing RAG configuration")
     expect(chatViewSource).toContain("[rag-test] result:")
@@ -89,13 +91,18 @@ describe("chat history flow", () => {
     expect(chatViewSource).toContain('type: "ragStatus"')
   })
 
-  test("streams chat replies through OpenCode events with blocking fallback", () => {
+  test("streams chat replies through OpenCode events with async polling fallback", () => {
     expect(chatViewSource).toContain("ensureEventSubscription")
     expect(chatViewSource).toContain("subscribeEvents")
     expect(chatViewSource).toContain("sendMessageAsync")
-    expect(chatViewSource).toContain("client.sendMessage({")
+    expect(chatViewSource).toContain("startMessagePollingFallback")
+    expect(chatViewSource).toContain("pollActiveSendMessages")
+    expect(chatViewSource).toContain("MESSAGE_POLL_INTERVAL_MS")
+    expect(chatViewSource).toContain("EVENT_READY_TIMEOUT_MS")
+    expect(chatViewSource).not.toContain("live stream unavailable; falling back to blocking message request")
     expect(chatViewSource).toContain("finishStreamingSession")
     expect(chatStreamSource).toContain('case "message.part.updated"')
+    expect(chatStreamSource).toContain('case "message.part.delta"')
     expect(chatStreamSource).toContain('case "session.status"')
   })
 
@@ -234,7 +241,7 @@ describe("chat history flow", () => {
     expect(chatHtmlSource).toContain("function formatRingProgress")
     expect(chatHtmlSource).toContain("function indexStatusRing")
     expect(chatHtmlSource).toContain('if (stateName === "ready") return { progress: 1 };')
-    expect(chatHtmlSource).toContain("function contextUsageRatio")
+    expect(chatHtmlSource).not.toContain("function contextUsageRatio")
     const finalStatusRingRule = chatHtmlSource.slice(
       chatHtmlSource.lastIndexOf("    .statusRing {"),
       chatHtmlSource.indexOf("    .statusRing::after", chatHtmlSource.lastIndexOf("    .statusRing {")),
@@ -268,6 +275,9 @@ describe("chat history flow", () => {
     expect(chatHtmlSource).toContain("composerStatusPill oc-icon-btn oc-liquid-btn index")
     expect(chatHtmlSource).toContain("composerStatusPill oc-icon-btn oc-liquid-btn guard ok")
     expect(chatHtmlSource).toContain("composerStatusPill oc-icon-btn oc-liquid-btn usage pending")
+    expect(chatHtmlSource).not.toContain("composerStatusPill oc-icon-btn oc-liquid-btn usage pending compactRing")
+    expect(chatHtmlSource).toContain("icon: STATUS_ICONS.usage")
+    expect(chatHtmlSource).not.toContain("ringIcon: STATUS_ICONS.usage")
     expect(chatHtmlSource).toContain("statusPopoverActions")
     expect(chatHtmlSource).toContain("contextRemoveButton")
     expect(chatHtmlSource).not.toContain('<span class="pillText">Panel</span>')

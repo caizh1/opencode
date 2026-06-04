@@ -33,6 +33,9 @@ export function openCodeEventSessionID(event: OpenCodeEvent) {
   const properties = objectRecord(event.properties)
   if (event.type === "message.updated") return stringValue(objectRecord(properties.info).sessionID)
   if (event.type === "message.part.updated") return stringValue(objectRecord(properties.part).sessionID)
+  if (event.type === "message.part.delta") {
+    return stringValue(properties.sessionID) || stringValue(objectRecord(properties.part).sessionID)
+  }
   if (event.type === "message.part.removed" || event.type === "message.removed" || event.type === "session.status") {
     return stringValue(properties.sessionID)
   }
@@ -78,7 +81,18 @@ export function applyOpenCodeEventToMessages(
       if (!part?.messageID) return result
       return {
         ...result,
-        messages: upsertMessagePart(messages, part, stringValue(properties.delta)),
+        messages: upsertMessagePart(messages, part, textValue(properties.delta)),
+        changed: true,
+      }
+    }
+    case "message.part.delta": {
+      const properties = objectRecord(event.properties)
+      const part = messagePartFromDeltaEvent(properties, currentSessionID)
+      const delta = textValue(properties.delta) || textValue(properties.text)
+      if (!part?.messageID || !part.id || !delta) return result
+      return {
+        ...result,
+        messages: upsertMessagePart(messages, part, delta),
         changed: true,
       }
     }
@@ -165,6 +179,24 @@ function messagePartFromEvent(input: unknown): OpenCodeMessagePart | undefined {
   } as OpenCodeMessagePart
 }
 
+function messagePartFromDeltaEvent(
+  properties: Record<string, unknown>,
+  currentSessionID: string | undefined,
+): OpenCodeMessagePart | undefined {
+  const partPayload = objectRecord(properties.part)
+  const type = stringValue(partPayload.type) || stringValue(properties.type) || "text"
+  const id = stringValue(partPayload.id) || stringValue(properties.partID)
+  const messageID = stringValue(partPayload.messageID) || stringValue(properties.messageID)
+  if (!id || !messageID) return
+  return {
+    ...partPayload,
+    type,
+    id,
+    messageID,
+    sessionID: stringValue(partPayload.sessionID) || stringValue(properties.sessionID) || currentSessionID,
+  } as OpenCodeMessagePart
+}
+
 function upsertMessageInfo(messages: OpenCodeMessage[], info: OpenCodeMessageInfo) {
   const index = messages.findIndex((message) => message.info.id === info.id)
   if (index === -1) return [...messages, { info, parts: [] }]
@@ -219,8 +251,8 @@ function mergePart(existing: OpenCodeMessagePart | undefined, part: OpenCodeMess
   } as Record<string, unknown>
 
   if (delta && (part.type === "text" || part.type === "reasoning")) {
-    const incomingText = stringValue(objectRecord(part).text)
-    const existingText = stringValue(objectRecord(existing).text)
+    const incomingText = textValue(objectRecord(part).text)
+    const existingText = textValue(objectRecord(existing).text)
     merged.text = incomingText && incomingText.length >= existingText.length ? incomingText : `${existingText}${delta}`
   }
 
@@ -249,4 +281,8 @@ function objectRecord(input: unknown): Record<string, unknown> {
 
 function stringValue(input: unknown) {
   return typeof input === "string" ? input.trim() : ""
+}
+
+function textValue(input: unknown) {
+  return typeof input === "string" ? input : ""
 }

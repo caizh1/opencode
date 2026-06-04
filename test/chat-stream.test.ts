@@ -42,6 +42,48 @@ describe("chat stream events", () => {
     expect(textOf(result.messages[0]?.parts[0])).toBe("Hello")
   })
 
+  test("applies message.part.delta events from part payloads and flat payloads", () => {
+    let result = applyOpenCodeEventToMessages([], messageUpdated("s1", "m1"), "s1")
+    result = applyOpenCodeEventToMessages(
+      result.messages,
+      partDelta({ part: { id: "p1", sessionID: "s1", messageID: "m1", type: "text" }, delta: "Hel" }),
+      "s1",
+    )
+    result = applyOpenCodeEventToMessages(
+      result.messages,
+      partDelta({ sessionID: "s1", messageID: "m1", partID: "p1", type: "text", text: " lo" }),
+      "s1",
+    )
+
+    expect(textOf(result.messages[0]?.parts[0])).toBe("Hel lo")
+
+    result = applyOpenCodeEventToMessages(
+      result.messages,
+      partDelta({ sessionID: "s1", messageID: "m1", partID: "p2", type: "reasoning", delta: "thinking" }),
+      "s1",
+    )
+    expect(result.messages[0]?.parts[1]).toMatchObject({ type: "reasoning", text: "thinking" })
+  })
+
+  test("ignores message.part.delta events for other sessions or missing identifiers", () => {
+    const started = applyOpenCodeEventToMessages([], messageUpdated("s1", "m1"), "s1")
+    const ignoredSession = applyOpenCodeEventToMessages(
+      started.messages,
+      partDelta({ sessionID: "s2", messageID: "m2", partID: "p2", type: "text", delta: "nope" }),
+      "s1",
+    )
+    expect(ignoredSession.changed).toBe(false)
+    expect(ignoredSession.messages).toBe(started.messages)
+
+    const missingPart = applyOpenCodeEventToMessages(
+      started.messages,
+      partDelta({ sessionID: "s1", messageID: "m1", type: "text", delta: "nope" }),
+      "s1",
+    )
+    expect(missingPart.changed).toBe(false)
+    expect(missingPart.messages).toBe(started.messages)
+  })
+
   test("keeps tool and reasoning parts structured", () => {
     let result = applyOpenCodeEventToMessages([], messageUpdated("s1", "m1"), "s1")
     result = applyOpenCodeEventToMessages(
@@ -183,6 +225,13 @@ function partUpdated(part: Record<string, unknown>, delta?: string): OpenCodeEve
   return {
     type: "message.part.updated",
     properties: { part, delta },
+  }
+}
+
+function partDelta(properties: Record<string, unknown>): OpenCodeEvent {
+  return {
+    type: "message.part.delta",
+    properties,
   }
 }
 

@@ -111,6 +111,23 @@ export type RagStatus = {
   fallbackReason?: string
 }
 
+export type RagConfigurationApplyAction =
+  | "status-refreshed"
+  | "build-started"
+  | "build-queued"
+  | "disabled"
+  | "unavailable"
+
+export type RagConfigurationApplyOptions = {
+  forceRebuild?: boolean
+}
+
+export type RagConfigurationApplyResult = {
+  action: RagConfigurationApplyAction
+  status: RagStatus
+  hasReusableIndex: boolean
+}
+
 export type RemoteSettings = {
   serverUrl: string
   username: string
@@ -308,6 +325,18 @@ export type OpenCodeEvent =
   | { type: "message.updated"; properties: { info?: OpenCodeMessageInfo } }
   | { type: "message.removed"; properties: { sessionID?: string; messageID?: string } }
   | { type: "message.part.updated"; properties: { part?: OpenCodeMessagePart; delta?: string } }
+  | {
+      type: "message.part.delta"
+      properties: {
+        sessionID?: string
+        messageID?: string
+        partID?: string
+        delta?: string
+        text?: string
+        type?: string
+        part?: OpenCodeMessagePart
+      }
+    }
   | { type: "message.part.removed"; properties: { sessionID?: string; messageID?: string; partID?: string } }
   | { type: "session.status"; properties: { sessionID?: string; status?: OpenCodeSessionStatus } }
   | { type: "session.error"; properties: { sessionID?: string; error?: OpenCodeMessageInfo["error"] | { data?: { message?: string }; message?: string } } }

@@ -140,8 +140,13 @@ export class RemoteOpenCodeClient {
     })
   }
 
-  async subscribeEvents(onEvent: (event: unknown) => void, signal: AbortSignal, onOpen?: () => void) {
-    const response = await this.safeFetch("/event", {
+  async subscribeEvents(
+    onEvent: (event: unknown) => void,
+    signal: AbortSignal,
+    onOpen?: () => void,
+    path: "/event" | "/global/event" = "/event",
+  ) {
+    const response = await this.safeFetch(path, {
       method: "GET",
       headers: this.headers(),
       signal,

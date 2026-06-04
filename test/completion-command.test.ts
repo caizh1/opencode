@@ -15,7 +15,9 @@ describe("accepted completion formatting command wiring", () => {
   })
 
   test("completion provider logs empty reasons and edit debug details", () => {
-    expect(completionSource).toContain("reason=filtered-or-no-visible-text")
+    expect(completionSource).toContain("postprocessCompletion")
+    expect(completionSource).toContain("postprocessResult.reason")
+    expect(completionSource).toContain('reason: "empty-output" as const')
     expect(completionSource).toContain("edit-rejected reason=${result.reason}")
     expect(completionSource).toContain("edit-ready ${editDetails(edit)}")
     expect(completionSource).toContain("returned source=${source}")
@@ -38,14 +40,30 @@ describe("accepted completion formatting command wiring", () => {
 
   test("completion provider can route inline completions to a direct model API", () => {
     expect(completionSource).toContain('settings.completion.provider === "openai-compatible"')
-    expect(completionSource).toContain('input.settings.completion.profile === "qwen-coder-fim"')
+    expect(completionSource).toContain('input.route.promptKind === "qwen-fim"')
     expect(completionSource).toContain("buildQwenCoderFimPrompt")
     expect(completionSource).toContain("new CompletionModelClient(input.settings, apiKey)")
     expect(completionSource).toContain('transport: "openai-compatible"')
     expect(completionSource).toContain("document.version")
     expect(completionSource).toContain("planCompletion")
-    expect(completionSource).toContain("completionMaxTokensForPlan")
-    expect(completionSource).toContain("client.complete({ prompt: promptText, signal: input.signal, maxTokens })")
+    expect(completionSource).toContain("routeCompletionModel")
+    expect(completionSource).toContain("routeLogValue(route)")
+    expect(completionSource).toContain("completionPromptForRoute")
+    expect(completionSource).toContain("profile: route.modelProfile")
+    expect(completionSource).toContain("maxTokens: route.maxTokens")
+  })
+
+  test("completion provider emits structured telemetry for routed outcomes", () => {
+    expect(completionSource).toContain("createCompletionRequestId")
+    expect(completionSource).toContain("requestId=${requestId}")
+    expect(completionSource).toContain("serializeCompletionDebugEvent")
+    expect(completionSource).toContain("logCompletionTelemetry")
+    expect(completionSource).toContain("completionTelemetryRoute(route)")
+    expect(completionSource).toContain("completionTelemetrySymbolCandidates")
+    expect(completionSource).toContain("selectedContextBlocks")
+    expect(completionSource).toContain("droppedContextBlocks")
+    expect(completionSource).toContain("rejectReason")
+    expect(completionSource).toContain("latencyMs")
   })
 
   test("Qwen coder FIM prompt uses the expected token order", () => {

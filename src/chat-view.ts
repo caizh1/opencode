@@ -50,11 +50,12 @@ import type {
   OpenCodeSessionStatus,
   PromptModel,
   CodeGraphStatus,
+  RagConfigurationApplyResult,
   RagStatus,
   RenderedUsage,
   RemoteSettings,
 } from "./types"
-import { connectionInputHasPassword, saveCompletionSettings, saveRagSettings, type CompletionSettingsInput, type ConnectionSettingsInput, type RagSettingsInput } from "./settings"
+import { connectionInputHasPassword, ragSettingsInputMatchesCurrent, saveCompletionSettings, saveRagSettings, type CompletionSettingsInput, type ConnectionSettingsInput, type RagSettingsInput } from "./settings"
 
 const SESSION_MESSAGE_LIMIT = 100
 const MODEL_REFRESH_TIMEOUT_MS = 8000
@@ -62,11 +63,15 @@ const AGENT_REFRESH_TIMEOUT_MS = 8000
 const SESSION_REFRESH_TIMEOUT_MS = 8000
 const MESSAGE_REFRESH_TIMEOUT_MS = 5000
 const SESSION_STATUS_TIMEOUT_MS = 5000
+const EVENT_READY_TIMEOUT_MS = 8000
 const SEND_STATUS_POLL_INTERVAL_MS = 5000
+const MESSAGE_POLL_INTERVAL_MS = 1000
 const EXPORT_INTENT_TIMEOUT_MS = 15000
 const EXPORT_INTENT_SESSION_TITLE = "VS Code export intent"
 const DIAGNOSTIC_CONTEXT_LIMIT = 60
 const DIAGNOSTIC_PREVIEW_LIMIT = 5
+
+type EventStreamPath = "/event" | "/global/event"
 
 type MentionedFileRef = {
   uri: string
@@ -174,6 +179,7 @@ type RemoteChatViewProviderDeps = {
   setConnectionState: (state: ConnectionState, detail?: string) => void
   clearClient: (client: RemoteOpenCodeClient) => void
   openOutput: () => void
+  suppressNextRagConfigurationApply?: () => void
 }
 
 export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
@@ -210,6 +216,7 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
     client: RemoteOpenCodeClient
     controller: AbortController
     ready: Promise<boolean>
+    path: EventStreamPath
   }
   private eventStreamReady = false
   private eventStreamFailed = false
@@ -220,12 +227,15 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
   private activeSendController?: AbortController
   private activeSendGeneration = 0
   private sendStatusTimer?: ReturnType<typeof setTimeout>
+  private messagePollTimer?: ReturnType<typeof setTimeout>
+  private readonly eventTypeCounts = new Map<string, number>()
 
   constructor(private readonly deps: RemoteChatViewProviderDeps) {}
 
   dispose() {
     this.stopEventSubscription()
     this.stopSendStatusWatchdog()
+    this.stopMessagePollingFallback()
   }
 
   resolveWebviewView(webviewView: vscode.WebviewView) {
@@ -314,6 +324,10 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
       return current.ready
     }
 
+    return this.startEventSubscription(client, "/event", true)
+  }
+
+  private startEventSubscription(client: RemoteOpenCodeClient, path: EventStreamPath, allowGlobalFallback: boolean) {
     this.stopEventSubscription()
     this.eventStreamReady = false
     this.eventStreamFailed = false
@@ -331,14 +345,26 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
       clearTimeout(timer)
       resolveReady(value)
     }
+    const tryGlobalFallback = (reason: string) => {
+      if (!allowGlobalFallback || path !== "/event" || settled) return false
+      settled = true
+      clearTimeout(timer)
+      if (this.eventSubscription?.controller === controller) this.eventSubscription = undefined
+      controller.abort()
+      this.eventStreamReady = false
+      this.eventStreamFailed = false
+      this.deps.output.appendLine(`[event] ${reason}; trying /global/event`)
+      void this.startEventSubscription(client, "/global/event", false).then(resolveReady)
+      return true
+    }
     timer = setTimeout(() => {
       this.eventStreamFailed = true
       if (this.eventSubscription?.controller === controller) this.eventSubscription = undefined
       controller.abort()
       settle(false)
-    }, 1500)
+    }, EVENT_READY_TIMEOUT_MS)
 
-    this.eventSubscription = { client, controller, ready }
+    this.eventSubscription = { client, controller, ready, path }
     void client
       .subscribeEvents(
         (event) => this.handleRemoteEvent(client, event),
@@ -346,27 +372,30 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
         () => {
           this.eventStreamReady = true
           this.eventStreamFailed = false
-          this.deps.output.appendLine(`[event] connected ${client.baseUrl}`)
+          this.deps.output.appendLine(`[event] connected ${path} ${client.baseUrl}`)
           settle(true)
         },
+        path,
       )
       .then(() => {
         if (controller.signal.aborted) return
+        if (tryGlobalFallback(`${path} stream closed before ready`)) return
         this.eventStreamReady = false
         this.eventStreamFailed = true
         if (this.eventSubscription?.controller === controller) this.eventSubscription = undefined
         settle(false)
-        this.deps.output.appendLine("[event] stream closed")
+        this.deps.output.appendLine(`[event] ${path} stream closed`)
         this.finishActiveStreamAfterEventLoss(client)
       })
       .catch((error) => {
         if (controller.signal.aborted) return
+        if (tryGlobalFallback(`${path} stream failed`)) return
         this.eventStreamReady = false
         this.eventStreamFailed = true
         if (this.eventSubscription?.controller === controller) this.eventSubscription = undefined
         settle(false)
         const message = error instanceof Error ? error.message : String(error)
-        this.deps.output.appendLine(`[event] stream failed: ${message}`)
+        this.deps.output.appendLine(`[event] ${path} stream failed: ${message}`)
         this.finishActiveStreamAfterEventLoss(client)
       })
 
@@ -401,11 +430,37 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
     this.sendStatusTimer = undefined
   }
 
+  private startMessagePollingFallback(client: RemoteOpenCodeClient, sessionID: string, generation = this.activeSend?.generation) {
+    if (generation === undefined) return
+    this.stopMessagePollingFallback()
+    this.scheduleMessagePollingFallback(client, sessionID, generation, 0)
+  }
+
+  private scheduleMessagePollingFallback(
+    client: RemoteOpenCodeClient,
+    sessionID: string,
+    generation: number,
+    delayMs = MESSAGE_POLL_INTERVAL_MS,
+  ) {
+    this.stopMessagePollingFallback()
+    this.messagePollTimer = setTimeout(() => {
+      this.messagePollTimer = undefined
+      void this.pollActiveSendMessages(client, sessionID, generation)
+    }, delayMs)
+  }
+
+  private stopMessagePollingFallback() {
+    if (!this.messagePollTimer) return
+    clearTimeout(this.messagePollTimer)
+    this.messagePollTimer = undefined
+  }
+
   private clearActiveSendState() {
     this.activeSendGeneration += 1
     this.activeSend = undefined
     this.activeSendController = undefined
     this.stopSendStatusWatchdog()
+    this.stopMessagePollingFallback()
     this.pendingLocalUserMessageIDs.clear()
     this.pendingLocalUserTexts.clear()
     this.sending = false
@@ -455,6 +510,37 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
     if (this.isActiveSend(client, sessionID, generation)) this.scheduleSendStatusWatchdog(client, sessionID, generation)
   }
 
+  private async pollActiveSendMessages(client: RemoteOpenCodeClient, sessionID: string, generation: number) {
+    if (!this.isActiveSend(client, sessionID, generation)) return
+
+    try {
+      if (this.sessionID === sessionID) {
+        const started = Date.now()
+        const messages = await withRequestTimeout("session messages", MESSAGE_REFRESH_TIMEOUT_MS, (signal) =>
+          client.getMessages(sessionID, SESSION_MESSAGE_LIMIT, signal),
+        )
+        this.deps.output.appendLine(`[refresh] polling messages ${Date.now() - started}ms`)
+        if (!this.isActiveSend(client, sessionID, generation) || this.sessionID !== sessionID) return
+        if (messages.some(isInlineCompletionMessage)) {
+          await this.hideCompletionSession(client, sessionID)
+          return
+        }
+        if (messages.some(isExternalChatMessage)) {
+          await this.hideExternalSession(client, sessionID)
+          return
+        }
+        this.remoteMessages = messages
+        this.syncRenderedMessages()
+        this.applyServerToolWarnings(sessionID)
+        this.postState()
+      }
+    } catch (error) {
+      if (this.isActiveSend(client, sessionID, generation)) this.logEventError("message polling fallback failed", error)
+    }
+
+    if (this.isActiveSend(client, sessionID, generation)) this.scheduleMessagePollingFallback(client, sessionID, generation)
+  }
+
   private async failActiveSendWithRetry(
     client: RemoteOpenCodeClient,
     sessionID: string,
@@ -464,6 +550,7 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
     if (generation === undefined || !this.isActiveSend(client, sessionID, generation)) return
 
     this.stopSendStatusWatchdog()
+    this.stopMessagePollingFallback()
     const message = remoteRetryMessage(status)
     this.deps.output.appendLine(`[event] ${message}`)
     try {
@@ -485,7 +572,9 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
   private handleRemoteEvent(client: RemoteOpenCodeClient, rawEvent: unknown) {
     if (this.deps.getClient() !== client) return
     const event = normalizeOpenCodeEvent(rawEvent)
-    if (!event || event.type === "server.connected") return
+    if (!event) return
+    this.logRemoteEventType(event.type)
+    if (event.type === "server.connected") return
 
     const result = applyOpenCodeEventToMessages(this.remoteMessages, event, this.sessionID)
     if (result.refreshSessions) {
@@ -514,9 +603,23 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
     }
   }
 
+  private logRemoteEventType(type: string) {
+    const count = (this.eventTypeCounts.get(type) ?? 0) + 1
+    this.eventTypeCounts.set(type, count)
+    if (count <= 5 || count % 25 === 0) this.deps.output.appendLine(`[event] ${type} #${count}`)
+  }
+
   private finishActiveStreamAfterEventLoss(client: RemoteOpenCodeClient) {
     if (!this.sending || !this.sessionID) return
-    void this.finishStreamingSession(client, this.sessionID)
+    const sessionID = this.sessionID
+    const generation =
+      this.activeSend?.client === client && this.activeSend.sessionID === sessionID ? this.activeSend.generation : undefined
+    if (generation !== undefined) {
+      this.deps.output.appendLine("[event] stream unavailable during active send; using message polling fallback")
+      this.startMessagePollingFallback(client, sessionID, generation)
+      return
+    }
+    void this.finishStreamingSession(client, sessionID)
   }
 
   private async finishStreamingSession(client: RemoteOpenCodeClient, sessionID: string) {
@@ -524,7 +627,10 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
     this.finalizingSessions.add(sessionID)
     const activeGeneration =
       this.activeSend?.client === client && this.activeSend.sessionID === sessionID ? this.activeSend.generation : undefined
-    if (activeGeneration !== undefined) this.stopSendStatusWatchdog()
+    if (activeGeneration !== undefined) {
+      this.stopSendStatusWatchdog()
+      this.stopMessagePollingFallback()
+    }
     try {
       if (this.deps.getClient() !== client) return
       await this.refreshSessionList(client)
@@ -845,16 +951,48 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
 
   private async saveRagSettings(input: RagSettingsInput) {
     try {
-      await saveRagSettings(input)
-      await this.deps.codeGraph?.applyRagConfiguration()
+      const unchanged = ragSettingsInputMatchesCurrent(input, this.deps.getSettings().rag)
+      if (!unchanged) {
+        this.deps.suppressNextRagConfigurationApply?.()
+        await saveRagSettings(input)
+      }
+      let result = await this.deps.codeGraph?.applyRagConfiguration()
       this.postState()
-      this.postRagStatus("RAG settings saved. Re-indexing with the new configuration.", "success")
+      if (!result) {
+        this.postRagStatus(unchanged ? "RAG settings unchanged." : "RAG settings saved.", "success")
+        return
+      }
+      if (unchanged && result.hasReusableIndex) {
+        const forceRebuild = await this.confirmForceRagRebuild()
+        if (!forceRebuild) {
+          this.postState()
+          this.postRagStatus(`RAG settings unchanged. Existing local RAG index kept. ${ragStatusMessage(result.status, "RAG status refreshed.")}`, "success")
+          return
+        }
+        result = await this.deps.codeGraph?.applyRagConfiguration({ forceRebuild: true }) ?? result
+        this.postState()
+        this.postRagStatus(ragApplyResultMessage(result, "RAG force rebuild requested."), "success")
+        return
+      }
+      this.postRagStatus(ragApplyResultMessage(result, unchanged ? "RAG settings unchanged." : "RAG settings saved."), "success")
     } catch (error) {
       const message = formatErrorMessage(error)
       this.deps.output.appendLine(`[rag-settings] save failed: ${message}`)
       this.postState()
       this.postRagStatus(`RAG settings save failed: ${message}`, "error")
     }
+  }
+
+  private async confirmForceRagRebuild() {
+    const keep = { title: "否，保留现有索引", isCloseAffordance: true }
+    const force = { title: "是，强制重建" }
+    const selected = await vscode.window.showWarningMessage(
+      "本地已有 RAG 索引。强制重建会从头开始重新 embedding，可能消耗大量时间。确定要从头重建吗？",
+      { modal: true },
+      keep,
+      force,
+    )
+    return selected?.title === force.title
   }
 
   private async testRagSettings(input: RagSettingsInput) {
@@ -1127,30 +1265,24 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
   ) {
     const sessionID = await this.getOrCreateSession(client, signal)
     const canStream = await this.ensureEventSubscription(client)
-    if (canStream) {
-      await client.sendMessageAsync({
-        sessionID,
-        text: input.text,
-        model: input.model,
-        agent: input.agent,
-        signal,
-      })
-      if (this.sending && this.sessionID === sessionID) this.startSendStatusWatchdog(client, sessionID)
-      await this.refreshSessionList(client)
-      return true
-    }
-
-    this.deps.output.appendLine("[event] live stream unavailable; falling back to blocking message request")
-    await client.sendMessage({
+    await client.sendMessageAsync({
       sessionID,
       text: input.text,
       model: input.model,
       agent: input.agent,
       signal,
     })
+
+    if (this.sending && this.sessionID === sessionID) {
+      this.startSendStatusWatchdog(client, sessionID)
+      if (!canStream || this.eventStreamFailed || !this.eventStreamReady) {
+        this.deps.output.appendLine("[event] live stream unavailable; using async message polling fallback")
+        this.startMessagePollingFallback(client, sessionID)
+      }
+    }
+
     await this.refreshSessionList(client)
-    await this.loadSessionMessages(client, sessionID)
-    return false
+    return true
   }
 
   private async refreshSessionList(client: RemoteOpenCodeClient) {
@@ -1910,6 +2042,16 @@ function ragStatusMessage(rag: RagStatus | undefined, fallback: string) {
   if (rag.availability === "not-indexed") return `RAG not indexed: ${rag.fallbackReason || "rebuild the local code graph to enable vector retrieval"}`
   if (rag.availability === "unavailable") return `RAG unavailable: ${rag.fallbackReason || rag.lastError || "endpoint test failed"}`
   return "RAG not configured. Add an embedding endpoint to enable vector retrieval."
+}
+
+function ragApplyResultMessage(result: RagConfigurationApplyResult, fallback: string) {
+  const detail = ragStatusMessage(result.status, fallback)
+  if (result.action === "status-refreshed") return `RAG status refreshed. Existing local RAG index kept. ${detail}`
+  if (result.action === "build-started") return `RAG indexing started. ${detail}`
+  if (result.action === "build-queued") return `RAG indexing queued until the local code graph is ready. ${detail}`
+  if (result.action === "disabled") return detail
+  if (result.action === "unavailable") return detail
+  return fallback
 }
 
 function ragIndexingMessage(rag: RagStatus) {

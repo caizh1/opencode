@@ -1,4 +1,4 @@
-import type { CodeGraphStatus } from "./types"
+import type { CodeGraphStatus, RagConfigurationApplyOptions, RagConfigurationApplyResult } from "./types"
 import type { AnalysisToolName, AnalysisToolResult, CodeIntelligenceSnapshot, QueryEvidenceResult } from "./analysis-types"
 import type { CodeGraphStorageSchemaManifest } from "./codegraph-storage-schema"
 
@@ -256,7 +256,7 @@ export type CodeGraphContextProvider = {
   metrics(): NonNullable<CodeGraphStatus["metrics"]>
   waitForReady(): Promise<void>
   showStatus(): Promise<void>
-  applyRagConfiguration(): Promise<void>
+  applyRagConfiguration(options?: RagConfigurationApplyOptions): Promise<RagConfigurationApplyResult>
   refreshRagConfiguration(): Promise<void>
   testRagConfiguration(): Promise<CodeGraphStatus["rag"]>
   buildContext(input: {
