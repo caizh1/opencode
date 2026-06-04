@@ -7,6 +7,14 @@
   package names, and text that must be quoted verbatim may remain in their
   original language.
 
+## Git / Push
+
+- 推送 GitHub 远程时使用 SSH。当前网络下 GitHub SSH 22 端口可能不可用；如果
+  `git@github.com` 连接失败，使用 SSH-over-443：
+  `ssh://git@ssh.github.com:443/caizh1/opencode.git`。
+- 优先通过 `~/.ssh/config` 将 `Host github.com` 映射到 `ssh.github.com` 的
+  `443` 端口，这样普通 `git push origin <branch>` 也会自动走 443。
+
 ## 项目目标
 
 - 本仓库包含一个用于 AI inline code completion 的 VS Code 扩展。
