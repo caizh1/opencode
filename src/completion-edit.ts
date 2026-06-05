@@ -53,8 +53,53 @@ export type CompletionEditResult =
   | { edit: CompletionEdit; reason?: never }
   | { edit?: undefined; reason: CompletionEditRejectReason }
 
+export type CompletionSelectedCompletionInfo = {
+  range: CompletionRange
+  text: string
+}
+
+export type InlineCompletionEditValidationReason =
+  | "filterText-not-prefix-of-insertText"
+  | "selectedCompletionInfo-range-mismatch"
+  | "selectedCompletionInfo-text-not-prefix"
+
+export type InlineCompletionEditValidationResult =
+  | { valid: true; reason?: never }
+  | { valid: false; reason: InlineCompletionEditValidationReason }
+
 export function buildCompletionEdit(input: CompletionEditInput): CompletionEdit | undefined {
   return buildCompletionEditResult(input).edit
+}
+
+export function validateInlineCompletionEdit(input: {
+  edit: CompletionEdit
+  selectedCompletionInfo?: CompletionSelectedCompletionInfo
+}): InlineCompletionEditValidationResult {
+  const filterText = input.edit.filterText ?? input.edit.insertText
+  if (filterText && !input.edit.insertText.startsWith(filterText)) {
+    return {
+      valid: false,
+      reason: "filterText-not-prefix-of-insertText",
+    }
+  }
+
+  if (!input.selectedCompletionInfo) return { valid: true }
+
+  if (!input.edit.replaceRange || !sameCompletionRange(input.edit.replaceRange, input.selectedCompletionInfo.range)) {
+    return {
+      valid: false,
+      reason: "selectedCompletionInfo-range-mismatch",
+    }
+  }
+
+  if (!input.edit.insertText.startsWith(input.selectedCompletionInfo.text)) {
+    return {
+      valid: false,
+      reason: "selectedCompletionInfo-text-not-prefix",
+    }
+  }
+
+  return { valid: true }
 }
 
 export function buildInlineCompletionEditResult(input: InlineCompletionEditInput): CompletionEditResult {
@@ -178,17 +223,14 @@ function inlineWholeLineReplacement(input: InlineCompletionEditInput): Completio
     edit: {
       insertText,
       replaceRange,
-      filterText: wholeLineReplacementFilterText(input, insertText),
+      filterText: wholeLineReplacementFilterText(insertText),
       formatRange: formatRangeAfterInsert(input.position.line, replaceRange.startCharacter, insertText),
     },
   }
 }
 
-function wholeLineReplacementFilterText(input: InlineCompletionEditInput, insertText: string) {
-  const start = firstNonWhitespaceOrZero(input.linePrefix)
-  const rangeText = `${input.linePrefix}${input.lineSuffix}`.slice(start)
-  if (!rangeText || insertText.startsWith(rangeText)) return insertText
-  return rangeText
+function wholeLineReplacementFilterText(insertText: string) {
+  return insertText
 }
 
 function linePrefixOverlapResult(input: CompletionEditInput): CompletionEditResult | undefined {
@@ -374,6 +416,13 @@ function firstNonWhitespaceOrZero(input: string) {
 
 function isSingleLineRange(range: CompletionRange | undefined) {
   return !range || range.startLine === range.endLine
+}
+
+function sameCompletionRange(left: CompletionRange, right: CompletionRange) {
+  return left.startLine === right.startLine &&
+    left.startCharacter === right.startCharacter &&
+    left.endLine === right.endLine &&
+    left.endCharacter === right.endCharacter
 }
 
 function formatRangeAfterInsert(startLine: number, startCharacter: number, insertText: string): CompletionRange {

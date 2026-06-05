@@ -52,15 +52,31 @@ describe("completion test fallback", () => {
     })).toBe("")
   })
 
-  test("does not mask low-confidence model output with a deterministic test fallback", () => {
+  test("generates deterministic test fallback for low-confidence test output", () => {
+    const text = fallbackCompletionText({
+      languageId: "c",
+      plan: planCompletion({
+        languageId: "c",
+        linePrefix: "// test for epr_ppn_raw_write_cb_dfx",
+        lineSuffix: "",
+      }),
+      retrievedSnippets: [snippet("epr_ppn_raw_write_cb_dfx")],
+      rejectReason: "low-confidence-output",
+    })
+
+    expect(text).toContain("static void test_epr_ppn_raw_write_cb_dfx(void)")
+    expect(text).toContain("epr_ppn_raw_write_cb_dfx();")
+  })
+
+  test("does not create fallback text for low-confidence non-test comment output", () => {
     expect(fallbackCompletionText({
       languageId: "c",
       plan: planCompletion({
         languageId: "c",
-        linePrefix: "// unit test for epr_ppn_raw_write_cb_dfx()",
+        linePrefix: "// implement alpha_feature_finalize",
         lineSuffix: "",
       }),
-      retrievedSnippets: [snippet("epr_ppn_raw_write_cb_dfx")],
+      retrievedSnippets: [snippet("alpha_feature_finalize")],
       rejectReason: "low-confidence-output",
     })).toBe("")
   })

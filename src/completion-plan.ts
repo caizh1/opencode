@@ -162,8 +162,7 @@ function disabledPlan(): CompletionPlan {
 }
 
 function looksLikeUnitTestPrompt(trimmed: string) {
-  if (!/\bunit\s*test\b|\bunittest\b/i.test(trimmed)) return false
-  return /\bfor\b|\bof\b|\bto\s+test\b/i.test(trimmed)
+  return Boolean(unitTestTargetSymbol(trimmed))
 }
 
 function isSingleLineCommentPrompt(trimmed: string, languageId: string) {
@@ -174,7 +173,9 @@ function isSingleLineCommentPrompt(trimmed: string, languageId: string) {
 
 function unitTestTargetSymbol(trimmed: string) {
   const withoutComment = stripSingleLineCommentMarker(trimmed)
-  const match = /\b(?:unit\s*test|unittest)\b\s+(?:for|of|to\s+test)\s+([A-Za-z_][A-Za-z0-9_]*)(?:\s*\(\s*\))?/i.exec(withoutComment)
+  const match =
+    /\b(?:unit\s*test|unittest)\b(?:\s+[A-Za-z][A-Za-z0-9_-]*){0,6}?\s+(?:for|of|to\s+test)\s+([A-Za-z_][A-Za-z0-9_]*)(?:\s*\(\s*\))?/i.exec(withoutComment) ??
+    /\b(?:write|add|create|generate|implement)?\s*tests?\s+(?:for|of)\s+([A-Za-z_][A-Za-z0-9_]*)(?:\s*\(\s*\))?/i.exec(withoutComment)
   return match?.[1]
 }
 

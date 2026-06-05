@@ -289,6 +289,41 @@ describe("phase 1 completion regression eval fixtures", () => {
     expect(snapshot.insertText).not.toContain("// generated note")
   })
 
+  test("common test-for comments generate a deterministic C test stub after low-confidence model output", () => {
+    const line = "// test for foo"
+    const snapshot = runCompletionEval({
+      documentText: [
+        "int foo(void)",
+        "{",
+        "    return 0;",
+        "}",
+        "",
+        line,
+        "",
+      ].join("\n"),
+      line: 5,
+      character: line.length,
+      rawModelText: "}",
+      languageId: "c",
+      relatedPath: "src/features/foo.c",
+    })
+
+    expect(snapshot).toMatchObject({
+      plan: {
+        kind: "comment-to-test",
+        insertMode: "insert-after-line",
+        targetSymbol: "foo",
+      },
+      selectedCandidate: "foo",
+      modelRoute: "instruction",
+      normalizedText: "",
+      insertText: "\nstatic void test_foo(void)\n{\n    (void)foo();\n}",
+      finalLine: line,
+      rejectionReason: undefined,
+      retried: false,
+    })
+  })
+
   test("the same comment symbol prefix rule works for another unrelated symbol", () => {
     const line = "// 任意中文 storage_"
     const snapshot = runCompletionEval({

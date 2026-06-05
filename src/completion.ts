@@ -1,6 +1,14 @@
 import * as vscode from "vscode"
 import type { CodeGraphContextProvider } from "./codegraph-types"
-import { buildCompletionEditResult, buildInlineCompletionEditResult, type CompletionEdit, type CompletionEditInput, type CompletionRange } from "./completion-edit"
+import {
+  buildCompletionEditResult,
+  buildInlineCompletionEditResult,
+  validateInlineCompletionEdit,
+  type CompletionEdit,
+  type CompletionEditInput,
+  type CompletionRange,
+  type CompletionSelectedCompletionInfo,
+} from "./completion-edit"
 import { completionFormatCommand } from "./completion-format-command"
 import { completionContextDebugSummary, type CompletionContextPack } from "./completion-context"
 import { inferCompletionIndent } from "./completion-indent"
@@ -141,6 +149,10 @@ export class RemoteCompletionProvider implements vscode.InlineCompletionItemProv
       details,
       debounceMs: settings.completion.debounceMs,
       localFallback,
+      validateEdit: (edit) => validateInlineCompletionEdit({
+        edit,
+        selectedCompletionInfo: selectedCompletionInfoValue(context.selectedCompletionInfo),
+      }),
       runRemote: (signal) =>
         settings.completion.provider === "openai-compatible"
           ? this.directCompletionOutcome({
@@ -172,8 +184,20 @@ export class RemoteCompletionProvider implements vscode.InlineCompletionItemProv
     })
 
     if (start.immediate?.edit) {
-      this.logReturned(settings, start.immediate.source, start.immediate.edit, details, started)
-      return [this.inlineItem(start.immediate.edit, document)]
+      const item = this.inlineItemIfValid({
+        edit: start.immediate.edit,
+        document,
+        editInput,
+        plan,
+        selectedCompletionInfo: context.selectedCompletionInfo,
+        settings,
+        details,
+        source: start.immediate.source,
+      })
+      if (item) {
+        this.logReturned(settings, start.immediate.source, start.immediate.edit, details, started)
+        return [item]
+      }
     }
 
     if (!start.pending) return
@@ -185,8 +209,20 @@ export class RemoteCompletionProvider implements vscode.InlineCompletionItemProv
     }
     if (!outcome.edit) return
 
+    const item = this.inlineItemIfValid({
+      edit: outcome.edit,
+      document,
+      editInput,
+      plan,
+      selectedCompletionInfo: context.selectedCompletionInfo,
+      settings,
+      details,
+      source: outcome.source,
+    })
+    if (!item) return
+
     this.logReturned(settings, outcome.source, outcome.edit, details, started)
-    return [this.inlineItem(outcome.edit, document)]
+    return [item]
   }
 
   private async remoteCompletionOutcome(input: {
@@ -686,6 +722,36 @@ export class RemoteCompletionProvider implements vscode.InlineCompletionItemProv
       return { reason: result.reason, source: "remote" }
     }
 
+    const validation = validateInlineCompletionEdit({
+      edit,
+      selectedCompletionInfo: selectedCompletionInfoValue(input.selectedCompletionInfo),
+    })
+    if (!validation.valid) {
+      this.logDebug(input.settings, `inline-invariant ${inlineCompletionInvariantDetails({
+        edit,
+        editInput: input.editInput,
+        plan: input.plan,
+        rawFirstLine,
+        postprocessFirstLine,
+        postprocessDebug,
+        rejectReason: validation.reason,
+        selectedCompletionInfo: input.selectedCompletionInfo,
+      })} ${input.details}`)
+      if (input.attempt === "retry") {
+        this.logInfo(
+          input.settings,
+          `retry-edit-rejected reason=${validation.reason} ${input.details} elapsedMs=${elapsedMs(input.started)}`,
+        )
+      } else {
+        this.logInfo(
+          input.settings,
+          `edit-rejected reason=${validation.reason} ${input.details} elapsedMs=${elapsedMs(input.started)}`,
+        )
+      }
+      this.logCompletionTelemetry(input.settings, input.telemetry, input.started, false, validation.reason)
+      return { reason: validation.reason, source: "remote" }
+    }
+
     input.telemetry.finalRange = edit.replaceRange ?? zeroWidthRange(input.editInput.position)
     input.telemetry.filterText = edit.filterText ?? edit.insertText
     this.logDebug(input.settings, `inline-invariant ${inlineCompletionInvariantDetails({
@@ -831,6 +897,35 @@ export class RemoteCompletionProvider implements vscode.InlineCompletionItemProv
     const item = new vscode.InlineCompletionItem(edit.insertText, range, command)
     if (edit.filterText) item.filterText = edit.filterText
     return item
+  }
+
+  private inlineItemIfValid(input: {
+    edit: CompletionEdit
+    document: vscode.TextDocument
+    editInput: Omit<CompletionEditInput, "text">
+    plan: CompletionPlan
+    selectedCompletionInfo?: SelectedCompletionInfo
+    settings: RemoteSettings
+    details: string
+    source: CompletionRequestOutcome["source"]
+  }) {
+    const validation = validateInlineCompletionEdit({
+      edit: input.edit,
+      selectedCompletionInfo: selectedCompletionInfoValue(input.selectedCompletionInfo),
+    })
+    if (validation.valid) return this.inlineItem(input.edit, input.document)
+
+    this.logDebug(input.settings, `inline-item-rejected reason=${validation.reason} source=${input.source} ${inlineCompletionInvariantDetails({
+      edit: input.edit,
+      editInput: input.editInput,
+      plan: input.plan,
+      rawFirstLine: "",
+      postprocessFirstLine: "",
+      postprocessDebug: { prefixMode: "none" },
+      rejectReason: validation.reason,
+      selectedCompletionInfo: input.selectedCompletionInfo,
+    })} ${input.details}`)
+    return undefined
   }
 }
 
@@ -1090,7 +1185,6 @@ function inlineCompletionInvariantDetails(input: {
   const filterText = input.edit ? input.edit.filterText ?? input.edit.insertText : ""
   const risks = inlineCompletionDisplayRisks({
     edit: input.edit,
-    rangeText,
     selectedCompletionInfo: input.selectedCompletionInfo,
   })
   return [
@@ -1112,7 +1206,6 @@ function inlineCompletionInvariantDetails(input: {
 
 function inlineCompletionDisplayRisks(input: {
   edit?: CompletionEdit
-  rangeText: string
   selectedCompletionInfo?: SelectedCompletionInfo
 }) {
   const risks: string[] = []
@@ -1122,8 +1215,8 @@ function inlineCompletionDisplayRisks(input: {
   }
 
   const filterText = input.edit.filterText ?? input.edit.insertText
-  if (input.rangeText && input.rangeText !== "<cross-line>" && !filterText.startsWith(input.rangeText)) {
-    risks.push("filterText-not-prefixed-by-rangeText")
+  if (filterText && !input.edit.insertText.startsWith(filterText)) {
+    risks.push("filterText-not-prefix-of-insertText")
   }
 
   if (!input.selectedCompletionInfo) return risks
@@ -1141,6 +1234,19 @@ function currentLineRangeText(input: Omit<CompletionEditInput, "text">, range: C
   if (range.startLine !== input.position.line || range.endLine !== input.position.line) return "<cross-line>"
   const lineText = `${input.linePrefix}${input.lineSuffix}`
   return lineText.slice(range.startCharacter, range.endCharacter)
+}
+
+function selectedCompletionInfoValue(input: SelectedCompletionInfo | undefined): CompletionSelectedCompletionInfo | undefined {
+  if (!input) return undefined
+  return {
+    text: input.text,
+    range: {
+      startLine: input.range.start.line,
+      startCharacter: input.range.start.character,
+      endLine: input.range.end.line,
+      endCharacter: input.range.end.character,
+    },
+  }
 }
 
 function sameCompletionRangeAsVscodeRange(range: CompletionRange, vscodeRange: vscode.Range) {

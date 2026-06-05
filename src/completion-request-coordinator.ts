@@ -25,9 +25,14 @@ type CompletionRequestCoordinatorInput = {
   details: string
   debounceMs: number
   localFallback?: CompletionEdit
+  validateEdit?: (edit: CompletionEdit) => CompletionEditCacheValidation
   runRemote: (signal: AbortSignal) => Promise<CompletionRequestOutcome>
   onRemoteReady?: () => void
 }
+
+type CompletionEditCacheValidation =
+  | { valid: true; reason?: never }
+  | { valid: false; reason: string }
 
 type CompletionRequestCoordinatorOptions = {
   delay?: (ms: number, signal: AbortSignal) => Promise<void>
@@ -60,11 +65,17 @@ export class CompletionRequestCoordinator {
   request(input: CompletionRequestCoordinatorInput): CompletionRequestStart {
     const cached = this.cache.get(input.key)
     if (cached) {
-      return {
-        immediate: {
-          edit: cached,
-          source: "cache",
-        },
+      const validation = input.validateEdit?.(cached) ?? { valid: true as const }
+      if (!validation.valid) {
+        this.cache.delete(input.key)
+        this.logInfo(`cache-invalid reason=${validation.reason} ${input.details}`)
+      } else {
+        return {
+          immediate: {
+            edit: cached,
+            source: "cache",
+          },
+        }
       }
     }
 
@@ -129,8 +140,13 @@ export class CompletionRequestCoordinator {
       pending.phase = "request"
       const outcome = await input.runRemote(pending.controller.signal)
       if (outcome.edit) {
-        this.cache.set(input.key, outcome.edit)
-        this.trimCache()
+        const validation = input.validateEdit?.(outcome.edit) ?? { valid: true as const }
+        if (validation.valid) {
+          this.cache.set(input.key, outcome.edit)
+          this.trimCache()
+        } else {
+          this.logInfo(`cache-skip-invalid reason=${validation.reason} ${input.details}`)
+        }
         if (this.pending === pending) input.onRemoteReady?.()
       }
       return outcome

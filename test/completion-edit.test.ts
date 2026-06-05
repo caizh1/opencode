@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { buildCompletionEdit, buildCompletionEditResult, buildInlineCompletionEditResult } from "../src/completion-edit"
+import { buildCompletionEdit, buildCompletionEditResult, buildInlineCompletionEditResult, validateInlineCompletionEdit } from "../src/completion-edit"
 import type { CompletionInsertMode, CompletionPlanKind } from "../src/completion-types"
 
 describe("language-aware completion edits", () => {
@@ -85,7 +85,7 @@ describe("language-aware completion edits", () => {
         endLine: 0,
         endCharacter: prefix.length,
       },
-      filterText: prefix,
+      filterText: "TEST(EprPpnRaw, WriteWithCbDfx) {\n    EXPECT_EQ(0, epr_ppn_raw_write_with_cb_dfx());\n}",
     })
     expect(edit?.replaceRange?.startLine).toBe(edit?.replaceRange?.endLine)
   })
@@ -113,7 +113,7 @@ describe("language-aware completion edits", () => {
     })
   })
 
-  test("InlineEditBuilder uses range text as filter text for overtyped whole-line replacements", () => {
+  test("InlineEditBuilder keeps filter text as a prefix of overtyped whole-line replacements", () => {
     const edit = inlineEdit({
       insertMode: "replace-whole-line",
       planKind: "previous-comment-continuation",
@@ -132,7 +132,104 @@ describe("language-aware completion edits", () => {
         endLine: 0,
         endCharacter: "stats".length,
       },
-      filterText: "stats",
+      filterText: "static void test_alpha_feature_finalize(void)\n{\n}",
+    })
+  })
+
+  test("InlineEditBuilder validates VS Code inline completion display invariants", () => {
+    expect(validateInlineCompletionEdit({
+      edit: {
+        insertText: "static void test_case(void)",
+        filterText: "static void",
+        replaceRange: {
+          startLine: 0,
+          startCharacter: 0,
+          endLine: 0,
+          endCharacter: "static void".length,
+        },
+      },
+    })).toEqual({ valid: true })
+
+    expect(validateInlineCompletionEdit({
+      edit: {
+        insertText: "test_case(void)",
+        filterText: "static void",
+      },
+    })).toEqual({
+      valid: false,
+      reason: "filterText-not-prefix-of-insertText",
+    })
+
+    expect(validateInlineCompletionEdit({
+      edit: {
+        insertText: "printf(\"ok\");",
+        filterText: "printf",
+        replaceRange: {
+          startLine: 0,
+          startCharacter: 4,
+          endLine: 0,
+          endCharacter: 10,
+        },
+      },
+      selectedCompletionInfo: {
+        text: "printf",
+        range: {
+          startLine: 0,
+          startCharacter: 4,
+          endLine: 0,
+          endCharacter: 10,
+        },
+      },
+    })).toEqual({ valid: true })
+
+    expect(validateInlineCompletionEdit({
+      edit: {
+        insertText: "puts(\"ok\");",
+        filterText: "puts",
+        replaceRange: {
+          startLine: 0,
+          startCharacter: 4,
+          endLine: 0,
+          endCharacter: 8,
+        },
+      },
+      selectedCompletionInfo: {
+        text: "printf",
+        range: {
+          startLine: 0,
+          startCharacter: 4,
+          endLine: 0,
+          endCharacter: 10,
+        },
+      },
+    })).toEqual({
+      valid: false,
+      reason: "selectedCompletionInfo-range-mismatch",
+    })
+
+    expect(validateInlineCompletionEdit({
+      edit: {
+        insertText: "puts(\"ok\");",
+        filterText: "puts",
+        replaceRange: {
+          startLine: 0,
+          startCharacter: 4,
+          endLine: 0,
+          endCharacter: 10,
+        },
+      },
+      selectedCompletionInfo: {
+        text: "printf",
+        range: {
+          startLine: 0,
+          startCharacter: 4,
+          endLine: 0,
+          endCharacter: 10,
+        },
+      },
+    })).toEqual({
+      valid: false,
+      reason: "selectedCompletionInfo-text-not-prefix",
     })
   })
 

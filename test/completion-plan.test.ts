@@ -38,6 +38,42 @@ describe("completion planner", () => {
     })
   })
 
+  test("recognizes common test-for comment prompts as test generation", () => {
+    for (const linePrefix of [
+      "// test for confidential_guest_support_finalize",
+      "// write test for confidential_guest_support_finalize",
+      "// tests for confidential_guest_support_finalize",
+    ]) {
+      expect(planCompletion({
+        languageId: "c",
+        linePrefix,
+        lineSuffix: "",
+      })).toMatchObject({
+        kind: "comment-to-test",
+        insertMode: "insert-after-line",
+        targetSymbol: "confidential_guest_support_finalize",
+        needsSymbolRetrieval: true,
+        needsTestRetrieval: true,
+        useInstruction: true,
+      })
+    }
+  })
+
+  test("recognizes common natural test-for prompts as line replacements", () => {
+    expect(planCompletion({
+      languageId: "c",
+      linePrefix: "write test for confidential_guest_support_finalize",
+      lineSuffix: "",
+    })).toMatchObject({
+      kind: "natural-command",
+      insertMode: "replace-whole-line",
+      targetSymbol: "confidential_guest_support_finalize",
+      needsSymbolRetrieval: true,
+      needsTestRetrieval: true,
+      useInstruction: true,
+    })
+  })
+
   test("routes identifier continuations through symbol completion", () => {
     expect(planCompletion({
       languageId: "c",
@@ -157,6 +193,24 @@ describe("completion planner", () => {
       needsSymbolRetrieval: true,
       needsTestRetrieval: false,
       useFim: false,
+      useInstruction: false,
+    })
+  })
+
+  test("tries plain identifier prefixes inside common test-for comments before generating code", () => {
+    expect(planCompletion({
+      languageId: "c",
+      linePrefix: "// test for confident",
+      lineSuffix: "",
+      currentWord: "confident",
+    })).toMatchObject({
+      kind: "comment-symbol-reference",
+      insertMode: "replace-current-word",
+      targetSymbol: "confident",
+      symbolFallbackKind: "comment-to-test",
+      replaceCurrentWord: true,
+      needsSymbolRetrieval: true,
+      needsTestRetrieval: false,
       useInstruction: false,
     })
   })

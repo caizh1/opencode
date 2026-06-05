@@ -298,6 +298,21 @@ describe("completion postprocessor", () => {
     }
   })
 
+  test("keeps ordinary code continuations even when they are small structural fragments", () => {
+    expect(postprocessCompletion({
+      rawText: "}",
+      linePrefix: "    if (enabled) {",
+      lineSuffix: "",
+      languageId: "c",
+      plan: postprocessPlan({
+        insertMode: "insert-at-cursor",
+      }),
+      indent: indent("    ", "        "),
+    })).toEqual({
+      text: "}",
+    })
+  })
+
   test("rejects generated comment placeholders followed only by structure", () => {
     const linePrefix = "// arbitrary words target_symbol"
     expect(postprocessCompletion({

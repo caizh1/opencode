@@ -129,4 +129,92 @@ describe("completion request coordinator", () => {
       source: "cache",
     })
   })
+
+  test("invalidates cached edits that no longer satisfy inline display invariants", async () => {
+    let requests = 0
+    const logs: string[] = []
+    const coordinator = new CompletionRequestCoordinator({
+      delay: () => Promise.resolve(),
+      logInfo: (message) => logs.push(message),
+    })
+
+    const first = coordinator.request({
+      key: "cached",
+      details: "line=1",
+      debounceMs: 0,
+      runRemote: async () => {
+        requests += 1
+        return editOutcome
+      },
+    })
+    await first.pending
+
+    const second = coordinator.request({
+      key: "cached",
+      details: "line=1",
+      debounceMs: 0,
+      validateEdit: () => ({
+        valid: false,
+        reason: "filterText-not-prefix-of-insertText",
+      }),
+      runRemote: async () => {
+        requests += 1
+        return {
+          edit: {
+            insertText: "return 2;",
+          },
+          source: "remote",
+        }
+      },
+    })
+
+    expect(second.immediate).toBeUndefined()
+    expect(await second.pending).toEqual({
+      edit: {
+        insertText: "return 2;",
+      },
+      source: "remote",
+    })
+    expect(requests).toBe(2)
+    expect(logs).toContain("cache-invalid reason=filterText-not-prefix-of-insertText line=1")
+  })
+
+  test("does not save invalid remote edits into the cache", async () => {
+    let requests = 0
+    const logs: string[] = []
+    const coordinator = new CompletionRequestCoordinator({
+      delay: () => Promise.resolve(),
+      logInfo: (message) => logs.push(message),
+    })
+
+    const first = coordinator.request({
+      key: "bad-edit",
+      details: "line=1",
+      debounceMs: 0,
+      validateEdit: () => ({
+        valid: false,
+        reason: "selectedCompletionInfo-range-mismatch",
+      }),
+      runRemote: async () => {
+        requests += 1
+        return editOutcome
+      },
+    })
+    await first.pending
+
+    const second = coordinator.request({
+      key: "bad-edit",
+      details: "line=1",
+      debounceMs: 0,
+      runRemote: async () => {
+        requests += 1
+        return editOutcome
+      },
+    })
+    await second.pending
+
+    expect(second.immediate).toBeUndefined()
+    expect(requests).toBe(2)
+    expect(logs).toContain("cache-skip-invalid reason=selectedCompletionInfo-range-mismatch line=1")
+  })
 })
