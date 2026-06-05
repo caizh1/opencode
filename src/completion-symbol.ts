@@ -26,6 +26,8 @@ export type SymbolResolverInput = {
   query: string
   candidates: SymbolCandidate[]
   relatedPath?: string
+  cursorLine?: number
+  preferNearbyAbove?: boolean
   limit?: number
   unitTestTarget?: boolean
 }
@@ -55,6 +57,11 @@ export function resolveSymbols(input: SymbolResolverInput): ResolvedSymbolCandid
       if (candidatePath && relatedPath && candidatePath === relatedPath) {
         score += 250
         reasons.push("same-file")
+        const nearby = nearbyAboveScore(candidate, input.cursorLine, Boolean(input.preferNearbyAbove))
+        if (nearby > 0) {
+          score += nearby
+          reasons.push("nearby-above")
+        }
       } else if (candidatePath && relatedDir && directoryPath(candidatePath) === relatedDir) {
         score += 120
         reasons.push("same-directory")
@@ -220,6 +227,12 @@ function sourceRank(source: SymbolCandidateSource) {
     case "retrievedSnippet":
       return 20
   }
+}
+
+function nearbyAboveScore(candidate: SymbolCandidate, cursorLine: number | undefined, preferNearbyAbove: boolean) {
+  if (!preferNearbyAbove || !cursorLine || !candidate.line || candidate.line >= cursorLine) return 0
+  const distance = Math.max(0, cursorLine - candidate.line)
+  return 2000 + Math.max(0, 1000 - distance)
 }
 
 function symbolKindRank(kind: SymbolCandidateKind, unitTestTarget: boolean) {

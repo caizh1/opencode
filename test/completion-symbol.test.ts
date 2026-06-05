@@ -126,6 +126,34 @@ describe("completion symbol resolver", () => {
       source: "retrievedSnippet",
     })
   })
+
+  test("prefers the nearest function above the cursor for comment symbol references", () => {
+    const result = resolveSymbols({
+      query: "alpha_feature_",
+      relatedPath: "src/features/alpha.c",
+      cursorLine: 79,
+      preferNearbyAbove: true,
+      candidates: [
+        candidate("alpha_feature_init", {
+          filePath: "src/features/alpha.c",
+          line: 71,
+        }),
+        candidate("alpha_feature_finalize", {
+          filePath: "src/features/alpha.c",
+          line: 75,
+        }),
+        candidate("alpha_feature_check", {
+          filePath: "src/features/alpha.c",
+          line: 20,
+        }),
+      ],
+    })
+
+    expect(result[0]).toMatchObject({
+      name: "alpha_feature_finalize",
+      reasons: expect.arrayContaining(["nearby-above"]),
+    })
+  })
 })
 
 function candidate(name: string, overrides: Partial<SymbolCandidate> = {}): SymbolCandidate {

@@ -1,6 +1,6 @@
 import { formatCompletionBlock, formatCompletionInsertText, formatCompletionReplacementText, isCommentPromptCodeCompletion } from "./completion-format"
 import type { CompletionIndentContext } from "./completion-indent"
-import type { CompletionInsertMode } from "./completion-types"
+import type { CompletionInsertMode, CompletionPlanKind } from "./completion-types"
 
 export type CompletionPosition = {
   line: number
@@ -28,6 +28,7 @@ export type CompletionEditInput = {
 
 export type InlineCompletionEditInput = CompletionEditInput & {
   plan: {
+    kind?: CompletionPlanKind
     insertMode: CompletionInsertMode
     replaceCurrentWord: boolean
   }
@@ -177,10 +178,17 @@ function inlineWholeLineReplacement(input: InlineCompletionEditInput): Completio
     edit: {
       insertText,
       replaceRange,
-      filterText: insertText,
+      filterText: wholeLineReplacementFilterText(input, insertText),
       formatRange: formatRangeAfterInsert(input.position.line, replaceRange.startCharacter, insertText),
     },
   }
+}
+
+function wholeLineReplacementFilterText(input: InlineCompletionEditInput, insertText: string) {
+  const start = firstNonWhitespaceOrZero(input.linePrefix)
+  const rangeText = `${input.linePrefix}${input.lineSuffix}`.slice(start)
+  if (!rangeText || insertText.startsWith(rangeText)) return insertText
+  return rangeText
 }
 
 function linePrefixOverlapResult(input: CompletionEditInput): CompletionEditResult | undefined {

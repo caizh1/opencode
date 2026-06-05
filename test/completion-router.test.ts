@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { routeCompletionModel } from "../src/completion-router"
+import { resolveCompletionPlanAfterSymbolRetrieval, routeCompletionModel, shouldRetryCompletionRejection } from "../src/completion-router"
 import { planCompletion } from "../src/completion-plan"
 import type { RetrievedCompletionSnippet } from "../src/completion-types"
 import type { RemoteSettings } from "../src/types"
@@ -87,6 +87,187 @@ describe("completion model router", () => {
       maxTokens: 0,
       textProfile: "generic-chat",
     })
+  })
+
+  test("returns deterministic comment symbol references without calling a model", () => {
+    const route = routeCompletionModel({
+      plan: planCompletion({
+        languageId: "c",
+        linePrefix: "// arbitrary words alpha_feature_",
+        lineSuffix: "",
+        currentWord: "alpha_feature_",
+      }),
+      settings: settings(),
+      retrievedSnippets: [
+        snippet("alpha_feature_finalize", 9500),
+      ],
+    })
+
+    expect(route).toEqual({
+      kind: "deterministic-symbol",
+      reason: "high-confidence-symbol",
+      text: "alpha_feature_finalize",
+      maxTokens: 0,
+      textProfile: "generic-chat",
+    })
+  })
+
+  test("returns deterministic references for plain identifier prefixes in unit-test comments", () => {
+    const route = routeCompletionModel({
+      plan: planCompletion({
+        languageId: "c",
+        linePrefix: "// give me a unit test code for confident",
+        lineSuffix: "",
+        currentWord: "confident",
+      }),
+      settings: settings(),
+      retrievedSnippets: [
+        snippet("confidential_guest_support_class_init", 9500),
+      ],
+    })
+
+    expect(route).toEqual({
+      kind: "deterministic-symbol",
+      reason: "high-confidence-symbol",
+      text: "confidential_guest_support_class_init",
+      maxTokens: 0,
+      textProfile: "generic-chat",
+    })
+  })
+
+  test("switches complete unit-test comment symbols to instruction test generation", () => {
+    const initialPlan = planCompletion({
+      languageId: "c",
+      linePrefix: "// give me a unit test code for confidential_guest_support_class_init",
+      lineSuffix: "",
+      currentWord: "confidential_guest_support_class_init",
+    })
+    const effectivePlan = resolveCompletionPlanAfterSymbolRetrieval(initialPlan, [
+      snippet("confidential_guest_support_class_init", 9500),
+    ])
+
+    expect(effectivePlan).toMatchObject({
+      kind: "comment-to-test",
+      insertMode: "insert-after-line",
+      targetSymbol: "confidential_guest_support_class_init",
+      replaceCurrentWord: false,
+      needsSymbolRetrieval: true,
+      needsTestRetrieval: true,
+      useInstruction: true,
+      maxTokens: 768,
+    })
+  })
+
+  test("switches complete comment symbols to instruction code generation", () => {
+    const initialPlan = planCompletion({
+      languageId: "c",
+      linePrefix: "// 中文说明 alpha_feature_finalize",
+      lineSuffix: "",
+      currentWord: "alpha_feature_finalize",
+    })
+    const effectivePlan = resolveCompletionPlanAfterSymbolRetrieval(initialPlan, [
+      snippet("alpha_feature_finalize", 9500),
+    ])
+    const route = routeCompletionModel({
+      plan: effectivePlan,
+      settings: settings(),
+      retrievedSnippets: [
+        snippet("alpha_feature_finalize", 9500),
+      ],
+    })
+
+    expect(effectivePlan).toMatchObject({
+      kind: "comment-to-code",
+      insertMode: "insert-after-line",
+      targetSymbol: "alpha_feature_finalize",
+      replaceCurrentWord: false,
+      needsSymbolRetrieval: true,
+      useInstruction: true,
+    })
+    expect(route).toMatchObject({
+      kind: "model",
+      reason: "instruction-task",
+      promptKind: "instruction",
+      modelProfile: "generic-chat",
+      textProfile: "generic-chat",
+    })
+  })
+
+  test("falls back to comment code generation when a comment identifier has no symbol candidate", () => {
+    const initialPlan = planCompletion({
+      languageId: "typescript",
+      linePrefix: "// implement add two numbers",
+      lineSuffix: "",
+      currentWord: "numbers",
+    })
+    const effectivePlan = resolveCompletionPlanAfterSymbolRetrieval(initialPlan, [])
+    const route = routeCompletionModel({
+      plan: effectivePlan,
+      settings: settings(),
+      retrievedSnippets: [],
+    })
+
+    expect(effectivePlan).toMatchObject({
+      kind: "comment-to-code",
+      insertMode: "insert-after-line",
+      targetSymbol: "numbers",
+      replaceCurrentWord: false,
+      useInstruction: true,
+    })
+    expect(route).toMatchObject({
+      kind: "model",
+      reason: "instruction-task",
+      promptKind: "instruction",
+      modelProfile: "generic-chat",
+      textProfile: "generic-chat",
+    })
+  })
+
+  test("does not fall back to a model for comment symbol references without candidates", () => {
+    const route = routeCompletionModel({
+      plan: planCompletion({
+        languageId: "c",
+        linePrefix: "// arbitrary words alpha_feature_",
+        lineSuffix: "",
+        currentWord: "alpha_feature_",
+      }),
+      settings: settings(),
+      retrievedSnippets: [],
+    })
+
+    expect(route).toEqual({
+      kind: "none",
+      reason: "no-symbol-candidate",
+      maxTokens: 0,
+      textProfile: "generic-chat",
+    })
+  })
+
+  test("retries low-confidence instruction output but not FIM output", () => {
+    const commentPlan = resolveCompletionPlanAfterSymbolRetrieval(planCompletion({
+      languageId: "c",
+      linePrefix: "// arbitrary words alpha_feature_finalize",
+      lineSuffix: "",
+      currentWord: "alpha_feature_finalize",
+    }), [
+      snippet("alpha_feature_finalize", 9500),
+    ])
+    const ordinaryPlan = planCompletion({
+      languageId: "typescript",
+      linePrefix: "const value = ",
+      lineSuffix: "",
+    })
+
+    expect(shouldRetryCompletionRejection({
+      reason: "low-confidence-output",
+      plan: commentPlan,
+      textProfile: "generic-chat",
+    })).toBe(true)
+    expect(shouldRetryCompletionRejection({
+      reason: "low-confidence-output",
+      plan: ordinaryPlan,
+      textProfile: "qwen-coder-fim",
+    })).toBe(false)
   })
 
   test("uses a small FIM assist route for low-confidence symbol completions", () => {

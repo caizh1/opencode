@@ -1,4 +1,4 @@
-import type { CompletionPlan, CompletionPlanKind } from "./completion-types"
+import type { CompletionInsertMode, CompletionPlan, CompletionPlanKind } from "./completion-types"
 
 export type CompletionPostprocessRejectReason =
   | "empty-output"
@@ -8,7 +8,14 @@ export type CompletionPostprocessRejectReason =
   | "low-confidence-output"
   | "suffix-duplicated-output"
 
-export type CompletionPostprocessPlan = Pick<CompletionPlan, "kind" | "replaceCurrentWord" | "confidenceFloor">
+export type CompletionPostprocessPlan = Pick<CompletionPlan, "kind" | "insertMode" | "replaceCurrentWord" | "confidenceFloor">
+
+export type CompletionPostprocessPrefixMode = "none" | "stripped" | "preserved" | "exact-echo"
+
+export type CompletionPostprocessDebug = {
+  prefixMode: CompletionPostprocessPrefixMode
+  stripReason?: "insert-at-cursor-full-candidate-to-delta"
+}
 
 export type CompletionPostprocessInput = {
   rawText: string
@@ -37,6 +44,7 @@ export type CompletionPostprocessResult =
       reason: CompletionPostprocessRejectReason
     }
 
+const POSTPROCESS_DEBUG: unique symbol = Symbol("completionPostprocessDebug")
 const QWEN_SPECIAL_TOKEN_PATTERN = /<\|(?:fim_prefix|fim_middle|fim_suffix|fim_pad|repo_name|file_sep|endoftext|im_start|im_end)\|>/g
 
 export function postprocessCompletion(input: CompletionPostprocessInput): CompletionPostprocessResult {
@@ -47,14 +55,45 @@ export function postprocessCompletion(input: CompletionPostprocessInput): Comple
   text = stripLeadingMetaLines(text)
   text = stripExplanatoryLeadIn(text)
 
+  const initialPrefix = normalizePrefixEcho({
+    text,
+    linePrefix: input.linePrefix,
+    insertMode: input.plan.insertMode,
+    replaceCurrentWord: input.plan.replaceCurrentWord,
+  })
   const echo = stripCurrentLineEchoes(text, currentLine)
   text = echo.text
+  const prefix = text
+    ? normalizePrefixEcho({
+        text,
+        linePrefix: input.linePrefix,
+        insertMode: input.plan.insertMode,
+        replaceCurrentWord: input.plan.replaceCurrentWord,
+      })
+    : initialPrefix.exactEcho
+      ? initialPrefix
+      : normalizePrefixEcho({
+          text,
+          linePrefix: input.linePrefix,
+          insertMode: input.plan.insertMode,
+          replaceCurrentWord: input.plan.replaceCurrentWord,
+        })
+
+  if (prefix.exactEcho) {
+    return withPostprocessDebug({
+      text: "",
+      rejected: true,
+      reason: echoReason(input.plan.kind, input.linePrefix),
+    }, prefixDebug(prefix))
+  }
 
   if (input.plan.replaceCurrentWord && hasCurrentWordLinePrefixCandidate(text, input.linePrefix, input.currentWord)) {
     return finalizedResult({
       text: stripSuffixOverlap(text.trimEnd(), input.lineSuffix).text,
       fallbackReason: echo.count ? echoReason(input.plan.kind, input.linePrefix) : "empty-output",
       planKind: input.plan.kind,
+      skipLowConfidence: true,
+      debug: prefixDebug(prefix),
     })
   }
 
@@ -63,22 +102,24 @@ export function postprocessCompletion(input: CompletionPostprocessInput): Comple
       text: stripSuffixOverlap(text.trimEnd(), input.lineSuffix).text,
       fallbackReason: echo.count ? echoReason(input.plan.kind, input.linePrefix) : "empty-output",
       planKind: input.plan.kind,
+      skipLowConfidence: true,
+      debug: prefixDebug(prefix),
     })
   }
 
-  const prefix = stripPrefixEcho(text, input.linePrefix)
   text = prefix.text
   const suffix = stripSuffixOverlap(text, input.lineSuffix)
   text = stripLeadingMetaLines(suffix.text)
   text = stripExplanatoryLeadIn(text)
   text = normalizeCommonIndent(text)
+  text = stripInstructionLeadingComments(text, input.plan.kind)
   const middleOfLine = sanitizeMiddleOfLineCompletion(text, input.lineSuffix)
   if (middleOfLine.rejected) {
-    return {
+    return withPostprocessDebug({
       text: "",
       rejected: true,
       reason: middleOfLine.reason,
-    }
+    }, prefixDebug(prefix))
   }
   text = middleOfLine.text
 
@@ -92,16 +133,24 @@ export function postprocessCompletion(input: CompletionPostprocessInput): Comple
     text,
     fallbackReason,
     planKind: input.plan.kind,
+    debug: prefixDebug(prefix),
   })
+}
+
+export function completionPostprocessDebug(result: CompletionPostprocessResult): CompletionPostprocessDebug | undefined {
+  return (result as { [POSTPROCESS_DEBUG]?: CompletionPostprocessDebug })[POSTPROCESS_DEBUG]
 }
 
 export function planKindOnlyPostprocessPlan(input: {
   planKind?: CompletionPlanKind
   replaceCurrentWord?: boolean
+  insertMode?: CompletionInsertMode
 }): CompletionPostprocessPlan {
+  const replaceCurrentWord = input.replaceCurrentWord ?? false
   return {
     kind: input.planKind ?? "ordinary-code",
-    replaceCurrentWord: input.replaceCurrentWord ?? false,
+    insertMode: input.insertMode ?? (replaceCurrentWord ? "replace-current-word" : "insert-at-cursor"),
+    replaceCurrentWord,
     confidenceFloor: 0,
   }
 }
@@ -158,21 +207,80 @@ function hasCurrentWordCandidate(text: string, currentWord: string | undefined) 
   return Boolean(match?.[1].startsWith(currentWord) && match[1].length > currentWord.length)
 }
 
-function stripPrefixEcho(text: string, linePrefix: string) {
-  let remaining = text
+function normalizePrefixEcho(input: {
+  text: string
+  linePrefix: string
+  insertMode: CompletionInsertMode
+  replaceCurrentWord: boolean
+}): {
+  text: string
+  stripped: boolean
+  preserved: boolean
+  exactEcho: boolean
+} {
+  const prefixes = linePrefixEchoCandidates(input.linePrefix)
+  if (!input.text || prefixes.length === 0) {
+    return {
+      text: input.text,
+      stripped: false,
+      preserved: false,
+      exactEcho: false,
+    }
+  }
+
+  if (prefixes.some((prefix) => isExactPrefixEcho(input.text, prefix))) {
+    return {
+      text: "",
+      stripped: false,
+      preserved: false,
+      exactEcho: true,
+    }
+  }
+
+  const startsWithPrefix = prefixes.some((prefix) => input.text.startsWith(prefix))
+  if (!startsWithPrefix) {
+    return {
+      text: input.text,
+      stripped: false,
+      preserved: false,
+      exactEcho: false,
+    }
+  }
+
+  if (input.insertMode !== "insert-at-cursor") {
+    return {
+      text: input.text,
+      stripped: false,
+      preserved: true,
+      exactEcho: false,
+    }
+  }
+
+  let remaining = input.text
   let stripped = false
-  const prefixes = uniqueNonEmpty([linePrefix, linePrefix.trimStart(), linePrefix.trim()])
-    .sort((left, right) => right.length - left.length)
   while (true) {
     const prefix = prefixes.find((item) => remaining.startsWith(item))
     if (!prefix) break
     remaining = remaining.slice(prefix.length)
     stripped = true
   }
+
   return {
-    text: stripped ? remaining.replace(/^[ \t]+/, "") : text,
+    text: remaining,
     stripped,
+    preserved: false,
+    exactEcho: stripped && !remaining,
   }
+}
+
+function linePrefixEchoCandidates(linePrefix: string) {
+  return uniqueNonEmpty([linePrefix, linePrefix.trimStart(), linePrefix.trim()])
+    .sort((left, right) => right.length - left.length)
+}
+
+function isExactPrefixEcho(text: string, prefix: string) {
+  const trimmedText = text.trimEnd()
+  return trimmedText === prefix || trimmedText === prefix.trimStart() || trimmedText === prefix.trim()
 }
 
 function stripSuffixOverlap(text: string, lineSuffix: string) {
@@ -287,34 +395,87 @@ function normalizeCommonIndent(input: string) {
   return hasLeadingNewline ? normalized : normalized.replace(/^\n+/, "")
 }
 
+function stripInstructionLeadingComments(input: string, planKind: CompletionPlanKind) {
+  if (!isInstructionPlanKind(planKind)) return input
+
+  const lines = input.split("\n")
+  let index = 0
+  let sawComment = false
+  while (index < lines.length) {
+    const trimmed = lines[index].trim()
+    if (!trimmed && sawComment) {
+      index += 1
+      continue
+    }
+    if (!isGeneratedCommentLine(trimmed)) break
+    sawComment = true
+    index += 1
+  }
+  if (!sawComment) return input
+
+  const remaining = lines.slice(index).join("\n").replace(/^\n+/, "")
+  if (!hasMeaningfulInstructionCode(remaining)) return input
+  return remaining
+}
+
 function finalizedResult(input: {
   text: string
   fallbackReason: CompletionPostprocessRejectReason
   planKind: CompletionPlanKind
+  skipLowConfidence?: boolean
+  debug?: CompletionPostprocessDebug
 }): CompletionPostprocessResult {
   const text = finalizeCompletion(input.text)
+  const debug = input.debug ?? { prefixMode: "none" as const }
   if (!text) {
-    return {
+    return withPostprocessDebug({
       text: "",
       rejected: true,
       reason: input.fallbackReason,
-    }
+    }, debug)
   }
   if (isExplanationOnly(text)) {
-    return {
+    return withPostprocessDebug({
       text: "",
       rejected: true,
       reason: "explanation-only",
-    }
+    }, debug)
   }
-  if (isLowConfidenceOutput(text, input.planKind)) {
-    return {
+  if (!input.skipLowConfidence && isLowConfidenceOutput(text, input.planKind)) {
+    return withPostprocessDebug({
       text: "",
       rejected: true,
       reason: "low-confidence-output",
+    }, debug)
+  }
+  return withPostprocessDebug({ text }, debug)
+}
+
+function prefixDebug(input: {
+  stripped: boolean
+  preserved: boolean
+  exactEcho: boolean
+}): CompletionPostprocessDebug {
+  if (input.exactEcho) return { prefixMode: "exact-echo" }
+  if (input.stripped) {
+    return {
+      prefixMode: "stripped",
+      stripReason: "insert-at-cursor-full-candidate-to-delta",
     }
   }
-  return { text }
+  if (input.preserved) return { prefixMode: "preserved" }
+  return { prefixMode: "none" }
+}
+
+function withPostprocessDebug<T extends CompletionPostprocessResult>(
+  result: T,
+  debug: CompletionPostprocessDebug,
+): T {
+  Object.defineProperty(result, POSTPROCESS_DEBUG, {
+    value: debug,
+    enumerable: false,
+  })
+  return result
 }
 
 function finalizeCompletion(input: string) {
@@ -379,8 +540,49 @@ function isLowConfidenceOutput(input: string, planKind: CompletionPlanKind) {
   if (!text) return false
   if (/^(?:todo|tbd|pass|\.\.\.|your code here|implementation goes here)$/i.test(text)) return true
   if (/^(?:\/\/|#|\/\*)\s*(?:todo|tbd|\.\.\.|your code here)/i.test(text)) return true
+  if (isInstructionPlanKind(planKind) && isStructuralOnlyCodeFragment(text)) return true
   if ((planKind === "comment-to-test" || planKind === "natural-command") && /^return\s+undefined;?$/i.test(text)) return true
   return false
+}
+
+function isInstructionPlanKind(planKind: CompletionPlanKind) {
+  return planKind === "comment-to-code" ||
+    planKind === "comment-to-test" ||
+    planKind === "natural-command" ||
+    planKind === "previous-comment-continuation"
+}
+
+function isStructuralOnlyCodeFragment(input: string) {
+  const compact = input.replace(/\s+/g, "")
+  if (!compact) return false
+  if (/^[{}()[\];,.:]+$/.test(compact)) return true
+
+  const lines = input.split("\n").map((line) => line.trim()).filter(Boolean)
+  if (lines.length === 0) return false
+  if (lines.every((line) => /^[{}()[\];,.:]+$/.test(line))) return true
+  return !hasMeaningfulInstructionCode(input)
+}
+
+function hasMeaningfulInstructionCode(input: string) {
+  return input
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .filter((line) => !isGeneratedCommentLine(line))
+    .filter((line) => !/^[{}()[\];,.:]+$/.test(line))
+    .some(looksLikeCodeLine)
+}
+
+function isGeneratedCommentLine(input: string) {
+  if (!input) return false
+  if (input.startsWith("//")) return true
+  if (input.startsWith("/*") || input.startsWith("*") || input.endsWith("*/")) return true
+  if (input.startsWith("#") && !isPreprocessorCodeLine(input)) return true
+  return false
+}
+
+function isPreprocessorCodeLine(input: string) {
+  return /^#\s*(?:include|define|if|ifdef|ifndef|elif|else|endif|pragma|error|warning)\b/.test(input)
 }
 
 function isSingleLineComment(input: string) {

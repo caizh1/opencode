@@ -60,6 +60,93 @@ describe("completion postprocessor", () => {
     })
   })
 
+  test("replace-whole-line preserves a full line-prefix candidate", () => {
+    const rawText = "static void test_confidential_guest_support_finalize(void) {\n}"
+    expect(postprocessCompletion({
+      rawText,
+      linePrefix: "static void",
+      lineSuffix: "",
+      currentWord: "void",
+      languageId: "c",
+      plan: postprocessPlan({
+        kind: "previous-comment-continuation",
+        insertMode: "replace-whole-line",
+        replaceCurrentWord: true,
+      }),
+      indent: indent(),
+    })).toEqual({
+      text: rawText,
+    })
+  })
+
+  test("replace-whole-line still rejects exact current-prefix echoes", () => {
+    expect(postprocessCompletion({
+      rawText: "static void",
+      linePrefix: "static void",
+      lineSuffix: "",
+      currentWord: "void",
+      languageId: "c",
+      plan: postprocessPlan({
+        kind: "previous-comment-continuation",
+        insertMode: "replace-whole-line",
+        replaceCurrentWord: true,
+      }),
+      indent: indent(),
+    })).toEqual({
+      text: "",
+      rejected: true,
+      reason: "echoed-prefix",
+    })
+  })
+
+  test("insert-at-cursor converts full prefix candidates to deltas without dropping needed spaces", () => {
+    expect(postprocessCompletion({
+      rawText: "static void test_confidential_guest_support_finalize(void)",
+      linePrefix: "static void",
+      lineSuffix: "",
+      currentWord: "void",
+      languageId: "c",
+      plan: postprocessPlan({
+        insertMode: "insert-at-cursor",
+      }),
+      indent: indent(),
+    })).toEqual({
+      text: " test_confidential_guest_support_finalize(void)",
+    })
+  })
+
+  test("insert-at-cursor keeps dotted prefix delta normalization", () => {
+    expect(postprocessCompletion({
+      rawText: "console.log",
+      linePrefix: "console.",
+      lineSuffix: "",
+      languageId: "typescript",
+      plan: postprocessPlan({
+        insertMode: "insert-at-cursor",
+      }),
+      indent: indent(),
+    })).toEqual({
+      text: "log",
+    })
+  })
+
+  test("replace-current-word preserves full line-prefix candidates for the edit builder", () => {
+    expect(postprocessCompletion({
+      rawText: "static void test_confidential_guest_support_finalize(void)",
+      linePrefix: "static void",
+      lineSuffix: "",
+      currentWord: "void",
+      languageId: "c",
+      plan: postprocessPlan({
+        insertMode: "replace-current-word",
+        replaceCurrentWord: true,
+      }),
+      indent: indent(),
+    })).toEqual({
+      text: "static void test_confidential_guest_support_finalize(void)",
+    })
+  })
+
   test("strips repeated comment prompts and keeps generated code", () => {
     const linePrefix = "// unit test for epr_ppn_raw_write_cb_dfx()"
     expect(postprocessCompletion({
@@ -192,6 +279,105 @@ describe("completion postprocessor", () => {
       reason: "low-confidence-output",
     })
   })
+
+  test("rejects structural-only outputs for comment code generation", () => {
+    const linePrefix = "// arbitrary words target_symbol"
+    for (const rawText of ["}", ";", "{}", "};"]) {
+      expect(postprocessCompletion({
+        rawText,
+        linePrefix,
+        lineSuffix: "",
+        languageId: "c",
+        plan: commentToCodePlan(linePrefix),
+        indent: indent(),
+      })).toEqual({
+        text: "",
+        rejected: true,
+        reason: "low-confidence-output",
+      })
+    }
+  })
+
+  test("rejects generated comment placeholders followed only by structure", () => {
+    const linePrefix = "// arbitrary words target_symbol"
+    expect(postprocessCompletion({
+      rawText: "// generated note\n}",
+      linePrefix,
+      lineSuffix: "",
+      languageId: "c",
+      plan: commentToCodePlan(linePrefix),
+      indent: indent(),
+    })).toEqual({
+      text: "",
+      rejected: true,
+      reason: "low-confidence-output",
+    })
+  })
+
+  test("rejects pure generated comments for instruction completions", () => {
+    const linePrefix = "// arbitrary words target_symbol"
+    expect(postprocessCompletion({
+      rawText: "// generated note",
+      linePrefix,
+      lineSuffix: "",
+      languageId: "c",
+      plan: commentToCodePlan(linePrefix),
+      indent: indent(),
+    })).toEqual({
+      text: "",
+      rejected: true,
+      reason: "low-confidence-output",
+    })
+  })
+
+  test("strips generated leading comments when real code follows", () => {
+    const linePrefix = "// arbitrary words target_symbol"
+    expect(postprocessCompletion({
+      rawText: "// generated note\nstatic void test_target_symbol(void)\n{\n}",
+      linePrefix,
+      lineSuffix: "",
+      languageId: "c",
+      plan: commentToCodePlan(linePrefix),
+      indent: indent(),
+    })).toEqual({
+      text: "static void test_target_symbol(void)\n{\n}",
+    })
+
+    expect(postprocessCompletion({
+      rawText: "// generated note\nObject *test_obj = object_new();",
+      linePrefix,
+      lineSuffix: "",
+      languageId: "c",
+      plan: commentToCodePlan(linePrefix),
+      indent: indent(),
+    })).toEqual({
+      text: "Object *test_obj = object_new();",
+    })
+  })
+
+  test("keeps meaningful comment code generation outputs", () => {
+    const linePrefix = "// arbitrary words target_symbol"
+    expect(postprocessCompletion({
+      rawText: "target_symbol();",
+      linePrefix,
+      lineSuffix: "",
+      languageId: "c",
+      plan: commentToCodePlan(linePrefix),
+      indent: indent(),
+    })).toEqual({
+      text: "target_symbol();",
+    })
+    expect(postprocessCompletion({
+      rawText: "return 0;",
+      linePrefix,
+      lineSuffix: "",
+      languageId: "c",
+      plan: commentToCodePlan(linePrefix),
+      indent: indent(),
+    })).toEqual({
+      text: "return 0;",
+    })
+  })
 })
 
 function ordinaryPlan() {
@@ -208,6 +394,34 @@ function commentToTestPlan() {
     linePrefix: "// unit test for epr_ppn_raw_write_cb_dfx()",
     lineSuffix: "",
   })
+}
+
+function commentToCodePlan(linePrefix: string) {
+  return {
+    kind: "comment-to-code" as const,
+    insertMode: "insert-after-line" as const,
+    replaceCurrentWord: false,
+    needsSymbolRetrieval: true,
+    needsTestRetrieval: false,
+    useFim: false,
+    useInstruction: true,
+    maxTokens: 384,
+    confidenceFloor: 0.5,
+    targetSymbol: "target_symbol",
+  }
+}
+
+function postprocessPlan(input: {
+  kind?: "ordinary-code" | "previous-comment-continuation"
+  insertMode: "replace-current-word" | "insert-at-cursor" | "insert-after-line" | "replace-whole-line"
+  replaceCurrentWord?: boolean
+}) {
+  return {
+    kind: input.kind ?? "ordinary-code",
+    insertMode: input.insertMode,
+    replaceCurrentWord: input.replaceCurrentWord ?? false,
+    confidenceFloor: 0,
+  }
 }
 
 function indent(currentIndent = "", targetIndent = "    ") {

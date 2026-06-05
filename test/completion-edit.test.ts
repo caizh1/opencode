@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import { buildCompletionEdit, buildCompletionEditResult, buildInlineCompletionEditResult } from "../src/completion-edit"
-import type { CompletionInsertMode } from "../src/completion-types"
+import type { CompletionInsertMode, CompletionPlanKind } from "../src/completion-types"
 
 describe("language-aware completion edits", () => {
   test("InlineEditBuilder replace-current-word uses the current word range", () => {
@@ -85,9 +85,55 @@ describe("language-aware completion edits", () => {
         endLine: 0,
         endCharacter: prefix.length,
       },
-      filterText: "TEST(EprPpnRaw, WriteWithCbDfx) {\n    EXPECT_EQ(0, epr_ppn_raw_write_with_cb_dfx());\n}",
+      filterText: prefix,
     })
     expect(edit?.replaceRange?.startLine).toBe(edit?.replaceRange?.endLine)
+  })
+
+  test("InlineEditBuilder uses full replacement filter text when it extends the replaced text", () => {
+    const edit = inlineEdit({
+      insertMode: "replace-whole-line",
+      planKind: "previous-comment-continuation",
+      text: "static void test_alpha_feature_finalize(void)\n{\n}",
+      languageId: "c",
+      linePrefix: "stat",
+      character: "stat".length,
+      currentWord: "stat",
+    })
+
+    expect(edit).toMatchObject({
+      insertText: "static void test_alpha_feature_finalize(void)\n{\n}",
+      replaceRange: {
+        startLine: 0,
+        startCharacter: 0,
+        endLine: 0,
+        endCharacter: "stat".length,
+      },
+      filterText: "static void test_alpha_feature_finalize(void)\n{\n}",
+    })
+  })
+
+  test("InlineEditBuilder uses range text as filter text for overtyped whole-line replacements", () => {
+    const edit = inlineEdit({
+      insertMode: "replace-whole-line",
+      planKind: "previous-comment-continuation",
+      text: "static void test_alpha_feature_finalize(void)\n{\n}",
+      languageId: "c",
+      linePrefix: "stats",
+      character: "stats".length,
+      currentWord: "stats",
+    })
+
+    expect(edit).toMatchObject({
+      insertText: "static void test_alpha_feature_finalize(void)\n{\n}",
+      replaceRange: {
+        startLine: 0,
+        startCharacter: 0,
+        endLine: 0,
+        endCharacter: "stats".length,
+      },
+      filterText: "stats",
+    })
   })
 
   test("InlineEditBuilder rejects empty insertText for explicit insert modes", () => {
@@ -613,6 +659,7 @@ function edit(input: {
 
 function inlineEdit(input: {
   insertMode: CompletionInsertMode
+  planKind?: CompletionPlanKind
   text: string
   languageId: string
   linePrefix: string
@@ -625,6 +672,7 @@ function inlineEdit(input: {
 
 function inlineEditResult(input: {
   insertMode: CompletionInsertMode
+  planKind?: CompletionPlanKind
   text: string
   languageId: string
   linePrefix: string
@@ -651,6 +699,7 @@ function inlineEditResult(input: {
         }
       : undefined,
     plan: {
+      kind: input.planKind,
       insertMode: input.insertMode,
       replaceCurrentWord: input.insertMode === "replace-current-word",
     },

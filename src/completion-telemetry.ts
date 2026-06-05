@@ -79,8 +79,9 @@ export function filePathHash(path: string | undefined) {
   return `sha256:${createHash("sha256").update(normalized).digest("hex").slice(0, 16)}`
 }
 
-export function completionTelemetryRoute(route: { kind: "deterministic-symbol" } | { kind: "model"; promptKind: "qwen-fim" | "instruction" } | undefined): CompletionTelemetryRoute {
+export function completionTelemetryRoute(route: { kind: "none" } | { kind: "deterministic-symbol" } | { kind: "model"; promptKind: "qwen-fim" | "instruction" } | undefined): CompletionTelemetryRoute {
   if (!route) return "none"
+  if (route.kind === "none") return "none"
   if (route.kind === "deterministic-symbol") return "deterministic-symbol"
   return route.promptKind === "qwen-fim" ? "fim" : "instruction"
 }

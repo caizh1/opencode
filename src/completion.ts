@@ -5,12 +5,13 @@ import { completionFormatCommand } from "./completion-format-command"
 import { completionContextDebugSummary, type CompletionContextPack } from "./completion-context"
 import { inferCompletionIndent } from "./completion-indent"
 import { CompletionModelClient, completionModel } from "./completion-model-client"
-import { postprocessCompletion } from "./completion-postprocess"
+import { completionPostprocessDebug, postprocessCompletion } from "./completion-postprocess"
 import { planCompletion } from "./completion-plan"
-import { routeCompletionModel, routeLogValue, type CompletionModelRoute } from "./completion-router"
+import { resolveCompletionPlanAfterSymbolRetrieval, routeCompletionModel, routeLogValue, shouldRetryCompletionRejection, type CompletionModelRoute } from "./completion-router"
 import { CompletionRequestCoordinator, type CompletionRequestOutcome } from "./completion-request-coordinator"
 import { INLINE_COMPLETION_SESSION_TITLE } from "./completion-session"
-import { resolveSymbols, symbolCandidateFromCodeGraph, type ResolvedSymbolCandidate } from "./completion-symbol"
+import { completionSnippetFromSymbol } from "./completion-snippets"
+import { resolveSymbols, symbolCandidateFromCodeGraph } from "./completion-symbol"
 import { completionTelemetryRoute, createCompletionRequestId, filePathHash, serializeCompletionDebugEvent, type CompletionDebugEvent, type CompletionTelemetryDraft } from "./completion-telemetry"
 import { fallbackCompletionText } from "./completion-test-fallback"
 import { completionInsertText } from "./completion-text"
@@ -31,6 +32,8 @@ type CompletionDeps = {
 type ModelCompletionRoute = Extract<CompletionModelRoute, { kind: "model" }>
 type DeterministicSymbolRoute = Extract<CompletionModelRoute, { kind: "deterministic-symbol" }>
 type CompletionLatencyKey = Exclude<keyof CompletionDebugEvent["latencyMs"], "total">
+type SelectedCompletionInfo = vscode.InlineCompletionContext["selectedCompletionInfo"]
+type PostprocessDebug = NonNullable<ReturnType<typeof completionPostprocessDebug>>
 
 export class RemoteCompletionProvider implements vscode.InlineCompletionItemProvider {
   private sessionID?: string
@@ -45,7 +48,7 @@ export class RemoteCompletionProvider implements vscode.InlineCompletionItemProv
   async provideInlineCompletionItems(
     document: vscode.TextDocument,
     position: vscode.Position,
-    _context: vscode.InlineCompletionContext,
+    context: vscode.InlineCompletionContext,
     token: vscode.CancellationToken,
   ): Promise<vscode.InlineCompletionItem[] | undefined> {
     const settings = this.deps.getSettings()
@@ -64,12 +67,29 @@ export class RemoteCompletionProvider implements vscode.InlineCompletionItemProv
     const lineSuffix = lineText.slice(position.character)
     const currentWord = currentWordBeforeCursor(line, position.line)
     const details = `${requestDetails(document, position, settings)} requestId=${requestId}`
-    if (!line.trim() && position.character === 0) {
-      this.logDebug(settings, `skip: empty line at column 0 ${details}`)
-      return
-    }
 
     const started = Date.now()
+    const planningStarted = Date.now()
+    const lines = documentLines(document)
+    const indent = inferCompletionIndent({
+      lines,
+      line: position.line,
+      linePrefix: line,
+      fallbackIndentUnit: fallbackIndentUnitForDocument(document),
+    })
+    const editInput = {
+      languageId: document.languageId,
+      linePrefix: line,
+      lineSuffix,
+      position: { line: position.line, character: position.character },
+      indent,
+      currentWord: currentWord?.text,
+      currentWordRange: currentWord?.range,
+    }
+    const plan = planCompletion({
+      ...editInput,
+      previousNonEmptyLine: previousNonEmptyLineBefore(lines, position.line),
+    })
     const client = this.deps.getClient()
     if (settings.completion.provider === "opencode" && !client) {
       this.logDebug(settings, `skip: no active remote client ${details}`)
@@ -87,28 +107,11 @@ export class RemoteCompletionProvider implements vscode.InlineCompletionItemProv
     }
 
     this.logInfo(settings, `triggered ${details}`)
-    const planningStarted = Date.now()
-    const indent = inferCompletionIndent({
-      lines: documentLines(document),
-      line: position.line,
-      linePrefix: line,
-      fallbackIndentUnit: fallbackIndentUnitForDocument(document),
-    })
-    const editInput = {
-      languageId: document.languageId,
-      linePrefix: line,
-      lineSuffix,
-      position: { line: position.line, character: position.character },
-      indent,
-      currentWord: currentWord?.text,
-      currentWordRange: currentWord?.range,
-    }
-    const plan = planCompletion(editInput)
     const telemetry: CompletionTelemetryDraft = {
       requestId,
       languageId: document.languageId,
       filePathHash: filePathHash(document.uri.fsPath),
-      triggerKind: completionTriggerKind(_context.triggerKind),
+      triggerKind: completionTriggerKind(context.triggerKind),
       planKind: plan.kind,
       insertMode: plan.insertMode,
       currentWord: currentWord?.text,
@@ -121,7 +124,9 @@ export class RemoteCompletionProvider implements vscode.InlineCompletionItemProv
       },
     }
     if (plan.kind === "disabled") {
-      this.logDebug(settings, `skip: disabled plan ${details}`)
+      this.logDebug(settings, !line.trim() && position.character === 0
+        ? `skip: empty line at column 0 ${details}`
+        : `skip: disabled plan ${details}`)
       this.logCompletionTelemetry(settings, telemetry, started, false, "disabled-plan")
       return
     }
@@ -148,6 +153,7 @@ export class RemoteCompletionProvider implements vscode.InlineCompletionItemProv
               editInput,
               plan,
               telemetry,
+              selectedCompletionInfo: context.selectedCompletionInfo,
             })
           : this.remoteCompletionOutcome({
               client: client!,
@@ -160,6 +166,7 @@ export class RemoteCompletionProvider implements vscode.InlineCompletionItemProv
               editInput,
               plan,
               telemetry,
+              selectedCompletionInfo: context.selectedCompletionInfo,
             }),
       onRemoteReady: () => this.triggerInlineSuggestRefresh(document, position, settings, details),
     })
@@ -193,6 +200,7 @@ export class RemoteCompletionProvider implements vscode.InlineCompletionItemProv
     editInput: Omit<CompletionEditInput, "text">
     plan: CompletionPlan
     telemetry: CompletionTelemetryDraft
+    selectedCompletionInfo?: SelectedCompletionInfo
   }): Promise<CompletionRequestOutcome> {
     try {
       const symbolStarted = Date.now()
@@ -205,13 +213,24 @@ export class RemoteCompletionProvider implements vscode.InlineCompletionItemProv
       })
       input.telemetry.latencyMs.symbol = elapsedMs(symbolStarted)
       input.telemetry.symbolCandidates = completionTelemetrySymbolCandidates(retrievedSnippets)
+      const plan = resolveCompletionPlanAfterSymbolRetrieval(input.plan, retrievedSnippets)
+      updateCompletionTelemetryPlan(input.telemetry, plan)
       const route = routeCompletionModel({
-        plan: input.plan,
+        plan,
         settings: input.settings,
         retrievedSnippets,
       })
       input.telemetry.modelRoute = completionTelemetryRoute(route)
       this.logDebug(input.settings, `${routeLogValue(route)} ${input.details}`)
+      if (route.kind === "none") {
+        return this.noCompletionCandidateOutcome({
+          route,
+          settings: input.settings,
+          details: input.details,
+          started: input.started,
+          telemetry: input.telemetry,
+        })
+      }
       if (route.kind === "deterministic-symbol") {
         return this.deterministicCompletionOutcome({
           route,
@@ -219,9 +238,10 @@ export class RemoteCompletionProvider implements vscode.InlineCompletionItemProv
           details: input.details,
           started: input.started,
           editInput: input.editInput,
-          plan: input.plan,
+          plan,
           retrievedSnippets,
           telemetry: input.telemetry,
+          selectedCompletionInfo: input.selectedCompletionInfo,
         })
       }
 
@@ -232,7 +252,7 @@ export class RemoteCompletionProvider implements vscode.InlineCompletionItemProv
         position: input.position,
         settings: input.settings,
         details: input.details,
-        plan: input.plan,
+        plan,
         retrievedSnippets,
         telemetry: input.telemetry,
       })
@@ -243,10 +263,11 @@ export class RemoteCompletionProvider implements vscode.InlineCompletionItemProv
         details: input.details,
         started: input.started,
         editInput: input.editInput,
-        plan: input.plan,
+        plan,
         retrievedSnippets,
         textProfile: route.textProfile,
         telemetry: input.telemetry,
+        selectedCompletionInfo: input.selectedCompletionInfo,
         sendPrompt: (promptText) => this.sendCompletion(input.client, promptText, input.settings, input.signal),
       })
     } catch (error) {
@@ -273,6 +294,7 @@ export class RemoteCompletionProvider implements vscode.InlineCompletionItemProv
     editInput: Omit<CompletionEditInput, "text">
     plan: CompletionPlan
     telemetry: CompletionTelemetryDraft
+    selectedCompletionInfo?: SelectedCompletionInfo
   }): Promise<CompletionRequestOutcome> {
     try {
       const symbolStarted = Date.now()
@@ -285,13 +307,24 @@ export class RemoteCompletionProvider implements vscode.InlineCompletionItemProv
       })
       input.telemetry.latencyMs.symbol = elapsedMs(symbolStarted)
       input.telemetry.symbolCandidates = completionTelemetrySymbolCandidates(retrievedSnippets)
+      const plan = resolveCompletionPlanAfterSymbolRetrieval(input.plan, retrievedSnippets)
+      updateCompletionTelemetryPlan(input.telemetry, plan)
       const route = routeCompletionModel({
-        plan: input.plan,
+        plan,
         settings: input.settings,
         retrievedSnippets,
       })
       input.telemetry.modelRoute = completionTelemetryRoute(route)
       this.logDebug(input.settings, `${routeLogValue(route)} ${input.details}`)
+      if (route.kind === "none") {
+        return this.noCompletionCandidateOutcome({
+          route,
+          settings: input.settings,
+          details: input.details,
+          started: input.started,
+          telemetry: input.telemetry,
+        })
+      }
       if (route.kind === "deterministic-symbol") {
         return this.deterministicCompletionOutcome({
           route,
@@ -299,9 +332,10 @@ export class RemoteCompletionProvider implements vscode.InlineCompletionItemProv
           details: input.details,
           started: input.started,
           editInput: input.editInput,
-          plan: input.plan,
+          plan,
           retrievedSnippets,
           telemetry: input.telemetry,
+          selectedCompletionInfo: input.selectedCompletionInfo,
         })
       }
 
@@ -312,7 +346,7 @@ export class RemoteCompletionProvider implements vscode.InlineCompletionItemProv
         position: input.position,
         settings: input.settings,
         details: input.details,
-        plan: input.plan,
+        plan,
         retrievedSnippets,
         transport: "openai-compatible",
         telemetry: input.telemetry,
@@ -326,10 +360,11 @@ export class RemoteCompletionProvider implements vscode.InlineCompletionItemProv
         details: input.details,
         started: input.started,
         editInput: input.editInput,
-        plan: input.plan,
+        plan,
         retrievedSnippets,
         textProfile: route.textProfile,
         telemetry: input.telemetry,
+        selectedCompletionInfo: input.selectedCompletionInfo,
         sendPrompt: (promptText) => client.complete({
           prompt: promptText,
           signal: input.signal,
@@ -401,6 +436,7 @@ export class RemoteCompletionProvider implements vscode.InlineCompletionItemProv
     plan: CompletionPlan
     retrievedSnippets: RetrievedCompletionSnippet[]
     telemetry: CompletionTelemetryDraft
+    selectedCompletionInfo?: SelectedCompletionInfo
   }): CompletionRequestOutcome {
     this.logInfo(input.settings, `deterministic-symbol reason=${input.route.reason} ${input.details}`)
     return this.completionOutcomeFromResponse({
@@ -414,7 +450,20 @@ export class RemoteCompletionProvider implements vscode.InlineCompletionItemProv
       attempt: "initial",
       textProfile: input.route.textProfile,
       telemetry: input.telemetry,
+      selectedCompletionInfo: input.selectedCompletionInfo,
     })
+  }
+
+  private noCompletionCandidateOutcome(input: {
+    route: Extract<CompletionModelRoute, { kind: "none" }>
+    settings: RemoteSettings
+    details: string
+    started: number
+    telemetry: CompletionTelemetryDraft
+  }): CompletionRequestOutcome {
+    this.logInfo(input.settings, `no-completion reason=${input.route.reason} ${input.details} elapsedMs=${elapsedMs(input.started)}`)
+    this.logCompletionTelemetry(input.settings, input.telemetry, input.started, false, input.route.reason)
+    return { reason: input.route.reason, source: "remote" }
   }
 
   private async completionOutcomeWithRetry(input: {
@@ -427,6 +476,7 @@ export class RemoteCompletionProvider implements vscode.InlineCompletionItemProv
     retrievedSnippets?: RetrievedCompletionSnippet[]
     textProfile: CompletionProfile
     telemetry: CompletionTelemetryDraft
+    selectedCompletionInfo?: SelectedCompletionInfo
     sendPrompt: (prompt: string) => Promise<OpenCodeMessage | undefined>
   }): Promise<CompletionRequestOutcome> {
     this.logInfo(input.settings, `sent ${input.details}`)
@@ -450,10 +500,15 @@ export class RemoteCompletionProvider implements vscode.InlineCompletionItemProv
       attempt: "initial",
       textProfile: input.textProfile,
       telemetry: input.telemetry,
+      selectedCompletionInfo: input.selectedCompletionInfo,
     })
-    if (initial.edit || initial.reason !== "misaligned-leading-newline" || input.textProfile === "qwen-coder-fim") return initial
+    if (initial.edit || !shouldRetryCompletionRejection({
+      reason: initial.reason,
+      plan: input.plan,
+      textProfile: input.textProfile,
+    })) return initial
 
-    const retryPrompt = completionRetryPrompt(input.prompt, input.editInput)
+    const retryPrompt = completionRetryPrompt(input.prompt, input.editInput, initial.reason)
     this.logInfo(input.settings, `retry-sent reason=${initial.reason} ${input.details}`)
     const retryModelStarted = Date.now()
     let retryResponse: OpenCodeMessage | undefined
@@ -474,6 +529,7 @@ export class RemoteCompletionProvider implements vscode.InlineCompletionItemProv
       attempt: "retry",
       textProfile: input.textProfile,
       telemetry: input.telemetry,
+      selectedCompletionInfo: input.selectedCompletionInfo,
     })
   }
 
@@ -494,17 +550,19 @@ export class RemoteCompletionProvider implements vscode.InlineCompletionItemProv
       const symbols = await this.deps.codeGraph.findSymbols({
         query,
         relatedPath: relativePath(input.document.uri),
-        limit: input.plan.needsTestRetrieval ? 10 : 8,
+        limit: completionSymbolRetrievalLimit(input.plan),
       })
       const resolved = resolveSymbols({
         query,
         relatedPath: relativePath(input.document.uri),
         candidates: symbols.map(symbolCandidateFromCodeGraph),
-        limit: input.plan.needsTestRetrieval ? 10 : 8,
+        cursorLine: input.editInput.position.line + 1,
+        preferNearbyAbove: input.plan.kind === "comment-symbol-reference",
+        limit: completionSymbolRetrievalLimit(input.plan),
         unitTestTarget: input.plan.kind === "comment-to-test" || input.plan.kind === "natural-command",
       })
       this.logDebug(input.settings, `retrieved symbols=${symbols.length} resolved=${resolved.length} query="${quoteLogValue(query)}" ${input.details}`)
-      return resolved.map(symbolSnippet)
+      return resolved.map(completionSnippetFromSymbol)
     } catch (error) {
       this.logDebug(input.settings, `symbol-retrieval skipped reason="${quoteLogValue(formatError(error))}" ${input.details}`)
       return []
@@ -522,9 +580,11 @@ export class RemoteCompletionProvider implements vscode.InlineCompletionItemProv
     attempt: "initial" | "retry"
     textProfile: CompletionProfile
     telemetry: CompletionTelemetryDraft
+    selectedCompletionInfo?: SelectedCompletionInfo
   }): CompletionRequestOutcome {
     const rawVisibleText = completionInsertText(input.response, input.textProfile)
     input.telemetry.rawOutputLength = rawVisibleText.length
+    const rawFirstLine = firstLogLine(rawVisibleText)
     const postprocessStarted = Date.now()
     const postprocessResult = rawVisibleText
       ? postprocessCompletion({
@@ -542,12 +602,14 @@ export class RemoteCompletionProvider implements vscode.InlineCompletionItemProv
           },
         })
       : {
-          text: "",
-          rejected: true,
+          text: "" as const,
+          rejected: true as const,
           reason: "empty-output" as const,
         }
+    const postprocessDebug = completionPostprocessDebug(postprocessResult) ?? { prefixMode: "none" as const }
     input.telemetry.latencyMs.postprocess = elapsedMs(postprocessStarted)
     const visibleText = postprocessResult.text
+    const postprocessFirstLine = firstLogLine(visibleText)
     input.telemetry.normalizedOutputLength = visibleText.length
     const fallbackText =
       fallbackCompletionText({
@@ -560,6 +622,15 @@ export class RemoteCompletionProvider implements vscode.InlineCompletionItemProv
     const candidateText = visibleText || fallbackText
     if (!candidateText) {
       const reason = postprocessResult.rejected ? postprocessResult.reason : "filtered-or-no-visible-text"
+      this.logDebug(input.settings, `inline-invariant ${inlineCompletionInvariantDetails({
+        editInput: input.editInput,
+        plan: input.plan,
+        rawFirstLine,
+        postprocessFirstLine,
+        postprocessDebug,
+        rejectReason: reason,
+        selectedCompletionInfo: input.selectedCompletionInfo,
+      })} ${input.details}`)
       if (input.attempt === "retry") {
         this.logInfo(
           input.settings,
@@ -591,6 +662,15 @@ export class RemoteCompletionProvider implements vscode.InlineCompletionItemProv
     input.telemetry.latencyMs.edit = elapsedMs(editStarted)
     const edit = result.edit
     if (!edit) {
+      this.logDebug(input.settings, `inline-invariant ${inlineCompletionInvariantDetails({
+        editInput: input.editInput,
+        plan: input.plan,
+        rawFirstLine,
+        postprocessFirstLine,
+        postprocessDebug,
+        rejectReason: result.reason,
+        selectedCompletionInfo: input.selectedCompletionInfo,
+      })} ${input.details}`)
       if (input.attempt === "retry") {
         this.logInfo(
           input.settings,
@@ -608,6 +688,16 @@ export class RemoteCompletionProvider implements vscode.InlineCompletionItemProv
 
     input.telemetry.finalRange = edit.replaceRange ?? zeroWidthRange(input.editInput.position)
     input.telemetry.filterText = edit.filterText ?? edit.insertText
+    this.logDebug(input.settings, `inline-invariant ${inlineCompletionInvariantDetails({
+      edit,
+      editInput: input.editInput,
+      plan: input.plan,
+      rawFirstLine,
+      postprocessFirstLine,
+      postprocessDebug,
+      rejectReason: postprocessResult.reason,
+      selectedCompletionInfo: input.selectedCompletionInfo,
+    })} ${input.details}`)
     if (input.attempt === "retry") {
       this.logInfo(input.settings, `retry-edit-ready ${editDetails(edit)} ${input.details} elapsedMs=${elapsedMs(input.started)} chars=${edit.insertText.length}`)
     } else {
@@ -744,16 +834,19 @@ export class RemoteCompletionProvider implements vscode.InlineCompletionItemProv
   }
 }
 
-function completionRetryPrompt(prompt: string, editInput: Omit<CompletionEditInput, "text">) {
+function completionRetryPrompt(prompt: string, editInput: Omit<CompletionEditInput, "text">, reason: string) {
   const currentLine = truncateFeedback(`${editInput.linePrefix}${editInput.lineSuffix}`)
   const cursorPrefix = truncateFeedback(editInput.linePrefix)
+  const feedback = reason === "low-confidence-output"
+    ? "Previous completion was rejected because it contained only structural punctuation or otherwise lacked meaningful code."
+    : `Previous completion was rejected because it began with blank lines and did not continue the current line "${quoteLogValue(currentLine)}".`
   return [
     prompt,
     "",
     "<completion-feedback>",
-    `Previous completion was rejected because it began with blank lines and did not continue the current line "${quoteLogValue(currentLine)}".`,
+    feedback,
     `The cursor is after the prefix "${quoteLogValue(cursorPrefix)}".`,
-    "Return only text that continues or replaces the cursor context, or return empty.",
+    "Return only meaningful code that continues or replaces the cursor context, or return empty.",
     "</completion-feedback>",
   ].join("\n")
 }
@@ -826,19 +919,15 @@ function completionSymbolQuery(input: Omit<CompletionEditInput, "text">) {
     .at(-1)
 }
 
-function symbolSnippet(symbol: ResolvedSymbolCandidate): RetrievedCompletionSnippet {
-  const path = symbol.filePath ?? ""
-  const kind = /(?:^|[\\/._-])(?:test|tests|spec|mock|fixture)(?:[\\/._-]|$)/i.test(path) || /test|spec|mock|fixture/i.test(symbol.name)
-    ? "existing test"
-    : symbol.kind
-  return {
-    kind,
-    path,
-    line: symbol.line ?? 1,
-    name: symbol.name,
-    text: symbol.signature || firstNonEmptyLine(symbol.snippet ?? "") || symbol.name,
-    score: symbol.score,
-  }
+function completionSymbolRetrievalLimit(plan: CompletionPlan) {
+  if (plan.kind === "comment-symbol-reference") return 50
+  return plan.needsTestRetrieval ? 30 : 8
+}
+
+function updateCompletionTelemetryPlan(telemetry: CompletionTelemetryDraft, plan: CompletionPlan) {
+  telemetry.planKind = plan.kind
+  telemetry.insertMode = plan.insertMode
+  telemetry.targetSymbol = plan.targetSymbol
 }
 
 function fallbackSymbolText(plan: CompletionPlan, snippets: RetrievedCompletionSnippet[], currentWord: string | undefined) {
@@ -859,10 +948,6 @@ function deterministicCompletionMessage(text: string): OpenCodeMessage {
     },
     parts: [{ type: "text", text }],
   }
-}
-
-function firstNonEmptyLine(input: string) {
-  return input.split(/\r?\n/).map((line) => line.trim()).find(Boolean) ?? ""
 }
 
 function formatError(error: unknown) {
@@ -897,6 +982,14 @@ function documentLines(document: vscode.TextDocument) {
     lines.push(document.lineAt(line).text)
   }
   return lines
+}
+
+function previousNonEmptyLineBefore(lines: string[], line: number) {
+  for (let index = line - 1; index >= 0; index--) {
+    const text = lines[index]
+    if (text?.trim()) return text
+  }
+  return undefined
 }
 
 function currentWordBeforeCursor(linePrefix: string, line: number): { text: string; range: CompletionRange } | undefined {
@@ -980,8 +1073,89 @@ function editDetails(edit: CompletionEdit) {
   ].join(" ")
 }
 
+function inlineCompletionInvariantDetails(input: {
+  edit?: CompletionEdit
+  editInput: Omit<CompletionEditInput, "text">
+  plan: CompletionPlan
+  rawFirstLine: string
+  postprocessFirstLine: string
+  postprocessDebug: PostprocessDebug
+  rejectReason?: string
+  selectedCompletionInfo?: SelectedCompletionInfo
+}) {
+  const rangeText = input.edit?.replaceRange
+    ? currentLineRangeText(input.editInput, input.edit.replaceRange)
+    : ""
+  const insertFirstLine = input.edit ? firstLogLine(input.edit.insertText) : ""
+  const filterText = input.edit ? input.edit.filterText ?? input.edit.insertText : ""
+  const risks = inlineCompletionDisplayRisks({
+    edit: input.edit,
+    rangeText,
+    selectedCompletionInfo: input.selectedCompletionInfo,
+  })
+  return [
+    `rawFirstLine="${quoteLogValue(truncateLine(input.rawFirstLine))}"`,
+    `postprocessFirstLine="${quoteLogValue(truncateLine(input.postprocessFirstLine))}"`,
+    `insertMode="${input.plan.insertMode}"`,
+    `prefixMode="${input.postprocessDebug.prefixMode}"`,
+    ...(input.postprocessDebug.stripReason ? [`stripReason="${input.postprocessDebug.stripReason}"`] : []),
+    `linePrefix="${quoteLogValue(truncateLine(input.editInput.linePrefix))}"`,
+    `currentWord="${quoteLogValue(input.editInput.currentWord ?? "")}"`,
+    `replaceRange=${input.edit?.replaceRange ? rangeLogValue(input.edit.replaceRange) : "none"}`,
+    `rangeText="${quoteLogValue(truncateLine(rangeText))}"`,
+    `insertFirstLine="${quoteLogValue(truncateLine(insertFirstLine))}"`,
+    `filterText="${quoteLogValue(truncateLine(filterText))}"`,
+    ...(input.rejectReason ? [`rejectReason="${quoteLogValue(input.rejectReason)}"`] : []),
+    `displayRisk="${risks.length ? quoteLogValue(risks.join(",")) : "none"}"`,
+  ].join(" ")
+}
+
+function inlineCompletionDisplayRisks(input: {
+  edit?: CompletionEdit
+  rangeText: string
+  selectedCompletionInfo?: SelectedCompletionInfo
+}) {
+  const risks: string[] = []
+  if (!input.edit) {
+    if (input.selectedCompletionInfo) risks.push("selected-info-without-edit")
+    return risks
+  }
+
+  const filterText = input.edit.filterText ?? input.edit.insertText
+  if (input.rangeText && input.rangeText !== "<cross-line>" && !filterText.startsWith(input.rangeText)) {
+    risks.push("filterText-not-prefixed-by-rangeText")
+  }
+
+  if (!input.selectedCompletionInfo) return risks
+
+  if (!input.edit.replaceRange || !sameCompletionRangeAsVscodeRange(input.edit.replaceRange, input.selectedCompletionInfo.range)) {
+    risks.push("selectedCompletionInfo-range-mismatch")
+  }
+  if (!input.edit.insertText.startsWith(input.selectedCompletionInfo.text)) {
+    risks.push("selectedCompletionInfo-text-not-prefix")
+  }
+  return risks
+}
+
+function currentLineRangeText(input: Omit<CompletionEditInput, "text">, range: CompletionRange) {
+  if (range.startLine !== input.position.line || range.endLine !== input.position.line) return "<cross-line>"
+  const lineText = `${input.linePrefix}${input.lineSuffix}`
+  return lineText.slice(range.startCharacter, range.endCharacter)
+}
+
+function sameCompletionRangeAsVscodeRange(range: CompletionRange, vscodeRange: vscode.Range) {
+  return range.startLine === vscodeRange.start.line &&
+    range.startCharacter === vscodeRange.start.character &&
+    range.endLine === vscodeRange.end.line &&
+    range.endCharacter === vscodeRange.end.character
+}
+
 function rangeLogValue(range: CompletionRange) {
   return `${range.startLine + 1}:${range.startCharacter + 1}-${range.endLine + 1}:${range.endCharacter + 1}`
+}
+
+function firstLogLine(input: string) {
+  return input.replace(/\r\n/g, "\n").split("\n")[0] ?? ""
 }
 
 function truncateLine(input: string) {

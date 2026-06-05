@@ -51,6 +51,19 @@ describe("completion test fallback", () => {
       rejectReason: "echoed-prefix",
     })).toBe("")
   })
+
+  test("does not mask low-confidence model output with a deterministic test fallback", () => {
+    expect(fallbackCompletionText({
+      languageId: "c",
+      plan: planCompletion({
+        languageId: "c",
+        linePrefix: "// unit test for epr_ppn_raw_write_cb_dfx()",
+        lineSuffix: "",
+      }),
+      retrievedSnippets: [snippet("epr_ppn_raw_write_cb_dfx")],
+      rejectReason: "low-confidence-output",
+    })).toBe("")
+  })
 })
 
 function snippet(name: string): RetrievedCompletionSnippet {

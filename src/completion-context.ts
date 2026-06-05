@@ -6,6 +6,7 @@ export type PackedContextBlockKind =
   | "current-function"
   | "target-symbol"
   | "similar-test"
+  | "test-framework"
   | "include"
   | "open-tab"
   | "recent-file"
@@ -74,11 +75,13 @@ export function formatRepoContext(pack: CompletionContextPack) {
 export function formatInstructionContext(pack: CompletionContextPack) {
   const target = pack.selected.filter((block) => block.kind === "target-symbol")
   const tests = pack.selected.filter((block) => block.kind === "similar-test")
+  const framework = pack.selected.filter((block) => block.kind === "test-framework")
   const current = pack.selected.filter((block) => block.kind === "current-prefix" || block.kind === "current-suffix")
 
   return [
     section("Target symbol", target),
     section("Similar tests", tests),
+    section("Test framework context", framework),
     section("Current file", current),
   ].filter(Boolean).join("\n\n")
 }
@@ -97,16 +100,23 @@ function contextBlocks(input: PackCompletionContextInput): PackedContextBlock[] 
   const snippets = input.retrievedSnippets
   const target = targetSymbolBlocks(input.plan, snippets)
   const similarTests = snippets.filter(isSimilarTest).map((snippet, index) => snippetBlock(snippet, "similar-test", 760 - index))
+  const testFramework = testFrameworkBlocks(input.plan, snippets)
   const includes = includeBlock(input.prefix, input.currentPath)
   const current = currentFileBlocks(input)
 
   switch (input.plan.kind) {
     case "symbol-completion":
       return target.length > 0 ? target : snippets.slice(0, 8).map((snippet, index) => snippetBlock(snippet, "target-symbol", 700 - index))
+    case "comment-symbol-reference":
+      return target
+    case "previous-comment-continuation":
+      return input.plan.needsTestRetrieval
+        ? [...target, ...similarTests, ...testFramework, ...includes, ...current]
+        : [...target, ...includes, ...current]
     case "comment-to-test":
-      return [...target, ...similarTests, ...includes, ...current]
+      return [...target, ...similarTests, ...testFramework, ...includes, ...current]
     case "natural-command":
-      return [...target, ...similarTests, ...current]
+      return [...target, ...similarTests, ...testFramework, ...current]
     case "ordinary-code":
       return [...target, ...includes, ...current]
     case "comment-to-code":
@@ -132,7 +142,7 @@ function snippetBlock(snippet: RetrievedCompletionSnippet, kind: PackedContextBl
   const title = snippet.name ? `${snippet.kind}: ${snippet.name}` : snippet.kind
   const text = [
     snippet.name ? `symbol: ${snippet.name}` : "",
-    snippet.text,
+    limitSnippetText(snippet.text, kind),
   ].filter(Boolean).join("\n")
   return block({
     kind,
@@ -141,6 +151,23 @@ function snippetBlock(snippet: RetrievedCompletionSnippet, kind: PackedContextBl
     text,
     score: score + Math.min(Math.max(snippet.score ?? 0, 0), 100),
   })
+}
+
+function testFrameworkBlocks(plan: CompletionPlan, snippets: RetrievedCompletionSnippet[]): PackedContextBlock[] {
+  if (!isTestInstructionPlan(plan)) return []
+  const similarTests = snippets.filter(isSimilarTest)
+  const lines = uniqueLines(similarTests.flatMap((snippet) => testFrameworkLines(snippet.text)))
+  if (lines.length === 0) return []
+  const firstPath = similarTests.find((snippet) => snippet.path)?.path
+  return [
+    block({
+      kind: "test-framework",
+      title: "test framework cues",
+      filePath: firstPath,
+      text: limitSnippetText(lines.join("\n"), "test-framework"),
+      score: 820,
+    }),
+  ]
 }
 
 function currentFileBlocks(input: PackCompletionContextInput): PackedContextBlock[] {
@@ -195,13 +222,69 @@ function isSimilarTest(snippet: RetrievedCompletionSnippet) {
     /test|spec|mock|fixture/i.test(snippet.name ?? "")
 }
 
+function isTestInstructionPlan(plan: CompletionPlan) {
+  return plan.useInstruction && plan.needsTestRetrieval
+}
+
+function testFrameworkLines(input: string) {
+  return input
+    .split(/\r?\n/)
+    .map((line) => line.trimEnd())
+    .filter((line) => isTestFrameworkCueLine(line.trim()))
+}
+
+function isTestFrameworkCueLine(line: string) {
+  if (!line) return false
+  if (/^(?:#\s*(?:include|define|if|ifdef|ifndef|endif|elif|else|pragma)\b|import\b|from\b)/.test(line)) return true
+  if (/^(?:TEST(?:_[A-Z0-9]+)?|TESTCASE|TEST_CASE|SCENARIO|FEATURE|describe|it|test)\s*\(/i.test(line)) return true
+  if (/\b(?:assert|expect|verify|check|fail|ok)[A-Za-z0-9_]*\s*\(/i.test(line)) return true
+  if (/\b[A-Za-z_][A-Za-z0-9_]*(?:setup|teardown|fixture|helper|mock)[A-Za-z0-9_]*\s*\(/i.test(line)) return true
+  return false
+}
+
+function limitSnippetText(input: string, kind: PackedContextBlockKind) {
+  const max = snippetTextLimit(kind)
+  const normalized = input.trim()
+  if (normalized.length <= max) return normalized
+  return `${normalized.slice(0, max).replace(/\s+$/, "")}\n/* completion context truncated */`
+}
+
+function snippetTextLimit(kind: PackedContextBlockKind) {
+  switch (kind) {
+    case "target-symbol":
+      return 3600
+    case "similar-test":
+      return 2600
+    case "test-framework":
+      return 1800
+    default:
+      return 3000
+  }
+}
+
+function uniqueLines(lines: string[]) {
+  const seen = new Set<string>()
+  const result: string[] = []
+  for (const line of lines) {
+    const key = line.trim()
+    if (!key || seen.has(key)) continue
+    seen.add(key)
+    result.push(line)
+  }
+  return result
+}
+
 function tokenBudgetForPlan(plan: CompletionPlan) {
   switch (plan.kind) {
     case "symbol-completion":
       return 240
+    case "comment-symbol-reference":
+      return 120
+    case "previous-comment-continuation":
+      return plan.needsTestRetrieval ? 1800 : 900
     case "comment-to-test":
     case "natural-command":
-      return 1400
+      return 1800
     case "ordinary-code":
     case "comment-to-code":
       return 900

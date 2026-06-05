@@ -13,6 +13,7 @@ const MIN_UNIT_TEST_FALLBACK_SCORE = 500
 export function fallbackCompletionText(input: CompletionFallbackInput) {
   if (input.plan.kind !== "natural-command" && input.plan.kind !== "comment-to-test") return ""
   if (!input.rejectReason) return ""
+  if (input.rejectReason === "low-confidence-output") return ""
 
   const symbol = unitTestTargetSymbol(input)
   if (!symbol) return ""

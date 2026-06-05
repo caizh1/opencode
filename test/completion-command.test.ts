@@ -29,9 +29,10 @@ describe("accepted completion formatting command wiring", () => {
     expect(completionSource).toContain("editor.action.inlineSuggest.trigger")
   })
 
-  test("completion provider retries once after misaligned leading-newline edits", () => {
-    expect(completionSource).toContain('initial.reason !== "misaligned-leading-newline"')
-    expect(completionSource).toContain("completionRetryPrompt(input.prompt, input.editInput)")
+  test("completion provider retries once after retryable rejected instruction edits", () => {
+    expect(completionSource).toContain("shouldRetryCompletionRejection")
+    expect(completionSource).toContain('reason === "low-confidence-output"')
+    expect(completionSource).toContain("completionRetryPrompt(input.prompt, input.editInput, initial.reason)")
     expect(completionSource).toContain("retry-sent reason=${initial.reason}")
     expect(completionSource).toContain("retry-received reason=${initial.reason}")
     expect(completionSource).toContain("retry-edit-ready ${editDetails(edit)}")
@@ -64,6 +65,10 @@ describe("accepted completion formatting command wiring", () => {
     expect(completionSource).toContain("droppedContextBlocks")
     expect(completionSource).toContain("rejectReason")
     expect(completionSource).toContain("latencyMs")
+  })
+
+  test("completion provider retrieves a wider symbol set for test instruction context", () => {
+    expect(completionSource).toContain("plan.needsTestRetrieval ? 30 : 8")
   })
 
   test("Qwen coder FIM prompt uses the expected token order", () => {

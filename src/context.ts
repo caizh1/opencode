@@ -254,12 +254,15 @@ function buildInstructionCompletionPrompt(input: {
     "Task:",
     task,
     "",
+    ...previousCommentContinuationPromptLines(input.plan, input.prefix),
+    "",
     "Rules:",
     "- Do not repeat the user's current line.",
     "- Do not output markdown.",
     "- Do not explain.",
     "- Output only code.",
     "- Use the target symbol and similar tests from context.",
+    "- For test-code requests, use target symbol, similar tests, and test framework context to return real executable, declaration, or call code; do not return placeholder comments, empty blocks, or scaffold-only text.",
     input.transport === "openai-compatible"
       ? "- If you produce <think> reasoning, put all reasoning inside <think>...</think>; after </think>, output only the exact insertion text."
       : "",
@@ -276,6 +279,20 @@ function buildInstructionCompletionPrompt(input: {
     "</suffix>",
     "</file>",
   ].filter(Boolean).join("\n")
+}
+
+function previousCommentContinuationPromptLines(plan: CompletionPlan, prefix: string) {
+  if (plan.kind !== "previous-comment-continuation") return []
+  return [
+    "Source comment:",
+    plan.sourceComment ?? "",
+    "Current line prefix:",
+    currentLinePrefix(prefix),
+  ]
+}
+
+function currentLinePrefix(prefix: string) {
+  return prefix.replace(/\r\n/g, "\n").split("\n").at(-1) ?? ""
 }
 
 function emptyContextPack(): CompletionContextPack {

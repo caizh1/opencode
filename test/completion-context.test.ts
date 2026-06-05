@@ -120,6 +120,140 @@ describe("completion context packer", () => {
     expect(prompt).toContain("ExistingWriteCbDfx")
     expect(prompt).toContain("Current file:")
   })
+
+  test("instruction prompt keeps full target function bodies when snippets include them", async () => {
+    const { buildCompletionPrompt } = await import("../src/context")
+    const line = "// arbitrary intent alpha_feature_finalize"
+    const prompt = await buildCompletionPrompt({
+      document: fakeDocument(line, "c"),
+      position: { line: 0, character: line.length },
+      settings: settings(),
+      plan: commentToCodePlan("alpha_feature_finalize"),
+      retrievedSnippets: [
+        {
+          kind: "function",
+          path: "src/features/alpha.c",
+          line: 10,
+          name: "alpha_feature_finalize",
+          text: [
+            "static void alpha_feature_finalize(void)",
+            "{",
+            "    alpha_release_state();",
+            "}",
+          ].join("\n"),
+          score: 99,
+        },
+      ],
+    })
+
+    expect(prompt).toContain("Target symbol:")
+    expect(prompt).toContain("alpha_release_state();")
+  })
+
+  test("test instructions include framework context from test-shaped snippets", async () => {
+    const { buildCompletionPrompt } = await import("../src/context")
+    const line = "// unit test for alpha_feature_finalize()"
+    const prompt = await buildCompletionPrompt({
+      document: fakeDocument(line, "c"),
+      position: { line: 0, character: line.length },
+      settings: settings(),
+      plan: commentToTestPlanFor("alpha_feature_finalize"),
+      retrievedSnippets: [
+        {
+          kind: "function",
+          path: "src/features/alpha.c",
+          line: 10,
+          name: "alpha_feature_finalize",
+          text: "static void alpha_feature_finalize(void) {}",
+          score: 99,
+        },
+        {
+          kind: "existing test",
+          path: "src/features/alpha_test.c",
+          line: 30,
+          name: "test_alpha_feature_finalize",
+          text: [
+            "#include <glib.h>",
+            "static void alpha_fixture_setup(void)",
+            "{",
+            "    alpha_fixture_init();",
+            "}",
+            "",
+            "static void test_alpha_feature_finalize(void)",
+            "{",
+            "    g_assert_true(alpha_feature_finalize_for_test());",
+            "}",
+          ].join("\n"),
+          score: 88,
+        },
+      ],
+    })
+
+    expect(prompt).toContain("Similar tests:")
+    expect(prompt).toContain("Test framework context:")
+    expect(prompt).toContain("#include <glib.h>")
+    expect(prompt).toContain("alpha_fixture_setup")
+    expect(prompt).toContain("g_assert_true")
+  })
+
+  test("ordinary comment-to-code instructions do not include test framework context", async () => {
+    const { buildCompletionPrompt } = await import("../src/context")
+    const line = "// arbitrary intent alpha_feature_finalize"
+    const prompt = await buildCompletionPrompt({
+      document: fakeDocument(line, "c"),
+      position: { line: 0, character: line.length },
+      settings: settings(),
+      plan: commentToCodePlan("alpha_feature_finalize"),
+      retrievedSnippets: [
+        {
+          kind: "function",
+          path: "src/features/alpha.c",
+          line: 10,
+          name: "alpha_feature_finalize",
+          text: "static void alpha_feature_finalize(void) {}",
+          score: 99,
+        },
+        {
+          kind: "existing test",
+          path: "src/features/alpha_test.c",
+          line: 30,
+          name: "test_alpha_feature_finalize",
+          text: "static void test_alpha_feature_finalize(void) { g_assert_true(true); }",
+          score: 88,
+        },
+      ],
+    })
+
+    expect(prompt).not.toContain("Test framework context:")
+    expect(prompt).not.toContain("test_alpha_feature_finalize")
+  })
+
+  test("previous comment continuation prompt names the source comment and current line prefix", async () => {
+    const { buildCompletionPrompt } = await import("../src/context")
+    const sourceComment = "// 任意描述 alpha_feature_finalize"
+    const currentPrefix = "stat"
+    const prompt = await buildCompletionPrompt({
+      document: fakeDocument(`${sourceComment}\n${currentPrefix}`, "c"),
+      position: { line: 1, character: currentPrefix.length },
+      settings: settings(),
+      plan: previousCommentContinuationPlan(sourceComment),
+      retrievedSnippets: [
+        {
+          kind: "function",
+          path: "src/features/alpha.c",
+          line: 10,
+          name: "alpha_feature_finalize",
+          text: "static void alpha_feature_finalize(void) {}",
+          score: 99,
+        },
+      ],
+    })
+
+    expect(prompt).toContain("Source comment:")
+    expect(prompt).toContain(sourceComment)
+    expect(prompt).toContain("Current line prefix:")
+    expect(prompt).toContain(currentPrefix)
+  })
 })
 
 function commentToTestPlan() {
@@ -128,6 +262,48 @@ function commentToTestPlan() {
     linePrefix: "// unit test for epr_ppn_raw_write_cb_dfx()",
     lineSuffix: "",
   })
+}
+
+function commentToTestPlanFor(symbol: string) {
+  return {
+    ...planCompletion({
+      languageId: "c",
+      linePrefix: `// unit test for ${symbol}()`,
+      lineSuffix: "",
+    }),
+    targetSymbol: symbol,
+  }
+}
+
+function commentToCodePlan(symbol: string): CompletionPlan {
+  return {
+    kind: "comment-to-code",
+    insertMode: "insert-after-line",
+    targetSymbol: symbol,
+    replaceCurrentWord: false,
+    needsSymbolRetrieval: true,
+    needsTestRetrieval: false,
+    useFim: false,
+    useInstruction: true,
+    maxTokens: 384,
+    confidenceFloor: 0.5,
+  }
+}
+
+function previousCommentContinuationPlan(sourceComment: string): CompletionPlan {
+  return {
+    kind: "previous-comment-continuation",
+    insertMode: "replace-whole-line",
+    sourceComment,
+    targetSymbol: "alpha_feature_finalize",
+    replaceCurrentWord: true,
+    needsSymbolRetrieval: true,
+    needsTestRetrieval: false,
+    useFim: false,
+    useInstruction: true,
+    maxTokens: 384,
+    confidenceFloor: 0.5,
+  }
 }
 
 function ordinaryPlan(): CompletionPlan {

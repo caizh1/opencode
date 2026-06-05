@@ -132,11 +132,99 @@ describe("completion planner", () => {
       lineSuffix: "",
       currentWord: "numbers",
     })).toMatchObject({
-      kind: "comment-to-code",
-      insertMode: "insert-after-line",
-      replaceCurrentWord: false,
+      kind: "comment-symbol-reference",
+      insertMode: "replace-current-word",
+      targetSymbol: "numbers",
+      symbolFallbackKind: "comment-to-code",
+      replaceCurrentWord: true,
+      useFim: false,
+      useInstruction: false,
+    })
+  })
+
+  test("tries plain identifier prefixes inside unit-test comments before generating code", () => {
+    expect(planCompletion({
+      languageId: "c",
+      linePrefix: "// give me a unit test code for confident",
+      lineSuffix: "",
+      currentWord: "confident",
+    })).toMatchObject({
+      kind: "comment-symbol-reference",
+      insertMode: "replace-current-word",
+      targetSymbol: "confident",
+      symbolFallbackKind: "comment-to-test",
+      replaceCurrentWord: true,
+      needsSymbolRetrieval: true,
+      needsTestRetrieval: false,
+      useFim: false,
+      useInstruction: false,
+    })
+  })
+
+  test("routes identifier prefixes inside comments as deterministic symbol references", () => {
+    expect(planCompletion({
+      languageId: "c",
+      linePrefix: "// arbitrary words alpha_feature_",
+      lineSuffix: "",
+      currentWord: "alpha_feature_",
+    })).toMatchObject({
+      kind: "comment-symbol-reference",
+      insertMode: "replace-current-word",
+      targetSymbol: "alpha_feature_",
+      replaceCurrentWord: true,
+      needsSymbolRetrieval: true,
+      needsTestRetrieval: false,
+      useFim: false,
+      useInstruction: false,
+    })
+  })
+
+  test("routes the line after a comment intent to instruction continuation", () => {
+    expect(planCompletion({
+      languageId: "c",
+      previousNonEmptyLine: "// 任意描述 alpha_feature_finalize",
+      linePrefix: "",
+      lineSuffix: "",
+    })).toMatchObject({
+      kind: "previous-comment-continuation",
+      insertMode: "replace-whole-line",
+      targetSymbol: "alpha_feature_finalize",
+      sourceComment: "// 任意描述 alpha_feature_finalize",
+      replaceCurrentWord: true,
+      needsSymbolRetrieval: true,
       useFim: false,
       useInstruction: true,
+    })
+  })
+
+  test("keeps previous comment continuation ahead of current-word symbol completion", () => {
+    expect(planCompletion({
+      languageId: "c",
+      previousNonEmptyLine: "// in order to test alpha_feature_finalize",
+      linePrefix: "stat",
+      lineSuffix: "",
+      currentWord: "stat",
+    })).toMatchObject({
+      kind: "previous-comment-continuation",
+      insertMode: "replace-whole-line",
+      targetSymbol: "alpha_feature_finalize",
+      needsTestRetrieval: true,
+      useInstruction: true,
+    })
+  })
+
+  test("does not treat ordinary identifier prefixes as previous comment continuations", () => {
+    expect(planCompletion({
+      languageId: "c",
+      previousNonEmptyLine: "static void unrelated(void)",
+      linePrefix: "stat",
+      lineSuffix: "",
+      currentWord: "stat",
+    })).toMatchObject({
+      kind: "symbol-completion",
+      insertMode: "replace-current-word",
+      targetSymbol: "stat",
+      useInstruction: false,
     })
   })
 
