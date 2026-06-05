@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
-import { buildCompletionEdit, buildCompletionEditResult, buildInlineCompletionEditResult, validateInlineCompletionEdit } from "../src/completion-edit"
-import type { CompletionInsertMode, CompletionPlanKind } from "../src/completion-types"
+import { adaptAndValidateInlineCompletionEdit, buildCompletionEdit, buildCompletionEditResult, buildInlineCompletionEditResult, validateInlineCompletionEdit } from "../src/completion-edit"
+import type { CompletionInsertMode, CompletionPlan, CompletionPlanKind } from "../src/completion-types"
 
 describe("language-aware completion edits", () => {
   test("InlineEditBuilder replace-current-word uses the current word range", () => {
@@ -136,6 +136,112 @@ describe("language-aware completion edits", () => {
     })
   })
 
+  test("InlineEditAdapter shrinks unsafe whole-line replacements to the current word", () => {
+    const linePrefix = "static void con"
+    const result = adaptAndValidateInlineCompletionEdit({
+      edit: {
+        insertText: "confidential_guest_support_finalize(void)",
+        filterText: "confidential_guest_support_finalize(void)",
+        replaceRange: range(0, 0, linePrefix.length),
+      },
+      editInput: editInput({
+        languageId: "c",
+        linePrefix,
+        character: linePrefix.length,
+        currentWord: "con",
+      }),
+      plan: inlinePlan("replace-whole-line", "previous-comment-continuation"),
+    })
+
+    expect(result).toMatchObject({
+      status: "ok",
+      edit: {
+        insertText: "confidential_guest_support_finalize(void)",
+        replaceRange: range(0, "static void ".length, linePrefix.length),
+      },
+    })
+    expect(result.status === "ok" ? applySingleLineEdit(linePrefix, result.edit.replaceRange, result.edit.insertText) : "").toBe(
+      "static void confidential_guest_support_finalize(void)",
+    )
+  })
+
+  test("InlineEditAdapter rejects wide replacements that would drop preserved code prefix", () => {
+    const linePrefix = "static void con"
+    expect(adaptAndValidateInlineCompletionEdit({
+      edit: {
+        insertText: "finalize(void)",
+        filterText: "static void con",
+        replaceRange: range(0, 0, linePrefix.length),
+      },
+      editInput: editInput({
+        languageId: "c",
+        linePrefix,
+        character: linePrefix.length,
+        currentWord: "con",
+      }),
+      plan: inlinePlan("replace-whole-line", "previous-comment-continuation"),
+    })).toEqual({
+      status: "rejected",
+      reason: "insertText-does-not-preserve-rangeText",
+    })
+  })
+
+  test("InlineEditAdapter adapts whole-line candidates to selected completion ranges conservatively", () => {
+    const linePrefix = "static void con"
+    const result = adaptAndValidateInlineCompletionEdit({
+      edit: {
+        insertText: "static void confidential_guest_support_finalize(void)",
+        filterText: "static void confidential_guest_support_finalize(void)",
+        replaceRange: range(0, 0, linePrefix.length),
+      },
+      editInput: editInput({
+        languageId: "c",
+        linePrefix,
+        character: linePrefix.length,
+        currentWord: "con",
+      }),
+      plan: inlinePlan("replace-whole-line", "previous-comment-continuation"),
+      selectedCompletionInfo: {
+        text: "confidential_guest_support_finalize",
+        range: range(0, "static void ".length, linePrefix.length),
+      },
+    })
+
+    expect(result).toMatchObject({
+      status: "ok",
+      edit: {
+        insertText: "confidential_guest_support_finalize(void)",
+        filterText: "confidential_guest_support_finalize",
+        replaceRange: range(0, "static void ".length, linePrefix.length),
+      },
+    })
+  })
+
+  test("InlineEditAdapter rejects selected completion edits that cannot extend the selected text", () => {
+    const linePrefix = "static void con"
+    expect(adaptAndValidateInlineCompletionEdit({
+      edit: {
+        insertText: "static void finalize(void)",
+        filterText: "static void finalize(void)",
+        replaceRange: range(0, 0, linePrefix.length),
+      },
+      editInput: editInput({
+        languageId: "c",
+        linePrefix,
+        character: linePrefix.length,
+        currentWord: "con",
+      }),
+      plan: inlinePlan("replace-whole-line", "previous-comment-continuation"),
+      selectedCompletionInfo: {
+        text: "confidential_guest_support_finalize",
+        range: range(0, "static void ".length, linePrefix.length),
+      },
+    })).toEqual({
+      status: "rejected",
+      reason: "selectedCompletionInfo-text-not-prefix",
+    })
+  })
+
   test("InlineEditBuilder validates VS Code inline completion display invariants", () => {
     expect(validateInlineCompletionEdit({
       edit: {
@@ -148,16 +254,31 @@ describe("language-aware completion edits", () => {
           endCharacter: "static void".length,
         },
       },
+      editInput: editInput({
+        languageId: "c",
+        linePrefix: "static void",
+        character: "static void".length,
+        currentWord: "void",
+      }),
+      plan: inlinePlan("replace-whole-line", "previous-comment-continuation"),
     })).toEqual({ valid: true })
 
     expect(validateInlineCompletionEdit({
       edit: {
         insertText: "test_case(void)",
         filterText: "static void",
+        replaceRange: range(0, 0, "static void".length),
       },
+      editInput: editInput({
+        languageId: "c",
+        linePrefix: "static void",
+        character: "static void".length,
+        currentWord: "void",
+      }),
+      plan: inlinePlan("replace-whole-line", "previous-comment-continuation"),
     })).toEqual({
       valid: false,
-      reason: "filterText-not-prefix-of-insertText",
+      reason: "insertText-does-not-preserve-rangeText",
     })
 
     expect(validateInlineCompletionEdit({
@@ -171,6 +292,13 @@ describe("language-aware completion edits", () => {
           endCharacter: 10,
         },
       },
+      editInput: editInput({
+        languageId: "c",
+        linePrefix: "    printf",
+        character: "    printf".length,
+        currentWord: "printf",
+      }),
+      plan: inlinePlan("replace-current-word", "symbol-completion"),
       selectedCompletionInfo: {
         text: "printf",
         range: {
@@ -193,6 +321,13 @@ describe("language-aware completion edits", () => {
           endCharacter: 8,
         },
       },
+      editInput: editInput({
+        languageId: "c",
+        linePrefix: "    printf",
+        character: "    printf".length,
+        currentWord: "printf",
+      }),
+      plan: inlinePlan("replace-current-word", "symbol-completion"),
       selectedCompletionInfo: {
         text: "printf",
         range: {
@@ -218,6 +353,13 @@ describe("language-aware completion edits", () => {
           endCharacter: 10,
         },
       },
+      editInput: editInput({
+        languageId: "c",
+        linePrefix: "    printf",
+        character: "    printf".length,
+        currentWord: "printf",
+      }),
+      plan: inlinePlan("replace-current-word", "symbol-completion"),
       selectedCompletionInfo: {
         text: "printf",
         range: {
@@ -741,6 +883,54 @@ describe("language-aware completion edits", () => {
     })
   })
 })
+
+function inlinePlan(insertMode: CompletionInsertMode, kind: CompletionPlanKind = "ordinary-code"): CompletionPlan {
+  return {
+    kind,
+    insertMode,
+    replaceCurrentWord: insertMode === "replace-current-word" || insertMode === "replace-whole-line",
+    needsSymbolRetrieval: false,
+    needsTestRetrieval: false,
+    useFim: kind === "ordinary-code",
+    useInstruction: kind !== "ordinary-code" && kind !== "symbol-completion",
+    maxTokens: 128,
+    confidenceFloor: 0.5,
+  }
+}
+
+function editInput(input: {
+  languageId: string
+  linePrefix: string
+  character: number
+  lineSuffix?: string
+  currentWord?: string
+}) {
+  const currentWord = input.currentWord
+  const startCharacter = currentWord ? input.character - currentWord.length : input.character
+  return {
+    languageId: input.languageId,
+    linePrefix: input.linePrefix,
+    lineSuffix: input.lineSuffix ?? "",
+    position: { line: 0, character: input.character },
+    indent: { indentUnit: "    ", targetIndent: "    " },
+    currentWord,
+    currentWordRange: currentWord ? range(0, startCharacter, input.character) : undefined,
+  }
+}
+
+function range(line: number, startCharacter: number, endCharacter: number) {
+  return {
+    startLine: line,
+    startCharacter,
+    endLine: line,
+    endCharacter,
+  }
+}
+
+function applySingleLineEdit(lineText: string, editRange: ReturnType<typeof range> | undefined, insertText: string) {
+  const rangeValue = editRange ?? range(0, lineText.length, lineText.length)
+  return `${lineText.slice(0, rangeValue.startCharacter)}${insertText.split("\n")[0] ?? ""}${lineText.slice(rangeValue.endCharacter)}`
+}
 
 function edit(input: {
   text: string

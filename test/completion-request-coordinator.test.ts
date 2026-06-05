@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test"
 import { CompletionRequestCoordinator, type CompletionRequestOutcome } from "../src/completion-request-coordinator"
 
 const editOutcome: CompletionRequestOutcome = {
+  status: "ok",
   edit: {
     insertText: "return 1;",
   },
@@ -65,7 +66,7 @@ describe("completion request coordinator", () => {
       runRemote: async () => editOutcome,
     })
 
-    expect(await stale.pending).toEqual({ reason: "stale-key", source: "remote" })
+    expect(await stale.pending).toEqual({ status: "rejected", reason: "stale-key", source: "remote" })
     expect(logs).toContain("cancelled reason=stale-key phase=scheduled line=1")
   })
 
@@ -84,7 +85,7 @@ describe("completion request coordinator", () => {
       runRemote: (signal) => {
         firstSignal = signal
         return new Promise<CompletionRequestOutcome>((resolve) => {
-          signal.addEventListener("abort", () => resolve({ reason: "aborted", source: "remote" }), { once: true })
+            signal.addEventListener("abort", () => resolve({ status: "rejected", reason: "aborted", source: "remote" }), { once: true })
         })
       },
     })
@@ -98,7 +99,7 @@ describe("completion request coordinator", () => {
     })
 
     expect(firstSignal?.aborted).toBe(true)
-    expect(await stale.pending).toEqual({ reason: "aborted", source: "remote" })
+    expect(await stale.pending).toEqual({ status: "rejected", reason: "aborted", source: "remote" })
     expect(logs).toContain("cancelled reason=stale-key phase=request line=1")
   })
 
@@ -125,6 +126,7 @@ describe("completion request coordinator", () => {
     })
 
     expect(second.immediate).toEqual({
+      status: "ok",
       edit: editOutcome.edit,
       source: "cache",
     })
@@ -132,6 +134,7 @@ describe("completion request coordinator", () => {
 
   test("invalidates cached edits that no longer satisfy inline display invariants", async () => {
     let requests = 0
+    let validations = 0
     const logs: string[] = []
     const coordinator = new CompletionRequestCoordinator({
       delay: () => Promise.resolve(),
@@ -153,13 +156,22 @@ describe("completion request coordinator", () => {
       key: "cached",
       details: "line=1",
       debounceMs: 0,
-      validateEdit: () => ({
-        valid: false,
-        reason: "filterText-not-prefix-of-insertText",
-      }),
+      validateEdit: (edit) => {
+        validations += 1
+        return validations === 1
+          ? {
+              status: "rejected",
+              reason: "rangeText-not-prefix-of-filterText",
+            }
+          : {
+              status: "ok",
+              edit,
+            }
+      },
       runRemote: async () => {
         requests += 1
         return {
+          status: "ok",
           edit: {
             insertText: "return 2;",
           },
@@ -170,17 +182,19 @@ describe("completion request coordinator", () => {
 
     expect(second.immediate).toBeUndefined()
     expect(await second.pending).toEqual({
+      status: "ok",
       edit: {
         insertText: "return 2;",
       },
       source: "remote",
     })
     expect(requests).toBe(2)
-    expect(logs).toContain("cache-invalid reason=filterText-not-prefix-of-insertText line=1")
+    expect(logs).toContain("cache-invalid reason=rangeText-not-prefix-of-filterText line=1")
   })
 
-  test("does not save invalid remote edits into the cache", async () => {
+  test("rejects invalid remote edits without returning, caching, or refreshing them", async () => {
     let requests = 0
+    let refreshes = 0
     const logs: string[] = []
     const coordinator = new CompletionRequestCoordinator({
       delay: () => Promise.resolve(),
@@ -192,15 +206,22 @@ describe("completion request coordinator", () => {
       details: "line=1",
       debounceMs: 0,
       validateEdit: () => ({
-        valid: false,
+        status: "rejected",
         reason: "selectedCompletionInfo-range-mismatch",
       }),
       runRemote: async () => {
         requests += 1
         return editOutcome
       },
+      onRemoteReady: () => {
+        refreshes += 1
+      },
     })
-    await first.pending
+    expect(await first.pending).toEqual({
+      status: "rejected",
+      reason: "selectedCompletionInfo-range-mismatch",
+      source: "remote",
+    })
 
     const second = coordinator.request({
       key: "bad-edit",
@@ -215,6 +236,7 @@ describe("completion request coordinator", () => {
 
     expect(second.immediate).toBeUndefined()
     expect(requests).toBe(2)
+    expect(refreshes).toBe(0)
     expect(logs).toContain("cache-skip-invalid reason=selectedCompletionInfo-range-mismatch line=1")
   })
 })

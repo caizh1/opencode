@@ -11,7 +11,11 @@ type CompletionFallbackInput = {
 const MIN_UNIT_TEST_FALLBACK_SCORE = 500
 
 export function fallbackCompletionText(input: CompletionFallbackInput) {
-  if (input.plan.kind !== "natural-command" && input.plan.kind !== "comment-to-test") return ""
+  if (
+    input.plan.kind !== "natural-command" &&
+    input.plan.kind !== "comment-to-test" &&
+    !(input.plan.kind === "previous-comment-continuation" && input.plan.needsTestRetrieval)
+  ) return ""
   if (!input.rejectReason) return ""
 
   const symbol = unitTestTargetSymbol(input)

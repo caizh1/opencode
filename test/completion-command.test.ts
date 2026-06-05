@@ -19,7 +19,7 @@ describe("accepted completion formatting command wiring", () => {
     expect(completionSource).toContain("postprocessResult.reason")
     expect(completionSource).toContain('reason: "empty-output" as const')
     expect(completionSource).toContain("edit-rejected reason=${result.reason}")
-    expect(completionSource).toContain("edit-ready ${editDetails(edit)}")
+    expect(completionSource).toContain("edit-ready ${editDetails(adaptedEdit)}")
     expect(completionSource).toContain("returned source=${source}")
     expect(completionSource).toContain("edit ${editDetails(edit)}")
     expect(completionSource).toContain("rangeLogValue(edit.replaceRange)")
@@ -35,7 +35,7 @@ describe("accepted completion formatting command wiring", () => {
     expect(completionSource).toContain("completionRetryPrompt(input.prompt, input.editInput, initial.reason)")
     expect(completionSource).toContain("retry-sent reason=${initial.reason}")
     expect(completionSource).toContain("retry-received reason=${initial.reason}")
-    expect(completionSource).toContain("retry-edit-ready ${editDetails(edit)}")
+    expect(completionSource).toContain("retry-edit-ready ${editDetails(adaptedEdit)}")
     expect(completionSource).toContain("retry-edit-rejected reason=${result.reason}")
   })
 

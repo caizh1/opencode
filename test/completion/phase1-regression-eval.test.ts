@@ -4,7 +4,7 @@ import { join } from "node:path"
 import { parseCFile } from "../../src/codegraph-c-parser"
 import { searchCodeGraphSymbols } from "../../src/codegraph-query"
 import type { CodeGraphIndex } from "../../src/codegraph-types"
-import { buildCompletionEditResult, buildInlineCompletionEditResult, type CompletionEditRejectReason, type CompletionRange } from "../../src/completion-edit"
+import { adaptAndValidateInlineCompletionEdit, buildCompletionEditResult, buildInlineCompletionEditResult, type CompletionEditRejectReason, type CompletionRange } from "../../src/completion-edit"
 import { inferCompletionIndent } from "../../src/completion-indent"
 import { postprocessCompletion, type CompletionPostprocessRejectReason } from "../../src/completion-postprocess"
 import { planCompletion } from "../../src/completion-plan"
@@ -492,7 +492,7 @@ describe("phase 1 completion regression eval fixtures", () => {
     })
   })
 
-  test("the line after a unit-test comment keeps full replacement text when the model echoes the typed code prefix", () => {
+  test("the line after a unit-test comment preserves typed code prefixes by shrinking to the current word", () => {
     const comment = "// give me a unit test code for confidential_guest_support_finalize"
     const line = "static void"
     const snapshot = runCompletionEval({
@@ -520,21 +520,21 @@ describe("phase 1 completion regression eval fixtures", () => {
       currentWord: "void",
       modelRoute: "instruction",
       normalizedText: "static void test_confidential_guest_support_finalize(void) {\n}",
-      insertText: "static void test_confidential_guest_support_finalize(void) {\n}",
+      insertText: "void test_confidential_guest_support_finalize(void) {\n}",
       finalRange: {
         startLine: 5,
-        startCharacter: 0,
+        startCharacter: "static ".length,
         endLine: 5,
         endCharacter: line.length,
       },
       finalLine: "static void test_confidential_guest_support_finalize(void) {",
       rejectionReason: undefined,
     })
-    expect(snapshot.insertText?.split("\n")[0]).toBe("static void test_confidential_guest_support_finalize(void) {")
+    expect(snapshot.insertText?.split("\n")[0]).toBe("void test_confidential_guest_support_finalize(void) {")
     expect(snapshot.insertText?.split("\n")[0]).not.toBe("test_confidential_guest_support_finalize(void) {")
   })
 
-  test("the line after a comment intent tolerates a slightly overtyped prefix", () => {
+  test("the line after a comment intent rejects overtyped prefixes that cannot be safely adapted", () => {
     const comment = "// in order to test alpha_feature_finalize"
     const snapshot = runCompletionEval({
       documentText: [
@@ -558,14 +558,9 @@ describe("phase 1 completion regression eval fixtures", () => {
         insertMode: "replace-whole-line",
       },
       currentWord: "stats",
-      insertText: "static void test_alpha_feature_finalize(void)\n{\n}",
-      finalRange: {
-        startLine: 5,
-        startCharacter: 0,
-        endLine: 5,
-        endCharacter: "stats".length,
-      },
-      rejectionReason: undefined,
+      insertText: undefined,
+      finalRange: undefined,
+      rejectionReason: "rangeText-not-prefix-of-filterText",
     })
   })
 
@@ -713,7 +708,7 @@ function runCompletionEval(input: EvalInput): EvalSnapshot {
     relatedPath: input.relatedPath,
     cursorLine: input.line + 1,
     preferNearbyAbove: plan.kind === "comment-symbol-reference",
-    unitTestTarget: plan.kind === "comment-to-test" || plan.kind === "natural-command",
+    unitTestTarget: plan.needsTestRetrieval,
     documentText: input.documentText,
   })
   const retrievedSnippets = selectedCandidate ? [symbolSnippet(selectedCandidate)] : []
@@ -804,6 +799,21 @@ function runCompletionEval(input: EvalInput): EvalSnapshot {
       currentWordRange: currentWord?.range(position.line),
       plan: effectivePlan,
     })
+    const adaptedResult = editResult.edit
+      ? adaptAndValidateInlineCompletionEdit({
+          edit: editResult.edit,
+          editInput: {
+            languageId: document.languageId,
+            linePrefix,
+            lineSuffix,
+            position,
+            indent,
+            currentWord: currentWord?.text,
+            currentWordRange: currentWord?.range(position.line),
+          },
+          plan: effectivePlan,
+        })
+      : undefined
     const legacyEchoResult = input.legacyEchoProbe
       ? buildCompletionEditResult({
           text: rawText,
@@ -823,13 +833,14 @@ function runCompletionEval(input: EvalInput): EvalSnapshot {
       normalizedText,
       editText,
       editResult,
+      adaptedResult,
       legacyEchoResult,
-      edit: editResult.edit,
+      edit: adaptedResult?.status === "ok" ? adaptedResult.edit : undefined,
     }
   }
 
   function rejectionReasonForAttempt(attempt: ReturnType<typeof buildEvalAttempt>) {
-    return attempt.postprocessResult.reason ?? attempt.legacyEchoResult?.reason ?? attempt.editResult.reason ?? (attempt.editText ? undefined : "filtered-or-no-visible-text")
+    return attempt.postprocessResult.reason ?? attempt.legacyEchoResult?.reason ?? attempt.adaptedResult?.reason ?? attempt.editResult.reason ?? (attempt.editText ? undefined : "filtered-or-no-visible-text")
   }
 }
 

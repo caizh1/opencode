@@ -4,7 +4,7 @@ import { join } from "node:path"
 import { parseCFile } from "../../src/codegraph-c-parser"
 import { searchCodeGraphSymbols } from "../../src/codegraph-query"
 import type { CodeGraphIndex } from "../../src/codegraph-types"
-import { buildInlineCompletionEditResult, type CompletionRange } from "../../src/completion-edit"
+import { adaptAndValidateInlineCompletionEdit, buildInlineCompletionEditResult, type CompletionRange } from "../../src/completion-edit"
 import { inferCompletionIndent } from "../../src/completion-indent"
 import { postprocessCompletion } from "../../src/completion-postprocess"
 import { planCompletion } from "../../src/completion-plan"
@@ -150,6 +150,29 @@ describe("phase 10 completion e2e fixtures", () => {
       rejectionReason: "suffix-duplicated-output",
     })
   })
+
+  test("previous comment test continuation uses deterministic fallback after low-confidence output", () => {
+    const comment = `// in order to test ${COMMENT_SYMBOL}`
+    const line = "stat"
+    const snapshot = runCompletionE2E({
+      documentText: `${comment}\n${line}\n`,
+      line: 1,
+      character: line.length,
+      rawModelText: "{}",
+      languageId: "c",
+      relatedPath: "src/epr/epr_ppn_raw_test.c",
+    })
+
+    expect(snapshot).toMatchObject({
+      planKind: "previous-comment-continuation",
+      insertMode: "replace-whole-line",
+      selectedSymbol: COMMENT_SYMBOL,
+      modelRoute: "instruction",
+    })
+    expect(snapshot.insertText).toContain(`test_${COMMENT_SYMBOL}`)
+    expect(snapshot.insertText).toContain(`${COMMENT_SYMBOL}();`)
+    expect(snapshot.rejectionReason).toBeUndefined()
+  })
 })
 
 type E2EInput = {
@@ -193,11 +216,12 @@ function runCompletionE2E(input: E2EInput): E2ESnapshot {
     linePrefix,
     lineSuffix,
     currentWord: currentWord?.text,
+    previousNonEmptyLine: previousNonEmptyLineBefore(document.lines, position.line),
   })
   const selectedSymbol = retrieveSymbolCandidate({
     query: plan.targetSymbol ?? currentWord?.text ?? lastIdentifier(linePrefix),
     relatedPath: input.relatedPath,
-    unitTestTarget: plan.kind === "comment-to-test" || plan.kind === "natural-command",
+    unitTestTarget: plan.needsTestRetrieval,
   })
   const retrievedSnippets = selectedSymbol ? [symbolSnippet(selectedSymbol)] : []
   const route = routeCompletionModel({
@@ -240,7 +264,22 @@ function runCompletionE2E(input: E2EInput): E2ESnapshot {
     currentWordRange: currentWord?.range(position.line),
     plan,
   })
-  const edit = editResult.edit
+  const adaptedResult = editResult.edit
+    ? adaptAndValidateInlineCompletionEdit({
+        edit: editResult.edit,
+        editInput: {
+          languageId: document.languageId,
+          linePrefix,
+          lineSuffix,
+          position,
+          indent,
+          currentWord: currentWord?.text,
+          currentWordRange: currentWord?.range(position.line),
+        },
+        plan,
+      })
+    : undefined
+  const edit = adaptedResult?.status === "ok" ? adaptedResult.edit : undefined
 
   return {
     planKind: plan.kind,
@@ -252,7 +291,7 @@ function runCompletionE2E(input: E2EInput): E2ESnapshot {
     normalizedText,
     insertText: edit?.insertText,
     finalRange: edit?.replaceRange,
-    rejectionReason: edit ? undefined : postprocessResult.reason ?? editResult.reason,
+    rejectionReason: edit ? undefined : postprocessResult.reason ?? adaptedResult?.reason ?? editResult.reason,
     finalLine: edit ? applySingleLineEdit(lineText, edit.replaceRange, edit.insertText) : undefined,
   }
 }
@@ -361,6 +400,14 @@ function settings(): RemoteSettings {
 
 function lastIdentifier(input: string) {
   return input.match(/\b[A-Za-z_][A-Za-z0-9_]*\b/g)?.at(-1) ?? ""
+}
+
+function previousNonEmptyLineBefore(lines: string[], line: number) {
+  for (let index = line - 1; index >= 0; index--) {
+    const text = lines[index]
+    if (text?.trim()) return text
+  }
+  return undefined
 }
 
 function lineIndent(line: string) {

@@ -6,10 +6,12 @@ export type CompletionRequestSource = "cache" | "local-fallback" | "remote"
 
 export type CompletionRequestOutcome =
   | {
+      status: "ok"
       edit: CompletionEdit
       source: CompletionRequestSource
     }
   | {
+      status: "rejected"
       edit?: undefined
       reason: string
       source: "remote"
@@ -31,8 +33,8 @@ type CompletionRequestCoordinatorInput = {
 }
 
 type CompletionEditCacheValidation =
-  | { valid: true; reason?: never }
-  | { valid: false; reason: string }
+  | { status: "ok"; edit: CompletionEdit; reason?: never }
+  | { status: "rejected"; reason: string; edit?: undefined }
 
 type CompletionRequestCoordinatorOptions = {
   delay?: (ms: number, signal: AbortSignal) => Promise<void>
@@ -65,14 +67,16 @@ export class CompletionRequestCoordinator {
   request(input: CompletionRequestCoordinatorInput): CompletionRequestStart {
     const cached = this.cache.get(input.key)
     if (cached) {
-      const validation = input.validateEdit?.(cached) ?? { valid: true as const }
-      if (!validation.valid) {
+      const validation = this.validateEdit(input, cached)
+      if (validation.status === "rejected") {
         this.cache.delete(input.key)
         this.logInfo(`cache-invalid reason=${validation.reason} ${input.details}`)
       } else {
+        this.cache.set(input.key, validation.edit)
         return {
           immediate: {
-            edit: cached,
+            status: "ok",
+            edit: validation.edit,
             source: "cache",
           },
         }
@@ -82,12 +86,7 @@ export class CompletionRequestCoordinator {
     if (this.pending?.key === input.key) {
       this.logInfo(`reuse-pending ${input.details}`)
       return {
-        immediate: input.localFallback
-          ? {
-              edit: input.localFallback,
-              source: "local-fallback",
-            }
-          : undefined,
+        immediate: this.localFallbackOutcome(input),
         pending: this.pending.promise,
       }
     }
@@ -99,12 +98,7 @@ export class CompletionRequestCoordinator {
     this.logInfo(`scheduled ${input.details}`)
 
     return {
-      immediate: input.localFallback
-        ? {
-            edit: input.localFallback,
-            source: "local-fallback",
-          }
-        : undefined,
+      immediate: this.localFallbackOutcome(input),
       pending: pending.promise,
     }
   }
@@ -120,7 +114,7 @@ export class CompletionRequestCoordinator {
       key: input.key,
       details: input.details,
       controller,
-      promise: Promise.resolve({ reason: "not-started", source: "remote" }),
+      promise: Promise.resolve({ status: "rejected", reason: "not-started", source: "remote" }),
       phase: "scheduled",
     }
     pending.promise = this.runPending(input, pending)
@@ -134,31 +128,61 @@ export class CompletionRequestCoordinator {
     try {
       await this.delay(input.debounceMs, pending.controller.signal)
       if (pending.controller.signal.aborted) {
-        return { reason: pending.cancelReason ?? "cancelled", source: "remote" }
+        return { status: "rejected", reason: pending.cancelReason ?? "cancelled", source: "remote" }
       }
 
       pending.phase = "request"
       const outcome = await input.runRemote(pending.controller.signal)
-      if (outcome.edit) {
-        const validation = input.validateEdit?.(outcome.edit) ?? { valid: true as const }
-        if (validation.valid) {
-          this.cache.set(input.key, outcome.edit)
-          this.trimCache()
-        } else {
+      if (outcome.status === "ok") {
+        const validation = this.validateEdit(input, outcome.edit)
+        if (validation.status === "rejected") {
           this.logInfo(`cache-skip-invalid reason=${validation.reason} ${input.details}`)
+          return {
+            status: "rejected",
+            reason: validation.reason,
+            source: "remote",
+          }
         }
+        this.cache.set(input.key, validation.edit)
+        this.trimCache()
         if (this.pending === pending) input.onRemoteReady?.()
+        return {
+          status: "ok",
+          edit: validation.edit,
+          source: outcome.source,
+        }
       }
       return outcome
     } catch (error) {
       if (pending.controller.signal.aborted || error instanceof CompletionRequestAbortError) {
-        return { reason: pending.cancelReason ?? "cancelled", source: "remote" }
+        return { status: "rejected", reason: pending.cancelReason ?? "cancelled", source: "remote" }
       }
       const message = error instanceof Error ? error.message : String(error)
       this.logInfo(`failed reason=coordinator-error message="${quoteLogValue(message)}" ${input.details}`)
-      return { reason: "coordinator-error", source: "remote" }
+      return { status: "rejected", reason: "coordinator-error", source: "remote" }
     } finally {
       if (this.pending === pending) this.pending = undefined
+    }
+  }
+
+  private localFallbackOutcome(input: CompletionRequestCoordinatorInput): CompletionRequestOutcome | undefined {
+    if (!input.localFallback) return undefined
+    const validation = this.validateEdit(input, input.localFallback)
+    if (validation.status === "rejected") {
+      this.logInfo(`local-fallback-invalid reason=${validation.reason} ${input.details}`)
+      return undefined
+    }
+    return {
+      status: "ok",
+      edit: validation.edit,
+      source: "local-fallback",
+    }
+  }
+
+  private validateEdit(input: CompletionRequestCoordinatorInput, edit: CompletionEdit): CompletionEditCacheValidation {
+    return input.validateEdit?.(edit) ?? {
+      status: "ok",
+      edit,
     }
   }
 

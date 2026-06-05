@@ -68,6 +68,24 @@ describe("completion test fallback", () => {
     expect(text).toContain("epr_ppn_raw_write_cb_dfx();")
   })
 
+  test("generates deterministic test fallback for previous comment continuations with test intent", () => {
+    const text = fallbackCompletionText({
+      languageId: "c",
+      plan: planCompletion({
+        languageId: "c",
+        previousNonEmptyLine: "// in order to test alpha_feature_finalize",
+        linePrefix: "stat",
+        lineSuffix: "",
+        currentWord: "stat",
+      }),
+      retrievedSnippets: [snippet("alpha_feature_finalize")],
+      rejectReason: "low-confidence-output",
+    })
+
+    expect(text).toContain("static void test_alpha_feature_finalize(void)")
+    expect(text).toContain("alpha_feature_finalize();")
+  })
+
   test("does not create fallback text for low-confidence non-test comment output", () => {
     expect(fallbackCompletionText({
       languageId: "c",
@@ -75,6 +93,21 @@ describe("completion test fallback", () => {
         languageId: "c",
         linePrefix: "// implement alpha_feature_finalize",
         lineSuffix: "",
+      }),
+      retrievedSnippets: [snippet("alpha_feature_finalize")],
+      rejectReason: "low-confidence-output",
+    })).toBe("")
+  })
+
+  test("does not create fallback text for non-test previous comment continuations", () => {
+    expect(fallbackCompletionText({
+      languageId: "c",
+      plan: planCompletion({
+        languageId: "c",
+        previousNonEmptyLine: "// implement alpha_feature_finalize",
+        linePrefix: "stat",
+        lineSuffix: "",
+        currentWord: "stat",
       }),
       retrievedSnippets: [snippet("alpha_feature_finalize")],
       rejectReason: "low-confidence-output",

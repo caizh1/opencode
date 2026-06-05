@@ -59,7 +59,9 @@ export type CompletionSelectedCompletionInfo = {
 }
 
 export type InlineCompletionEditValidationReason =
-  | "filterText-not-prefix-of-insertText"
+  | "rangeText-not-prefix-of-filterText"
+  | "insertText-does-not-preserve-rangeText"
+  | "replaceRange-cross-line"
   | "selectedCompletionInfo-range-mismatch"
   | "selectedCompletionInfo-text-not-prefix"
 
@@ -67,35 +69,112 @@ export type InlineCompletionEditValidationResult =
   | { valid: true; reason?: never }
   | { valid: false; reason: InlineCompletionEditValidationReason }
 
+export type InlineCompletionEditAdaptResult =
+  | { status: "ok"; edit: CompletionEdit; reason?: never }
+  | { status: "rejected"; reason: InlineCompletionEditValidationReason; edit?: undefined }
+
+export type InlineCompletionEditValidationInput = {
+  edit: CompletionEdit
+  editInput: Omit<CompletionEditInput, "text">
+  plan: {
+    kind?: CompletionPlanKind
+    insertMode: CompletionInsertMode
+    replaceCurrentWord: boolean
+  }
+  selectedCompletionInfo?: CompletionSelectedCompletionInfo
+}
+
+export function adaptAndValidateInlineCompletionEdit(input: InlineCompletionEditValidationInput): InlineCompletionEditAdaptResult {
+  const selectedAdapted = input.selectedCompletionInfo
+    ? adaptForSelectedCompletion(input)
+    : undefined
+  if (selectedAdapted?.reason) {
+    return {
+      status: "rejected",
+      reason: selectedAdapted.reason,
+    }
+  }
+
+  let edit = selectedAdapted?.edit ?? input.edit
+  if (!input.selectedCompletionInfo) {
+    edit = adaptForCurrentWordReplacement({ ...input, edit }) ?? edit
+    edit = adaptForWholeLineReplacement({ ...input, edit })
+  }
+
+  const validation = validateInlineCompletionEdit({
+    ...input,
+    edit,
+  })
+  if (!validation.valid) {
+    return {
+      status: "rejected",
+      reason: validation.reason,
+    }
+  }
+
+  return {
+    status: "ok",
+    edit,
+  }
+}
+
 export function buildCompletionEdit(input: CompletionEditInput): CompletionEdit | undefined {
   return buildCompletionEditResult(input).edit
 }
 
-export function validateInlineCompletionEdit(input: {
-  edit: CompletionEdit
-  selectedCompletionInfo?: CompletionSelectedCompletionInfo
-}): InlineCompletionEditValidationResult {
+export function validateInlineCompletionEdit(input: InlineCompletionEditValidationInput): InlineCompletionEditValidationResult {
+  const replaceRange = input.edit.replaceRange ?? zeroWidthRange(input.editInput.position)
+  if (!isSingleLineRange(replaceRange)) {
+    return {
+      valid: false,
+      reason: "replaceRange-cross-line",
+    }
+  }
+
+  const rangeText = currentLineRangeText(input.editInput, replaceRange)
   const filterText = input.edit.filterText ?? input.edit.insertText
-  if (filterText && !input.edit.insertText.startsWith(filterText)) {
+  if (input.selectedCompletionInfo) {
+    if (!input.edit.replaceRange || !sameCompletionRange(input.edit.replaceRange, input.selectedCompletionInfo.range)) {
+      return {
+        valid: false,
+        reason: "selectedCompletionInfo-range-mismatch",
+      }
+    }
+
+    if (!input.edit.insertText.startsWith(input.selectedCompletionInfo.text)) {
+      return {
+        valid: false,
+        reason: "selectedCompletionInfo-text-not-prefix",
+      }
+    }
+
+    if (!filterText.startsWith(rangeText)) {
+      return {
+        valid: false,
+        reason: "rangeText-not-prefix-of-filterText",
+      }
+    }
+
+    return { valid: true }
+  }
+
+  if (!filterText.startsWith(rangeText)) {
     return {
       valid: false,
-      reason: "filterText-not-prefix-of-insertText",
+      reason: "rangeText-not-prefix-of-filterText",
     }
   }
 
-  if (!input.selectedCompletionInfo) return { valid: true }
-
-  if (!input.edit.replaceRange || !sameCompletionRange(input.edit.replaceRange, input.selectedCompletionInfo.range)) {
+  if (!hasSafeReplacementSemantics({
+    edit: input.edit,
+    editInput: input.editInput,
+    plan: input.plan,
+    replaceRange,
+    rangeText,
+  })) {
     return {
       valid: false,
-      reason: "selectedCompletionInfo-range-mismatch",
-    }
-  }
-
-  if (!input.edit.insertText.startsWith(input.selectedCompletionInfo.text)) {
-    return {
-      valid: false,
-      reason: "selectedCompletionInfo-text-not-prefix",
+      reason: "insertText-does-not-preserve-rangeText",
     }
   }
 
@@ -371,6 +450,200 @@ function zeroWidthRange(position: CompletionPosition): CompletionRange {
     endLine: position.line,
     endCharacter: position.character,
   }
+}
+
+function adaptForSelectedCompletion(input: InlineCompletionEditValidationInput): InlineCompletionEditAdaptResult {
+  const selected = input.selectedCompletionInfo
+  if (!selected) {
+    return {
+      status: "ok",
+      edit: input.edit,
+    }
+  }
+
+  if (input.edit.replaceRange && sameCompletionRange(input.edit.replaceRange, selected.range)) {
+    if (!input.edit.insertText.startsWith(selected.text)) {
+      return {
+        status: "rejected",
+        reason: "selectedCompletionInfo-text-not-prefix",
+      }
+    }
+    return {
+      status: "ok",
+      edit: withFilterText(input.edit, selected.text),
+    }
+  }
+
+  if (input.plan.insertMode === "replace-whole-line" && input.edit.replaceRange && containsCompletionRange(input.edit.replaceRange, selected.range)) {
+    const selectedEdit = replacementForNestedRange({
+      edit: input.edit,
+      editInput: input.editInput,
+      targetRange: selected.range,
+    })
+    if (!selectedEdit) {
+      return {
+        status: "rejected",
+        reason: "selectedCompletionInfo-range-mismatch",
+      }
+    }
+    if (!selectedEdit.insertText.startsWith(selected.text)) {
+      return {
+        status: "rejected",
+        reason: "selectedCompletionInfo-text-not-prefix",
+      }
+    }
+    return {
+      status: "ok",
+      edit: withFilterText(selectedEdit, selected.text),
+    }
+  }
+
+  return {
+    status: "rejected",
+    reason: "selectedCompletionInfo-range-mismatch",
+  }
+}
+
+function adaptForCurrentWordReplacement(input: InlineCompletionEditValidationInput): CompletionEdit | undefined {
+  const currentWord = input.editInput.currentWord
+  const currentWordRange = input.editInput.currentWordRange
+  if (!currentWord || !currentWordRange) return
+  if (input.edit.replaceRange && sameCompletionRange(input.edit.replaceRange, currentWordRange)) {
+    return startsWithCurrentWord(input.edit.insertText, currentWord)
+      ? withFilterText(input.edit, input.edit.filterText ?? input.edit.insertText)
+      : undefined
+  }
+  if (!input.edit.replaceRange || !containsCompletionRange(input.edit.replaceRange, currentWordRange)) return
+
+  const nested = replacementForNestedRange({
+    edit: input.edit,
+    editInput: input.editInput,
+    targetRange: currentWordRange,
+  })
+  if (nested && startsWithCurrentWord(nested.insertText, currentWord)) {
+    return nested
+  }
+
+  if (startsWithCurrentWord(input.edit.insertText, currentWord)) {
+    return {
+      ...input.edit,
+      replaceRange: currentWordRange,
+      filterText: input.edit.filterText?.startsWith(currentWord) ? input.edit.filterText : input.edit.insertText,
+      formatRange: formatRangeAfterInsert(currentWordRange.startLine, currentWordRange.startCharacter, input.edit.insertText),
+    }
+  }
+
+  return
+}
+
+function adaptForWholeLineReplacement(input: InlineCompletionEditValidationInput): CompletionEdit {
+  if (input.plan.insertMode !== "replace-whole-line") return input.edit
+  const replaceRange = input.edit.replaceRange
+  if (!replaceRange || !isExpectedWholeLineRange(input.editInput, replaceRange)) return input.edit
+
+  const rangeText = currentLineRangeText(input.editInput, replaceRange)
+  const filterText = input.edit.filterText ?? input.edit.insertText
+  if (filterText.startsWith(rangeText)) return input.edit
+
+  if (!isSafeWholeLineReplacement(input.edit, input.editInput, input.plan, replaceRange, rangeText)) {
+    return input.edit
+  }
+
+  return withFilterText(input.edit, rangeText)
+}
+
+function replacementForNestedRange(input: {
+  edit: CompletionEdit
+  editInput: Omit<CompletionEditInput, "text">
+  targetRange: CompletionRange
+}): CompletionEdit | undefined {
+  const sourceRange = input.edit.replaceRange
+  if (!sourceRange) return
+  if (!containsCompletionRange(sourceRange, input.targetRange)) return
+  if (input.editInput.lineSuffix.trim()) return
+
+  const lineText = `${input.editInput.linePrefix}${input.editInput.lineSuffix}`
+  const textBeforeTarget = lineText.slice(sourceRange.startCharacter, input.targetRange.startCharacter)
+  if (textBeforeTarget && input.edit.insertText.startsWith(textBeforeTarget)) {
+    const insertText = input.edit.insertText.slice(textBeforeTarget.length)
+    return {
+      ...input.edit,
+      insertText,
+      replaceRange: input.targetRange,
+      filterText: insertText,
+      formatRange: formatRangeAfterInsert(input.targetRange.startLine, input.targetRange.startCharacter, insertText),
+    }
+  }
+
+  const targetText = currentLineRangeText(input.editInput, input.targetRange)
+  if (targetText && input.edit.insertText.startsWith(targetText)) {
+    return {
+      ...input.edit,
+      replaceRange: input.targetRange,
+      filterText: input.edit.insertText,
+      formatRange: formatRangeAfterInsert(input.targetRange.startLine, input.targetRange.startCharacter, input.edit.insertText),
+    }
+  }
+
+  return
+}
+
+function hasSafeReplacementSemantics(input: {
+  edit: CompletionEdit
+  editInput: Omit<CompletionEditInput, "text">
+  plan: InlineCompletionEditValidationInput["plan"]
+  replaceRange: CompletionRange
+  rangeText: string
+}) {
+  if (!input.rangeText) return true
+  if (input.editInput.currentWord && input.editInput.currentWordRange && sameCompletionRange(input.replaceRange, input.editInput.currentWordRange)) {
+    return startsWithCurrentWord(input.edit.insertText, input.editInput.currentWord)
+  }
+  if (input.plan.insertMode === "replace-whole-line" && isExpectedWholeLineRange(input.editInput, input.replaceRange)) {
+    return isSafeWholeLineReplacement(input.edit, input.editInput, input.plan, input.replaceRange, input.rangeText)
+  }
+  return input.edit.insertText.startsWith(input.rangeText)
+}
+
+function isSafeWholeLineReplacement(
+  edit: CompletionEdit,
+  editInput: Omit<CompletionEditInput, "text">,
+  plan: InlineCompletionEditValidationInput["plan"],
+  replaceRange: CompletionRange,
+  rangeText: string,
+) {
+  if (!isExpectedWholeLineRange(editInput, replaceRange)) return false
+  if (!rangeText) return true
+  if (plan.kind === "natural-command") return true
+  return firstCompletionLine(edit.insertText).startsWith(rangeText)
+}
+
+function isExpectedWholeLineRange(input: Omit<CompletionEditInput, "text">, range: CompletionRange) {
+  if (range.startLine !== input.position.line || range.endLine !== input.position.line) return false
+  return range.startCharacter === firstNonWhitespaceOrZero(input.linePrefix) &&
+    range.endCharacter === input.linePrefix.length + input.lineSuffix.length
+}
+
+function containsCompletionRange(outer: CompletionRange, inner: CompletionRange) {
+  if (outer.startLine !== inner.startLine || outer.endLine !== inner.endLine) return false
+  return outer.startCharacter <= inner.startCharacter && outer.endCharacter >= inner.endCharacter
+}
+
+function currentLineRangeText(input: Omit<CompletionEditInput, "text">, range: CompletionRange) {
+  if (range.startLine !== input.position.line || range.endLine !== input.position.line) return ""
+  const lineText = `${input.linePrefix}${input.lineSuffix}`
+  return lineText.slice(range.startCharacter, range.endCharacter)
+}
+
+function withFilterText(edit: CompletionEdit, filterText: string): CompletionEdit {
+  return {
+    ...edit,
+    filterText,
+  }
+}
+
+function firstCompletionLine(input: string) {
+  return input.replace(/\r\n/g, "\n").split("\n")[0] ?? ""
 }
 
 function braceFunctionReplacement(input: CompletionEditInput): CompletionEdit | undefined {

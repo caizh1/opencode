@@ -3,7 +3,7 @@ import type { CodeGraphContextProvider } from "./codegraph-types"
 import {
   buildCompletionEditResult,
   buildInlineCompletionEditResult,
-  validateInlineCompletionEdit,
+  adaptAndValidateInlineCompletionEdit,
   type CompletionEdit,
   type CompletionEditInput,
   type CompletionRange,
@@ -149,8 +149,10 @@ export class RemoteCompletionProvider implements vscode.InlineCompletionItemProv
       details,
       debounceMs: settings.completion.debounceMs,
       localFallback,
-      validateEdit: (edit) => validateInlineCompletionEdit({
+      validateEdit: (edit) => adaptAndValidateInlineCompletionEdit({
         edit,
+        editInput,
+        plan,
         selectedCompletionInfo: selectedCompletionInfoValue(context.selectedCompletionInfo),
       }),
       runRemote: (signal) =>
@@ -183,8 +185,8 @@ export class RemoteCompletionProvider implements vscode.InlineCompletionItemProv
       onRemoteReady: () => this.triggerInlineSuggestRefresh(document, position, settings, details),
     })
 
-    if (start.immediate?.edit) {
-      const item = this.inlineItemIfValid({
+    if (start.immediate?.status === "ok") {
+      const ready = this.inlineItemIfValid({
         edit: start.immediate.edit,
         document,
         editInput,
@@ -194,9 +196,9 @@ export class RemoteCompletionProvider implements vscode.InlineCompletionItemProv
         details,
         source: start.immediate.source,
       })
-      if (item) {
-        this.logReturned(settings, start.immediate.source, start.immediate.edit, details, started)
-        return [item]
+      if (ready) {
+        this.logReturned(settings, start.immediate.source, ready.edit, details, started)
+        return [ready.item]
       }
     }
 
@@ -207,9 +209,9 @@ export class RemoteCompletionProvider implements vscode.InlineCompletionItemProv
       this.logInfo(settings, `cancelled reason=vscode-token ${details} elapsedMs=${elapsedMs(started)}`)
       return
     }
-    if (!outcome.edit) return
+    if (outcome.status !== "ok") return
 
-    const item = this.inlineItemIfValid({
+    const ready = this.inlineItemIfValid({
       edit: outcome.edit,
       document,
       editInput,
@@ -219,10 +221,10 @@ export class RemoteCompletionProvider implements vscode.InlineCompletionItemProv
       details,
       source: outcome.source,
     })
-    if (!item) return
+    if (!ready) return
 
-    this.logReturned(settings, outcome.source, outcome.edit, details, started)
-    return [item]
+    this.logReturned(settings, outcome.source, ready.edit, details, started)
+    return [ready.item]
   }
 
   private async remoteCompletionOutcome(input: {
@@ -309,14 +311,14 @@ export class RemoteCompletionProvider implements vscode.InlineCompletionItemProv
     } catch (error) {
       if (input.signal.aborted) {
         this.logCompletionTelemetry(input.settings, input.telemetry, input.started, false, "cancelled")
-        return { reason: "cancelled", source: "remote" }
+        return { status: "rejected", reason: "cancelled", source: "remote" }
       }
       this.logInfo(
         input.settings,
         `Completion failed: ${formatError(error)} ${input.details} elapsedMs=${elapsedMs(input.started)}`,
       )
       this.logCompletionTelemetry(input.settings, input.telemetry, input.started, false, "remote-error")
-      return { reason: "remote-error", source: "remote" }
+      return { status: "rejected", reason: "remote-error", source: "remote" }
     }
   }
 
@@ -413,14 +415,14 @@ export class RemoteCompletionProvider implements vscode.InlineCompletionItemProv
     } catch (error) {
       if (input.signal.aborted) {
         this.logCompletionTelemetry(input.settings, input.telemetry, input.started, false, "cancelled")
-        return { reason: "cancelled", source: "remote" }
+        return { status: "rejected", reason: "cancelled", source: "remote" }
       }
       this.logInfo(
         input.settings,
         `Completion failed: ${formatError(error)} ${input.details} elapsedMs=${elapsedMs(input.started)}`,
       )
       this.logCompletionTelemetry(input.settings, input.telemetry, input.started, false, "remote-error")
-      return { reason: "remote-error", source: "remote" }
+      return { status: "rejected", reason: "remote-error", source: "remote" }
     }
   }
 
@@ -499,7 +501,7 @@ export class RemoteCompletionProvider implements vscode.InlineCompletionItemProv
   }): CompletionRequestOutcome {
     this.logInfo(input.settings, `no-completion reason=${input.route.reason} ${input.details} elapsedMs=${elapsedMs(input.started)}`)
     this.logCompletionTelemetry(input.settings, input.telemetry, input.started, false, input.route.reason)
-    return { reason: input.route.reason, source: "remote" }
+    return { status: "rejected", reason: input.route.reason, source: "remote" }
   }
 
   private async completionOutcomeWithRetry(input: {
@@ -538,7 +540,7 @@ export class RemoteCompletionProvider implements vscode.InlineCompletionItemProv
       telemetry: input.telemetry,
       selectedCompletionInfo: input.selectedCompletionInfo,
     })
-    if (initial.edit || !shouldRetryCompletionRejection({
+    if (initial.status === "ok" || !shouldRetryCompletionRejection({
       reason: initial.reason,
       plan: input.plan,
       textProfile: input.textProfile,
@@ -679,7 +681,7 @@ export class RemoteCompletionProvider implements vscode.InlineCompletionItemProv
         )
       }
       this.logCompletionTelemetry(input.settings, input.telemetry, input.started, false, reason)
-      return { reason, source: "remote" }
+      return { status: "rejected", reason, source: "remote" }
     }
 
     const editStarted = Date.now()
@@ -719,14 +721,16 @@ export class RemoteCompletionProvider implements vscode.InlineCompletionItemProv
         )
       }
       this.logCompletionTelemetry(input.settings, input.telemetry, input.started, false, result.reason)
-      return { reason: result.reason, source: "remote" }
+      return { status: "rejected", reason: result.reason, source: "remote" }
     }
 
-    const validation = validateInlineCompletionEdit({
+    const validation = adaptAndValidateInlineCompletionEdit({
       edit,
+      editInput: input.editInput,
+      plan: input.plan,
       selectedCompletionInfo: selectedCompletionInfoValue(input.selectedCompletionInfo),
     })
-    if (!validation.valid) {
+    if (validation.status === "rejected") {
       this.logDebug(input.settings, `inline-invariant ${inlineCompletionInvariantDetails({
         edit,
         editInput: input.editInput,
@@ -749,13 +753,14 @@ export class RemoteCompletionProvider implements vscode.InlineCompletionItemProv
         )
       }
       this.logCompletionTelemetry(input.settings, input.telemetry, input.started, false, validation.reason)
-      return { reason: validation.reason, source: "remote" }
+      return { status: "rejected", reason: validation.reason, source: "remote" }
     }
 
-    input.telemetry.finalRange = edit.replaceRange ?? zeroWidthRange(input.editInput.position)
-    input.telemetry.filterText = edit.filterText ?? edit.insertText
+    const adaptedEdit = validation.edit
+    input.telemetry.finalRange = adaptedEdit.replaceRange ?? zeroWidthRange(input.editInput.position)
+    input.telemetry.filterText = adaptedEdit.filterText ?? adaptedEdit.insertText
     this.logDebug(input.settings, `inline-invariant ${inlineCompletionInvariantDetails({
-      edit,
+      edit: adaptedEdit,
       editInput: input.editInput,
       plan: input.plan,
       rawFirstLine,
@@ -765,13 +770,13 @@ export class RemoteCompletionProvider implements vscode.InlineCompletionItemProv
       selectedCompletionInfo: input.selectedCompletionInfo,
     })} ${input.details}`)
     if (input.attempt === "retry") {
-      this.logInfo(input.settings, `retry-edit-ready ${editDetails(edit)} ${input.details} elapsedMs=${elapsedMs(input.started)} chars=${edit.insertText.length}`)
+      this.logInfo(input.settings, `retry-edit-ready ${editDetails(adaptedEdit)} ${input.details} elapsedMs=${elapsedMs(input.started)} chars=${adaptedEdit.insertText.length}`)
     } else {
-      this.logInfo(input.settings, `edit-ready ${editDetails(edit)} ${input.details} elapsedMs=${elapsedMs(input.started)} chars=${edit.insertText.length}`)
+      this.logInfo(input.settings, `edit-ready ${editDetails(adaptedEdit)} ${input.details} elapsedMs=${elapsedMs(input.started)} chars=${adaptedEdit.insertText.length}`)
     }
-    this.logDebug(input.settings, `edit ${editDetails(edit)} visibleChars=${candidateText.length} ${input.details}`)
+    this.logDebug(input.settings, `edit ${editDetails(adaptedEdit)} visibleChars=${candidateText.length} ${input.details}`)
     this.logCompletionTelemetry(input.settings, input.telemetry, input.started, true)
-    return { edit, source: "remote" }
+    return { status: "ok", edit: adaptedEdit, source: "remote" }
   }
 
   private async getSession(client: RemoteOpenCodeClient, signal: AbortSignal) {
@@ -909,11 +914,18 @@ export class RemoteCompletionProvider implements vscode.InlineCompletionItemProv
     details: string
     source: CompletionRequestOutcome["source"]
   }) {
-    const validation = validateInlineCompletionEdit({
+    const validation = adaptAndValidateInlineCompletionEdit({
       edit: input.edit,
+      editInput: input.editInput,
+      plan: input.plan,
       selectedCompletionInfo: selectedCompletionInfoValue(input.selectedCompletionInfo),
     })
-    if (validation.valid) return this.inlineItem(input.edit, input.document)
+    if (validation.status === "ok") {
+      return {
+        item: this.inlineItem(validation.edit, input.document),
+        edit: validation.edit,
+      }
+    }
 
     this.logDebug(input.settings, `inline-item-rejected reason=${validation.reason} source=${input.source} ${inlineCompletionInvariantDetails({
       edit: input.edit,
@@ -977,7 +989,7 @@ function waitForOutcome(
       },
       () => {
         listener.dispose()
-        resolve({ reason: "provider-wait-error", source: "remote" })
+        resolve({ status: "rejected", reason: "provider-wait-error", source: "remote" })
       },
     )
   })
@@ -1185,6 +1197,7 @@ function inlineCompletionInvariantDetails(input: {
   const filterText = input.edit ? input.edit.filterText ?? input.edit.insertText : ""
   const risks = inlineCompletionDisplayRisks({
     edit: input.edit,
+    editInput: input.editInput,
     selectedCompletionInfo: input.selectedCompletionInfo,
   })
   return [
@@ -1206,6 +1219,7 @@ function inlineCompletionInvariantDetails(input: {
 
 function inlineCompletionDisplayRisks(input: {
   edit?: CompletionEdit
+  editInput: Omit<CompletionEditInput, "text">
   selectedCompletionInfo?: SelectedCompletionInfo
 }) {
   const risks: string[] = []
@@ -1215,8 +1229,11 @@ function inlineCompletionDisplayRisks(input: {
   }
 
   const filterText = input.edit.filterText ?? input.edit.insertText
-  if (filterText && !input.edit.insertText.startsWith(filterText)) {
-    risks.push("filterText-not-prefix-of-insertText")
+  const rangeText = input.edit.replaceRange
+    ? currentLineRangeText(input.editInput, input.edit.replaceRange)
+    : ""
+  if (!filterText.startsWith(rangeText)) {
+    risks.push("rangeText-not-prefix-of-filterText")
   }
 
   if (!input.selectedCompletionInfo) return risks
