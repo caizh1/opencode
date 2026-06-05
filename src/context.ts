@@ -6,6 +6,7 @@ import {
   formatInstructionContext,
   formatRepoContext,
   packCompletionContext,
+  type CompletionOpenTabContext,
   type CompletionContextPack,
 } from "./completion-context"
 import type { CompletionPlan, RetrievedCompletionSnippet } from "./completion-types"
@@ -156,6 +157,7 @@ export async function buildCompletionPrompt(input: {
         prefix,
         suffix,
         retrievedSnippets: input.retrievedSnippets ?? [],
+        openTabs: completionOpenTabs(input.document.uri),
       })
     : undefined
   if (contextPack) input.onContextPack?.(contextPack)
@@ -222,6 +224,7 @@ export function buildQwenCoderFimPrompt(input: {
         prefix,
         suffix,
         retrievedSnippets: input.retrievedSnippets ?? [],
+        openTabs: completionOpenTabs(input.document.uri),
       })
     : undefined
   if (contextPack) input.onContextPack?.(contextPack)
@@ -327,6 +330,18 @@ function completionContextBlock(snippets: RetrievedCompletionSnippet[], language
     "End relevant project context. */",
     "",
   ].join("\n")
+}
+
+function completionOpenTabs(currentUri: vscode.Uri): CompletionOpenTabContext[] {
+  return vscode.workspace.textDocuments
+    .filter((document) => document.uri.scheme === "file")
+    .filter((document) => document.uri.toString() !== currentUri.toString())
+    .slice(0, 6)
+    .map((document) => ({
+      path: relativePath(document.uri),
+      languageId: document.languageId,
+      text: document.getText(),
+    }))
 }
 
 function oneLine(input: string) {

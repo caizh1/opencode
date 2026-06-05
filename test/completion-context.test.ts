@@ -1,5 +1,5 @@
 import { describe, expect, mock, test } from "bun:test"
-import { completionContextDebugSummary, packCompletionContext } from "../src/completion-context"
+import { completionContextDebugSummary, formatRepoContext, packCompletionContext } from "../src/completion-context"
 import { planCompletion } from "../src/completion-plan"
 import type { CompletionPlan, RetrievedCompletionSnippet } from "../src/completion-types"
 
@@ -74,6 +74,33 @@ describe("completion context packer", () => {
 
     expect(pack.selected.some((block) => block.kind === "target-symbol")).toBe(true)
     expect(pack.dropped.length).toBeGreaterThan(0)
+  })
+
+  test("selects open tabs as completion project context", () => {
+    const pack = packCompletionContext({
+      plan: ordinaryPlan(),
+      languageId: "typescript",
+      currentPath: "src/current.ts",
+      prefix: "const next = ",
+      suffix: "",
+      retrievedSnippets: [],
+      openTabs: [
+        {
+          path: "src/settings.ts",
+          languageId: "typescript",
+          text: "export const defaultRetryDelayMs = 250",
+        },
+      ],
+      tokenBudget: 120,
+    })
+
+    expect(pack.selected).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: "open-tab",
+        title: "open tab: src/settings.ts",
+      }),
+    ]))
+    expect(formatRepoContext(pack)).toContain("defaultRetryDelayMs")
   })
 
   test("Qwen FIM prompt includes packed repo context before FIM tokens", async () => {

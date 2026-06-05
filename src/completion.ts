@@ -2,7 +2,6 @@ import * as vscode from "vscode"
 import type { CodeGraphContextProvider } from "./codegraph-types"
 import {
   buildCompletionEditResult,
-  buildInlineCompletionEditResult,
   adaptAndValidateInlineCompletionEdit,
   type CompletionEdit,
   type CompletionEditInput,
@@ -13,7 +12,7 @@ import { completionFormatCommand } from "./completion-format-command"
 import { completionContextDebugSummary, type CompletionContextPack } from "./completion-context"
 import { inferCompletionIndent } from "./completion-indent"
 import { CompletionModelClient, completionModel } from "./completion-model-client"
-import { completionPostprocessDebug, postprocessCompletion } from "./completion-postprocess"
+import { runCompletionCandidatePipeline, type CompletionCandidatePipelineResult } from "./completion-candidate-pipeline"
 import { planCompletion } from "./completion-plan"
 import { resolveCompletionPlanAfterSymbolRetrieval, routeCompletionModel, routeLogValue, shouldRetryCompletionRejection, type CompletionModelRoute } from "./completion-router"
 import { CompletionRequestCoordinator, type CompletionRequestOutcome } from "./completion-request-coordinator"
@@ -21,8 +20,6 @@ import { INLINE_COMPLETION_SESSION_TITLE } from "./completion-session"
 import { completionSnippetFromSymbol } from "./completion-snippets"
 import { resolveSymbols, symbolCandidateFromCodeGraph } from "./completion-symbol"
 import { completionTelemetryRoute, createCompletionRequestId, filePathHash, serializeCompletionDebugEvent, type CompletionDebugEvent, type CompletionTelemetryDraft } from "./completion-telemetry"
-import { fallbackCompletionText } from "./completion-test-fallback"
-import { completionInsertText } from "./completion-text"
 import type { CompletionPlan, RetrievedCompletionSnippet } from "./completion-types"
 import { buildCompletionPrompt, buildQwenCoderFimPrompt, relativePath } from "./context"
 import { resolveRequestAgent } from "./local-agent"
@@ -41,7 +38,7 @@ type ModelCompletionRoute = Extract<CompletionModelRoute, { kind: "model" }>
 type DeterministicSymbolRoute = Extract<CompletionModelRoute, { kind: "deterministic-symbol" }>
 type CompletionLatencyKey = Exclude<keyof CompletionDebugEvent["latencyMs"], "total">
 type SelectedCompletionInfo = vscode.InlineCompletionContext["selectedCompletionInfo"]
-type PostprocessDebug = NonNullable<ReturnType<typeof completionPostprocessDebug>>
+type PostprocessDebug = CompletionCandidatePipelineResult["postprocessDebug"]
 
 export class RemoteCompletionProvider implements vscode.InlineCompletionItemProvider {
   private sessionID?: string
@@ -620,52 +617,29 @@ export class RemoteCompletionProvider implements vscode.InlineCompletionItemProv
     telemetry: CompletionTelemetryDraft
     selectedCompletionInfo?: SelectedCompletionInfo
   }): CompletionRequestOutcome {
-    const rawVisibleText = completionInsertText(input.response, input.textProfile)
-    input.telemetry.rawOutputLength = rawVisibleText.length
-    const rawFirstLine = firstLogLine(rawVisibleText)
-    const postprocessStarted = Date.now()
-    const postprocessResult = rawVisibleText
-      ? postprocessCompletion({
-          rawText: rawVisibleText,
-          linePrefix: input.editInput.linePrefix,
-          lineSuffix: input.editInput.lineSuffix,
-          currentWord: input.editInput.currentWord,
-          fullCurrentLine: `${input.editInput.linePrefix}${input.editInput.lineSuffix}`,
-          languageId: input.editInput.languageId,
-          plan: input.plan,
-          indent: {
-            currentIndent: lineIndent(input.editInput.linePrefix),
-            targetIndent: input.editInput.indent.targetIndent,
-            indentUnit: input.editInput.indent.indentUnit,
-          },
-        })
-      : {
-          text: "" as const,
-          rejected: true as const,
-          reason: "empty-output" as const,
-        }
-    const postprocessDebug = completionPostprocessDebug(postprocessResult) ?? { prefixMode: "none" as const }
-    input.telemetry.latencyMs.postprocess = elapsedMs(postprocessStarted)
-    const visibleText = postprocessResult.text
-    const postprocessFirstLine = firstLogLine(visibleText)
-    input.telemetry.normalizedOutputLength = visibleText.length
-    const fallbackText =
-      fallbackCompletionText({
-        languageId: input.editInput.languageId,
-        plan: input.plan,
-        retrievedSnippets: input.retrievedSnippets,
-        rejectReason: postprocessResult.reason,
-      }) ||
-      fallbackSymbolText(input.plan, input.retrievedSnippets, input.editInput.currentWord)
-    const candidateText = visibleText || fallbackText
-    if (!candidateText) {
-      const reason = postprocessResult.rejected ? postprocessResult.reason : "filtered-or-no-visible-text"
+    const pipeline = runCompletionCandidatePipeline({
+      response: input.response,
+      textProfile: input.textProfile,
+      editInput: input.editInput,
+      plan: input.plan,
+      retrievedSnippets: input.retrievedSnippets,
+      selectedCompletionInfo: selectedCompletionInfoValue(input.selectedCompletionInfo),
+    })
+    input.telemetry.rawOutputLength = pipeline.rawText.length
+    input.telemetry.latencyMs.postprocess = pipeline.latencyMs.postprocess
+    input.telemetry.normalizedOutputLength = pipeline.postprocessText.length
+    input.telemetry.latencyMs.edit = pipeline.latencyMs.edit
+    const rawFirstLine = firstLogLine(pipeline.rawText)
+    const postprocessFirstLine = firstLogLine(pipeline.postprocessText)
+    if (pipeline.decision === "rejected") {
+      const reason = pipeline.rejectionReason ?? "filtered-or-no-visible-text"
       this.logDebug(input.settings, `inline-invariant ${inlineCompletionInvariantDetails({
+        edit: pipeline.edit,
         editInput: input.editInput,
         plan: input.plan,
         rawFirstLine,
         postprocessFirstLine,
-        postprocessDebug,
+        postprocessDebug: pipeline.postprocessDebug,
         rejectReason: reason,
         selectedCompletionInfo: input.selectedCompletionInfo,
       })} ${input.details}`)
@@ -684,79 +658,12 @@ export class RemoteCompletionProvider implements vscode.InlineCompletionItemProv
       return { status: "rejected", reason, source: "remote" }
     }
 
-    const editStarted = Date.now()
-    let result = buildInlineCompletionEditResult({
-      text: candidateText,
-      ...input.editInput,
-      plan: input.plan,
-    })
-    if (!result.edit && fallbackText && fallbackText !== candidateText) {
-      result = buildInlineCompletionEditResult({
-        text: fallbackText,
-        ...input.editInput,
-        plan: input.plan,
-      })
+    const adaptedEdit = pipeline.edit
+    if (!adaptedEdit) {
+      const reason = "filtered-or-no-visible-text"
+      this.logCompletionTelemetry(input.settings, input.telemetry, input.started, false, reason)
+      return { status: "rejected", reason, source: "remote" }
     }
-    input.telemetry.latencyMs.edit = elapsedMs(editStarted)
-    const edit = result.edit
-    if (!edit) {
-      this.logDebug(input.settings, `inline-invariant ${inlineCompletionInvariantDetails({
-        editInput: input.editInput,
-        plan: input.plan,
-        rawFirstLine,
-        postprocessFirstLine,
-        postprocessDebug,
-        rejectReason: result.reason,
-        selectedCompletionInfo: input.selectedCompletionInfo,
-      })} ${input.details}`)
-      if (input.attempt === "retry") {
-        this.logInfo(
-          input.settings,
-          `retry-edit-rejected reason=${result.reason} ${input.details} elapsedMs=${elapsedMs(input.started)}`,
-        )
-      } else {
-        this.logInfo(
-          input.settings,
-          `edit-rejected reason=${result.reason} ${input.details} elapsedMs=${elapsedMs(input.started)}`,
-        )
-      }
-      this.logCompletionTelemetry(input.settings, input.telemetry, input.started, false, result.reason)
-      return { status: "rejected", reason: result.reason, source: "remote" }
-    }
-
-    const validation = adaptAndValidateInlineCompletionEdit({
-      edit,
-      editInput: input.editInput,
-      plan: input.plan,
-      selectedCompletionInfo: selectedCompletionInfoValue(input.selectedCompletionInfo),
-    })
-    if (validation.status === "rejected") {
-      this.logDebug(input.settings, `inline-invariant ${inlineCompletionInvariantDetails({
-        edit,
-        editInput: input.editInput,
-        plan: input.plan,
-        rawFirstLine,
-        postprocessFirstLine,
-        postprocessDebug,
-        rejectReason: validation.reason,
-        selectedCompletionInfo: input.selectedCompletionInfo,
-      })} ${input.details}`)
-      if (input.attempt === "retry") {
-        this.logInfo(
-          input.settings,
-          `retry-edit-rejected reason=${validation.reason} ${input.details} elapsedMs=${elapsedMs(input.started)}`,
-        )
-      } else {
-        this.logInfo(
-          input.settings,
-          `edit-rejected reason=${validation.reason} ${input.details} elapsedMs=${elapsedMs(input.started)}`,
-        )
-      }
-      this.logCompletionTelemetry(input.settings, input.telemetry, input.started, false, validation.reason)
-      return { status: "rejected", reason: validation.reason, source: "remote" }
-    }
-
-    const adaptedEdit = validation.edit
     input.telemetry.finalRange = adaptedEdit.replaceRange ?? zeroWidthRange(input.editInput.position)
     input.telemetry.filterText = adaptedEdit.filterText ?? adaptedEdit.insertText
     this.logDebug(input.settings, `inline-invariant ${inlineCompletionInvariantDetails({
@@ -765,8 +672,8 @@ export class RemoteCompletionProvider implements vscode.InlineCompletionItemProv
       plan: input.plan,
       rawFirstLine,
       postprocessFirstLine,
-      postprocessDebug,
-      rejectReason: postprocessResult.reason,
+      postprocessDebug: pipeline.postprocessDebug,
+      rejectReason: pipeline.rejectionReason,
       selectedCompletionInfo: input.selectedCompletionInfo,
     })} ${input.details}`)
     if (input.attempt === "retry") {
@@ -774,7 +681,7 @@ export class RemoteCompletionProvider implements vscode.InlineCompletionItemProv
     } else {
       this.logInfo(input.settings, `edit-ready ${editDetails(adaptedEdit)} ${input.details} elapsedMs=${elapsedMs(input.started)} chars=${adaptedEdit.insertText.length}`)
     }
-    this.logDebug(input.settings, `edit ${editDetails(adaptedEdit)} visibleChars=${candidateText.length} ${input.details}`)
+    this.logDebug(input.settings, `edit ${editDetails(adaptedEdit)} visibleChars=${pipeline.candidateText.length} ${input.details}`)
     this.logCompletionTelemetry(input.settings, input.telemetry, input.started, true)
     return { status: "ok", edit: adaptedEdit, source: "remote" }
   }
@@ -1014,10 +921,6 @@ function elapsedMs(started: number) {
   return Date.now() - started
 }
 
-function lineIndent(line: string) {
-  return line.match(/^[ \t]*/)?.[0] ?? ""
-}
-
 function completionSymbolQuery(input: Omit<CompletionEditInput, "text">) {
   if (input.currentWord && input.currentWord.length >= 2) return input.currentWord
   const identifiers = input.linePrefix.match(/\b[A-Za-z_][A-Za-z0-9_]*\b/g) ?? []
@@ -1035,14 +938,6 @@ function updateCompletionTelemetryPlan(telemetry: CompletionTelemetryDraft, plan
   telemetry.planKind = plan.kind
   telemetry.insertMode = plan.insertMode
   telemetry.targetSymbol = plan.targetSymbol
-}
-
-function fallbackSymbolText(plan: CompletionPlan, snippets: RetrievedCompletionSnippet[], currentWord: string | undefined) {
-  if (!plan.replaceCurrentWord || !currentWord) return ""
-  const current = currentWord.toLowerCase()
-  return snippets
-    .map((snippet) => snippet.name ?? "")
-    .find((name) => name.toLowerCase().startsWith(current) && name.length > currentWord.length) ?? ""
 }
 
 function deterministicCompletionMessage(text: string): OpenCodeMessage {

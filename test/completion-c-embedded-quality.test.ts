@@ -1,0 +1,198 @@
+import { describe, expect, test } from "bun:test"
+import { readdir } from "node:fs/promises"
+import { resolve } from "node:path"
+import { pathToFileURL } from "node:url"
+import {
+  C_EMBEDDED_CHECKERS,
+  gateForCEmbeddedScore,
+  scoreCEmbeddedCompletionQuality,
+  type CEmbeddedCompletionFixture,
+} from "../src/completion-c-embedded-quality"
+
+const fixtureDir = resolve(import.meta.dir, "completion-quality/c-embedded/fixtures")
+
+describe("C/embedded completion quality fixtures", () => {
+  test("cover twelve C/embedded categories with ten fixtures each", async () => {
+    const fixtures = await loadFixtures()
+    expect(fixtures.length).toBeGreaterThanOrEqual(120)
+
+    const categoryCounts = new Map<string, number>()
+    const ids = new Set<string>()
+    for (const fixture of fixtures) {
+      expect(fixture.id).toBeTruthy()
+      expect(ids.has(fixture.id)).toBe(false)
+      ids.add(fixture.id)
+      expect(fixture.category).toMatch(/^[A-L]\./)
+      expect(fixture.languageId).toBe("c")
+      expect(fixture.path).toBeTruthy()
+      expect(fixture.document).toContain("<|cursor|>")
+      expect(["automatic", "manual"]).toContain(fixture.triggerKind)
+      expect(fixture.expectedIntent).toBeTruthy()
+      expect(Array.isArray(fixture.mustContain)).toBe(true)
+      expect(Array.isArray(fixture.mustNotContain)).toBe(true)
+      expect(fixture.maxLines).toBeGreaterThanOrEqual(1)
+      expect(fixture.checks).toEqual([...C_EMBEDDED_CHECKERS])
+      if (fixture.mustContainAny) {
+        expect(fixture.mustContainAny.every((group) => Array.isArray(group) && group.length > 0)).toBe(true)
+      }
+      categoryCounts.set(fixture.category, (categoryCounts.get(fixture.category) ?? 0) + 1)
+    }
+
+    expect(categoryCounts.size).toBe(12)
+    for (const count of categoryCounts.values()) {
+      expect(count).toBeGreaterThanOrEqual(10)
+    }
+  })
+
+  test("exposes all required checker names", () => {
+    expect([...C_EMBEDDED_CHECKERS]).toEqual([
+      "checkVscodeContract",
+      "checkApplyEditResult",
+      "checkCParseOrCompile",
+      "checkNoMarkdownOrExplanation",
+      "checkNoPlaceholder",
+      "checkNoDangerousC",
+      "checkNoHallucinatedSymbol",
+      "checkIntentMatch",
+      "checkEmbeddedSafety",
+      "checkProjectStyle",
+      "checkStability",
+      "checkLatency",
+    ])
+  })
+})
+
+describe("C/embedded completion quality scorer", () => {
+  test("hard rejects unsafe buffer completions", () => {
+    const score = scoreCEmbeddedCompletionQuality(scoreInput({
+      acceptedText: "strcpy(dst, src);",
+      appliedText: "hal_status_t f(char *dst, const char *src) { strcpy(dst, src); return HAL_OK; }",
+      checks: ["checkNoDangerousC", "checkIntentMatch"],
+      mustContain: ["snprintf"],
+    }))
+
+    expect(score.gate).toBe("reject")
+    expect(score.issues.map((issue) => issue.kind)).toContain("unsafe buffer")
+    expect(score.issues.some((issue) => issue.hardReject)).toBe(true)
+  })
+
+  test("labels bad edit contracts", () => {
+    const score = scoreCEmbeddedCompletionQuality(scoreInput({
+      decision: "rejected",
+      rejectionReason: "selectedCompletionInfo-range-mismatch",
+      acceptedText: "",
+      appliedText: "int x;\n",
+      checks: ["checkVscodeContract", "checkIntentMatch"],
+      mustContain: ["int x = 1;"],
+    }))
+
+    expect(score.gate).toBe("reject")
+    expect(score.issues.map((issue) => issue.kind)).toContain("bad edit contract")
+  })
+
+  test("labels ISR blocking, missing volatile, hallucinated API, placeholder, and unstable output", () => {
+    const isr = scoreCEmbeddedCompletionQuality(scoreInput({
+      category: "E. Interrupts critical sections and concurrency",
+      path: "src/irq/timer_irq.c",
+      acceptedText: "vTaskDelay(1);",
+      appliedText: "void TIMER0_IRQHandler(void) { vTaskDelay(1); }",
+      checks: ["checkEmbeddedSafety"],
+    }))
+    expect(isr.issues.map((issue) => issue.kind)).toContain("ISR blocking")
+
+    const volatileScore = scoreCEmbeddedCompletionQuality(scoreInput({
+      category: "D. MMIO registers and volatile",
+      acceptedText: "#define UART_DR (*(uint32_t *)UART_BASE)",
+      appliedText: "#define UART_BASE 0x40000000u\n#define UART_DR (*(uint32_t *)UART_BASE)\n",
+      checks: ["checkEmbeddedSafety"],
+    }))
+    expect(volatileScore.issues.map((issue) => issue.kind)).toContain("missing volatile")
+
+    const hallucinated = scoreCEmbeddedCompletionQuality(scoreInput({
+      acceptedText: "HAL_UARTX_Read(bus);",
+      appliedText: "int f(void) { return HAL_UARTX_Read(bus); }",
+      checks: ["checkNoHallucinatedSymbol"],
+    }))
+    expect(hallucinated.issues.map((issue) => issue.kind)).toContain("hallucinated API")
+
+    const placeholder = scoreCEmbeddedCompletionQuality(scoreInput({
+      acceptedText: "// TODO: Add your implementation",
+      appliedText: "void f(void) { /* TODO: Add your implementation */ }",
+      checks: ["checkNoPlaceholder"],
+    }))
+    expect(placeholder.issues.map((issue) => issue.kind)).toContain("placeholder")
+
+    const unstable = scoreCEmbeddedCompletionQuality(scoreInput({
+      acceptedText: "return HAL_OK;",
+      appliedText: "hal_status_t f(void) { return HAL_OK; }",
+      repeatAcceptedTexts: ["return HAL_OK;", "return HAL_ERR;"],
+      checks: ["checkStability"],
+    }))
+    expect(unstable.issues.map((issue) => issue.kind)).toContain("unstable output")
+  })
+
+  test("applies gate thresholds and hard reject override", () => {
+    expect(gateForCEmbeddedScore(85)).toBe("auto show")
+    expect(gateForCEmbeddedScore(70)).toBe("manual only")
+    expect(gateForCEmbeddedScore(69)).toBe("reject")
+    expect(gateForCEmbeddedScore(100, [{
+      kind: "unsafe buffer",
+      message: "unsafe",
+      checker: "checkNoDangerousC",
+      dimension: "safety",
+      severity: "critical",
+      hardReject: true,
+    }])).toBe("reject")
+  })
+})
+
+async function loadFixtures() {
+  const files = (await readdir(fixtureDir))
+    .filter((file) => file.endsWith(".ts") && !file.startsWith("_"))
+    .sort()
+  const fixtures: CEmbeddedCompletionFixture[] = []
+  for (const file of files) {
+    const module = await import(`${pathToFileURL(resolve(fixtureDir, file)).href}?t=${Date.now()}`)
+    fixtures.push(...(module.default as CEmbeddedCompletionFixture[]))
+  }
+  return fixtures
+}
+
+function scoreInput(input: Partial<Parameters<typeof scoreCEmbeddedCompletionQuality>[0]> & {
+  checks?: CEmbeddedCompletionFixture["checks"]
+  mustContain?: string[]
+  category?: string
+  path?: string
+}): Parameters<typeof scoreCEmbeddedCompletionQuality>[0] {
+  return {
+    fixture: {
+      id: "score-fixture",
+      category: input.category ?? "I. Memory buffer and safety",
+      languageId: "c",
+      path: input.path ?? "src/driver/test.c",
+      document: "int f(void) { <|cursor|> }\n",
+      triggerKind: "automatic",
+      expectedIntent: "score fixture",
+      mustContain: input.mustContain ?? [],
+      mustNotContain: ["HAL_UARTX", "TODO", "Add your implementation", "strcpy("],
+      maxLines: 4,
+      checks: input.checks ?? [...C_EMBEDDED_CHECKERS],
+    },
+    decision: input.decision ?? "accepted",
+    rejectionReason: input.rejectionReason,
+    acceptedText: input.acceptedText ?? "",
+    appliedText: input.appliedText ?? "",
+    originalText: input.originalText ?? "",
+    linePrefix: input.linePrefix ?? "",
+    lineSuffix: input.lineSuffix ?? "",
+    edit: input.edit ?? {
+      insertText: input.acceptedText ?? "",
+      replaceRange: { startLine: 0, startCharacter: 14, endLine: 0, endCharacter: 14 },
+      filterText: input.acceptedText ?? "",
+    },
+    repeatAcceptedTexts: input.repeatAcceptedTexts ?? [input.acceptedText ?? ""],
+    repeatDecisions: input.repeatDecisions ?? [input.decision ?? "accepted"],
+    latencyMs: input.latencyMs ?? 0,
+    selectedContextText: input.selectedContextText ?? "",
+  }
+}

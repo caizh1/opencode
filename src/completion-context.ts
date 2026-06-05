@@ -27,6 +27,12 @@ export type CompletionContextPack = {
   tokenEstimate: number
 }
 
+export type CompletionOpenTabContext = {
+  path: string
+  languageId: string
+  text: string
+}
+
 export type PackCompletionContextInput = {
   plan: CompletionPlan
   languageId: string
@@ -34,6 +40,7 @@ export type PackCompletionContextInput = {
   prefix: string
   suffix: string
   retrievedSnippets: RetrievedCompletionSnippet[]
+  openTabs?: CompletionOpenTabContext[]
   tokenBudget?: number
 }
 
@@ -103,6 +110,7 @@ function contextBlocks(input: PackCompletionContextInput): PackedContextBlock[] 
   const testFramework = testFrameworkBlocks(input.plan, snippets)
   const includes = includeBlock(input.prefix, input.currentPath)
   const current = currentFileBlocks(input)
+  const openTabs = openTabBlocks(input)
 
   switch (input.plan.kind) {
     case "symbol-completion":
@@ -111,16 +119,16 @@ function contextBlocks(input: PackCompletionContextInput): PackedContextBlock[] 
       return target
     case "previous-comment-continuation":
       return input.plan.needsTestRetrieval
-        ? [...target, ...similarTests, ...testFramework, ...includes, ...current]
-        : [...target, ...includes, ...current]
+        ? [...target, ...similarTests, ...testFramework, ...includes, ...openTabs, ...current]
+        : [...target, ...includes, ...openTabs, ...current]
     case "comment-to-test":
-      return [...target, ...similarTests, ...testFramework, ...includes, ...current]
+      return [...target, ...similarTests, ...testFramework, ...includes, ...openTabs, ...current]
     case "natural-command":
-      return [...target, ...similarTests, ...testFramework, ...current]
+      return [...target, ...similarTests, ...testFramework, ...openTabs, ...current]
     case "ordinary-code":
-      return [...target, ...includes, ...current]
+      return [...target, ...includes, ...openTabs, ...current]
     case "comment-to-code":
-      return [...target, ...includes, ...current]
+      return [...target, ...includes, ...openTabs, ...current]
     case "disabled":
       return []
   }
@@ -193,6 +201,20 @@ function currentFileBlocks(input: PackCompletionContextInput): PackedContextBloc
         })
       : undefined,
   ].filter((item): item is PackedContextBlock => Boolean(item))
+}
+
+function openTabBlocks(input: PackCompletionContextInput): PackedContextBlock[] {
+  return (input.openTabs ?? [])
+    .filter((tab) => tab.path !== input.currentPath && tab.text.trim())
+    .slice(0, 6)
+    .map((tab, index) =>
+      block({
+        kind: "open-tab",
+        title: `open tab: ${tab.path}`,
+        filePath: tab.path,
+        text: limitSnippetText(tab.text, "open-tab"),
+        score: 560 - index,
+      }))
 }
 
 function includeBlock(prefix: string, currentPath: string): PackedContextBlock[] {

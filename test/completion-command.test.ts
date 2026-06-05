@@ -4,6 +4,7 @@ import { join } from "node:path"
 
 describe("accepted completion formatting command wiring", () => {
   const completionSource = readFileSync(join(import.meta.dir, "..", "src", "completion.ts"), "utf8")
+  const completionCandidateSource = readFileSync(join(import.meta.dir, "..", "src", "completion-candidate-pipeline.ts"), "utf8")
   const contextSource = readFileSync(join(import.meta.dir, "..", "src", "context.ts"), "utf8")
   const commandSource = readFileSync(join(import.meta.dir, "..", "src", "completion-format-command.ts"), "utf8")
   const extensionSource = readFileSync(join(import.meta.dir, "..", "src", "extension.ts"), "utf8")
@@ -15,10 +16,12 @@ describe("accepted completion formatting command wiring", () => {
   })
 
   test("completion provider logs empty reasons and edit debug details", () => {
-    expect(completionSource).toContain("postprocessCompletion")
-    expect(completionSource).toContain("postprocessResult.reason")
-    expect(completionSource).toContain('reason: "empty-output" as const')
-    expect(completionSource).toContain("edit-rejected reason=${result.reason}")
+    expect(completionSource).toContain("runCompletionCandidatePipeline")
+    expect(completionCandidateSource).toContain("postprocessCompletion")
+    expect(completionCandidateSource).toContain("postprocessResult.reason")
+    expect(completionCandidateSource).toContain('reason: "empty-output" as const')
+    expect(completionCandidateSource).toContain("`edit:${result.reason}`")
+    expect(completionSource).toContain("edit-rejected reason=${reason}")
     expect(completionSource).toContain("edit-ready ${editDetails(adaptedEdit)}")
     expect(completionSource).toContain("returned source=${source}")
     expect(completionSource).toContain("edit ${editDetails(edit)}")
@@ -36,7 +39,7 @@ describe("accepted completion formatting command wiring", () => {
     expect(completionSource).toContain("retry-sent reason=${initial.reason}")
     expect(completionSource).toContain("retry-received reason=${initial.reason}")
     expect(completionSource).toContain("retry-edit-ready ${editDetails(adaptedEdit)}")
-    expect(completionSource).toContain("retry-edit-rejected reason=${result.reason}")
+    expect(completionSource).toContain("retry-edit-rejected reason=${reason}")
   })
 
   test("completion provider can route inline completions to a direct model API", () => {
