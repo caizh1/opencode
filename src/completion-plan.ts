@@ -6,6 +6,10 @@ export type CompletionPlanInput = {
   lineSuffix: string
   currentWord?: string
   previousNonEmptyLine?: string
+  nextNonEmptyLine?: string
+  lines?: string[]
+  line?: number
+  triggerKind?: "automatic" | "manual" | "invoke" | string
 }
 
 export function planCompletion(input: CompletionPlanInput): CompletionPlan {
@@ -15,6 +19,8 @@ export function planCompletion(input: CompletionPlanInput): CompletionPlan {
   if (previousContinuation) return previousContinuation
 
   if (!trimmed && !input.lineSuffix.trim()) {
+    const bodyContinuation = bodyContinuationPlan(input)
+    if (bodyContinuation) return bodyContinuation
     return disabledPlan()
   }
 
@@ -132,18 +138,38 @@ function previousCommentContinuationPlan(input: CompletionPlanInput, trimmed: st
   if (!targetSymbol && !looksLikeCodeCommentPrompt(sourceComment)) return
 
   const testIntent = looksLikeTestIntentComment(sourceComment)
+  const emptyContinuationLine = !trimmed && !input.lineSuffix.trim()
   return {
     kind: "previous-comment-continuation",
-    insertMode: "replace-whole-line",
+    insertMode: emptyContinuationLine ? "insert-at-cursor" : "replace-whole-line",
     sourceComment,
     ...(targetSymbol ? { targetSymbol } : {}),
-    replaceCurrentWord: true,
+    replaceCurrentWord: !emptyContinuationLine,
     needsSymbolRetrieval: Boolean(targetSymbol),
     needsTestRetrieval: testIntent,
     useFim: false,
     useInstruction: true,
     maxTokens: testIntent ? 768 : 384,
     confidenceFloor: testIntent ? 0.55 : 0.5,
+  }
+}
+
+function bodyContinuationPlan(input: CompletionPlanInput): CompletionPlan | undefined {
+  if (!supportsCBodyContinuation(input.languageId)) return
+  if (input.line === undefined || !input.lines) return
+  if (!looksLikeBodyNeighborCode(input.previousNonEmptyLine) && !looksLikeBodyNeighborCode(input.nextNonEmptyLine)) return
+  if (!isCursorInCCodeBlock(input.lines, input.line, input.linePrefix.length)) return
+
+  return {
+    kind: "body-continuation",
+    insertMode: "insert-at-cursor",
+    replaceCurrentWord: false,
+    needsSymbolRetrieval: false,
+    needsTestRetrieval: false,
+    useFim: true,
+    useInstruction: false,
+    maxTokens: isManualTrigger(input.triggerKind) ? 128 : 96,
+    confidenceFloor: 0.35,
   }
 }
 
@@ -159,6 +185,14 @@ function disabledPlan(): CompletionPlan {
     maxTokens: 0,
     confidenceFloor: 1,
   }
+}
+
+function supportsCBodyContinuation(languageId: string) {
+  return languageId === "c" || languageId === "cpp"
+}
+
+function isManualTrigger(triggerKind: CompletionPlanInput["triggerKind"]) {
+  return triggerKind === "manual" || triggerKind === "invoke"
 }
 
 function looksLikeUnitTestPrompt(trimmed: string) {
@@ -254,6 +288,114 @@ function isInsideStringLiteral(linePrefix: string, languageId: string) {
   }
 
   return Boolean(quote)
+}
+
+function looksLikeBodyNeighborCode(line: string | undefined) {
+  if (!line) return false
+  const trimmed = line.trim()
+  if (!trimmed) return false
+  if (/^(?:\/\/|\/\*|\*|#\s*(?:include|define|if|ifdef|ifndef|endif|elif|else|pragma)\b)/.test(trimmed)) return false
+  return /[A-Za-z0-9_)}\];{]/.test(trimmed)
+}
+
+function isCursorInCCodeBlock(lines: string[], line: number, character: number) {
+  const beforeCursor = [
+    ...lines.slice(0, line),
+    (lines[line] ?? "").slice(0, character),
+  ].join("\n")
+  const state = scanCBlockState(beforeCursor)
+  if (state.inComment || state.inString) return false
+  return state.stack.some((item) => item === "block")
+}
+
+function scanCBlockState(input: string) {
+  const stack: Array<"block" | "aggregate"> = []
+  let inBlockComment = false
+  let inLineComment = false
+  let quote: "'" | "\"" | undefined
+  let escaped = false
+  let sanitized = ""
+
+  for (let index = 0; index < input.length; index += 1) {
+    const char = input[index]
+    const next = input[index + 1]
+
+    if (inLineComment) {
+      if (char === "\n") {
+        inLineComment = false
+        sanitized += "\n"
+      } else {
+        sanitized += " "
+      }
+      continue
+    }
+
+    if (inBlockComment) {
+      if (char === "*" && next === "/") {
+        inBlockComment = false
+        sanitized += "  "
+        index += 1
+      } else {
+        sanitized += char === "\n" ? "\n" : " "
+      }
+      continue
+    }
+
+    if (quote) {
+      if (escaped) {
+        escaped = false
+      } else if (char === "\\") {
+        escaped = true
+      } else if (char === quote) {
+        quote = undefined
+      }
+      sanitized += char === "\n" ? "\n" : " "
+      continue
+    }
+
+    if (char === "/" && next === "/") {
+      inLineComment = true
+      sanitized += "  "
+      index += 1
+      continue
+    }
+    if (char === "/" && next === "*") {
+      inBlockComment = true
+      sanitized += "  "
+      index += 1
+      continue
+    }
+    if (char === "\"" || char === "'") {
+      quote = char
+      sanitized += " "
+      continue
+    }
+
+    if (char === "{") {
+      stack.push(openBraceContext(sanitized))
+    } else if (char === "}") {
+      stack.pop()
+    }
+    sanitized += char
+  }
+
+  return {
+    stack,
+    inComment: inBlockComment || inLineComment,
+    inString: Boolean(quote),
+  }
+}
+
+function openBraceContext(sanitizedBeforeBrace: string): "block" | "aggregate" {
+  const tail = sanitizedBeforeBrace
+    .replace(/#[^\n]*/g, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(-180)
+  if (/\b(?:struct|union|enum)\s+[A-Za-z_][A-Za-z0-9_]*\s*$/.test(tail)) return "aggregate"
+  if (/\btypedef\s+(?:struct|union|enum)(?:\s+[A-Za-z_][A-Za-z0-9_]*)?\s*$/.test(tail)) return "aggregate"
+  if (/\b(?:struct|union|enum)\s*$/.test(tail)) return "aggregate"
+  return "block"
 }
 
 function isLowSignalInput(trimmed: string, currentWord: string) {

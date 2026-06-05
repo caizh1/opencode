@@ -1,5 +1,6 @@
 export type CompletionPlanKind =
   | "ordinary-code"
+  | "body-continuation"
   | "symbol-completion"
   | "comment-symbol-reference"
   | "previous-comment-continuation"

@@ -126,6 +126,7 @@ function contextBlocks(input: PackCompletionContextInput): PackedContextBlock[] 
     case "natural-command":
       return [...target, ...similarTests, ...testFramework, ...openTabs, ...current]
     case "ordinary-code":
+    case "body-continuation":
       return [...target, ...includes, ...openTabs, ...current]
     case "comment-to-code":
       return [...target, ...includes, ...openTabs, ...current]
@@ -179,8 +180,9 @@ function testFrameworkBlocks(plan: CompletionPlan, snippets: RetrievedCompletion
 }
 
 function currentFileBlocks(input: PackCompletionContextInput): PackedContextBlock[] {
-  const currentPrefix = tailLines(input.prefix, input.plan.kind === "ordinary-code" ? 60 : 120)
-  const currentSuffix = headLines(input.suffix, input.plan.kind === "ordinary-code" ? 40 : 80)
+  const ordinary = input.plan.kind === "ordinary-code" || input.plan.kind === "body-continuation"
+  const currentPrefix = tailLines(input.prefix, ordinary ? 60 : 120)
+  const currentSuffix = headLines(input.suffix, ordinary ? 40 : 80)
   return [
     currentPrefix
       ? block({
@@ -188,7 +190,7 @@ function currentFileBlocks(input: PackCompletionContextInput): PackedContextBloc
           title: "current prefix",
           filePath: input.currentPath,
           text: currentPrefix,
-          score: input.plan.kind === "ordinary-code" ? 650 : 500,
+          score: ordinary ? 650 : 500,
         })
       : undefined,
     currentSuffix
@@ -197,7 +199,7 @@ function currentFileBlocks(input: PackCompletionContextInput): PackedContextBloc
           title: "current suffix",
           filePath: input.currentPath,
           text: currentSuffix,
-          score: input.plan.kind === "ordinary-code" ? 620 : 460,
+          score: ordinary ? 620 : 460,
         })
       : undefined,
   ].filter((item): item is PackedContextBlock => Boolean(item))
@@ -213,7 +215,7 @@ function openTabBlocks(input: PackCompletionContextInput): PackedContextBlock[] 
         title: `open tab: ${tab.path}`,
         filePath: tab.path,
         text: limitSnippetText(tab.text, "open-tab"),
-        score: 560 - index,
+        score: 560 - index + cEmbeddedContextBoost(input, tab.path, tab.text),
       }))
 }
 
@@ -308,11 +310,29 @@ function tokenBudgetForPlan(plan: CompletionPlan) {
     case "natural-command":
       return 1800
     case "ordinary-code":
+    case "body-continuation":
     case "comment-to-code":
       return 900
     case "disabled":
       return 0
   }
+}
+
+function cEmbeddedContextBoost(input: PackCompletionContextInput, path: string, text: string) {
+  if (!isCEmbeddedContext(input, path, text)) return 0
+  let boost = 0
+  if (/\b[A-Z][A-Z0-9_]{2,}\b/.test(text)) boost += 70
+  if (/\b(?:uart|gpio|i2c|spi)_[A-Za-z0-9_]+\s*\(/.test(text)) boost += 80
+  if (/\b(?:fake|mock|expect)[A-Za-z0-9_]*\s*\(/i.test(text) || /(?:^|[\\/])(?:test|tests|mock|fake|helper)s?(?:[\\/._-]|$)/i.test(path)) boost += 80
+  if (/\bextern\s+(?:volatile\s+)?[A-Za-z_][A-Za-z0-9_\s*]*\s+[A-Za-z_][A-Za-z0-9_]*\s*;/.test(text)) boost += 60
+  if (/\b(?:DRIVER_LOG_[A-Z0-9_]*|LOG_[A-Z0-9_]*)\b/.test(text)) boost += 70
+  if (/(?:^|[\\/])include[\\/]|\.h$|\.hpp$/.test(path)) boost += 50
+  return boost
+}
+
+function isCEmbeddedContext(input: PackCompletionContextInput, path: string, text: string) {
+  if (input.languageId === "c" || input.languageId === "cpp") return true
+  return /\.(?:c|h|cpp|hpp)$/.test(path) || /\b(?:HAL_|MMIO|volatile|uint(?:8|16|32)_t|UART|GPIO|I2C|SPI)\b/.test(text)
 }
 
 function estimateTokens(input: string) {

@@ -241,10 +241,10 @@ describe("completion planner", () => {
       lineSuffix: "",
     })).toMatchObject({
       kind: "previous-comment-continuation",
-      insertMode: "replace-whole-line",
+      insertMode: "insert-at-cursor",
       targetSymbol: "alpha_feature_finalize",
       sourceComment: "// 任意描述 alpha_feature_finalize",
-      replaceCurrentWord: true,
+      replaceCurrentWord: false,
       needsSymbolRetrieval: true,
       useFim: false,
       useInstruction: true,
@@ -293,5 +293,95 @@ describe("completion planner", () => {
       useFim: false,
       useInstruction: false,
     })
+  })
+
+  test("routes blank lines inside C function bodies as body continuations", () => {
+    const lines = [
+      "hal_status_t enable_uart(void)",
+      "{",
+      "    uint32_t flags = UART_CTRL_ENABLE;",
+      "    ",
+      "    return HAL_OK;",
+      "}",
+    ]
+    expect(planCompletion({
+      languageId: "c",
+      linePrefix: "    ",
+      lineSuffix: "",
+      previousNonEmptyLine: lines[2],
+      nextNonEmptyLine: lines[4],
+      lines,
+      line: 3,
+      triggerKind: "automatic",
+    })).toMatchObject({
+      kind: "body-continuation",
+      insertMode: "insert-at-cursor",
+      useFim: true,
+      useInstruction: false,
+      maxTokens: 96,
+    })
+  })
+
+  test("uses a larger body continuation budget for manual triggers", () => {
+    const lines = ["void task(void)", "{", "    while (running) {", "    ", "    }", "}"]
+    expect(planCompletion({
+      languageId: "c",
+      linePrefix: "    ",
+      lineSuffix: "",
+      previousNonEmptyLine: lines[2],
+      nextNonEmptyLine: lines[4],
+      lines,
+      line: 3,
+      triggerKind: "manual",
+    })).toMatchObject({
+      kind: "body-continuation",
+      maxTokens: 128,
+    })
+  })
+
+  test("does not route top-level, aggregate, comment, or string blank lines as body continuations", () => {
+    const topLevel = ["int a;", "", "int b;"]
+    expect(planCompletion({
+      languageId: "c",
+      linePrefix: "",
+      lineSuffix: "",
+      previousNonEmptyLine: topLevel[0],
+      nextNonEmptyLine: topLevel[2],
+      lines: topLevel,
+      line: 1,
+    })).toMatchObject({ kind: "disabled" })
+
+    const aggregate = ["typedef struct {", "    ", "    uint32_t value;", "} cfg_t;"]
+    expect(planCompletion({
+      languageId: "c",
+      linePrefix: "    ",
+      lineSuffix: "",
+      previousNonEmptyLine: aggregate[0],
+      nextNonEmptyLine: aggregate[2],
+      lines: aggregate,
+      line: 1,
+    })).toMatchObject({ kind: "disabled" })
+
+    const comment = ["void f(void)", "{", "    /*", "    ", "     */", "}"]
+    expect(planCompletion({
+      languageId: "c",
+      linePrefix: "    ",
+      lineSuffix: "",
+      previousNonEmptyLine: comment[2],
+      nextNonEmptyLine: comment[4],
+      lines: comment,
+      line: 3,
+    })).toMatchObject({ kind: "disabled" })
+
+    const string = ["void f(void)", "{", "    const char *s = \"", "    ", "    \";", "}"]
+    expect(planCompletion({
+      languageId: "c",
+      linePrefix: "    ",
+      lineSuffix: "",
+      previousNonEmptyLine: string[2],
+      nextNonEmptyLine: string[4],
+      lines: string,
+      line: 3,
+    })).toMatchObject({ kind: "disabled" })
   })
 })

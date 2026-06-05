@@ -10,6 +10,7 @@ import {
 } from "./completion-edit"
 import { completionFormatCommand } from "./completion-format-command"
 import { completionContextDebugSummary, type CompletionContextPack } from "./completion-context"
+import { scoreCEmbeddedCompletionQuality, type CEmbeddedCompletionFixture, type CEmbeddedTriggerKind } from "./completion-c-embedded-quality"
 import { inferCompletionIndent } from "./completion-indent"
 import { CompletionModelClient, completionModel } from "./completion-model-client"
 import { runCompletionCandidatePipeline, type CompletionCandidatePipelineResult } from "./completion-candidate-pipeline"
@@ -39,6 +40,9 @@ type DeterministicSymbolRoute = Extract<CompletionModelRoute, { kind: "determini
 type CompletionLatencyKey = Exclude<keyof CompletionDebugEvent["latencyMs"], "total">
 type SelectedCompletionInfo = vscode.InlineCompletionContext["selectedCompletionInfo"]
 type PostprocessDebug = CompletionCandidatePipelineResult["postprocessDebug"]
+type QualityCompletionEdit = CompletionEdit & {
+  qualityContextText?: string
+}
 
 export class RemoteCompletionProvider implements vscode.InlineCompletionItemProvider {
   private sessionID?: string
@@ -94,6 +98,10 @@ export class RemoteCompletionProvider implements vscode.InlineCompletionItemProv
     const plan = planCompletion({
       ...editInput,
       previousNonEmptyLine: previousNonEmptyLineBefore(lines, position.line),
+      nextNonEmptyLine: nextNonEmptyLineAfter(lines, position.line),
+      lines,
+      line: position.line,
+      triggerKind: completionTriggerKind(context.triggerKind),
     })
     const client = this.deps.getClient()
     if (settings.completion.provider === "opencode" && !client) {
@@ -146,11 +154,14 @@ export class RemoteCompletionProvider implements vscode.InlineCompletionItemProv
       details,
       debounceMs: settings.completion.debounceMs,
       localFallback,
-      validateEdit: (edit) => adaptAndValidateInlineCompletionEdit({
+      validateEdit: (edit) => this.validateInlineCompletionEditForReturn({
         edit,
+        document,
         editInput,
         plan,
-        selectedCompletionInfo: selectedCompletionInfoValue(context.selectedCompletionInfo),
+        selectedCompletionInfo: context.selectedCompletionInfo,
+        triggerKind: runtimeTriggerKind(context.triggerKind),
+        selectedContextText: (edit as QualityCompletionEdit).qualityContextText,
       }),
       runRemote: (signal) =>
         settings.completion.provider === "openai-compatible"
@@ -192,6 +203,7 @@ export class RemoteCompletionProvider implements vscode.InlineCompletionItemProv
         settings,
         details,
         source: start.immediate.source,
+        triggerKind: runtimeTriggerKind(context.triggerKind),
       })
       if (ready) {
         this.logReturned(settings, start.immediate.source, ready.edit, details, started)
@@ -217,6 +229,7 @@ export class RemoteCompletionProvider implements vscode.InlineCompletionItemProv
       settings,
       details,
       source: outcome.source,
+      triggerKind: runtimeTriggerKind(context.triggerKind),
     })
     if (!ready) return
 
@@ -269,6 +282,7 @@ export class RemoteCompletionProvider implements vscode.InlineCompletionItemProv
       if (route.kind === "deterministic-symbol") {
         return this.deterministicCompletionOutcome({
           route,
+          document: input.document,
           settings: input.settings,
           details: input.details,
           started: input.started,
@@ -293,7 +307,9 @@ export class RemoteCompletionProvider implements vscode.InlineCompletionItemProv
       })
       input.telemetry.latencyMs.context = elapsedMs(contextStarted)
       return await this.completionOutcomeWithRetry({
-        prompt,
+        prompt: prompt.prompt,
+        selectedContextText: prompt.selectedContextText,
+        document: input.document,
         settings: input.settings,
         details: input.details,
         started: input.started,
@@ -363,6 +379,7 @@ export class RemoteCompletionProvider implements vscode.InlineCompletionItemProv
       if (route.kind === "deterministic-symbol") {
         return this.deterministicCompletionOutcome({
           route,
+          document: input.document,
           settings: input.settings,
           details: input.details,
           started: input.started,
@@ -390,7 +407,9 @@ export class RemoteCompletionProvider implements vscode.InlineCompletionItemProv
       const apiKey = await this.deps.getCompletionApiKey?.()
       const client = new CompletionModelClient(input.settings, apiKey)
       return await this.completionOutcomeWithRetry({
-        prompt,
+        prompt: prompt.prompt,
+        selectedContextText: prompt.selectedContextText,
+        document: input.document,
         settings: input.settings,
         details: input.details,
         started: input.started,
@@ -433,15 +452,17 @@ export class RemoteCompletionProvider implements vscode.InlineCompletionItemProv
     retrievedSnippets: RetrievedCompletionSnippet[]
     transport?: "opencode" | "openai-compatible"
     telemetry: CompletionTelemetryDraft
-  }) {
+  }): Promise<{ prompt: string; selectedContextText: string }> {
+    let selectedContextText = ""
     const onContextPack = (pack: CompletionContextPack) => {
+      selectedContextText = pack.selected.map((block) => block.text).join("\n")
       input.telemetry.selectedContextBlocks = completionTelemetrySelectedContextBlocks(pack)
       input.telemetry.droppedContextBlocks = completionTelemetryDroppedContextBlocks(pack)
       this.logDebug(input.settings, `${completionContextDebugSummary(pack)} ${input.details}`)
     }
 
     if (input.route.promptKind === "qwen-fim") {
-      return buildQwenCoderFimPrompt({
+      const prompt = buildQwenCoderFimPrompt({
         document: input.document,
         position: input.position,
         settings: input.settings,
@@ -449,9 +470,10 @@ export class RemoteCompletionProvider implements vscode.InlineCompletionItemProv
         retrievedSnippets: input.retrievedSnippets,
         onContextPack,
       })
+      return { prompt, selectedContextText }
     }
 
-    return buildCompletionPrompt({
+    const prompt = await buildCompletionPrompt({
       document: input.document,
       position: input.position,
       settings: input.settings,
@@ -460,10 +482,12 @@ export class RemoteCompletionProvider implements vscode.InlineCompletionItemProv
       retrievedSnippets: input.retrievedSnippets,
       onContextPack,
     })
+    return { prompt, selectedContextText }
   }
 
   private deterministicCompletionOutcome(input: {
     route: DeterministicSymbolRoute
+    document: vscode.TextDocument
     settings: RemoteSettings
     details: string
     started: number
@@ -476,12 +500,14 @@ export class RemoteCompletionProvider implements vscode.InlineCompletionItemProv
     this.logInfo(input.settings, `deterministic-symbol reason=${input.route.reason} ${input.details}`)
     return this.completionOutcomeFromResponse({
       response: deterministicCompletionMessage(input.route.text),
+      document: input.document,
       settings: input.settings,
       details: input.details,
       started: input.started,
       editInput: input.editInput,
       plan: input.plan,
       retrievedSnippets: input.retrievedSnippets,
+      selectedContextText: completionQualityContextText(input.retrievedSnippets),
       attempt: "initial",
       textProfile: input.route.textProfile,
       telemetry: input.telemetry,
@@ -503,6 +529,7 @@ export class RemoteCompletionProvider implements vscode.InlineCompletionItemProv
 
   private async completionOutcomeWithRetry(input: {
     prompt: string
+    document: vscode.TextDocument
     settings: RemoteSettings
     details: string
     started: number
@@ -513,6 +540,7 @@ export class RemoteCompletionProvider implements vscode.InlineCompletionItemProv
     telemetry: CompletionTelemetryDraft
     selectedCompletionInfo?: SelectedCompletionInfo
     sendPrompt: (prompt: string) => Promise<OpenCodeMessage | undefined>
+    selectedContextText?: string
   }): Promise<CompletionRequestOutcome> {
     this.logInfo(input.settings, `sent ${input.details}`)
     const modelStarted = Date.now()
@@ -526,12 +554,14 @@ export class RemoteCompletionProvider implements vscode.InlineCompletionItemProv
 
     const initial = this.completionOutcomeFromResponse({
       response,
+      document: input.document,
       settings: input.settings,
       details: input.details,
       started: input.started,
       editInput: input.editInput,
       plan: input.plan,
       retrievedSnippets: input.retrievedSnippets ?? [],
+      selectedContextText: input.selectedContextText ?? completionQualityContextText(input.retrievedSnippets ?? []),
       attempt: "initial",
       textProfile: input.textProfile,
       telemetry: input.telemetry,
@@ -555,12 +585,14 @@ export class RemoteCompletionProvider implements vscode.InlineCompletionItemProv
     this.logInfo(input.settings, `retry-received reason=${initial.reason} ${input.details} elapsedMs=${elapsedMs(input.started)}`)
     return this.completionOutcomeFromResponse({
       response: retryResponse,
+      document: input.document,
       settings: input.settings,
       details: input.details,
       started: input.started,
       editInput: input.editInput,
       plan: input.plan,
       retrievedSnippets: input.retrievedSnippets ?? [],
+      selectedContextText: input.selectedContextText ?? completionQualityContextText(input.retrievedSnippets ?? []),
       attempt: "retry",
       textProfile: input.textProfile,
       telemetry: input.telemetry,
@@ -606,12 +638,14 @@ export class RemoteCompletionProvider implements vscode.InlineCompletionItemProv
 
   private completionOutcomeFromResponse(input: {
     response: OpenCodeMessage | undefined
+    document: vscode.TextDocument
     settings: RemoteSettings
     details: string
     started: number
     editInput: Omit<CompletionEditInput, "text">
     plan: CompletionPlan
     retrievedSnippets: RetrievedCompletionSnippet[]
+    selectedContextText?: string
     attempt: "initial" | "retry"
     textProfile: CompletionProfile
     telemetry: CompletionTelemetryDraft
@@ -664,10 +698,28 @@ export class RemoteCompletionProvider implements vscode.InlineCompletionItemProv
       this.logCompletionTelemetry(input.settings, input.telemetry, input.started, false, reason)
       return { status: "rejected", reason, source: "remote" }
     }
-    input.telemetry.finalRange = adaptedEdit.replaceRange ?? zeroWidthRange(input.editInput.position)
-    input.telemetry.filterText = adaptedEdit.filterText ?? adaptedEdit.insertText
-    this.logDebug(input.settings, `inline-invariant ${inlineCompletionInvariantDetails({
+    const quality = this.validateInlineCompletionEditForReturn({
       edit: adaptedEdit,
+      document: input.document,
+      editInput: input.editInput,
+      plan: input.plan,
+      selectedCompletionInfo: input.selectedCompletionInfo,
+      triggerKind: runtimeTriggerKindFromTelemetry(input.telemetry.triggerKind),
+      selectedContextText: input.selectedContextText ?? completionQualityContextText(input.retrievedSnippets),
+    })
+    if (quality.status === "rejected") {
+      this.logInfo(input.settings, `quality-rejected reason=${quality.reason} ${input.details} elapsedMs=${elapsedMs(input.started)}`)
+      this.logCompletionTelemetry(input.settings, input.telemetry, input.started, false, quality.reason)
+      return { status: "rejected", reason: quality.reason, source: "remote" }
+    }
+    const qualityEdit: QualityCompletionEdit = {
+      ...quality.edit,
+      qualityContextText: input.selectedContextText ?? completionQualityContextText(input.retrievedSnippets),
+    }
+    input.telemetry.finalRange = qualityEdit.replaceRange ?? zeroWidthRange(input.editInput.position)
+    input.telemetry.filterText = qualityEdit.filterText ?? qualityEdit.insertText
+    this.logDebug(input.settings, `inline-invariant ${inlineCompletionInvariantDetails({
+      edit: qualityEdit,
       editInput: input.editInput,
       plan: input.plan,
       rawFirstLine,
@@ -677,13 +729,13 @@ export class RemoteCompletionProvider implements vscode.InlineCompletionItemProv
       selectedCompletionInfo: input.selectedCompletionInfo,
     })} ${input.details}`)
     if (input.attempt === "retry") {
-      this.logInfo(input.settings, `retry-edit-ready ${editDetails(adaptedEdit)} ${input.details} elapsedMs=${elapsedMs(input.started)} chars=${adaptedEdit.insertText.length}`)
+      this.logInfo(input.settings, `retry-edit-ready ${editDetails(qualityEdit)} ${input.details} elapsedMs=${elapsedMs(input.started)} chars=${qualityEdit.insertText.length}`)
     } else {
-      this.logInfo(input.settings, `edit-ready ${editDetails(adaptedEdit)} ${input.details} elapsedMs=${elapsedMs(input.started)} chars=${adaptedEdit.insertText.length}`)
+      this.logInfo(input.settings, `edit-ready ${editDetails(qualityEdit)} ${input.details} elapsedMs=${elapsedMs(input.started)} chars=${qualityEdit.insertText.length}`)
     }
-    this.logDebug(input.settings, `edit ${editDetails(adaptedEdit)} visibleChars=${pipeline.candidateText.length} ${input.details}`)
+    this.logDebug(input.settings, `edit ${editDetails(qualityEdit)} visibleChars=${pipeline.candidateText.length} ${input.details}`)
     this.logCompletionTelemetry(input.settings, input.telemetry, input.started, true)
-    return { status: "ok", edit: adaptedEdit, source: "remote" }
+    return { status: "ok", edit: qualityEdit, source: "remote" }
   }
 
   private async getSession(client: RemoteOpenCodeClient, signal: AbortSignal) {
@@ -820,12 +872,16 @@ export class RemoteCompletionProvider implements vscode.InlineCompletionItemProv
     settings: RemoteSettings
     details: string
     source: CompletionRequestOutcome["source"]
+    triggerKind: CEmbeddedTriggerKind
   }) {
-    const validation = adaptAndValidateInlineCompletionEdit({
+    const validation = this.validateInlineCompletionEditForReturn({
       edit: input.edit,
+      document: input.document,
       editInput: input.editInput,
       plan: input.plan,
-      selectedCompletionInfo: selectedCompletionInfoValue(input.selectedCompletionInfo),
+      selectedCompletionInfo: input.selectedCompletionInfo,
+      triggerKind: input.triggerKind,
+      selectedContextText: (input.edit as QualityCompletionEdit).qualityContextText,
     })
     if (validation.status === "ok") {
       return {
@@ -846,6 +902,133 @@ export class RemoteCompletionProvider implements vscode.InlineCompletionItemProv
     })} ${input.details}`)
     return undefined
   }
+
+  private validateInlineCompletionEditForReturn(input: {
+    edit: CompletionEdit
+    document: vscode.TextDocument
+    editInput: Omit<CompletionEditInput, "text">
+    plan: CompletionPlan
+    selectedCompletionInfo?: SelectedCompletionInfo
+    triggerKind: CEmbeddedTriggerKind
+    selectedContextText?: string
+  }) {
+    const validation = adaptAndValidateInlineCompletionEdit({
+      edit: input.edit,
+      editInput: input.editInput,
+      plan: input.plan,
+      selectedCompletionInfo: selectedCompletionInfoValue(input.selectedCompletionInfo),
+    })
+    if (validation.status === "rejected") return validation
+    if (!isCEmbeddedLanguage(input.editInput.languageId)) return validation
+
+    const originalText = input.document.getText()
+    const appliedText = applyCompletionEditToText(originalText, validation.edit, input.editInput.position)
+    const selectedContextText = input.selectedContextText || runtimeOpenDocumentContext(input.document)
+    const score = scoreCEmbeddedCompletionQuality({
+      fixture: runtimeCEmbeddedFixture({
+        documentText: originalText,
+        languageId: input.editInput.languageId,
+        triggerKind: input.triggerKind,
+        openTabs: runtimeOpenTabs(input.document),
+      }),
+      decision: "accepted",
+      acceptedText: validation.edit.insertText,
+      appliedText,
+      originalText,
+      linePrefix: input.editInput.linePrefix,
+      lineSuffix: input.editInput.lineSuffix,
+      edit: validation.edit,
+      repeatAcceptedTexts: [validation.edit.insertText],
+      repeatDecisions: ["accepted"],
+      latencyMs: 0,
+      selectedContextText,
+    })
+    const hardReject = score.issues.find((issue) => issue.hardReject)
+    if (hardReject) {
+      return {
+        status: "rejected" as const,
+        reason: `quality:${hardReject.kind}` as const,
+      }
+    }
+    return validation
+  }
+}
+
+function runtimeTriggerKind(kind: vscode.InlineCompletionTriggerKind | undefined): CEmbeddedTriggerKind {
+  return kind === vscode.InlineCompletionTriggerKind.Automatic ? "automatic" : "manual"
+}
+
+function runtimeTriggerKindFromTelemetry(kind: CompletionTelemetryDraft["triggerKind"]): CEmbeddedTriggerKind {
+  return kind === "automatic" ? "automatic" : "manual"
+}
+
+function isCEmbeddedLanguage(languageId: string) {
+  return languageId === "c" || languageId === "cpp"
+}
+
+function runtimeCEmbeddedFixture(input: {
+  documentText: string
+  languageId: string
+  triggerKind: CEmbeddedTriggerKind
+  openTabs: CEmbeddedCompletionFixture["openTabs"]
+}): CEmbeddedCompletionFixture {
+  return {
+    id: "runtime-c-embedded",
+    category: "runtime C/embedded",
+    languageId: input.languageId,
+    path: "runtime.c",
+    document: input.documentText,
+    openTabs: input.openTabs,
+    triggerKind: input.triggerKind,
+    expectedIntent: "runtime C/embedded inline completion quality gate",
+    mustContain: [],
+    mustNotContain: [],
+    maxLines: input.triggerKind === "automatic" ? 4 : 12,
+    checks: [
+      "checkVscodeContract",
+      "checkApplyEditResult",
+      "checkCParseOrCompile",
+      "checkNoMarkdownOrExplanation",
+      "checkNoPlaceholder",
+      "checkNoDangerousC",
+      "checkNoHallucinatedSymbol",
+      "checkEmbeddedSafety",
+    ],
+  }
+}
+
+function runtimeOpenTabs(currentDocument: vscode.TextDocument): NonNullable<CEmbeddedCompletionFixture["openTabs"]> {
+  return vscode.workspace.textDocuments
+    .filter((document) => document.uri.scheme === "file")
+    .filter((document) => document.uri.toString() !== currentDocument.uri.toString())
+    .slice(0, 12)
+    .map((document) => ({
+      path: relativePath(document.uri),
+      languageId: document.languageId,
+      text: document.getText(),
+    }))
+}
+
+function runtimeOpenDocumentContext(currentDocument: vscode.TextDocument) {
+  return [
+    currentDocument.getText(),
+    ...runtimeOpenTabs(currentDocument).map((tab) => tab.text),
+  ].join("\n")
+}
+
+function completionQualityContextText(snippets: RetrievedCompletionSnippet[]) {
+  return snippets.map((snippet) => `${snippet.name ?? ""}\n${snippet.text}`).join("\n")
+}
+
+function applyCompletionEditToText(text: string, edit: CompletionEdit, position: CompletionEditInput["position"]) {
+  const range = edit.replaceRange ?? zeroWidthRange(position)
+  const lines = text.replace(/\r\n/g, "\n").split("\n")
+  const startLine = lines[range.startLine] ?? ""
+  const endLine = lines[range.endLine] ?? ""
+  const before = lines.slice(0, range.startLine)
+  const after = lines.slice(range.endLine + 1)
+  const replacement = `${startLine.slice(0, range.startCharacter)}${edit.insertText}${endLine.slice(range.endCharacter)}`
+  return [...before, ...replacement.split("\n"), ...after].join("\n")
 }
 
 function completionRetryPrompt(prompt: string, editInput: Omit<CompletionEditInput, "text">, reason: string) {
@@ -988,6 +1171,14 @@ function documentLines(document: vscode.TextDocument) {
 
 function previousNonEmptyLineBefore(lines: string[], line: number) {
   for (let index = line - 1; index >= 0; index--) {
+    const text = lines[index]
+    if (text?.trim()) return text
+  }
+  return undefined
+}
+
+function nextNonEmptyLineAfter(lines: string[], line: number) {
+  for (let index = line + 1; index < lines.length; index++) {
     const text = lines[index]
     if (text?.trim()) return text
   }

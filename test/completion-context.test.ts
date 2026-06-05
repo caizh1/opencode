@@ -103,6 +103,37 @@ describe("completion context packer", () => {
     expect(formatRepoContext(pack)).toContain("defaultRetryDelayMs")
   })
 
+  test("body continuations include boosted C embedded open-tab context", () => {
+    const pack = packCompletionContext({
+      plan: bodyContinuationPlan(),
+      languageId: "c",
+      currentPath: "src/drivers/uart_hw.c",
+      prefix: "hal_status_t enable_uart(void)\n{\n    ",
+      suffix: "\n    return HAL_OK;\n}\n",
+      retrievedSnippets: [],
+      openTabs: [
+        {
+          path: "docs/notes.txt",
+          languageId: "plaintext",
+          text: "ordinary note",
+        },
+        {
+          path: "include/chip/uart_regs.h",
+          languageId: "c",
+          text: "#define UART_CTRL_ENABLE BIT(0)\nvoid uart_bus_unlock(uart_bus_t *bus);\n",
+        },
+      ],
+      tokenBudget: 260,
+    })
+
+    expect(pack.selected.map((block) => block.kind)).toEqual(expect.arrayContaining(["open-tab", "current-prefix", "current-suffix"]))
+    expect(pack.selected[0]).toMatchObject({
+      kind: "open-tab",
+      filePath: "include/chip/uart_regs.h",
+    })
+    expect(formatRepoContext(pack)).toContain("UART_CTRL_ENABLE")
+  })
+
   test("Qwen FIM prompt includes packed repo context before FIM tokens", async () => {
     const { buildQwenCoderFimPrompt } = await import("../src/context")
     const prompt = buildQwenCoderFimPrompt({
@@ -339,6 +370,20 @@ function ordinaryPlan(): CompletionPlan {
     linePrefix: "const value = ",
     lineSuffix: "",
   })
+}
+
+function bodyContinuationPlan(): CompletionPlan {
+  return {
+    kind: "body-continuation",
+    insertMode: "insert-at-cursor",
+    replaceCurrentWord: false,
+    needsSymbolRetrieval: false,
+    needsTestRetrieval: false,
+    useFim: true,
+    useInstruction: false,
+    maxTokens: 96,
+    confidenceFloor: 0.35,
+  }
 }
 
 function targetSnippet(text: string): RetrievedCompletionSnippet {

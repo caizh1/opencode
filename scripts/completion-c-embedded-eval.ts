@@ -243,6 +243,10 @@ function buildBasePipelineInput(fixture: CEmbeddedCompletionFixture, parsed: Par
     lineSuffix,
     currentWord: currentWord?.text,
     previousNonEmptyLine: previousNonEmptyLineBefore(parsed.lines, parsed.line),
+    nextNonEmptyLine: nextNonEmptyLineAfter(parsed.lines, parsed.line),
+    lines: parsed.lines,
+    line: parsed.line,
+    triggerKind: fixture.triggerKind,
   })
   const retrievedSnippets = fixture.retrievedSnippets ?? []
   const plan = resolveCompletionPlanAfterSymbolRetrieval(initialPlan, retrievedSnippets)
@@ -525,6 +529,14 @@ function previousNonEmptyLineBefore(lines: string[], line: number) {
   return undefined
 }
 
+function nextNonEmptyLineAfter(lines: string[], line: number) {
+  for (let index = line + 1; index < lines.length; index += 1) {
+    const text = lines[index]
+    if (text?.trim()) return text
+  }
+  return undefined
+}
+
 function applyEdit(text: string, edit: CompletionEdit, position: { line: number; character: number }) {
   const range = edit.replaceRange ?? {
     startLine: position.line,
@@ -650,6 +662,7 @@ function settings(): RemoteSettings {
 function renderSummary(records: EvalRecord[], options: EvalOptions) {
   const gateCounts = countBy(records, (record) => record.score.gate)
   const issueCounts = countIssues(records)
+  const taxonomyCounts = countFailureTaxonomy(records)
   const categoryRows = [...groupBy(records, (record) => record.category).entries()]
     .sort((left, right) => left[0].localeCompare(right[0]))
     .map(([category, rows]) => `| ${category} | ${rows.length} | ${averageScore(rows).toFixed(1)} | ${worstIssue(rows)} |`)
@@ -659,6 +672,8 @@ function renderSummary(records: EvalRecord[], options: EvalOptions) {
     .map((record) => `| ${record.id} | ${record.category} | ${record.score.qualityScore} | ${record.score.gate} | ${uniqueIssueKinds(record).join(", ") || "none"} |`)
   const issueRows = [...issueCounts.entries()]
     .sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))
+    .map(([issue, count]) => `| ${issue} | ${count} |`)
+  const taxonomyRows = [...taxonomyCounts.entries()]
     .map(([issue, count]) => `| ${issue} | ${count} |`)
   const unstableRows = records
     .filter((record) => !record.equivalentAtN)
@@ -696,6 +711,12 @@ function renderSummary(records: EvalRecord[], options: EvalOptions) {
     "| --- | ---: |",
     ...(issueRows.length ? issueRows : ["| none | 0 |"]),
     "",
+    "## Failure Taxonomy",
+    "",
+    "| Taxonomy | Count |",
+    "| --- | ---: |",
+    ...taxonomyRows,
+    "",
     "## Worst Fixtures",
     "",
     "| Fixture | Category | Score | Gate | Issues |",
@@ -709,6 +730,53 @@ function renderSummary(records: EvalRecord[], options: EvalOptions) {
     ...(unstableRows.length ? unstableRows : ["| all equivalent@N | 1 | 1 | 1 | stable |"]),
     "",
   ].join("\n")
+}
+
+function countFailureTaxonomy(records: EvalRecord[]) {
+  const counts = new Map<string, number>([
+    ["planner disabled", 0],
+    ["real bad edit contract", 0],
+    ["model hallucination", 0],
+    ["project context miss", 0],
+    ["unsafe C", 0],
+    ["parse error", 0],
+  ])
+  for (const record of records) {
+    for (const issue of record.score.issues) {
+      switch (issue.kind) {
+        case "planner disabled":
+          increment(counts, "planner disabled")
+          break
+        case "bad edit contract":
+        case "apply edit failure":
+          increment(counts, "real bad edit contract")
+          break
+        case "hallucinated API":
+          increment(counts, "model hallucination")
+          break
+        case "project context miss":
+          increment(counts, "project context miss")
+          break
+        case "unsafe buffer":
+        case "dangerous C":
+        case "ISR blocking":
+        case "busy loop":
+        case "missing volatile":
+        case "unaligned packet cast":
+        case "embedded safety":
+          increment(counts, "unsafe C")
+          break
+        case "C parse/compile":
+          increment(counts, "parse error")
+          break
+      }
+    }
+  }
+  return counts
+}
+
+function increment(counts: Map<string, number>, key: string) {
+  counts.set(key, (counts.get(key) ?? 0) + 1)
 }
 
 function parseArgs(args: string[]): EvalOptions {

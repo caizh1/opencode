@@ -443,7 +443,7 @@ describe("phase 1 completion regression eval fixtures", () => {
     expect(snapshot).toMatchObject({
       plan: {
         kind: "previous-comment-continuation",
-        insertMode: "replace-whole-line",
+        insertMode: "insert-at-cursor",
         targetSymbol: "alpha_feature_finalize",
       },
       selectedCandidate: "alpha_feature_finalize",

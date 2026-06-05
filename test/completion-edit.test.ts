@@ -66,6 +66,28 @@ describe("language-aware completion edits", () => {
     expect(edit?.filterText).not.toContain(prefix)
   })
 
+  test("InlineEditBuilder inserts previous comment continuations at an indented blank cursor", () => {
+    const edit = inlineEdit({
+      insertMode: "insert-at-cursor",
+      planKind: "previous-comment-continuation",
+      text: "if (!ready) {\n    return HAL_ERR;\n}",
+      languageId: "c",
+      linePrefix: "    ",
+      character: 4,
+    })
+
+    expect(edit).toMatchObject({
+      insertText: "if (!ready) {\n        return HAL_ERR;\n    }",
+      replaceRange: {
+        startLine: 0,
+        startCharacter: 4,
+        endLine: 0,
+        endCharacter: 4,
+      },
+      filterText: "if (!ready) {\n        return HAL_ERR;\n    }",
+    })
+  })
+
   test("InlineEditBuilder replace-whole-line replaces natural-language commands on one line", () => {
     const prefix = "unit test for epr_ppn_raw_wr"
     const edit = inlineEdit({

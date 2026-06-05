@@ -89,7 +89,7 @@ export function postprocessCompletion(input: CompletionPostprocessInput): Comple
 
   if (input.plan.replaceCurrentWord && hasCurrentWordLinePrefixCandidate(text, input.linePrefix, input.currentWord)) {
     return finalizedResult({
-      text: stripSuffixOverlap(text.trimEnd(), input.lineSuffix).text,
+      text: stripSuffixOverlap(text.trimEnd(), input.lineSuffix, input.linePrefix).text,
       fallbackReason: echo.count ? echoReason(input.plan.kind, input.linePrefix) : "empty-output",
       planKind: input.plan.kind,
       skipLowConfidence: true,
@@ -99,7 +99,7 @@ export function postprocessCompletion(input: CompletionPostprocessInput): Comple
 
   if (input.plan.replaceCurrentWord && hasCurrentWordCandidate(text, input.currentWord)) {
     return finalizedResult({
-      text: stripSuffixOverlap(text.trimEnd(), input.lineSuffix).text,
+      text: stripSuffixOverlap(text.trimEnd(), input.lineSuffix, input.linePrefix).text,
       fallbackReason: echo.count ? echoReason(input.plan.kind, input.linePrefix) : "empty-output",
       planKind: input.plan.kind,
       skipLowConfidence: true,
@@ -108,12 +108,12 @@ export function postprocessCompletion(input: CompletionPostprocessInput): Comple
   }
 
   text = prefix.text
-  const suffix = stripSuffixOverlap(text, input.lineSuffix)
+  const suffix = stripSuffixOverlap(text, input.lineSuffix, input.linePrefix)
   text = stripLeadingMetaLines(suffix.text)
   text = stripExplanatoryLeadIn(text)
   text = normalizeCommonIndent(text)
   text = stripInstructionLeadingComments(text, input.plan.kind)
-  const middleOfLine = sanitizeMiddleOfLineCompletion(text, input.lineSuffix)
+  const middleOfLine = sanitizeMiddleOfLineCompletion(text, input.lineSuffix, input.linePrefix)
   if (middleOfLine.rejected) {
     return withPostprocessDebug({
       text: "",
@@ -283,12 +283,18 @@ function isExactPrefixEcho(text: string, prefix: string) {
   return trimmedText === prefix || trimmedText === prefix.trimStart() || trimmedText === prefix.trim()
 }
 
-function stripSuffixOverlap(text: string, lineSuffix: string) {
+function stripSuffixOverlap(text: string, lineSuffix: string, linePrefix = "") {
   if (!lineSuffix.trim()) return { text, stripped: false }
   const suffix = lineSuffix.replace(/\r\n/g, "\n")
   const max = Math.min(text.length, suffix.length, 500)
   for (let length = max; length >= 1; length--) {
     if (text.slice(-length) === suffix.slice(0, length)) {
+      if (!shouldStripSuffixOverlap({
+        text,
+        lineSuffix: suffix,
+        linePrefix,
+        overlapLength: length,
+      })) continue
       return {
         text: text.slice(0, -length),
         stripped: true,
@@ -298,7 +304,7 @@ function stripSuffixOverlap(text: string, lineSuffix: string) {
   return { text, stripped: false }
 }
 
-function sanitizeMiddleOfLineCompletion(text: string, lineSuffix: string): CompletionPostprocessResult {
+function sanitizeMiddleOfLineCompletion(text: string, lineSuffix: string, linePrefix: string): CompletionPostprocessResult {
   if (!lineSuffix.trim()) return { text }
 
   let candidate = text
@@ -316,7 +322,7 @@ function sanitizeMiddleOfLineCompletion(text: string, lineSuffix: string): Compl
   }
 
   if (shouldStripRepeatedSingleCharacterSuffix(lineSuffix)) {
-    candidate = stripSuffixOverlap(candidate, lineSuffix).text
+    candidate = stripSuffixOverlap(candidate, lineSuffix, linePrefix).text
   }
 
   if (!candidate.trim()) {
@@ -328,6 +334,112 @@ function sanitizeMiddleOfLineCompletion(text: string, lineSuffix: string): Compl
   }
 
   return { text: candidate }
+}
+
+function shouldStripSuffixOverlap(input: {
+  text: string
+  lineSuffix: string
+  linePrefix: string
+  overlapLength: number
+}) {
+  const overlap = input.lineSuffix.slice(0, input.overlapLength)
+  if (!isOnlyClosingBracketOverlap(overlap)) return true
+
+  const strippedText = input.text.slice(0, -input.overlapLength)
+  const keptLine = `${input.linePrefix}${input.text}${input.lineSuffix}`
+  const strippedLine = `${input.linePrefix}${strippedText}${input.lineSuffix}`
+  return delimiterImbalance(strippedLine) < delimiterImbalance(keptLine)
+}
+
+function isOnlyClosingBracketOverlap(input: string) {
+  const trimmed = input.trim()
+  return trimmed.length > 0 && /^[)\]}]+$/.test(trimmed)
+}
+
+function delimiterImbalance(input: string) {
+  const sanitized = stripStringAndCommentContent(input)
+  return bracketImbalance(sanitized, "(", ")") +
+    bracketImbalance(sanitized, "[", "]") +
+    bracketImbalance(sanitized, "{", "}")
+}
+
+function bracketImbalance(input: string, open: string, close: string) {
+  let depth = 0
+  let unmatchedClose = 0
+  for (const char of input) {
+    if (char === open) {
+      depth += 1
+    } else if (char === close) {
+      if (depth > 0) {
+        depth -= 1
+      } else {
+        unmatchedClose += 1
+      }
+    }
+  }
+  return depth + unmatchedClose
+}
+
+function stripStringAndCommentContent(input: string) {
+  let result = ""
+  let quote: "'" | "\"" | "`" | undefined
+  let escaped = false
+  let inBlockComment = false
+  let inLineComment = false
+
+  for (let index = 0; index < input.length; index += 1) {
+    const char = input[index]
+    const next = input[index + 1]
+    if (inLineComment) {
+      if (char === "\n") {
+        inLineComment = false
+        result += "\n"
+      } else {
+        result += " "
+      }
+      continue
+    }
+    if (inBlockComment) {
+      if (char === "*" && next === "/") {
+        inBlockComment = false
+        result += "  "
+        index += 1
+      } else {
+        result += char === "\n" ? "\n" : " "
+      }
+      continue
+    }
+    if (quote) {
+      if (escaped) {
+        escaped = false
+      } else if (char === "\\") {
+        escaped = true
+      } else if (char === quote) {
+        quote = undefined
+      }
+      result += char === "\n" ? "\n" : " "
+      continue
+    }
+    if (char === "/" && next === "/") {
+      inLineComment = true
+      result += "  "
+      index += 1
+      continue
+    }
+    if (char === "/" && next === "*") {
+      inBlockComment = true
+      result += "  "
+      index += 1
+      continue
+    }
+    if (char === "\"" || char === "'" || char === "`") {
+      quote = char
+      result += " "
+      continue
+    }
+    result += char
+  }
+  return result
 }
 
 function startsWithSuffixEcho(text: string, lineSuffix: string) {

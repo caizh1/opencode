@@ -90,6 +90,57 @@ describe("C/embedded completion quality scorer", () => {
     expect(score.issues.map((issue) => issue.kind)).toContain("bad edit contract")
   })
 
+  test("classifies disabled plans as planner coverage misses instead of edit contracts", () => {
+    const score = scoreCEmbeddedCompletionQuality(scoreInput({
+      decision: "rejected",
+      rejectionReason: "plan:disabled-plan",
+      acceptedText: "",
+      appliedText: "int x;\n",
+      checks: ["checkVscodeContract"],
+    }))
+
+    expect(score.gate).toBe("reject")
+    expect(score.issues.map((issue) => issue.kind)).toContain("planner disabled")
+    expect(score.issues.map((issue) => issue.kind)).not.toContain("bad edit contract")
+    expect(score.issues.map((issue) => issue.kind)).not.toContain("auto-show risk")
+  })
+
+  test("does not mark every rejected completion as auto-show risk", () => {
+    const score = scoreCEmbeddedCompletionQuality(scoreInput({
+      decision: "rejected",
+      rejectionReason: "empty-output",
+      acceptedText: "",
+      appliedText: "int x;\n",
+      checks: ["checkVscodeContract"],
+    }))
+
+    expect(score.issues.map((issue) => issue.kind)).toContain("bad edit contract")
+    expect(score.issues.map((issue) => issue.kind)).not.toContain("auto-show risk")
+  })
+
+  test("hard rejects automatic C parse failures", () => {
+    const score = scoreCEmbeddedCompletionQuality(scoreInput({
+      acceptedText: "flags & BIT(0",
+      appliedText: "hal_status_t f(uint32_t flags) { if (flags & BIT(0) { return HAL_OK; } return HAL_ERR; }",
+      checks: ["checkCParseOrCompile"],
+    }))
+
+    expect(score.gate).toBe("reject")
+    expect(score.issues.map((issue) => issue.kind)).toContain("C parse/compile")
+    expect(score.issues.some((issue) => issue.kind === "C parse/compile" && issue.hardReject)).toBe(true)
+  })
+
+  test("allows project-style APIs and macros when they are present in context", () => {
+    const score = scoreCEmbeddedCompletionQuality(scoreInput({
+      acceptedText: "UART0->CTRL |= UART_CTRL_ENABLE;\nuart_bus_unlock(bus);",
+      appliedText: "void f(void) { UART0->CTRL |= UART_CTRL_ENABLE; uart_bus_unlock(bus); }",
+      checks: ["checkNoHallucinatedSymbol"],
+      selectedContextText: "#define UART_CTRL_ENABLE BIT(0)\n#define UART0 ((volatile uart_regs_t *)0x40000000u)\nvoid uart_bus_unlock(uart_bus_t *bus);\n",
+    }))
+
+    expect(score.issues.map((issue) => issue.kind)).not.toContain("hallucinated API")
+  })
+
   test("labels ISR blocking, missing volatile, hallucinated API, placeholder, and unstable output", () => {
     const isr = scoreCEmbeddedCompletionQuality(scoreInput({
       category: "E. Interrupts critical sections and concurrency",

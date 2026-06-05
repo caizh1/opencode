@@ -209,6 +209,19 @@ describe("completion postprocessor", () => {
     })
   })
 
+  test("keeps macro call closing parens when suffix starts with a block condition close", () => {
+    expect(postprocessCompletion({
+      rawText: "flags & BIT(0)",
+      linePrefix: "    if (",
+      lineSuffix: ") {",
+      languageId: "c",
+      plan: ordinaryPlan(),
+      indent: indent("    ", "        "),
+    })).toEqual({
+      text: "flags & BIT(0)",
+    })
+  })
+
   test("rejects middle-of-line output that starts by echoing the suffix", () => {
     expect(postprocessCompletion({
       rawText: ";\n}",

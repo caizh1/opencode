@@ -47,6 +47,7 @@ export type CEmbeddedCompletionFixture = {
   maxLines: number
   checks: CEmbeddedQualityCheck[]
   contextMustContain?: string[]
+  allowedSymbols?: string[]
   retrievedSnippets?: RetrievedCompletionSnippet[]
   modelOutputs?: string[]
   retryModelOutputs?: string[]
@@ -64,6 +65,7 @@ export type CEmbeddedQualityDimension =
   | "latency"
 
 export type CEmbeddedQualityIssueKind =
+  | "planner disabled"
   | "bad edit contract"
   | "apply edit failure"
   | "C parse/compile"
@@ -195,6 +197,20 @@ const SAFE_KNOWN_CALLS = new Set([
   "offsetof",
 ])
 
+const SAFE_KNOWN_SYMBOLS = new Set([
+  "NULL",
+  "BIT",
+  "ARRAY_SIZE",
+  "MIN",
+  "MAX",
+  "HAL_OK",
+  "HAL_ERR",
+  "HAL_TIMEOUT",
+  "pdPASS",
+  "pdTRUE",
+  "pdFALSE",
+])
+
 let clangAvailability: boolean | undefined
 
 export function scoreCEmbeddedCompletionQuality(input: CEmbeddedQualityScoreInput): CEmbeddedQualityScore {
@@ -226,7 +242,12 @@ export function gateForCEmbeddedScore(score: number, issues: CEmbeddedQualityIss
 export function checkVscodeContract(input: CheckerInput): CEmbeddedQualityIssue[] {
   const issues: CEmbeddedQualityIssue[] = []
   if (input.decision !== "accepted" || !input.edit) {
-    issues.push(issue("bad edit contract", input.rejectionReason ?? "completion did not produce a VS Code inline edit", "checkVscodeContract", "vscodeEditContract", "critical", true))
+    const reason = input.rejectionReason ?? "completion did not produce a VS Code inline edit"
+    if (isPlannerDisabledReason(reason)) {
+      issues.push(issue("planner disabled", "planner disabled / coverage miss", "checkVscodeContract", "embeddedSemantics", "critical", true))
+    } else {
+      issues.push(issue("bad edit contract", reason, "checkVscodeContract", "vscodeEditContract", "critical", true))
+    }
     return issues
   }
 
@@ -275,9 +296,10 @@ export function checkApplyEditResult(input: CheckerInput): CEmbeddedQualityIssue
 
 export function checkCParseOrCompile(input: CheckerInput): CEmbeddedQualityIssue[] {
   if (input.decision !== "accepted" || !input.appliedText.trim()) return []
+  const hardReject = input.fixture.triggerKind === "automatic"
   const staticIssue = cStaticSyntaxIssue(input.appliedText)
   if (staticIssue) {
-    return [issue("C parse/compile", staticIssue, "checkCParseOrCompile", "cSyntaxFormat", "major")]
+    return [issue("C parse/compile", staticIssue, "checkCParseOrCompile", "cSyntaxFormat", "major", hardReject)]
   }
   if (!clangAvailable()) return []
 
@@ -302,7 +324,7 @@ export function checkCParseOrCompile(input: CheckerInput): CEmbeddedQualityIssue
   } catch (error) {
     const message = clangErrorMessage(error)
     if (/file not found|No such file or directory/.test(message)) return []
-    return [issue("C parse/compile", message || "clang rejected the applied C document", "checkCParseOrCompile", "cSyntaxFormat", "major")]
+    return [issue("C parse/compile", message || "clang rejected the applied C document", "checkCParseOrCompile", "cSyntaxFormat", "major", hardReject)]
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }
@@ -314,7 +336,7 @@ export function checkNoMarkdownOrExplanation(input: CheckerInput): CEmbeddedQual
 }
 
 export function checkNoPlaceholder(input: CheckerInput): CEmbeddedQualityIssue[] {
-  const matches = [...input.fixture.mustNotContain, "TODO", "Add your implementation", "your implementation", "placeholder", "your code here"]
+  const matches = ["TODO", "Add your implementation", "your implementation", "placeholder", "your code here"]
     .filter((value) => value && containsFold(input.acceptedText, value))
   if (!matches.length) return []
   return matches.map((value) =>
@@ -337,31 +359,49 @@ export function checkNoDangerousC(input: CheckerInput): CEmbeddedQualityIssue[] 
 
 export function checkNoHallucinatedSymbol(input: CheckerInput): CEmbeddedQualityIssue[] {
   const issues: CEmbeddedQualityIssue[] = []
-  const forbidden = input.fixture.mustNotContain.filter((value) => containsFold(input.acceptedText, value) || containsFold(input.appliedText, value))
+  const known = knownProjectSymbols(input)
+  const forbidden = input.fixture.mustNotContain.filter((value) => containsForbiddenText(input, value))
   for (const value of forbidden) {
+    if (isProjectForbiddenPattern(value) && knownProjectSymbolsContainPattern(known, value)) continue
     issues.push(issue("hallucinated API", `forbidden text appeared: ${value}`, "checkNoHallucinatedSymbol", "projectContext", "critical", true))
   }
 
-  const suspicious = suspiciousSymbols(input.acceptedText)
-  for (const symbol of suspicious) {
-    issues.push(issue("hallucinated API", `suspicious project symbol appeared: ${symbol}`, "checkNoHallucinatedSymbol", "projectContext", "critical", true))
-  }
-
   if (input.fixture.checks.includes("checkNoHallucinatedSymbol")) {
-    const known = knownProjectSymbols(input)
+    const hardRejectUnknown = input.fixture.triggerKind === "automatic"
+    for (const symbol of unknownProjectSymbols(input.acceptedText, known)) {
+      issues.push(issue("hallucinated API", `unknown project symbol is not present in context: ${symbol}`, "checkNoHallucinatedSymbol", "projectContext", "critical", hardRejectUnknown))
+    }
+
     for (const call of callNames(input.acceptedText)) {
-      if (known.has(call) || SAFE_KNOWN_CALLS.has(call) || C_KEYWORDS.has(call)) continue
+      if (known.has(call) || SAFE_KNOWN_CALLS.has(call) || SAFE_KNOWN_SYMBOLS.has(call) || C_KEYWORDS.has(call)) continue
       if (/^(?:test_|mock_|stub_)/.test(call)) continue
-      if (/^(?:HAL_|LL_|GPIO_|UART_|I2C_|SPI_|ADC_|PWM_|TIMER_|LOG_|ASSERT_|EXPECT_)/.test(call)) continue
       if (/^(?:vTask|xQueue|xSemaphore|xTimer|xEventGroup|port|task|os)/.test(call)) continue
       if (/^(?:[a-z]+_)?(?:init|deinit|read|write|start|stop|enable|disable|reset|handle|parse|poll|lock|unlock)$/.test(call)) continue
-      if (/[A-Z]{2,}\d{2,}|(?:fake|unknown|nonexistent|invented)/i.test(call)) {
-        issues.push(issue("hallucinated API", `unknown call is not present in project context: ${call}`, "checkNoHallucinatedSymbol", "projectContext", "critical", true))
+      if (looksLikeProjectApiSymbol(call) || /[A-Z]{2,}\d{2,}|(?:fake|unknown|nonexistent|invented)/i.test(call)) {
+        issues.push(issue("hallucinated API", `unknown call is not present in project context: ${call}`, "checkNoHallucinatedSymbol", "projectContext", "critical", hardRejectUnknown))
       }
     }
   }
 
   return issues
+}
+
+function containsForbiddenText(input: CheckerInput, value: string) {
+  if (isProjectForbiddenPattern(value)) {
+    return input.acceptedText.includes(value) || input.appliedText.includes(value)
+  }
+  return containsFold(input.acceptedText, value) || containsFold(input.appliedText, value)
+}
+
+function isProjectForbiddenPattern(value: string) {
+  return /^(?:NONEXISTENT_|FAKE_|UNKNOWN_|HAL_UARTX|GPIOZ|USART99|I2C99|SPI99|invented_)/.test(value)
+}
+
+function knownProjectSymbolsContainPattern(known: Set<string>, value: string) {
+  for (const symbol of known) {
+    if (symbol === value || symbol.startsWith(value)) return true
+  }
+  return false
 }
 
 export function checkIntentMatch(input: CheckerInput): CEmbeddedQualityIssue[] {
@@ -467,15 +507,17 @@ function runSelectedChecks(input: CEmbeddedQualityScoreInput) {
   if (lineCount > input.fixture.maxLines) {
     issues.push(issue("too long", `insertText has ${lineCount} lines, max is ${input.fixture.maxLines}`, "checkCParseOrCompile", "cSyntaxFormat", "major"))
   }
-  if (input.decision !== "accepted") {
-    issues.push(issue("auto-show risk", "rejected completions should not auto-show", "checkVscodeContract", "autoShowSuitability", "critical"))
-  } else if (input.fixture.triggerKind === "automatic" && lineCount > Math.max(4, input.fixture.maxLines)) {
+  if (input.decision === "accepted" && input.fixture.triggerKind === "automatic" && lineCount > Math.max(4, input.fixture.maxLines)) {
     issues.push(issue("auto-show risk", "automatic trigger produced a large block", "checkVscodeContract", "autoShowSuitability", "major"))
   } else if (input.fixture.triggerKind === "manual" && lineCount > input.fixture.maxLines) {
     issues.push(issue("auto-show risk", "manual trigger exceeded fixture maxLines", "checkVscodeContract", "autoShowSuitability", "minor"))
   }
 
   return issues
+}
+
+function isPlannerDisabledReason(reason: string) {
+  return reason === "disabled-plan" || reason === "plan:disabled-plan" || reason.includes("plan:disabled-plan")
 }
 
 function issue(
@@ -639,23 +681,58 @@ function hasUnalignedPacketCast(input: string) {
   return /\(\s*(?:const\s+)?[A-Za-z_][A-Za-z0-9_]*_t\s*\*\s*\)\s*(?:buf|buffer|data|payload|packet|rx|frame)\b/.test(input)
 }
 
-function suspiciousSymbols(input: string) {
-  const matches = input.match(/\b(?:FAKE_[A-Z0-9_]+|UNKNOWN_[A-Z0-9_]+|NONEXISTENT_[A-Z0-9_]+|GPIOZ[A-Z0-9_]*|USART99[A-Z0-9_]*|I2C99[A-Z0-9_]*|SPI99[A-Z0-9_]*|HAL_UARTX[A-Za-z0-9_]*|invented_[A-Za-z0-9_]*|nonexistent[A-Za-z0-9_]*)\b/g)
-  return [...new Set(matches ?? [])]
-}
-
 function knownProjectSymbols(input: CheckerInput) {
   const text = [
     input.fixture.document,
+    input.originalText,
     input.selectedContextText,
     ...(input.fixture.openTabs ?? []).map((tab) => tab.text),
     ...(input.fixture.retrievedSnippets ?? []).map((snippet) => `${snippet.name ?? ""}\n${snippet.text}`),
+    ...(input.fixture.allowedSymbols ?? []),
   ].join("\n")
   const symbols = new Set<string>()
   for (const match of text.matchAll(/\b[A-Za-z_][A-Za-z0-9_]*\b/g)) {
     if (!C_KEYWORDS.has(match[0])) symbols.add(match[0])
   }
   return symbols
+}
+
+function unknownProjectSymbols(input: string, known: Set<string>) {
+  const result = new Set<string>()
+  for (const symbol of projectSymbolCandidates(input)) {
+    if (known.has(symbol) || SAFE_KNOWN_SYMBOLS.has(symbol) || SAFE_KNOWN_CALLS.has(symbol) || C_KEYWORDS.has(symbol)) continue
+    result.add(symbol)
+  }
+  return [...result]
+}
+
+function projectSymbolCandidates(input: string) {
+  const result = new Set<string>()
+  for (const match of input.matchAll(/\b[A-Za-z_][A-Za-z0-9_]*\b/g)) {
+    const symbol = match[0]
+    const before = input.slice(Math.max(0, (match.index ?? 0) - 2), match.index)
+    if (before.endsWith(".") || before.endsWith("->")) continue
+    if (isProjectMacroSymbol(symbol) || looksLikeProjectApiSymbol(symbol) || isAlwaysSuspiciousProjectSymbol(symbol)) {
+      result.add(symbol)
+    }
+  }
+  return [...result]
+}
+
+function isProjectMacroSymbol(symbol: string) {
+  if (!/^[A-Z][A-Z0-9_]{2,}$/.test(symbol)) return false
+  if (SAFE_KNOWN_SYMBOLS.has(symbol)) return false
+  return symbol.includes("_") || /(?:REG|CTRL|STATUS|MASK|FLAG|ENABLE|DISABLE|TIMEOUT|ERR|OK|IRQ|DMA|UART|GPIO|I2C|SPI|ADC|PWM|TIMER)/.test(symbol)
+}
+
+function looksLikeProjectApiSymbol(symbol: string) {
+  return /^(?:HAL_|LL_|UART|GPIO|I2C|SPI|ADC|PWM|TIMER)[A-Za-z0-9_]*$/.test(symbol) ||
+    /^(?:uart|gpio|i2c|spi|adc|pwm|timer)_[A-Za-z0-9_]+$/.test(symbol)
+}
+
+function isAlwaysSuspiciousProjectSymbol(symbol: string) {
+  return /^(?:NONEXISTENT_[A-Z0-9_]*|HAL_UARTX[A-Za-z0-9_]*|FAKE_[A-Z0-9_]+|UNKNOWN_[A-Z0-9_]+)$/.test(symbol) ||
+    /(?:invented|nonexistent)/i.test(symbol)
 }
 
 function callNames(input: string) {

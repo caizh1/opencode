@@ -114,13 +114,16 @@ export function routeCompletionModel(input: RouteCompletionModelInput): Completi
         topP: input.settings.completion.topP,
       }
     case "ordinary-code":
+    case "body-continuation":
       return {
         kind: "model",
         reason: "ordinary-code",
         promptKind: "qwen-fim",
         modelProfile: "qwen-coder-fim",
         textProfile: "qwen-coder-fim",
-        maxTokens: clampTokens(input.settings.completion.maxTokens || 192, 128, 256),
+        maxTokens: plan.kind === "body-continuation"
+          ? clampTokens(plan.maxTokens || 96, 96, 128)
+          : clampTokens(input.settings.completion.maxTokens || 192, 128, 256),
         temperature: Math.min(input.settings.completion.temperature, 0.2),
         topP: input.settings.completion.topP,
       }
