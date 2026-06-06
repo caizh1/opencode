@@ -331,16 +331,34 @@ export function checkCParseOrCompile(input: CheckerInput): CEmbeddedQualityIssue
 }
 
 export function checkNoMarkdownOrExplanation(input: CheckerInput): CEmbeddedQualityIssue[] {
-  if (!/```|^\s*(?:Here(?:'s| is)|Explanation|The completion|Below is|Sure\b|Answer:)/im.test(input.acceptedText)) return []
+  if (!/```|`|^\s*(?:Here(?:'s| is)|Explanation|The completion|Below is|Sure\b|Answer:)/im.test(input.acceptedText)) return []
   return [issue("markdown/explanation", "completion contains markdown or explanatory prose", "checkNoMarkdownOrExplanation", "cSyntaxFormat", "critical", true)]
 }
 
 export function checkNoPlaceholder(input: CheckerInput): CEmbeddedQualityIssue[] {
-  const matches = ["TODO", "Add your implementation", "your implementation", "placeholder", "your code here"]
-    .filter((value) => value && containsFold(input.acceptedText, value))
+  const matches = placeholderPhrases(input.acceptedText)
   if (!matches.length) return []
   return matches.map((value) =>
     issue("placeholder", `placeholder text appeared: ${value}`, "checkNoPlaceholder", "safety", "critical", true))
+}
+
+function placeholderPhrases(text: string) {
+  const matches = new Set<string>()
+  const patterns: Array<[string, RegExp]> = [
+    ["TODO", /\bTODO\b/i],
+    ["FIXME", /\bFIXME\b/i],
+    ["Add your implementation", /\badd\s+your\s+implementation\b/i],
+    ["your implementation", /\byour\s+implementation\b/i],
+    ["placeholder", /\bplaceholder\b/i],
+    ["your code/logic/implementation here", /\byour(?:\s+[A-Za-z_][A-Za-z0-9_]*){0,3}\s+(?:code|logic|implementation)\s+here\b/i],
+    ["code here", /\b(?:add|insert|fill\s+in|write|put)\s+(?:the\s+)?(?:code|logic|implementation)\s+here\b/i],
+    ["action here placeholder comment", /^\s*(?:\/\/|\/\*)\s*(?:handle|process|add|insert|fill(?:\s+in)?|write|implement|put|place)\b[^\n;{}()]*\bhere\b/im],
+    ["not implemented", /\bnot\s+implemented\b/i],
+  ]
+  for (const [label, pattern] of patterns) {
+    if (pattern.test(text)) matches.add(label)
+  }
+  return [...matches]
 }
 
 export function checkNoDangerousC(input: CheckerInput): CEmbeddedQualityIssue[] {

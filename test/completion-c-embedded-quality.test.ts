@@ -130,6 +130,25 @@ describe("C/embedded completion quality scorer", () => {
     expect(score.issues.some((issue) => issue.kind === "C parse/compile" && issue.hardReject)).toBe(true)
   })
 
+  test("hard rejects Markdown and stray backticks in C completions", () => {
+    const fenced = scoreCEmbeddedCompletionQuality(scoreInput({
+      acceptedText: "```c\nreturn HAL_OK;\n```",
+      appliedText: "hal_status_t f(void) { return HAL_OK; }",
+      checks: ["checkNoMarkdownOrExplanation"],
+    }))
+    expect(fenced.gate).toBe("reject")
+    expect(fenced.issues.map((issue) => issue.kind)).toContain("markdown/explanation")
+    expect(fenced.issues.some((issue) => issue.hardReject)).toBe(true)
+
+    const inlineBacktick = scoreCEmbeddedCompletionQuality(scoreInput({
+      acceptedText: "`flags & BIT(0)`",
+      appliedText: "hal_status_t f(uint32_t flags) { if (`flags & BIT(0)`) { return HAL_OK; } return HAL_ERR; }",
+      checks: ["checkNoMarkdownOrExplanation"],
+    }))
+    expect(inlineBacktick.gate).toBe("reject")
+    expect(inlineBacktick.issues.map((issue) => issue.kind)).toContain("markdown/explanation")
+  })
+
   test("allows project-style APIs and macros when they are present in context", () => {
     const score = scoreCEmbeddedCompletionQuality(scoreInput({
       acceptedText: "UART0->CTRL |= UART_CTRL_ENABLE;\nuart_bus_unlock(bus);",
@@ -180,6 +199,30 @@ describe("C/embedded completion quality scorer", () => {
       checks: ["checkStability"],
     }))
     expect(unstable.issues.map((issue) => issue.kind)).toContain("unstable output")
+  })
+
+  test("hard rejects generated code-here placeholder comments with descriptors", () => {
+    const codePlaceholder = scoreCEmbeddedCompletionQuality(scoreInput({
+      acceptedText: "// Your ISR code here\n    }",
+      appliedText: "void TIMER0_IRQHandler(void) { uint8_t byte = 0u; // Your ISR code here }",
+      checks: ["checkNoPlaceholder"],
+    }))
+    const implementationPlaceholder = scoreCEmbeddedCompletionQuality(scoreInput({
+      acceptedText: "// Your driver implementation here",
+      appliedText: "void driver_poll(void) { // Your driver implementation here }",
+      checks: ["checkNoPlaceholder"],
+    }))
+    const actionHerePlaceholder = scoreCEmbeddedCompletionQuality(scoreInput({
+      acceptedText: "// Handle the received data here",
+      appliedText: "void UART0_IRQHandler(void) { // Handle the received data here }",
+      checks: ["checkNoPlaceholder"],
+    }))
+
+    for (const score of [codePlaceholder, implementationPlaceholder, actionHerePlaceholder]) {
+      expect(score.gate).toBe("reject")
+      expect(score.issues.map((issue) => issue.kind)).toContain("placeholder")
+      expect(score.issues.some((issue) => issue.kind === "placeholder" && issue.hardReject)).toBe(true)
+    }
   })
 
   test("applies gate thresholds and hard reject override", () => {

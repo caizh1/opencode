@@ -550,6 +550,43 @@ describe("local RAG vector index", () => {
     expect(manifest.workerStatus).toEqual(vectorIndex.workerStatus)
   })
 
+  test("serializes manual paused RAG indexes without automatic resume metadata", async () => {
+    const index = sampleIndex()
+    const totalChunks = buildRagChunks(index).length
+    const vectorIndex = await buildRagVectorIndex({
+      index,
+      provider: recordingEmbeddingProvider(),
+      batchSize: 1,
+      maxRequestsPerRun: 1,
+      requestDelayMs: 0,
+    })
+    const manifest = createRagSerializedManifest({
+      ...vectorIndex,
+      chunks: [],
+      vectors: [],
+      dimension: 0,
+      totalChunks,
+      pendingChunkCount: totalChunks,
+      indexPausedReason: "manual",
+      lastError: "requested from test",
+      nextResumeAt: 12345,
+      resumeDelayMs: 60000,
+      resumeReason: "request-budget",
+    })
+
+    expect(manifest.chunks).toBe(0)
+    expect(manifest.totalChunks).toBe(totalChunks)
+    expect(manifest.pendingChunks).toBe(totalChunks)
+    expect(manifest.state).toBe("paused")
+    expect(manifest.completed).toBe(false)
+    expect(manifest.indexAvailability).toBe("paused")
+    expect(manifest.indexPausedReason).toBe("manual")
+    expect(manifest.lastError).toBe("requested from test")
+    expect(manifest.nextResumeAt).toBeUndefined()
+    expect(manifest.resumeDelayMs).toBeUndefined()
+    expect(manifest.resumeReason).toBeUndefined()
+  })
+
   test("serializes compatible RAG manifest lifecycle metadata", async () => {
     const index = sampleIndex()
     const vectorIndex = await buildRagVectorIndex({

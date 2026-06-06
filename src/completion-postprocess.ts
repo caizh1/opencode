@@ -52,6 +52,7 @@ export function postprocessCompletion(input: CompletionPostprocessInput): Comple
   let text = normalizeRawText(input.rawText)
   text = firstFencedCode(text) ?? text
   text = stripWrappingFence(text)
+  text = unwrapCStyleInlineCode(text, input.languageId)
   text = stripLeadingMetaLines(text)
   text = stripExplanatoryLeadIn(text)
 
@@ -171,6 +172,16 @@ function stripWrappingFence(input: string) {
   return input
     .replace(/^[ \t]*```[a-zA-Z0-9_-]*[ \t]*(?:\n)?/, "")
     .replace(/(?:\n)?[ \t]*```[ \t]*$/, "")
+}
+
+function unwrapCStyleInlineCode(input: string, languageId: string) {
+  if (!isCStyleLanguage(languageId)) return input
+  const trimmed = input.trim()
+  if (!trimmed.startsWith("`") || !trimmed.endsWith("`")) return input
+  if (trimmed.startsWith("```") || trimmed.endsWith("```")) return input
+  const inner = trimmed.slice(1, -1)
+  if (!inner.trim() || inner.includes("`")) return input
+  return inner
 }
 
 function stripCurrentLineEchoes(input: string, fullCurrentLine: string) {
@@ -700,6 +711,10 @@ function isPreprocessorCodeLine(input: string) {
 function isSingleLineComment(input: string) {
   const trimmed = input.trimStart()
   return trimmed.startsWith("//") || trimmed.startsWith("#")
+}
+
+function isCStyleLanguage(languageId: string) {
+  return new Set(["c", "cpp", "c++", "objective-c", "objective-cpp"]).has(languageId)
 }
 
 function lineIndent(line: string) {

@@ -73,6 +73,7 @@ export class CompletionRequestCoordinator {
         this.logInfo(`cache-invalid reason=${validation.reason} ${input.details}`)
       } else {
         this.cache.set(input.key, validation.edit)
+        this.logInfo(`cache-hit-validated ${input.details}`)
         return {
           immediate: {
             status: "ok",
@@ -136,6 +137,7 @@ export class CompletionRequestCoordinator {
       if (outcome.status === "ok") {
         const validation = this.validateEdit(input, outcome.edit)
         if (validation.status === "rejected") {
+          this.cache.delete(input.key)
           this.logInfo(`cache-skip-invalid reason=${validation.reason} ${input.details}`)
           return {
             status: "rejected",

@@ -270,6 +270,36 @@ describe("completion model router", () => {
     })).toBe(false)
   })
 
+  test("retries recoverable quality rejections once without retrying safety gates", () => {
+    const ordinaryPlan = planCompletion({
+      languageId: "c",
+      linePrefix: "    if (",
+      lineSuffix: ") {",
+      triggerKind: "automatic",
+    })
+
+    expect(shouldRetryCompletionRejection({
+      reason: "quality:placeholder",
+      plan: ordinaryPlan,
+      textProfile: "qwen-coder-fim",
+    })).toBe(true)
+    expect(shouldRetryCompletionRejection({
+      reason: "quality:C parse/compile",
+      plan: ordinaryPlan,
+      textProfile: "qwen-coder-fim",
+    })).toBe(true)
+    expect(shouldRetryCompletionRejection({
+      reason: "quality:markdown/explanation",
+      plan: ordinaryPlan,
+      textProfile: "generic-chat",
+    })).toBe(true)
+    expect(shouldRetryCompletionRejection({
+      reason: "quality:dangerous C",
+      plan: ordinaryPlan,
+      textProfile: "generic-chat",
+    })).toBe(false)
+  })
+
   test("uses a small FIM assist route for low-confidence symbol completions", () => {
     const route = routeCompletionModel({
       plan: planCompletion({

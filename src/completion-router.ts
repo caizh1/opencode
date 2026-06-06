@@ -39,9 +39,16 @@ export function shouldRetryCompletionRejection(input: {
   plan: CompletionPlan
   textProfile: CompletionProfile
 }) {
+  if (isRecoverableQualityRejection(input.reason)) return true
   if (input.textProfile === "qwen-coder-fim") return false
   if (input.reason === "misaligned-leading-newline") return true
   return input.reason === "low-confidence-output" && input.plan.useInstruction
+}
+
+function isRecoverableQualityRejection(reason: string) {
+  return reason === "quality:placeholder" ||
+    reason === "quality:C parse/compile" ||
+    reason === "quality:markdown/explanation"
 }
 
 export function resolveCompletionPlanAfterSymbolRetrieval(plan: CompletionPlan, retrievedSnippets: RetrievedCompletionSnippet[]): CompletionPlan {

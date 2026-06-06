@@ -120,7 +120,7 @@ export function readRemoteSettings(): RemoteSettings {
     },
     completion: {
       enabled: config.get<boolean>("completion.enabled", false),
-      provider: readCompletionProvider(config.get<string>("completion.provider", "opencode")),
+      provider: readCompletionProvider(config.get<string>("completion.provider", "openai-compatible")),
       profile: readCompletionProfile(config.get<string>("completion.profile", "generic-chat")),
       apiBaseUrl: normalizeServerUrl(config.get<string>("completion.apiBaseUrl", "")),
       model: config.get<string>("completion.model", "").trim(),

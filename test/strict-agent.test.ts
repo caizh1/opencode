@@ -23,11 +23,11 @@ describe("strict local-only agent selection", () => {
     expect(chatViewSource).toContain("throw new MissingLocalOnlyAgentError")
   })
 
-  test("uses the same agent path for chat and completion", () => {
+  test("keeps local-only agents on chat while inline completion stays decoupled", () => {
     expect(chatViewSource).toContain("[agent] ${agentSelection.label}")
     expect(chatViewSource).toContain("agent: agentSelection.agent")
-    expect(completionSource).toContain("resolveRequestAgent")
-    expect(completionSource).toContain("agent: agentSelection.agent")
+    expect(completionSource).not.toContain("resolveRequestAgent")
+    expect(completionSource).not.toContain("agent: agentSelection.agent")
   })
 
   test("documents vscode-local as required", () => {

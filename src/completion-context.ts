@@ -9,6 +9,7 @@ export type PackedContextBlockKind =
   | "test-framework"
   | "include"
   | "open-tab"
+  | "analysis-evidence"
   | "recent-file"
 
 export interface PackedContextBlock {
@@ -41,6 +42,7 @@ export type PackCompletionContextInput = {
   suffix: string
   retrievedSnippets: RetrievedCompletionSnippet[]
   openTabs?: CompletionOpenTabContext[]
+  analysisEvidenceText?: string
   tokenBudget?: number
 }
 
@@ -83,12 +85,14 @@ export function formatInstructionContext(pack: CompletionContextPack) {
   const target = pack.selected.filter((block) => block.kind === "target-symbol")
   const tests = pack.selected.filter((block) => block.kind === "similar-test")
   const framework = pack.selected.filter((block) => block.kind === "test-framework")
+  const evidence = pack.selected.filter((block) => block.kind === "analysis-evidence")
   const current = pack.selected.filter((block) => block.kind === "current-prefix" || block.kind === "current-suffix")
 
   return [
     section("Target symbol", target),
     section("Similar tests", tests),
     section("Test framework context", framework),
+    section("Local analysis evidence", evidence),
     section("Current file", current),
   ].filter(Boolean).join("\n\n")
 }
@@ -109,6 +113,7 @@ function contextBlocks(input: PackCompletionContextInput): PackedContextBlock[] 
   const similarTests = snippets.filter(isSimilarTest).map((snippet, index) => snippetBlock(snippet, "similar-test", 760 - index))
   const testFramework = testFrameworkBlocks(input.plan, snippets)
   const includes = includeBlock(input.prefix, input.currentPath)
+  const analysisEvidence = analysisEvidenceBlocks(input)
   const current = currentFileBlocks(input)
   const openTabs = openTabBlocks(input)
 
@@ -119,17 +124,17 @@ function contextBlocks(input: PackCompletionContextInput): PackedContextBlock[] 
       return target
     case "previous-comment-continuation":
       return input.plan.needsTestRetrieval
-        ? [...target, ...similarTests, ...testFramework, ...includes, ...openTabs, ...current]
-        : [...target, ...includes, ...openTabs, ...current]
+        ? [...target, ...similarTests, ...testFramework, ...includes, ...analysisEvidence, ...openTabs, ...current]
+        : [...target, ...includes, ...analysisEvidence, ...openTabs, ...current]
     case "comment-to-test":
-      return [...target, ...similarTests, ...testFramework, ...includes, ...openTabs, ...current]
+      return [...target, ...similarTests, ...testFramework, ...includes, ...analysisEvidence, ...openTabs, ...current]
     case "natural-command":
-      return [...target, ...similarTests, ...testFramework, ...openTabs, ...current]
+      return [...target, ...similarTests, ...testFramework, ...analysisEvidence, ...openTabs, ...current]
     case "ordinary-code":
     case "body-continuation":
-      return [...target, ...includes, ...openTabs, ...current]
+      return [...target, ...includes, ...analysisEvidence, ...openTabs, ...current]
     case "comment-to-code":
-      return [...target, ...includes, ...openTabs, ...current]
+      return [...target, ...includes, ...analysisEvidence, ...openTabs, ...current]
     case "disabled":
       return []
   }
@@ -233,6 +238,20 @@ function includeBlock(prefix: string, currentPath: string): PackedContextBlock[]
   ]
 }
 
+function analysisEvidenceBlocks(input: PackCompletionContextInput): PackedContextBlock[] {
+  const text = input.analysisEvidenceText?.trim()
+  if (!text) return []
+  return [
+    block({
+      kind: "analysis-evidence",
+      title: "local analysis evidence",
+      filePath: input.currentPath,
+      text: limitSnippetText(text, "analysis-evidence"),
+      score: input.plan.useInstruction ? 700 : 610,
+    }),
+  ]
+}
+
 function block(input: Omit<PackedContextBlock, "tokenEstimate">): PackedContextBlock {
   return {
     ...input,
@@ -281,6 +300,8 @@ function snippetTextLimit(kind: PackedContextBlockKind) {
       return 2600
     case "test-framework":
       return 1800
+    case "analysis-evidence":
+      return 3200
     default:
       return 3000
   }

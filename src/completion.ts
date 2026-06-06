@@ -20,10 +20,10 @@ import { CompletionRequestCoordinator, type CompletionRequestOutcome } from "./c
 import { INLINE_COMPLETION_SESSION_TITLE } from "./completion-session"
 import { completionSnippetFromSymbol } from "./completion-snippets"
 import { resolveSymbols, symbolCandidateFromCodeGraph } from "./completion-symbol"
+import { fallbackCompletionText } from "./completion-test-fallback"
 import { completionTelemetryRoute, createCompletionRequestId, filePathHash, serializeCompletionDebugEvent, type CompletionDebugEvent, type CompletionTelemetryDraft } from "./completion-telemetry"
 import type { CompletionPlan, RetrievedCompletionSnippet } from "./completion-types"
 import { buildCompletionPrompt, buildQwenCoderFimPrompt, relativePath } from "./context"
-import { resolveRequestAgent } from "./local-agent"
 import { isSessionNotFoundError, parseModel, RemoteOpenCodeClient } from "./remote-client"
 import type { CompletionProfile, OpenCodeMessage, RemoteSettings } from "./types"
 
@@ -460,6 +460,14 @@ export class RemoteCompletionProvider implements vscode.InlineCompletionItemProv
       input.telemetry.droppedContextBlocks = completionTelemetryDroppedContextBlocks(pack)
       this.logDebug(input.settings, `${completionContextDebugSummary(pack)} ${input.details}`)
     }
+    const analysisEvidenceText = await this.retrieveCompletionAnalysisEvidence({
+      document: input.document,
+      position: input.position,
+      settings: input.settings,
+      details: input.details,
+      plan: input.plan,
+      retrievedSnippets: input.retrievedSnippets,
+    })
 
     if (input.route.promptKind === "qwen-fim") {
       const prompt = buildQwenCoderFimPrompt({
@@ -468,6 +476,7 @@ export class RemoteCompletionProvider implements vscode.InlineCompletionItemProv
         settings: input.settings,
         plan: input.plan,
         retrievedSnippets: input.retrievedSnippets,
+        analysisEvidenceText,
         onContextPack,
       })
       return { prompt, selectedContextText }
@@ -480,6 +489,7 @@ export class RemoteCompletionProvider implements vscode.InlineCompletionItemProv
       transport: input.transport,
       plan: input.plan,
       retrievedSnippets: input.retrievedSnippets,
+      analysisEvidenceText,
       onContextPack,
     })
     return { prompt, selectedContextText }
@@ -573,7 +583,7 @@ export class RemoteCompletionProvider implements vscode.InlineCompletionItemProv
       textProfile: input.textProfile,
     })) return initial
 
-    const retryPrompt = completionRetryPrompt(input.prompt, input.editInput, initial.reason)
+    const retryPrompt = completionRetryPrompt(input.prompt, input.editInput, initial.reason, input.textProfile)
     this.logInfo(input.settings, `retry-sent reason=${initial.reason} ${input.details}`)
     const retryModelStarted = Date.now()
     let retryResponse: OpenCodeMessage | undefined
@@ -633,6 +643,39 @@ export class RemoteCompletionProvider implements vscode.InlineCompletionItemProv
     } catch (error) {
       this.logDebug(input.settings, `symbol-retrieval skipped reason="${quoteLogValue(formatError(error))}" ${input.details}`)
       return []
+    }
+  }
+
+  private async retrieveCompletionAnalysisEvidence(input: {
+    document: vscode.TextDocument
+    position: vscode.Position
+    settings: RemoteSettings
+    details: string
+    plan: CompletionPlan
+    retrievedSnippets: RetrievedCompletionSnippet[]
+  }) {
+    if (!this.deps.codeGraph) return ""
+    if (!input.settings.codeGraph.enabled) return ""
+    if (!isCEmbeddedLanguage(input.document.languageId)) return ""
+
+    const question = completionEvidenceQuestion({
+      document: input.document,
+      position: input.position,
+      plan: input.plan,
+      retrievedSnippets: input.retrievedSnippets,
+    })
+    if (!question) return ""
+
+    try {
+      const result = await this.deps.codeGraph.queryEvidence(question)
+      const text = result?.evidencePack.text.trim() ?? ""
+      if (text) {
+        this.logDebug(input.settings, `analysis-evidence selected bytes=${text.length} ${input.details}`)
+      }
+      return text
+    } catch (error) {
+      this.logDebug(input.settings, `analysis-evidence skipped reason="${quoteLogValue(formatError(error))}" ${input.details}`)
+      return ""
     }
   }
 
@@ -708,6 +751,22 @@ export class RemoteCompletionProvider implements vscode.InlineCompletionItemProv
       selectedContextText: input.selectedContextText ?? completionQualityContextText(input.retrievedSnippets),
     })
     if (quality.status === "rejected") {
+      const fallback = this.completionOutcomeFromQualityFallback({
+        rejectReason: quality.reason,
+        document: input.document,
+        settings: input.settings,
+        details: input.details,
+        started: input.started,
+        editInput: input.editInput,
+        plan: input.plan,
+        retrievedSnippets: input.retrievedSnippets,
+        selectedContextText: input.selectedContextText ?? completionQualityContextText(input.retrievedSnippets),
+        attempt: input.attempt,
+        textProfile: input.textProfile,
+        telemetry: input.telemetry,
+        selectedCompletionInfo: input.selectedCompletionInfo,
+      })
+      if (fallback) return fallback
       this.logInfo(input.settings, `quality-rejected reason=${quality.reason} ${input.details} elapsedMs=${elapsedMs(input.started)}`)
       this.logCompletionTelemetry(input.settings, input.telemetry, input.started, false, quality.reason)
       return { status: "rejected", reason: quality.reason, source: "remote" }
@@ -733,6 +792,85 @@ export class RemoteCompletionProvider implements vscode.InlineCompletionItemProv
     } else {
       this.logInfo(input.settings, `edit-ready ${editDetails(qualityEdit)} ${input.details} elapsedMs=${elapsedMs(input.started)} chars=${qualityEdit.insertText.length}`)
     }
+    this.logDebug(input.settings, `edit ${editDetails(qualityEdit)} visibleChars=${pipeline.candidateText.length} ${input.details}`)
+    this.logCompletionTelemetry(input.settings, input.telemetry, input.started, true)
+    return { status: "ok", edit: qualityEdit, source: "remote" }
+  }
+
+  private completionOutcomeFromQualityFallback(input: {
+    rejectReason: string
+    document: vscode.TextDocument
+    settings: RemoteSettings
+    details: string
+    started: number
+    editInput: Omit<CompletionEditInput, "text">
+    plan: CompletionPlan
+    retrievedSnippets: RetrievedCompletionSnippet[]
+    selectedContextText?: string
+    attempt: "initial" | "retry"
+    textProfile: CompletionProfile
+    telemetry: CompletionTelemetryDraft
+    selectedCompletionInfo?: SelectedCompletionInfo
+  }): CompletionRequestOutcome | undefined {
+    const fallbackText = fallbackCompletionText({
+      languageId: input.editInput.languageId,
+      plan: input.plan,
+      retrievedSnippets: input.retrievedSnippets,
+      rejectReason: input.rejectReason,
+    })
+    if (!fallbackText) return
+
+    const pipeline = runCompletionCandidatePipeline({
+      rawText: fallbackText,
+      textProfile: input.textProfile,
+      editInput: input.editInput,
+      plan: input.plan,
+      retrievedSnippets: input.retrievedSnippets,
+      selectedCompletionInfo: selectedCompletionInfoValue(input.selectedCompletionInfo),
+    })
+    input.telemetry.rawOutputLength = pipeline.rawText.length
+    input.telemetry.latencyMs.postprocess = pipeline.latencyMs.postprocess
+    input.telemetry.normalizedOutputLength = pipeline.postprocessText.length
+    input.telemetry.latencyMs.edit = pipeline.latencyMs.edit
+    const rawFirstLine = firstLogLine(pipeline.rawText)
+    const postprocessFirstLine = firstLogLine(pipeline.postprocessText)
+    if (pipeline.decision === "rejected" || !pipeline.edit) {
+      const reason = pipeline.rejectionReason ?? "filtered-or-no-visible-text"
+      this.logInfo(input.settings, `quality-fallback-rejected originalReason=${input.rejectReason} reason=${reason} ${input.details} elapsedMs=${elapsedMs(input.started)}`)
+      return
+    }
+
+    const quality = this.validateInlineCompletionEditForReturn({
+      edit: pipeline.edit,
+      document: input.document,
+      editInput: input.editInput,
+      plan: input.plan,
+      selectedCompletionInfo: input.selectedCompletionInfo,
+      triggerKind: runtimeTriggerKindFromTelemetry(input.telemetry.triggerKind),
+      selectedContextText: input.selectedContextText ?? completionQualityContextText(input.retrievedSnippets),
+    })
+    if (quality.status === "rejected") {
+      this.logInfo(input.settings, `quality-fallback-rejected originalReason=${input.rejectReason} reason=${quality.reason} ${input.details} elapsedMs=${elapsedMs(input.started)}`)
+      return
+    }
+
+    const qualityEdit: QualityCompletionEdit = {
+      ...quality.edit,
+      qualityContextText: input.selectedContextText ?? completionQualityContextText(input.retrievedSnippets),
+    }
+    input.telemetry.finalRange = qualityEdit.replaceRange ?? zeroWidthRange(input.editInput.position)
+    input.telemetry.filterText = qualityEdit.filterText ?? qualityEdit.insertText
+    this.logDebug(input.settings, `inline-invariant ${inlineCompletionInvariantDetails({
+      edit: qualityEdit,
+      editInput: input.editInput,
+      plan: input.plan,
+      rawFirstLine,
+      postprocessFirstLine,
+      postprocessDebug: pipeline.postprocessDebug,
+      rejectReason: pipeline.rejectionReason,
+      selectedCompletionInfo: input.selectedCompletionInfo,
+    })} ${input.details}`)
+    this.logInfo(input.settings, `quality-fallback-ready originalReason=${input.rejectReason} attempt=${input.attempt} ${editDetails(qualityEdit)} ${input.details} elapsedMs=${elapsedMs(input.started)} chars=${qualityEdit.insertText.length}`)
     this.logDebug(input.settings, `edit ${editDetails(qualityEdit)} visibleChars=${pipeline.candidateText.length} ${input.details}`)
     this.logCompletionTelemetry(input.settings, input.telemetry, input.started, true)
     return { status: "ok", edit: qualityEdit, source: "remote" }
@@ -767,13 +905,11 @@ export class RemoteCompletionProvider implements vscode.InlineCompletionItemProv
     settings: RemoteSettings,
     signal: AbortSignal,
   ) {
-    const agentSelection = await resolveRequestAgent(client, settings, signal)
     const sessionID = await this.getSession(client, signal)
     return client.sendMessage({
       sessionID,
       text: prompt,
       model: parseModel(settings.defaultModel),
-      agent: agentSelection.agent,
       signal,
     })
   }
@@ -829,7 +965,8 @@ export class RemoteCompletionProvider implements vscode.InlineCompletionItemProv
     started: number,
   ) {
     this.logDebug(settings, `edit ${editDetails(edit)} ${details}`)
-    this.logInfo(settings, `returned source=${source} ${editDetails(edit)} ${details} elapsedMs=${elapsedMs(started)} chars=${edit.insertText.length}`)
+    const cacheValidation = source === "cache" ? " revalidated=true" : ""
+    this.logInfo(settings, `returned source=${source}${cacheValidation} ${editDetails(edit)} ${details} elapsedMs=${elapsedMs(started)} chars=${edit.insertText.length}`)
   }
 
   private triggerInlineSuggestRefresh(
@@ -1031,12 +1168,13 @@ function applyCompletionEditToText(text: string, edit: CompletionEdit, position:
   return [...before, ...replacement.split("\n"), ...after].join("\n")
 }
 
-function completionRetryPrompt(prompt: string, editInput: Omit<CompletionEditInput, "text">, reason: string) {
+function completionRetryPrompt(prompt: string, editInput: Omit<CompletionEditInput, "text">, reason: string, textProfile: CompletionProfile) {
   const currentLine = truncateFeedback(`${editInput.linePrefix}${editInput.lineSuffix}`)
   const cursorPrefix = truncateFeedback(editInput.linePrefix)
-  const feedback = reason === "low-confidence-output"
-    ? "Previous completion was rejected because it contained only structural punctuation or otherwise lacked meaningful code."
-    : `Previous completion was rejected because it began with blank lines and did not continue the current line "${quoteLogValue(currentLine)}".`
+  const feedback = completionRetryFeedback(reason, currentLine)
+  if (textProfile === "qwen-coder-fim") {
+    return completionFimRetryPrompt(prompt, feedback, cursorPrefix)
+  }
   return [
     prompt,
     "",
@@ -1046,6 +1184,35 @@ function completionRetryPrompt(prompt: string, editInput: Omit<CompletionEditInp
     "Return only meaningful code that continues or replaces the cursor context, or return empty.",
     "</completion-feedback>",
   ].join("\n")
+}
+
+function completionFimRetryPrompt(prompt: string, feedback: string, cursorPrefix: string) {
+  const marker = "<|fim_prefix|>"
+  const feedbackBlock = [
+    "/* Completion retry feedback.",
+    feedback,
+    `The cursor is after the prefix "${quoteLogValue(cursorPrefix)}".`,
+    "Return only the exact FIM middle insertion text.",
+    "End completion retry feedback. */",
+    "",
+  ].join("\n")
+  if (!prompt.includes(marker)) return `${feedbackBlock}${prompt}`
+  return prompt.replace(marker, `${feedbackBlock}${marker}`)
+}
+
+function completionRetryFeedback(reason: string, currentLine: string) {
+  switch (reason) {
+    case "low-confidence-output":
+      return "Previous completion was rejected because it contained only structural punctuation or otherwise lacked meaningful code."
+    case "quality:placeholder":
+      return "Previous completion was rejected because it contained placeholder text or scaffold-only code. Return concrete C/C++ code using visible symbols; do not use placeholder names such as condition, TODO, value, or test body."
+    case "quality:C parse/compile":
+      return `Previous completion was rejected because the applied C/C++ fragment did not parse in the current line "${quoteLogValue(currentLine)}". Return only a syntactically valid fragment for this exact prefix/suffix; preserve existing parentheses, braces, semicolons, and suffix text.`
+    case "quality:markdown/explanation":
+      return "Previous completion was rejected because it contained Markdown, backticks, fences, or explanatory prose. Return raw code only."
+    default:
+      return `Previous completion was rejected because it began with blank lines and did not continue the current line "${quoteLogValue(currentLine)}".`
+  }
 }
 
 function completionRequestKey(document: vscode.TextDocument, position: vscode.Position, lineText: string, settings: RemoteSettings) {
@@ -1110,6 +1277,27 @@ function completionSymbolQuery(input: Omit<CompletionEditInput, "text">) {
   return identifiers
     .filter((identifier) => !new Set(["unit", "test", "unittest", "for", "of", "to", "function"]).has(identifier.toLowerCase()))
     .at(-1)
+}
+
+function completionEvidenceQuestion(input: {
+  document: vscode.TextDocument
+  position: vscode.Position
+  plan: CompletionPlan
+  retrievedSnippets: RetrievedCompletionSnippet[]
+}) {
+  const lineText = input.document.lineAt(input.position.line).text.trim()
+  const symbols = uniqueNonEmpty([
+    input.plan.targetSymbol,
+    ...input.retrievedSnippets.map((snippet) => snippet.name),
+  ]).slice(0, 8)
+  const parts = [
+    `inline completion for ${input.document.languageId} file ${relativePath(input.document.uri)}`,
+    `plan ${input.plan.kind}`,
+    symbols.length ? `symbols ${symbols.join(" ")}` : "",
+    input.plan.sourceComment ? `comment ${input.plan.sourceComment}` : "",
+    lineText ? `cursor line ${lineText}` : "",
+  ].filter(Boolean)
+  return parts.join("\n")
 }
 
 function completionSymbolRetrievalLimit(plan: CompletionPlan) {
@@ -1257,6 +1445,18 @@ function addCompletionTelemetryLatency(telemetry: CompletionTelemetryDraft, key:
   telemetry.latencyMs[key] = (telemetry.latencyMs[key] ?? 0) + ms
 }
 
+function uniqueNonEmpty(values: Array<string | undefined>) {
+  const seen = new Set<string>()
+  const result: string[] = []
+  for (const value of values) {
+    const trimmed = value?.trim()
+    if (!trimmed || seen.has(trimmed)) continue
+    seen.add(trimmed)
+    result.push(trimmed)
+  }
+  return result
+}
+
 function editDetails(edit: CompletionEdit) {
   return [
     `range=${edit.replaceRange ? rangeLogValue(edit.replaceRange) : "insert"}`,
@@ -1368,8 +1568,9 @@ function firstLogLine(input: string) {
 }
 
 function truncateLine(input: string) {
-  if (input.length <= 80) return input
-  return `${input.slice(0, 77)}...`
+  const firstLine = input.replace(/\r\n/g, "\n").split("\n")[0] ?? ""
+  if (firstLine.length <= 80) return firstLine
+  return `${firstLine.slice(0, 77)}...`
 }
 
 function truncateFeedback(input: string) {

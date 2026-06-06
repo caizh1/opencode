@@ -2152,6 +2152,7 @@ function ragPausedReasonMessage(reason?: RagStatus["indexPausedReason"], detail?
   if (reason === "request-budget") return `request budget reached${suffix}`
   if (reason === "rate-limit") return `rate limited${suffix}`
   if (reason === "provider-error") return `provider error${suffix}`
+  if (reason === "manual") return `paused by user${suffix}`
   return `indexing paused${suffix}`
 }
 

@@ -68,6 +68,40 @@ describe("completion test fallback", () => {
     expect(text).toContain("epr_ppn_raw_write_cb_dfx();")
   })
 
+  test("generates deterministic test fallback for quality parse rejection", () => {
+    const text = fallbackCompletionText({
+      languageId: "c",
+      plan: planCompletion({
+        languageId: "c",
+        linePrefix: "unit test for alpha_device_init",
+        lineSuffix: "",
+        currentWord: "alpha_device_init",
+      }),
+      retrievedSnippets: [snippet("alpha_device_init")],
+      rejectReason: "quality:C parse/compile",
+    })
+
+    expect(text).toContain("static void test_alpha_device_init(void)")
+    expect(text).toContain("alpha_device_init();")
+    expect(text).not.toContain("unit test for alpha_device_init")
+  })
+
+  test("generates deterministic test fallback for quality placeholder rejection", () => {
+    const text = fallbackCompletionText({
+      languageId: "c",
+      plan: planCompletion({
+        languageId: "c",
+        linePrefix: "// unit test for beta_packet_decode",
+        lineSuffix: "",
+      }),
+      retrievedSnippets: [snippet("beta_packet_decode")],
+      rejectReason: "quality:placeholder",
+    })
+
+    expect(text).toContain("static void test_beta_packet_decode(void)")
+    expect(text).toContain("beta_packet_decode();")
+  })
+
   test("generates deterministic test fallback for previous comment continuations with test intent", () => {
     const text = fallbackCompletionText({
       languageId: "c",

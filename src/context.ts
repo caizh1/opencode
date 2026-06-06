@@ -140,6 +140,7 @@ export async function buildCompletionPrompt(input: {
   transport?: "opencode" | "openai-compatible"
   plan?: CompletionPlan
   retrievedSnippets?: RetrievedCompletionSnippet[]
+  analysisEvidenceText?: string
   onContextPack?: (pack: CompletionContextPack) => void
 }) {
   const before = Math.max(0, input.position.line - 80)
@@ -158,6 +159,7 @@ export async function buildCompletionPrompt(input: {
         suffix,
         retrievedSnippets: input.retrievedSnippets ?? [],
         openTabs: completionOpenTabs(input.document.uri),
+        analysisEvidenceText: input.analysisEvidenceText,
       })
     : undefined
   if (contextPack) input.onContextPack?.(contextPack)
@@ -206,6 +208,7 @@ export function buildQwenCoderFimPrompt(input: {
   settings: RemoteSettings
   plan?: CompletionPlan
   retrievedSnippets?: RetrievedCompletionSnippet[]
+  analysisEvidenceText?: string
   onContextPack?: (pack: CompletionContextPack) => void
 }) {
   const before = Math.max(0, input.position.line - 80)
@@ -225,6 +228,7 @@ export function buildQwenCoderFimPrompt(input: {
         suffix,
         retrievedSnippets: input.retrievedSnippets ?? [],
         openTabs: completionOpenTabs(input.document.uri),
+        analysisEvidenceText: input.analysisEvidenceText,
       })
     : undefined
   if (contextPack) input.onContextPack?.(contextPack)
@@ -233,6 +237,7 @@ export function buildQwenCoderFimPrompt(input: {
     `<|repo_name|>${repoName}`,
     `<|file_sep|>${path}\n`,
     contextBlock,
+    completionFimRulesBlock(input.document.languageId),
     `<|fim_prefix|>${limitText(prefix, input.settings.context.maxFileBytes).text}`,
     `<|fim_suffix|>${limitText(suffix, Math.floor(input.settings.context.maxFileBytes / 2)).text}`,
     "<|fim_middle|>",
@@ -352,7 +357,12 @@ function completionLanguageRules(languageId: string) {
   switch (languageId) {
     case "c":
     case "cpp":
-      return "Language rule: this is C/C++; do not use Python-style colon blocks. Use braces for functions and control blocks. Return real code, not placeholders like condition."
+      return [
+        "Language rule: this is C/C++; do not use Python-style colon blocks. Use braces for functions and control blocks. Return real code, not placeholders like condition.",
+        "If the cursor is inside an existing control-flow header such as `if (` before a suffix `)` or `) {`, return only the condition expression, not `if`, parentheses, or braces.",
+        "If the cursor is inside an existing `for (` header before a suffix `)` or `) {`, return only the full loop header fields, not `for`, parentheses, or braces.",
+        "For embedded/RTOS/protocol code, prefer symbols, macros, functions, and buffer bounds visible in current file, open tabs, or retrieved context; do not invent APIs.",
+      ].join(" ")
     case "javascript":
     case "javascriptreact":
     case "typescript":
@@ -366,6 +376,25 @@ function completionLanguageRules(languageId: string) {
       return "Language rule: preserve Python colon blocks and indentation. Return real code, not placeholders like condition."
     default:
       return "Language rule: follow the file language syntax exactly. Return real code, not placeholders."
+  }
+}
+
+function completionFimRulesBlock(languageId: string) {
+  switch (languageId) {
+    case "c":
+    case "cpp":
+      return [
+        "/* Inline completion contract for C/C++.",
+        "Return only the exact text for the cursor hole; no Markdown, prose, fences, or backticks.",
+        "If the prefix ends inside `if (` and the suffix starts with `)` or `) {`, output only a valid condition expression.",
+        "If the prefix ends inside `for (` and the suffix starts with `)` or `) {`, output only the loop header fields.",
+        "Preserve existing suffix parentheses, braces, brackets, semicolons, and indentation.",
+        "Use visible local variables, macros, functions, open-tab/header symbols, and retrieved context. Do not invent unknown embedded APIs or placeholder identifiers.",
+        "For RTOS waits, queue/semaphore calls, protocol length/CRC guards, and buffer checks, prefer finite timeouts and explicit bounds using visible symbols.",
+        "End inline completion contract. */\n",
+      ].join("\n")
+    default:
+      return ""
   }
 }
 

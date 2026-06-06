@@ -72,7 +72,7 @@ describe("code graph query observability", () => {
     expect(serviceSource).toContain("await this.ragIndexInFlight")
     expect(serviceSource).toContain("private async clearStoredRagIndex")
     expect(serviceSource).toContain("vscode.workspace.fs.delete(this.ragDir(root), { recursive: true, useTrash: false })")
-    expect(serviceSource).toContain("failed to clear stored RAG vector index before force rebuild")
+    expect(serviceSource).toContain("failed to clear stored RAG vector index ${reason}")
     expect(serviceSource).toContain("private clearPendingRagWorkTimer")
     expect(serviceSource).toContain("this.ragIndex.sourceIndexUpdatedAt === this.index?.updatedAt")
     expect(serviceSource).toContain("runPendingRagRefreshWhenReady(\"RAG configuration changed\"")
@@ -166,6 +166,31 @@ describe("code graph query observability", () => {
     expect(serviceSource).toContain("[rag-index] resume scheduled")
     expect(serviceSource).toContain("[rag-index] auto resume starting")
     expect(serviceSource).toContain("resumeScheduledAt")
+  })
+
+  test("treats manual RAG pause as a global gate until explicit resume", () => {
+    const pauseStart = serviceSource.indexOf("pauseIndexing(reason = \"paused by user\")")
+    const pauseEnd = serviceSource.indexOf("resumeIndexing()", pauseStart)
+    const pauseBody = serviceSource.slice(pauseStart, pauseEnd)
+    expect(pauseBody).toContain("this.paused = true")
+    expect(pauseBody).toContain("this.clearRagIndexResume()")
+    expect(pauseBody).toContain("this.pauseActiveRagIndex(reason)")
+    expect(pauseBody).toContain("this.abortRagIndex(reason)")
+
+    const runStart = serviceSource.indexOf("private runPendingRagRefreshWhenReady")
+    const runEnd = serviceSource.indexOf("private isCodeGraphReadyForRag", runStart)
+    const runBody = serviceSource.slice(runStart, runEnd)
+    expect(runBody).toContain("if (this.paused)")
+    expect(runBody).toContain("pending RAG work preserved")
+    expect(runBody.indexOf("if (this.paused)")).toBeLessThan(runBody.indexOf("const pending = this.pendingRagRefresh"))
+
+    expect(serviceSource).toContain("private async pauseActiveRagIndex")
+    expect(serviceSource).toContain("private manualPausedRagSnapshot")
+    expect(serviceSource).toContain("indexPausedReason: \"manual\"")
+    expect(serviceSource).toContain("private resumeManualRagIndexing")
+    expect(serviceSource).toContain("continuePreviousElapsed: true")
+    expect(serviceSource).toContain("manual paused RAG index")
+    expect(typesSource).toContain('"manual"')
   })
 
   test("guards automatic RAG resume for stale cross-version partial indexes", () => {

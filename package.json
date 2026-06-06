@@ -2,7 +2,7 @@
   "name": "opencode-remote",
   "displayName": "OpenCode Remote",
   "description": "Remote opencode serve client for VS Code",
-  "version": "0.0.127",
+  "version": "0.0.138",
   "icon": "media/opencode-icon.png",
   "publisher": "local",
   "repository": {
@@ -35,6 +35,7 @@
     "onCommand:opencode.remote.askCurrentFile",
     "onCommand:opencode.remote.addFileToContext",
     "onCommand:opencode.remote.clearContext",
+    "onCommand:opencode.remote.openOutput",
     "onCommand:opencode.remote.codeGraph.index",
     "onCommand:opencode.remote.codeGraph.rebuild",
     "onCommand:opencode.remote.codeGraph.pause",
@@ -42,7 +43,8 @@
     "onCommand:opencode.remote.codeGraph.cancel",
     "onCommand:opencode.remote.codeGraph.benchmark",
     "onCommand:opencode.remote.codeGraph.status",
-    "onCommand:opencode.remote.completion.setApiKey"
+    "onCommand:opencode.remote.completion.setApiKey",
+    "onCommand:opencode.remote.completion.commitInlineSuggestion"
   ],
   "main": "./dist/extension.js",
   "contributes": {
@@ -87,6 +89,11 @@
         "category": "OpenCode Remote"
       },
       {
+        "command": "opencode.remote.completion.commitInlineSuggestion",
+        "title": "Commit Inline Suggestion",
+        "category": "OpenCode Remote"
+      },
+      {
         "command": "opencode.remote.openChat",
         "title": "Open Remote OpenCode Chat",
         "category": "OpenCode Remote"
@@ -118,6 +125,11 @@
       {
         "command": "opencode.remote.clearContext",
         "title": "Clear OpenCode Context",
+        "category": "OpenCode Remote"
+      },
+      {
+        "command": "opencode.remote.openOutput",
+        "title": "Open OpenCode Remote Output",
         "category": "OpenCode Remote"
       },
       {
@@ -228,8 +240,8 @@
             "opencode",
             "openai-compatible"
           ],
-          "default": "opencode",
-          "description": "Provider for inline completions. OpenCode uses the remote opencode serve session; OpenAI-compatible calls a direct model API for completion only."
+          "default": "openai-compatible",
+          "description": "Provider for inline completions. OpenAI-compatible is the default direct completion model path. OpenCode is a legacy compatibility path that uses the remote opencode serve session."
         },
         "opencode.remote.completion.profile": {
           "type": "string",
@@ -696,6 +708,7 @@
     "test": "bun test",
     "eval:completion-quality": "bun scripts/completion-quality-eval.ts",
     "eval:completion-c-embedded": "bun scripts/completion-c-embedded-eval.ts",
+    "ui:completion-c-embedded": "bun scripts/completion-c-embedded-ui.ts",
     "benchmark:codegraph": "bun scripts/codegraph-benchmark.ts",
     "test:vscode": "bun run package && node ./dist/test/runTest.js",
     "vsix": "bun run package && vsce package --no-dependencies"

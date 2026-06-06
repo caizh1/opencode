@@ -215,6 +215,9 @@ export async function activate(context: vscode.ExtensionContext) {
         chatProvider.refreshState()
       }
     }),
+    vscode.commands.registerCommand("opencode.remote.completion.commitInlineSuggestion", async () => {
+      await vscode.commands.executeCommand("editor.action.inlineSuggest.commit")
+    }),
     vscode.commands.registerCommand("opencode.remote.openChat", async () => {
       await chatProvider.reveal()
     }),
@@ -250,6 +253,9 @@ export async function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand("opencode.remote.clearContext", async () => {
       contextStore.clear()
       vscode.window.setStatusBarMessage("Cleared OpenCode context", 2000)
+    }),
+    vscode.commands.registerCommand("opencode.remote.openOutput", () => {
+      output.show(false)
     }),
     vscode.commands.registerCommand("opencode.remote.codeGraph.index", async () => {
       await codeGraph.indexWorkspace(false)

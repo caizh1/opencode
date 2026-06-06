@@ -2673,8 +2673,8 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
         <div class="settingsGrid">
           <label class="field checkbox"><input id="completionEnabled" type="checkbox"><span>Enable inline completion</span></label>
           <label class="field">Provider<select id="completionProvider">
-            <option value="opencode">OpenCode</option>
             <option value="openai-compatible">Direct Model API</option>
+            <option value="opencode">OpenCode legacy</option>
           </select></label>
           <div id="completionDirectFields" class="completionDirectFields hidden">
             <label class="field">Profile<select id="completionProfile">
@@ -3556,7 +3556,7 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
 	      const completion = state.completion || {};
 	      if (!userEditedCompletionSettings) {
 	        el("completionEnabled").checked = Boolean(completion.enabled);
-	        el("completionProvider").value = completion.provider || "opencode";
+	        el("completionProvider").value = completion.provider || "openai-compatible";
 	        el("completionProfile").value = completion.profile || "generic-chat";
 	        el("completionApiBaseUrl").value = completion.apiBaseUrl || "";
 	        el("completionModel").value = completion.model || "";
@@ -5478,20 +5478,39 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       await copyTextWithFeedback(text, button, "Copied code.");
     }
 
+    function ragControlActions(rag) {
+      if (!rag) return [];
+      if (rag.availability === "indexing") {
+        return [
+          { label: "Pause", message: "pauseCodeGraph", title: "Pause RAG indexing" },
+          { label: "Cancel", message: "cancelCodeGraph", title: "Cancel RAG indexing" },
+        ];
+      }
+      if (rag.availability === "paused") {
+        return [
+          { label: "Resume", message: "resumeCodeGraph", title: "Resume RAG indexing" },
+          { label: "Cancel", message: "cancelCodeGraph", title: "Cancel RAG indexing" },
+        ];
+      }
+      return [];
+    }
+
     function codeGraphView(graph, stateName) {
       const files = formatCount(graph.indexedFiles || 0);
       const functions = formatCount(graph.indexedFunctions || 0);
       if (stateName === "ready") {
         const intelLoading = Boolean(state.loadingCodeIntelligence);
         const intelLabel = intelLoading ? "Loading..." : codeIntelligenceVisible ? "Refresh" : "Intel";
+        const actions = [
+          { label: intelLabel, message: "refreshCodeIntelligence", title: codeIntelligenceVisible ? "Refresh local code intelligence panel" : "Show local code intelligence panel", disabled: intelLoading },
+          { label: "Rebuild", message: "rebuildCodeGraph", title: "Rebuild local code graph" },
+          { label: "Status", message: "showCodeGraphStatus", title: "Show local code graph status" },
+          ...ragControlActions(graph.rag),
+        ];
         return {
           label: "Indexed: " + files + " files, " + functions + " functions",
           meta: codeGraphMeta(graph),
-          actions: [
-            { label: intelLabel, message: "refreshCodeIntelligence", title: codeIntelligenceVisible ? "Refresh local code intelligence panel" : "Show local code intelligence panel", disabled: intelLoading },
-            { label: "Rebuild", message: "rebuildCodeGraph", title: "Rebuild local code graph" },
-            { label: "Status", message: "showCodeGraphStatus", title: "Show local code graph status" },
-          ],
+          actions,
         };
       }
       if (stateName === "indexing" || stateName === "indexingFull" || stateName === "indexingIncremental" || stateName === "recovering") {
@@ -5956,6 +5975,7 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       if (rag.indexPausedReason === "request-budget") return "request budget reached" + (detail ? ": " + detail : "");
       if (rag.indexPausedReason === "rate-limit") return "rate limited" + (detail ? ": " + detail : "");
       if (rag.indexPausedReason === "provider-error") return "provider error" + (detail ? ": " + detail : "");
+      if (rag.indexPausedReason === "manual") return "paused by user" + (detail ? ": " + detail : "");
       return "indexing paused" + (detail ? ": " + detail : "");
     }
 

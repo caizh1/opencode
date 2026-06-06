@@ -239,4 +239,137 @@ describe("completion request coordinator", () => {
     expect(refreshes).toBe(0)
     expect(logs).toContain("cache-skip-invalid reason=selectedCompletionInfo-range-mismatch line=1")
   })
+
+  test("clears same-key cache when a remote edit is rejected during validation", async () => {
+    let requests = 0
+    let rejectRemote = false
+    const logs: string[] = []
+    const coordinator = new CompletionRequestCoordinator({
+      delay: () => Promise.resolve(),
+      logInfo: (message) => logs.push(message),
+    })
+
+    const first = coordinator.request({
+      key: "same-key",
+      details: "line=1",
+      debounceMs: 0,
+      runRemote: async () => {
+        requests += 1
+        return {
+          status: "ok",
+          edit: {
+            insertText: "return cached;",
+          },
+          source: "remote",
+        }
+      },
+    })
+    await first.pending
+
+    const second = coordinator.request({
+      key: "same-key",
+      details: "line=1",
+      debounceMs: 0,
+      validateEdit: (edit) => {
+        if (edit.insertText === "return cached;") {
+          return {
+            status: "rejected",
+            reason: "quality:C parse/compile",
+          }
+        }
+        if (rejectRemote) {
+          return {
+            status: "rejected",
+            reason: "quality:placeholder",
+          }
+        }
+        return {
+          status: "ok",
+          edit,
+        }
+      },
+      runRemote: async () => {
+        requests += 1
+        rejectRemote = true
+        return {
+          status: "ok",
+          edit: {
+            insertText: "return rejected;",
+          },
+          source: "remote",
+        }
+      },
+    })
+
+    expect(second.immediate).toBeUndefined()
+    expect(await second.pending).toEqual({
+      status: "rejected",
+      reason: "quality:placeholder",
+      source: "remote",
+    })
+
+    rejectRemote = false
+    const third = coordinator.request({
+      key: "same-key",
+      details: "line=1",
+      debounceMs: 0,
+      runRemote: async () => {
+        requests += 1
+        return {
+          status: "ok",
+          edit: {
+            insertText: "return fresh;",
+          },
+          source: "remote",
+        }
+      },
+    })
+
+    expect(third.immediate).toBeUndefined()
+    expect(await third.pending).toEqual({
+      status: "ok",
+      edit: {
+        insertText: "return fresh;",
+      },
+      source: "remote",
+    })
+    expect(requests).toBe(3)
+    expect(logs).toContain("cache-invalid reason=quality:C parse/compile line=1")
+    expect(logs).toContain("cache-skip-invalid reason=quality:placeholder line=1")
+  })
+
+  test("validates local fallback edits before returning them", async () => {
+    const logs: string[] = []
+    let validations = 0
+    const coordinator = new CompletionRequestCoordinator({
+      delay: () => Promise.resolve(),
+      logInfo: (message) => logs.push(message),
+    })
+
+    const start = coordinator.request({
+      key: "fallback",
+      details: "line=1",
+      debounceMs: 0,
+      localFallback: {
+        insertText: "`bad c`",
+      },
+      validateEdit: (edit) => {
+        validations += 1
+        return validations === 1
+          ? {
+              status: "rejected",
+              reason: "quality:markdown/explanation",
+            }
+          : {
+              status: "ok",
+              edit,
+            }
+      },
+      runRemote: async () => editOutcome,
+    })
+
+    expect(start.immediate).toBeUndefined()
+    expect(logs).toContain("local-fallback-invalid reason=quality:markdown/explanation line=1")
+    expect(await start.pending).toEqual(editOutcome)
+  })
 })

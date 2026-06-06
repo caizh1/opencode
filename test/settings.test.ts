@@ -93,6 +93,14 @@ describe("connection settings", () => {
   })
 })
 
+describe("completion settings", () => {
+  test("defaults inline completion to the direct model provider", () => {
+    const settings = readRemoteSettings()
+
+    expect(settings.completion.provider).toBe("openai-compatible")
+  })
+})
+
 describe("RAG settings validation", () => {
   test("uses 128 as the default embedding batch size", () => {
     const settings = readRemoteSettings()

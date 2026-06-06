@@ -29,6 +29,9 @@ describe("extension manifest", () => {
     const commands = new Set((manifest.contributes?.commands ?? []).map((command: { command: string }) => command.command))
     expect(commands.has("opencode.remote.openChat")).toBe(true)
     expect(commands.has("opencode.remote.connect")).toBe(true)
+    expect(commands.has("opencode.remote.openOutput")).toBe(true)
+    expect(commands.has("opencode.remote.completion.commitInlineSuggestion")).toBe(true)
+    expect(manifest.activationEvents).toContain("onCommand:opencode.remote.completion.commitInlineSuggestion")
     expect(commands.has("opencode.remote.codeGraph.index")).toBe(true)
     expect(commands.has("opencode.remote.codeGraph.rebuild")).toBe(true)
     expect(commands.has("opencode.remote.codeGraph.pause")).toBe(true)
@@ -82,7 +85,7 @@ describe("extension manifest", () => {
     expect(properties["opencode.remote.completion.provider"]).toMatchObject({
       type: "string",
       enum: ["opencode", "openai-compatible"],
-      default: "opencode",
+      default: "openai-compatible",
     })
     expect(properties["opencode.remote.completion.profile"]).toMatchObject({
       type: "string",

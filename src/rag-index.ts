@@ -693,6 +693,7 @@ export function createRagSerializedManifest(index: RagVectorIndex, metadata: Par
   const pendingChunks = Math.max(0, index.pendingChunkCount ?? totalChunks - index.chunks.length)
   const state = metadata.state ?? index.state ?? (pendingChunks > 0 ? index.indexPausedReason ? "paused" : "building" : "ready")
   const completed = metadata.completed ?? index.completed ?? pendingChunks === 0
+  const resumablePause = index.indexPausedReason !== "manual"
   return {
     version: 1,
     rootPath: index.rootPath,
@@ -709,9 +710,9 @@ export function createRagSerializedManifest(index: RagVectorIndex, metadata: Par
     indexAvailability: pendingChunks > 0 ? index.indexPausedReason ? "paused" : "partial" : "ready",
     indexPausedReason: index.indexPausedReason,
     lastError: index.lastError,
-    nextResumeAt: index.nextResumeAt,
-    resumeDelayMs: index.resumeDelayMs,
-    resumeReason: index.resumeReason,
+    nextResumeAt: resumablePause ? index.nextResumeAt : undefined,
+    resumeDelayMs: resumablePause ? index.resumeDelayMs : undefined,
+    resumeReason: resumablePause ? index.resumeReason : undefined,
     extensionVersion: metadata.extensionVersion ?? index.extensionVersion,
     buildId: metadata.buildId ?? index.buildId,
     state,

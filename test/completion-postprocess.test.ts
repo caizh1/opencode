@@ -16,6 +16,32 @@ describe("completion postprocessor", () => {
     })
   })
 
+  test("unwraps C inline-code backticks when the whole completion is wrapped", () => {
+    expect(postprocessCompletion({
+      rawText: "`flags & BIT(0)`",
+      linePrefix: "    if (",
+      lineSuffix: ") {",
+      languageId: "c",
+      plan: ordinaryPlan(),
+      indent: indent("    ", "        "),
+    })).toEqual({
+      text: "flags & BIT(0)",
+    })
+  })
+
+  test("does not unwrap language backticks outside C-style completions", () => {
+    expect(postprocessCompletion({
+      rawText: "`template ${value}`",
+      linePrefix: "const label = ",
+      lineSuffix: "",
+      languageId: "typescript",
+      plan: ordinaryPlan(),
+      indent: indent(),
+    })).toEqual({
+      text: "`template ${value}`",
+    })
+  })
+
   test("strips explanatory lead-ins", () => {
     expect(postprocessCompletion({
       rawText: "Here is the completion:\nreturn value;",

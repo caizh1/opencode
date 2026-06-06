@@ -144,6 +144,18 @@ describe("chat webview html", () => {
     expect(html).not.toContain('el("send").textContent = state.sending ? "..." : "Send"')
   })
 
+  test("surfaces RAG indexing pause and resume controls when code graph is ready", () => {
+    const html = createChatViewHtml("vscode-resource:", "RagPause123")
+
+    expect(html).toContain("function ragControlActions")
+    expect(html).toContain('rag.availability === "indexing"')
+    expect(html).toContain('rag.availability === "paused"')
+    expect(html).toContain('message: "pauseCodeGraph"')
+    expect(html).toContain('message: "resumeCodeGraph"')
+    expect(html).toContain('message: "cancelCodeGraph"')
+    expect(html).toContain("paused by user")
+  })
+
   test("keeps webview actions and accessibility hooks wired", () => {
     const html = createChatViewHtml("vscode-resource:", "Actions123")
 

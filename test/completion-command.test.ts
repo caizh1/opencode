@@ -34,8 +34,10 @@ describe("accepted completion formatting command wiring", () => {
 
   test("completion provider retries once after retryable rejected instruction edits", () => {
     expect(completionSource).toContain("shouldRetryCompletionRejection")
-    expect(completionSource).toContain('reason === "low-confidence-output"')
-    expect(completionSource).toContain("completionRetryPrompt(input.prompt, input.editInput, initial.reason)")
+    expect(completionSource).toContain('case "low-confidence-output"')
+    expect(completionSource).toContain('case "quality:C parse/compile"')
+    expect(completionSource).toContain("completionRetryPrompt(input.prompt, input.editInput, initial.reason, input.textProfile)")
+    expect(completionSource).toContain("completionFimRetryPrompt(prompt, feedback, cursorPrefix)")
     expect(completionSource).toContain("retry-sent reason=${initial.reason}")
     expect(completionSource).toContain("retry-received reason=${initial.reason}")
     expect(completionSource).toContain("retry-edit-ready ${editDetails(qualityEdit)}")
@@ -55,6 +57,12 @@ describe("accepted completion formatting command wiring", () => {
     expect(completionSource).toContain("completionPromptForRoute")
     expect(completionSource).toContain("profile: route.modelProfile")
     expect(completionSource).toContain("maxTokens: route.maxTokens")
+  })
+
+  test("inline completion provider does not depend on OpenCode chat agents", () => {
+    expect(completionSource).not.toContain("resolveRequestAgent")
+    expect(completionSource).not.toContain("agentSelection")
+    expect(completionSource).not.toContain("agent: agentSelection.agent")
   })
 
   test("completion provider emits structured telemetry for routed outcomes", () => {

@@ -134,6 +134,46 @@ describe("completion context packer", () => {
     expect(formatRepoContext(pack)).toContain("UART_CTRL_ENABLE")
   })
 
+  test("selects local analysis evidence for completion context within budget", () => {
+    const pack = packCompletionContext({
+      plan: bodyContinuationPlan(),
+      languageId: "c",
+      currentPath: "src/drivers/uart_hw.c",
+      prefix: "hal_status_t uart_enable(void)\n{\n    ",
+      suffix: "\n}\n",
+      retrievedSnippets: [],
+      analysisEvidenceText: [
+        "Evidence:",
+        "include/chip/uart_regs.h: #define UART_CTRL_ENABLE BIT(0)",
+        "src/drivers/uart_bus.c: void uart_bus_unlock(uart_bus_t *bus);",
+      ].join("\n"),
+      tokenBudget: 260,
+    })
+
+    expect(pack.selected).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: "analysis-evidence",
+        title: "local analysis evidence",
+      }),
+    ]))
+    expect(formatRepoContext(pack)).toContain("UART_CTRL_ENABLE")
+  })
+
+  test("drops local analysis evidence when token budget is too small", () => {
+    const pack = packCompletionContext({
+      plan: ordinaryPlan(),
+      languageId: "c",
+      currentPath: "src/current.c",
+      prefix: "int value = ",
+      suffix: "",
+      retrievedSnippets: [],
+      analysisEvidenceText: "x".repeat(2000),
+      tokenBudget: 40,
+    })
+
+    expect(pack.dropped.map((block) => block.kind)).toContain("analysis-evidence")
+  })
+
   test("Qwen FIM prompt includes packed repo context before FIM tokens", async () => {
     const { buildQwenCoderFimPrompt } = await import("../src/context")
     const prompt = buildQwenCoderFimPrompt({
@@ -157,6 +197,22 @@ describe("completion context packer", () => {
     expect(prompt).toContain("<|fim_middle|>")
   })
 
+  test("Qwen FIM prompt includes local analysis evidence in packed context", async () => {
+    const { buildQwenCoderFimPrompt } = await import("../src/context")
+    const prompt = buildQwenCoderFimPrompt({
+      document: fakeDocument("uint32_t flags = ", "c"),
+      position: { line: 0, character: "uint32_t flags = ".length },
+      settings: settings(),
+      plan: bodyContinuationPlan(),
+      retrievedSnippets: [],
+      analysisEvidenceText: "include/chip/flags.h: #define FLAG_READY BIT(0)",
+    })
+
+    expect(prompt).toContain('kind="analysis-evidence"')
+    expect(prompt).toContain("FLAG_READY")
+    expect(prompt.indexOf("FLAG_READY")).toBeLessThan(prompt.indexOf("<|fim_prefix|>"))
+  })
+
   test("instruction prompt includes target symbol definition and similar tests", async () => {
     const { buildCompletionPrompt } = await import("../src/context")
     const line = "// unit test for epr_ppn_raw_write_cb_dfx()"
@@ -177,6 +233,22 @@ describe("completion context packer", () => {
     expect(prompt).toContain("Similar tests:")
     expect(prompt).toContain("ExistingWriteCbDfx")
     expect(prompt).toContain("Current file:")
+  })
+
+  test("instruction prompt includes local analysis evidence", async () => {
+    const { buildCompletionPrompt } = await import("../src/context")
+    const line = "// initialize uart safely"
+    const prompt = await buildCompletionPrompt({
+      document: fakeDocument(line, "c"),
+      position: { line: 0, character: line.length },
+      settings: settings(),
+      plan: commentToCodePlan("uart_init"),
+      retrievedSnippets: [],
+      analysisEvidenceText: "src/drivers/uart_bus.c: hal_status_t uart_bus_lock(uart_bus_t *bus);",
+    })
+
+    expect(prompt).toContain("Local analysis evidence:")
+    expect(prompt).toContain("uart_bus_lock")
   })
 
   test("instruction prompt keeps full target function bodies when snippets include them", async () => {
