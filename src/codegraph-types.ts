@@ -247,12 +247,21 @@ export type CodeGraphPromptContext = {
   metrics: CodeGraphQueryMetrics
 }
 
+export type CodeGraphEvidenceRetrievalMode = "hybrid" | "graph-only"
+
+export type CodeGraphEvidenceQueryOptions = {
+  retrievalMode?: CodeGraphEvidenceRetrievalMode
+}
+
 export type CodeGraphContextProvider = {
   status(): CodeGraphStatus
   indexWorkspace(force: boolean): Promise<void>
   cancelIndexing(reason?: string): void
   pauseIndexing(reason?: string): void
   resumeIndexing(): void
+  cancelRagIndexing(reason?: string): void
+  pauseRagIndexing(reason?: string): void
+  resumeRagIndexing(): void
   metrics(): NonNullable<CodeGraphStatus["metrics"]>
   waitForReady(): Promise<void>
   showStatus(): Promise<void>
@@ -271,7 +280,7 @@ export type CodeGraphContextProvider = {
     tool: AnalysisToolName
     args?: Record<string, unknown>
   }): Promise<AnalysisToolResult>
-  queryEvidence(question: string): Promise<QueryEvidenceResult | undefined>
+  queryEvidence(question: string, options?: CodeGraphEvidenceQueryOptions): Promise<QueryEvidenceResult | undefined>
   findSymbols(input: {
     query: string
     relatedPath?: string

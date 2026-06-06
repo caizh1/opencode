@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { resolveCompletionPlanAfterSymbolRetrieval, routeCompletionModel, shouldRetryCompletionRejection } from "../src/completion-router"
+import { resolveCompletionPlanAfterSymbolRetrieval, routeCompletionModel, routeLogValue, shouldRetryCompletionRejection } from "../src/completion-router"
 import { planCompletion } from "../src/completion-plan"
 import type { RetrievedCompletionSnippet } from "../src/completion-types"
 import type { RemoteSettings } from "../src/types"
@@ -22,6 +22,48 @@ describe("completion model router", () => {
       modelProfile: "qwen-coder-fim",
       textProfile: "qwen-coder-fim",
       maxTokens: 256,
+      temperature: 0.2,
+    })
+  })
+
+  test("logs the effective direct FIM profile and endpoint for ordinary code", () => {
+    const route = routeCompletionModel({
+      plan: planCompletion({
+        languageId: "c",
+        linePrefix: "    ret = ",
+        lineSuffix: "",
+      }),
+      settings: settings({ provider: "openai-compatible", profile: "generic-chat" }),
+    })
+
+    expect(routeLogValue(route, settings({ provider: "openai-compatible", profile: "generic-chat" }))).toContain("effectiveProfile=qwen-coder-fim")
+    expect(routeLogValue(route, settings({ provider: "openai-compatible", profile: "generic-chat" }))).toContain("endpoint=/completions")
+    expect(routeLogValue(route, settings({ provider: "openai-compatible", profile: "generic-chat" }))).toContain("promptKind=qwen-fim")
+  })
+
+  test("routes C/C++ top-level declarations to Qwen Coder FIM", () => {
+    const lines = ["#include <stdint.h>", "", "typedef struct device device_t;"]
+    const route = routeCompletionModel({
+      plan: planCompletion({
+        languageId: "c",
+        linePrefix: "",
+        lineSuffix: "",
+        previousNonEmptyLine: lines[0],
+        nextNonEmptyLine: lines[2],
+        lines,
+        line: 1,
+        triggerKind: "automatic",
+      }),
+      settings: settings({ maxTokens: 512, temperature: 0.8, profile: "generic-chat" }),
+    })
+
+    expect(route).toMatchObject({
+      kind: "model",
+      reason: "ordinary-code",
+      promptKind: "qwen-fim",
+      modelProfile: "qwen-coder-fim",
+      textProfile: "qwen-coder-fim",
+      maxTokens: 192,
       temperature: 0.2,
     })
   })

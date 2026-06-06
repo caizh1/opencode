@@ -1,4 +1,4 @@
-import { cFixture, doc } from "./_helpers"
+import { cFixture, doc, snippet } from "./_helpers"
 
 export default [
   cFixture({
@@ -110,5 +110,44 @@ export default [
     mustContain: ["rx_cb(byte);"],
     maxLines: 1,
     modelOutputs: ["rx_cb(byte);"],
+  }),
+  cFixture({
+    id: "G11-call-args-with-site-example",
+    category: "G. Peripheral drivers",
+    path: "src/driver/dma.c",
+    document: doc("static hal_status_t dma_submit(uint8_t channel, const void *buf, size_t len) { (void)channel; (void)buf; (void)len; return HAL_OK; }\nhal_status_t dma_send(const uint8_t *buf, size_t len)\n{\n    return dma_submit(<|cursor|>);\n}\n"),
+    retrievedSnippets: [
+      snippet({
+        name: "dma_submit",
+        path: "src/driver/dma.c",
+        text: "static hal_status_t dma_submit(uint8_t channel, const void *buf, size_t len);\nreturn dma_submit(0u, tx_buf, tx_len);",
+      }),
+    ],
+    triggerKind: "automatic",
+    expectedIntent: "complete call arguments from a visible call-site pattern",
+    mustContain: ["return dma_submit(0u, buf, len);"],
+    contextMustContain: ["dma_submit"],
+    maxLines: 1,
+    modelOutputs: ["0u, buf, len);\n    return HAL_OK;"],
+  }),
+  cFixture({
+    id: "G12-initializer-callback-style",
+    category: "G. Peripheral drivers",
+    path: "src/driver/callback_table.c",
+    document: doc("typedef void (*driver_cb_t)(uint32_t event);\nstatic void driver_on_event(uint32_t event) { (void)event; }\ntypedef struct { driver_cb_t on_event; uint32_t mask; } driver_ops_t;\nstatic const driver_ops_t ops = {\n    <|cursor|>\n};\n"),
+    retrievedSnippets: [
+      snippet({
+        kind: "type",
+        name: "driver_ops_t",
+        path: "include/driver/ops.h",
+        text: "typedef struct { driver_cb_t on_event; uint32_t mask; } driver_ops_t;\nstatic const driver_ops_t default_ops = { .on_event = driver_on_event, .mask = BIT(0), };",
+      }),
+    ],
+    triggerKind: "manual",
+    expectedIntent: "complete a designated initializer using callback style",
+    mustContain: [".on_event = driver_on_event,"],
+    contextMustContain: ["driver_ops_t"],
+    maxLines: 2,
+    modelOutputs: [".on_event = driver_on_event,\n    .mask = BIT(0),\n};"],
   }),
 ]

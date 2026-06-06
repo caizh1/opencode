@@ -96,6 +96,12 @@ describe("chat history flow", () => {
     expect(chatViewSource).toContain("[rag-test] result:")
     expect(chatViewSource).toContain("this.deps.promptRagApiKey()")
     expect(chatViewSource).toContain('type: "ragStatus"')
+    expect(chatViewSource).toContain('type: "pauseRagIndexing"')
+    expect(chatViewSource).toContain('type: "resumeRagIndexing"')
+    expect(chatViewSource).toContain('type: "cancelRagIndexing"')
+    expect(chatViewSource).toContain("this.deps.codeGraph?.pauseRagIndexing")
+    expect(chatViewSource).toContain("this.deps.codeGraph?.resumeRagIndexing")
+    expect(chatViewSource).toContain("this.deps.codeGraph?.cancelRagIndexing")
   })
 
   test("defaults the RAG rebuild confirmation to keeping the existing index", () => {

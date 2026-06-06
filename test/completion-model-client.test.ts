@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test"
 import * as http from "node:http"
-import { CompletionModelClient, chatCompletionsUrl, completionModel, completionsUrl } from "../src/completion-model-client"
+import { CompletionModelClient, CompletionModelRequestError, chatCompletionsUrl, completionModel, completionsUrl, directCompletionRequestDiagnostic } from "../src/completion-model-client"
 import { completionInsertText } from "../src/completion-text"
 import type { RemoteSettings } from "../src/types"
 
@@ -188,6 +188,21 @@ describe("direct completion model client", () => {
     await expect(new CompletionModelClient(settings(emptyBaseUrl)).complete({ prompt: "complete" })).rejects.toMatchObject({
       name: "CompletionModelRequestError",
     })
+  })
+
+  test("explains direct FIM endpoint failures for chat-only compatible servers", () => {
+    expect(directCompletionRequestDiagnostic(
+      new CompletionModelRequestError(404, "404 Not Found"),
+      "qwen-coder-fim",
+    )).toContain("/completions")
+    expect(directCompletionRequestDiagnostic(
+      new CompletionModelRequestError(405, "405 Method Not Allowed"),
+      "qwen-coder-fim",
+    )).toContain("qwen-coder-fim")
+    expect(directCompletionRequestDiagnostic(
+      new CompletionModelRequestError(404, "404 Not Found"),
+      "generic-chat",
+    )).toBe("")
   })
 
   test("builds chat completion URLs and falls back to the default model", () => {

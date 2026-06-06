@@ -233,15 +233,36 @@ export function buildQwenCoderFimPrompt(input: {
     : undefined
   if (contextPack) input.onContextPack?.(contextPack)
   const contextBlock = contextPack ? formatRepoContext(contextPack) : completionContextBlock(input.retrievedSnippets ?? [], input.document.languageId)
+  const intentBlock = completionFimIntentBlock({
+    plan: input.plan,
+    retrievedSnippets: input.retrievedSnippets ?? [],
+    contextPack,
+  })
   return [
     `<|repo_name|>${repoName}`,
     `<|file_sep|>${path}\n`,
+    intentBlock,
     contextBlock,
     completionFimRulesBlock(input.document.languageId),
     `<|fim_prefix|>${limitText(prefix, input.settings.context.maxFileBytes).text}`,
     `<|fim_suffix|>${limitText(suffix, Math.floor(input.settings.context.maxFileBytes / 2)).text}`,
     "<|fim_middle|>",
   ].join("")
+}
+
+function completionFimIntentBlock(input: {
+  plan?: CompletionPlan
+  retrievedSnippets: RetrievedCompletionSnippet[]
+  contextPack?: CompletionContextPack
+}) {
+  if (!input.plan?.cIntent) return ""
+  const selected = input.contextPack?.selected.length ?? input.retrievedSnippets.length
+  return [
+    `// intent: ${input.plan.cIntent}`,
+    `// retrieval: ${selected} context block(s) selected for this inline hole`,
+    "// constraints: return only insertion text; preserve local style",
+    "",
+  ].join("\n")
 }
 
 function buildInstructionCompletionPrompt(input: {
@@ -262,14 +283,14 @@ function buildInstructionCompletionPrompt(input: {
     "Task:",
     task,
     "",
-    ...previousCommentContinuationPromptLines(input.plan, input.prefix),
+    ...instructionIntentPromptLines(input),
     "",
     "Rules:",
     "- Do not repeat the user's current line.",
     "- Do not output markdown.",
     "- Do not explain.",
     "- Output only code.",
-    "- Use the target symbol and similar tests from context.",
+    "- Use the target symbol and similar tests from context when they are relevant to the current task.",
     "- For test-code requests, use target symbol, similar tests, and test framework context to return real executable, declaration, or call code; do not return placeholder comments, empty blocks, or scaffold-only text.",
     input.transport === "openai-compatible"
       ? "- If you produce <think> reasoning, put all reasoning inside <think>...</think>; after </think>, output only the exact insertion text."
@@ -289,18 +310,68 @@ function buildInstructionCompletionPrompt(input: {
   ].filter(Boolean).join("\n")
 }
 
-function previousCommentContinuationPromptLines(plan: CompletionPlan, prefix: string) {
-  if (plan.kind !== "previous-comment-continuation") return []
+function instructionIntentPromptLines(input: {
+  plan: CompletionPlan
+  languageId: string
+  prefix: string
+  suffix: string
+}) {
+  if (isCommentCodeInstructionPlan(input.plan)) {
+    const sourceComment = input.plan.sourceComment ?? currentLinePrefix(input.prefix).trim()
+    return [
+      "Source comment:",
+      sourceComment,
+      "Current line prefix:",
+      currentLinePrefix(input.prefix),
+      "Insertion point:",
+      "Insert the smallest useful code immediately after the source comment and before the suffix. Satisfy the comment using visible local variables, existing error variables, cleanup labels, and surrounding style.",
+      "First suffix line:",
+      firstNonEmptyLine(input.suffix) ?? "<none>",
+      "Current function context:",
+      currentFunctionContext(input.prefix, input.suffix),
+      "Comment-to-code guidance:",
+      "- Do not copy code from the suffix; generate only the missing code before it.",
+      "- Do not return generic success code such as `return 0;` unless the source comment explicitly asks for that exact return.",
+      "- For C/C++ cleanup or error-handling comments, prefer existing `ret`/error variables, nearby cleanup labels, visible helper calls, and the function's established return style.",
+    ]
+  }
+
+  if (input.plan.kind !== "previous-comment-continuation") return []
   return [
     "Source comment:",
-    plan.sourceComment ?? "",
+    input.plan.sourceComment ?? "",
     "Current line prefix:",
-    currentLinePrefix(prefix),
+    currentLinePrefix(input.prefix),
   ]
 }
 
 function currentLinePrefix(prefix: string) {
   return prefix.replace(/\r\n/g, "\n").split("\n").at(-1) ?? ""
+}
+
+function isCommentCodeInstructionPlan(plan: CompletionPlan) {
+  return plan.kind === "comment-to-code" ||
+    (plan.kind === "previous-comment-continuation" && Boolean(plan.sourceComment) && !plan.needsTestRetrieval)
+}
+
+function firstNonEmptyLine(input: string) {
+  return input.replace(/\r\n/g, "\n").split("\n").find((line) => line.trim())?.trim()
+}
+
+function currentFunctionContext(prefix: string, suffix: string) {
+  return [
+    tailLines(prefix, 45).trimEnd(),
+    "<cursor>",
+    headLines(suffix, 35).trimStart(),
+  ].filter(Boolean).join("\n")
+}
+
+function headLines(input: string, count: number) {
+  return input.replace(/\r\n/g, "\n").split("\n").slice(0, count).join("\n")
+}
+
+function tailLines(input: string, count: number) {
+  return input.replace(/\r\n/g, "\n").split("\n").slice(-count).join("\n")
 }
 
 function emptyContextPack(): CompletionContextPack {

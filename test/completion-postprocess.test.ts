@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { postprocessCompletion } from "../src/completion-postprocess"
+import { postprocessCompletion, trimCompletionForCIntent } from "../src/completion-postprocess"
 import { planCompletion } from "../src/completion-plan"
 
 describe("completion postprocessor", () => {
@@ -431,6 +431,56 @@ describe("completion postprocessor", () => {
     })).toEqual({
       text: "return 0;",
     })
+  })
+
+  test("trims member-access completions to field-shaped text", () => {
+    expect(trimCompletionForCIntent({
+      text: "status;\nif (ret) {\n    goto out;\n}",
+      cIntent: "member-access",
+      linePrefix: "    req->",
+      lineSuffix: "",
+      languageId: "c",
+    })).toBe("status")
+  })
+
+  test("trims call-argument completions before closing call suffix", () => {
+    expect(trimCompletionForCIntent({
+      text: "dev, flags);\nreturn ret;",
+      cIntent: "call-args",
+      linePrefix: "    ret = driver_start(",
+      lineSuffix: ");",
+      languageId: "c",
+    })).toBe("dev, flags")
+  })
+
+  test("trims initializer completions before aggregate close", () => {
+    expect(trimCompletionForCIntent({
+      text: ".complete = driver_complete,\n};\n",
+      cIntent: "initializer",
+      linePrefix: "    ",
+      lineSuffix: "};",
+      languageId: "c",
+    })).toBe(".complete = driver_complete,")
+  })
+
+  test("trims condition completions to condition expressions", () => {
+    expect(trimCompletionForCIntent({
+      text: "ret < 0) {\n    goto out;",
+      cIntent: "condition",
+      linePrefix: "    if (",
+      lineSuffix: ") {",
+      languageId: "c",
+    })).toBe("ret < 0")
+  })
+
+  test("keeps concise error-path statements while trimming excess automatic output", () => {
+    expect(trimCompletionForCIntent({
+      text: "goto out_unlock;\nreturn 0;\nret = 1;\nret = 2;\nret = 3;",
+      cIntent: "error-path",
+      linePrefix: "        ",
+      lineSuffix: "",
+      languageId: "c",
+    })).toBe("goto out_unlock;\nreturn 0;")
   })
 })
 

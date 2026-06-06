@@ -301,6 +301,7 @@ function runPipelineAttempt(
     plan: base.plan,
     retrievedSnippets: base.retrievedSnippets,
     selectedCompletionInfo: fixture.selectedCompletionInfo,
+    documentSuffix: parsed.suffix,
   })
 }
 

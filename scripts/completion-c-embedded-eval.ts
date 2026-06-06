@@ -288,7 +288,7 @@ function runOnce(
   repeatIndex: number,
 ): RunSnapshot {
   const started = Date.now()
-  const initial = runPipelineAttempt(fixture, base, repeatIndex, "initial")
+  const initial = runPipelineAttempt(fixture, parsed, base, repeatIndex, "initial")
   const attempts = [attemptRecord("initial", initial)]
   let final = initial
   if (
@@ -300,7 +300,7 @@ function runOnce(
       textProfile: base.route.textProfile,
     })
   ) {
-    const retry = runPipelineAttempt(fixture, base, repeatIndex, "retry")
+    const retry = runPipelineAttempt(fixture, parsed, base, repeatIndex, "retry")
     attempts.push(attemptRecord("retry", retry))
     final = retry
   }
@@ -328,6 +328,7 @@ function runOnce(
 
 function runPipelineAttempt(
   fixture: CEmbeddedCompletionFixture,
+  parsed: ParsedDocument,
   base: ReturnType<typeof buildBasePipelineInput>,
   repeatIndex: number,
   attempt: "initial" | "retry",
@@ -341,6 +342,7 @@ function runPipelineAttempt(
     plan: base.plan,
     retrievedSnippets: base.retrievedSnippets,
     selectedCompletionInfo: fixture.selectedCompletionInfo,
+    documentSuffix: parsed.suffix,
   })
 }
 

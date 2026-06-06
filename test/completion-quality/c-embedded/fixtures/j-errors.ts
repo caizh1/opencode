@@ -112,4 +112,15 @@ export default [
     maxLines: 1,
     modelOutputs: ["return ret;"],
   }),
+  cFixture({
+    id: "J11-cleanup-label-goto",
+    category: "J. Error handling logs and return codes",
+    path: "src/driver/probe.c",
+    document: doc("static void driver_unlock(void) { }\nstatic int driver_start(void) { return 0; }\nint driver_probe(void)\n{\n    int ret = driver_start();\n    if (ret) {\n        <|cursor|>\n    }\nout_unlock:\n    driver_unlock();\n    return ret;\n}\n"),
+    triggerKind: "automatic",
+    expectedIntent: "jump to an existing cleanup label from an error guard",
+    mustContain: ["goto out_unlock;"],
+    maxLines: 1,
+    modelOutputs: ["goto out_unlock;"],
+  }),
 ]

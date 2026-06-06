@@ -1,4 +1,4 @@
-import { cFixture, doc } from "./_helpers"
+import { cFixture, doc, snippet } from "./_helpers"
 
 export default [
   cFixture({
@@ -114,5 +114,25 @@ export default [
     mustContain: ["ctx->status = 1u;"],
     maxLines: 1,
     modelOutputs: ["state"],
+  }),
+  cFixture({
+    id: "B11-member-access-type-context",
+    category: "B. Pointers structs and typedefs",
+    path: "src/driver/queue.c",
+    document: doc("typedef struct { uint32_t depth; bool ready; } queue_state_t;\nbool queue_ready(queue_state_t *state)\n{\n    return state-><|cursor|>;\n}\n"),
+    retrievedSnippets: [
+      snippet({
+        kind: "type",
+        name: "queue_state_t",
+        path: "include/driver/queue.h",
+        text: "typedef struct { uint32_t depth; bool ready; } queue_state_t;",
+      }),
+    ],
+    triggerKind: "automatic",
+    expectedIntent: "complete a pointer member using visible type context",
+    mustContain: ["return state->ready;"],
+    contextMustContain: ["queue_state_t"],
+    maxLines: 1,
+    modelOutputs: ["ready;\nif (state == NULL) {\n        return false;\n    }"],
   }),
 ]

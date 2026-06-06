@@ -296,9 +296,9 @@ export function checkApplyEditResult(input: CheckerInput): CEmbeddedQualityIssue
 
 export function checkCParseOrCompile(input: CheckerInput): CEmbeddedQualityIssue[] {
   if (input.decision !== "accepted" || !input.appliedText.trim()) return []
-  const hardReject = input.fixture.triggerKind === "automatic"
   const staticIssue = cStaticSyntaxIssue(input.appliedText)
   if (staticIssue) {
+    const hardReject = input.fixture.triggerKind === "automatic"
     return [issue("C parse/compile", staticIssue, "checkCParseOrCompile", "cSyntaxFormat", "major", hardReject)]
   }
   if (!clangAvailable()) return []
@@ -323,11 +323,26 @@ export function checkCParseOrCompile(input: CheckerInput): CEmbeddedQualityIssue
     return []
   } catch (error) {
     const message = clangErrorMessage(error)
-    if (/file not found|No such file or directory/.test(message)) return []
+    const hardReject = shouldHardRejectCParseIssue(message, input.fixture.triggerKind)
     return [issue("C parse/compile", message || "clang rejected the applied C document", "checkCParseOrCompile", "cSyntaxFormat", "major", hardReject)]
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }
+}
+
+function shouldHardRejectCParseIssue(message: string, triggerKind: CEmbeddedTriggerKind) {
+  if (triggerKind !== "automatic") return false
+  return !isStandaloneProjectContextMissingCError(message)
+}
+
+function isStandaloneProjectContextMissingCError(message: string) {
+  return /\bunknown type name\b/i.test(message) ||
+    /\buse of undeclared identifier\b/i.test(message) ||
+    /\bundeclared identifier\b/i.test(message) ||
+    /\bfatal error:\s*['"<][^'">]+[>'"] file not found\b/i.test(message) ||
+    /\bNo such file or directory\b/i.test(message) ||
+    /\bcould not build module\b/i.test(message) ||
+    /\bmodule .* not found\b/i.test(message)
 }
 
 export function checkNoMarkdownOrExplanation(input: CheckerInput): CEmbeddedQualityIssue[] {

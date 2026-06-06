@@ -170,6 +170,13 @@ export function completionsUrl(baseUrl: string) {
   return `${trimmed}/completions`
 }
 
+export function directCompletionRequestDiagnostic(error: unknown, profile: CompletionProfile) {
+  if (!(error instanceof CompletionModelRequestError)) return ""
+  if (profile !== "qwen-coder-fim") return ""
+  if (error.status !== 404 && error.status !== 405) return ""
+  return "Direct completion profile qwen-coder-fim requires an OpenAI-compatible raw /completions endpoint with Qwen FIM token support; this server appears to reject /completions. Use a FIM-compatible endpoint/profile for ordinary code, or use generic-chat only for instruction/comment-to-code completions."
+}
+
 function normalizeChatCompletionMessage(input: unknown): OpenCodeMessage {
   const root = objectRecord(input)
   const choices = Array.isArray(root.choices) ? root.choices : []

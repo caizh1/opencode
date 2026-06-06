@@ -9,6 +9,8 @@ export type LiquidIconName =
   | "agent"
   | "send"
   | "stop"
+  | "pause"
+  | "play"
   | "attach"
   | "file"
   | "selection"
@@ -75,6 +77,13 @@ const liquidIconPaths = {
   ],
   stop: [
     "M8.1 5.1h7.8c1.7 0 3 1.3 3 3v7.8c0 1.7-1.3 3-3 3H8.1c-1.7 0-3-1.3-3-3V8.1c0-1.7 1.3-3 3-3Z",
+  ],
+  pause: [
+    "M8.4 5.6h2.5v12.8H8.4V5.6Z",
+    "M13.1 5.6h2.5v12.8h-2.5V5.6Z",
+  ],
+  play: [
+    "M7.4 5.4v13.2l10.8-6.6L7.4 5.4Z",
   ],
   attach: [
     "M8.4 12.8l5.6-5.7a3.1 3.1 0 0 1 4.4 4.4l-7 7.1a4.8 4.8 0 0 1-6.8-6.8l7.2-7.3",

@@ -4,11 +4,12 @@ import { join } from "node:path"
 import { parseCFile } from "../../src/codegraph-c-parser"
 import { searchCodeGraphSymbols } from "../../src/codegraph-query"
 import type { CodeGraphIndex } from "../../src/codegraph-types"
+import { runCompletionCandidatePipeline } from "../../src/completion-candidate-pipeline"
 import { adaptAndValidateInlineCompletionEdit, buildInlineCompletionEditResult, type CompletionRange } from "../../src/completion-edit"
 import { inferCompletionIndent } from "../../src/completion-indent"
 import { postprocessCompletion } from "../../src/completion-postprocess"
 import { planCompletion } from "../../src/completion-plan"
-import { routeCompletionModel } from "../../src/completion-router"
+import { routeCompletionModel, shouldRetryCompletionRejection } from "../../src/completion-router"
 import { resolveSymbols, symbolCandidateFromCodeGraph, type ResolvedSymbolCandidate } from "../../src/completion-symbol"
 import { fallbackCompletionText } from "../../src/completion-test-fallback"
 import { completionInsertText } from "../../src/completion-text"
@@ -88,6 +89,25 @@ describe("phase 10 completion e2e fixtures", () => {
       modelRoute: "fim",
       modelCalled: true,
     })
+  })
+
+  test("generic embedded C top-level declarations use Qwen FIM", () => {
+    const snapshot = runCompletionE2E({
+      documentText: "#include <stdint.h>\n\nextern void sensor_driver_probe(void);\n",
+      line: 1,
+      character: 0,
+      rawModelText: "static volatile uint32_t * const sensor_status_reg = (volatile uint32_t *)0x40001000u;",
+      languageId: "c",
+      relatedPath: "src/drivers/sensor_driver.c",
+    })
+
+    expect(snapshot).toMatchObject({
+      planKind: "top-level-declaration",
+      modelRoute: "fim",
+      modelCalled: true,
+      rejectionReason: undefined,
+    })
+    expect(snapshot.insertText).toContain("sensor_status_reg")
   })
 
   test("high-confidence symbol completion uses deterministic resolver without calling the model", () => {
@@ -173,6 +193,81 @@ describe("phase 10 completion e2e fixtures", () => {
     expect(snapshot.insertText).toContain(`${COMMENT_SYMBOL}();`)
     expect(snapshot.rejectionReason).toBeUndefined()
   })
+
+  test("comment-to-code retries generic success returns before showing ghost code", () => {
+    const documentText = [
+      "static int driver_open(Device *dev)",
+      "{",
+      "    int ret;",
+      "    // Add project-style error cleanup before success return.",
+      "    ",
+      "    ret = driver_start(dev);",
+      "    if (ret < 0) {",
+      "        return ret;",
+      "    }",
+      "    return 0;",
+      "}",
+    ].join("\n")
+    const first = runPipelineForDocument({
+      documentText,
+      line: 4,
+      character: 4,
+      rawText: "return 0;",
+      languageId: "c",
+    })
+
+    expect(first.result).toMatchObject({
+      decision: "rejected",
+      rejectionReason: "low-intent-output",
+    })
+    expect(shouldRetryCompletionRejection({
+      reason: first.result.rejectionReason ?? "",
+      plan: first.plan,
+      textProfile: "generic-chat",
+    })).toBe(true)
+
+    const retry = runPipelineForDocument({
+      documentText,
+      line: 4,
+      character: 4,
+      rawText: [
+        "ret = driver_prepare(dev);",
+        "if (ret < 0) {",
+        "    return ret;",
+        "}",
+      ].join("\n"),
+      languageId: "c",
+    })
+
+    expect(retry.result).toMatchObject({
+      decision: "accepted",
+    })
+    expect(retry.result.edit?.insertText).toContain("driver_prepare")
+  })
+
+  test("comment-to-code rejects direct copies of the following suffix", () => {
+    const documentText = [
+      "static int driver_open(Device *dev)",
+      "{",
+      "    // Add project-style error cleanup before success return.",
+      "    ",
+      "    ret = driver_start(dev);",
+      "    return 0;",
+      "}",
+    ].join("\n")
+    const snapshot = runPipelineForDocument({
+      documentText,
+      line: 3,
+      character: 4,
+      rawText: "ret = driver_start(dev);\nif (ret < 0) {\n    return ret;\n}",
+      languageId: "c",
+    })
+
+    expect(snapshot.result).toMatchObject({
+      decision: "rejected",
+      rejectionReason: "suffix-duplicated-output",
+    })
+  })
 })
 
 type E2EInput = {
@@ -182,6 +277,7 @@ type E2EInput = {
   rawModelText: string
   languageId: string
   relatedPath: string
+  triggerKind?: "automatic" | "manual" | "invoke" | string
 }
 
 type E2ESnapshot = {
@@ -217,6 +313,10 @@ function runCompletionE2E(input: E2EInput): E2ESnapshot {
     lineSuffix,
     currentWord: currentWord?.text,
     previousNonEmptyLine: previousNonEmptyLineBefore(document.lines, position.line),
+    nextNonEmptyLine: nextNonEmptyLineAfter(document.lines, position.line),
+    lines: document.lines,
+    line: position.line,
+    triggerKind: input.triggerKind ?? "automatic",
   })
   const selectedSymbol = retrieveSymbolCandidate({
     query: plan.targetSymbol ?? currentWord?.text ?? lastIdentifier(linePrefix),
@@ -294,6 +394,55 @@ function runCompletionE2E(input: E2EInput): E2ESnapshot {
     rejectionReason: edit ? undefined : postprocessResult.reason ?? adaptedResult?.reason ?? editResult.reason,
     finalLine: edit ? applySingleLineEdit(lineText, edit.replaceRange, edit.insertText) : undefined,
   }
+}
+
+function runPipelineForDocument(input: {
+  documentText: string
+  line: number
+  character: number
+  rawText: string
+  languageId: string
+}) {
+  const document = fakeTextDocument(input.documentText, input.languageId)
+  const position = { line: input.line, character: input.character }
+  const lineText = document.lineAt(position.line).text
+  const linePrefix = lineText.slice(0, position.character)
+  const lineSuffix = lineText.slice(position.character)
+  const currentWord = currentWordBeforeCursor(linePrefix)
+  const indent = inferCompletionIndent({
+    lines: document.lines,
+    line: position.line,
+    linePrefix,
+    fallbackIndentUnit: "    ",
+  })
+  const plan = planCompletion({
+    languageId: document.languageId,
+    linePrefix,
+    lineSuffix,
+    currentWord: currentWord?.text,
+    previousNonEmptyLine: previousNonEmptyLineBefore(document.lines, position.line),
+    nextNonEmptyLine: nextNonEmptyLineAfter(document.lines, position.line),
+    lines: document.lines,
+    line: position.line,
+    triggerKind: "automatic",
+  })
+  const result = runCompletionCandidatePipeline({
+    rawText: input.rawText,
+    textProfile: "generic-chat",
+    editInput: {
+      languageId: document.languageId,
+      linePrefix,
+      lineSuffix,
+      position,
+      indent,
+      currentWord: currentWord?.text,
+      currentWordRange: currentWord?.range(position.line),
+    },
+    plan,
+    retrievedSnippets: [],
+    documentSuffix: documentSuffixAfter(document.lines, position),
+  })
+  return { plan, result }
 }
 
 function fakeTextDocument(text: string, languageId: string) {
@@ -408,6 +557,22 @@ function previousNonEmptyLineBefore(lines: string[], line: number) {
     if (text?.trim()) return text
   }
   return undefined
+}
+
+function nextNonEmptyLineAfter(lines: string[], line: number) {
+  for (let index = line + 1; index < lines.length; index++) {
+    const text = lines[index]
+    if (text?.trim()) return text
+  }
+  return undefined
+}
+
+function documentSuffixAfter(lines: string[], position: { line: number; character: number }) {
+  const current = lines[position.line] ?? ""
+  return [
+    current.slice(position.character),
+    ...lines.slice(position.line + 1),
+  ].join("\n")
 }
 
 function lineIndent(line: string) {

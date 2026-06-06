@@ -48,6 +48,7 @@ import {
 import type { EmbeddingProvider, HybridRetrievalOptions, RagVectorIndex, RerankProvider } from "./rag-types"
 import type {
   CodeGraphFile,
+  CodeGraphEvidenceQueryOptions,
   CodeGraphIndex,
   CodeGraphPromptContext,
   CodeGraphQueryMetrics,
@@ -135,6 +136,7 @@ export class LocalCodeGraphService implements vscode.Disposable {
   private pendingRagWorkTimer?: ReturnType<typeof setTimeout>
   private ragResumeTimer?: ReturnType<typeof setTimeout>
   private ragResumeInFlight?: Promise<void>
+  private ragManualPauseSequence = 0
   private lastRagElapsedMs: number | undefined
   private ragStatusValue = disabledRagStatus()
   private changeTimer?: ReturnType<typeof setTimeout>
@@ -193,6 +195,7 @@ export class LocalCodeGraphService implements vscode.Disposable {
   cancelIndexing(reason = "cancelled by user") {
     this.cancelRequested = true
     this.paused = false
+    this.ragManualPauseSequence += 1
     this.clearRagIndexResume()
     this.clearPendingRagWorkTimer()
     this.pendingRagRefresh = undefined
@@ -218,7 +221,7 @@ export class LocalCodeGraphService implements vscode.Disposable {
     this.paused = true
     this.clearRagIndexResume()
     this.jobs.pause()
-    void this.pauseActiveRagIndex(reason).catch((error) => {
+    void this.pauseActiveRagIndex(reason, { requireCodeGraphPause: true }).catch((error) => {
       const message = error instanceof Error ? error.message : String(error)
       this.output.appendLine(`[rag-index] failed to save manual paused RAG index: ${message}`)
     })
@@ -233,6 +236,7 @@ export class LocalCodeGraphService implements vscode.Disposable {
 
   resumeIndexing() {
     this.paused = false
+    this.ragManualPauseSequence += 1
     this.jobs.resume()
     const hasQueuedWork = this.pendingChanges.size > 0 || this.rescanScheduled || this.jobs.hasPending()
     this.setStatus({
@@ -247,6 +251,35 @@ export class LocalCodeGraphService implements vscode.Disposable {
     else if (this.jobs.hasPending() && !this.indexing) {
       void this.startQueuedIndexJobs()
     }
+    const manualRagResume = this.resumeManualRagIndexing()
+    if (!manualRagResume) void this.scheduleRagIndexResumeFromStatus("manual-resume")
+    this.schedulePendingRagWorkAfterCodeGraphReady("manual-resume")
+  }
+
+  cancelRagIndexing(reason = "cancelled by user") {
+    this.ragManualPauseSequence += 1
+    this.clearRagIndexResume()
+    this.clearPendingRagWorkTimer()
+    this.pendingRagRefresh = undefined
+    this.pendingRagRefreshIgnorePrevious = false
+    this.pendingRagRefreshContinuePreviousElapsed = false
+    this.pendingRagResumeTrigger = undefined
+    this.clearManualRagPause(reason)
+    this.abortRagIndex(reason)
+  }
+
+  pauseRagIndexing(reason = "paused by user") {
+    this.clearRagIndexResume()
+    const pauseSequence = ++this.ragManualPauseSequence
+    void this.pauseActiveRagIndex(reason, { pauseSequence }).catch((error) => {
+      const message = error instanceof Error ? error.message : String(error)
+      this.output.appendLine(`[rag-index] failed to save manual paused RAG index: ${message}`)
+    })
+    this.abortRagIndex(reason)
+  }
+
+  resumeRagIndexing() {
+    this.ragManualPauseSequence += 1
     const manualRagResume = this.resumeManualRagIndexing()
     if (!manualRagResume) void this.scheduleRagIndexResumeFromStatus("manual-resume")
     this.schedulePendingRagWorkAfterCodeGraphReady("manual-resume")
@@ -516,19 +549,20 @@ export class LocalCodeGraphService implements vscode.Disposable {
     return buildCodeIntelligenceSnapshot(activeIndex, this.lastAnalysisTrace, this.analysisAudit.slice(-50).reverse(), this.ragStatusValue)
   }
 
-  async queryEvidence(question: string): Promise<QueryEvidenceResult | undefined> {
+  async queryEvidence(question: string, options: CodeGraphEvidenceQueryOptions = {}): Promise<QueryEvidenceResult | undefined> {
     if (!this.getSettings().codeGraph.enabled) return undefined
     if (!this.index) await this.ensureIndexLoaded()
     const activeIndex = await this.activeIndexForQuestion(question, [])
     if (!activeIndex) return undefined
     const settings = this.getSettings()
+    const hybrid = options.retrievalMode === "graph-only" ? undefined : this.hybridOptions()
     const result = await queryEvidenceAsync(activeIndex, question, {
       maxEvidenceItems: settings.analysis.maxEvidenceItems,
       maxEvidenceBytes: settings.analysis.maxEvidenceBytes,
       maxFileSliceBytes: settings.analysis.maxFileSliceBytes,
       maxGraphEdges: settings.analysis.maxGraphEdges,
       maxPaths: settings.analysis.maxPaths,
-    }, this.hybridOptions())
+    }, hybrid)
     this.lastAnalysisTrace = result.trace
     return result
   }
@@ -1563,7 +1597,10 @@ export class LocalCodeGraphService implements vscode.Disposable {
     })
   }
 
-  private async pauseActiveRagIndex(reason: string) {
+  private async pauseActiveRagIndex(reason: string, options: { requireCodeGraphPause?: boolean; pauseSequence?: number } = {}) {
+    const pauseStillCurrent = () => options.requireCodeGraphPause
+      ? this.paused
+      : options.pauseSequence === undefined || this.ragManualPauseSequence === options.pauseSequence
     const activeOrQueued = Boolean(
       this.ragIndexInFlight
         || this.pendingRagRefresh
@@ -1574,14 +1611,14 @@ export class LocalCodeGraphService implements vscode.Disposable {
 
     const snapshot = this.manualPausedRagSnapshot(reason)
     if (!snapshot) return
-    if (!this.paused) return
+    if (!pauseStillCurrent()) return
     this.ragIndex = snapshot
     this.setRagStatus(this.ragStatusForManualPausedIndex(snapshot))
 
     const root = workspaceRoot()
     if (!root) return
     const saved = await this.saveRagIndex(root, snapshot, { state: "paused", completed: false })
-    if (!this.paused || this.ragIndex?.indexPausedReason !== "manual") return
+    if (!pauseStillCurrent() || this.ragIndex?.indexPausedReason !== "manual") return
     this.ragIndex = saved
     this.setRagStatus(this.ragStatusForManualPausedIndex(saved))
     this.output.appendLine(`[rag-index] saved manual paused RAG index chunks=${saved.chunks.length}/${saved.totalChunks ?? saved.chunks.length} pending=${saved.pendingChunkCount ?? 0}`)

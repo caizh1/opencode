@@ -137,6 +137,165 @@ describe("completion planner", () => {
     }
   })
 
+  test("manual triggers do not disable low-signal input", () => {
+    for (const linePrefix of ["t", "re", ";"]) {
+      expect(planCompletion({
+        languageId: "typescript",
+        linePrefix,
+        lineSuffix: "",
+        currentWord: /^[A-Za-z_]/.test(linePrefix) ? linePrefix : undefined,
+        triggerKind: "manual",
+      })).toMatchObject({
+        kind: "ordinary-code",
+        useFim: true,
+        useInstruction: false,
+      })
+    }
+  })
+
+  test("allows short C/C++ identifier prefixes to reach FIM", () => {
+    for (const currentWord of ["u", "io", "rb", "sq", "cq", "hw", "req", "cmd"]) {
+      expect(planCompletion({
+        languageId: "c",
+        linePrefix: `    ${currentWord}`,
+        lineSuffix: "",
+        currentWord,
+        triggerKind: "automatic",
+      })).toMatchObject({
+        kind: "ordinary-code",
+        useFim: true,
+        useInstruction: false,
+        cIntent: "symbol-prefix",
+      })
+    }
+  })
+
+  test("classifies common C/C++ inline intents without project-specific names", () => {
+    expect(planCompletion({
+      languageId: "c",
+      linePrefix: "    req->",
+      lineSuffix: "",
+      triggerKind: "automatic",
+    })).toMatchObject({
+      kind: "ordinary-code",
+      cIntent: "member-access",
+      needsSymbolRetrieval: true,
+    })
+
+    expect(planCompletion({
+      languageId: "c",
+      linePrefix: "    device_start(",
+      lineSuffix: ");",
+      triggerKind: "automatic",
+    })).toMatchObject({
+      kind: "ordinary-code",
+      cIntent: "call-args",
+      needsSymbolRetrieval: true,
+    })
+
+    expect(planCompletion({
+      languageId: "c",
+      linePrefix: "        .status = ",
+      lineSuffix: ",",
+      triggerKind: "automatic",
+    })).toMatchObject({
+      kind: "ordinary-code",
+      cIntent: "initializer",
+      needsSymbolRetrieval: true,
+    })
+
+    expect(planCompletion({
+      languageId: "c",
+      linePrefix: "    ret = ",
+      lineSuffix: "",
+      triggerKind: "automatic",
+    })).toMatchObject({
+      kind: "ordinary-code",
+      cIntent: "assignment-rhs",
+      needsSymbolRetrieval: true,
+    })
+  })
+
+  test("classifies embedded C/C++ condition, error path, and MMIO intents structurally", () => {
+    for (const linePrefix of ["    if (", "    while ("]) {
+      expect(planCompletion({
+        languageId: "c",
+        linePrefix,
+        lineSuffix: ") {",
+        triggerKind: "automatic",
+      })).toMatchObject({
+        kind: "ordinary-code",
+        cIntent: "condition",
+        needsSymbolRetrieval: true,
+      })
+    }
+
+    expect(planCompletion({
+      languageId: "c",
+      linePrefix: "        goto ",
+      lineSuffix: ";",
+      triggerKind: "automatic",
+    })).toMatchObject({
+      kind: "ordinary-code",
+      cIntent: "error-path",
+      needsSymbolRetrieval: true,
+    })
+
+    const lines = [
+      "int driver_probe(struct driver *drv)",
+      "{",
+      "    int ret;",
+      "    if (ret) {",
+      "        ",
+      "    }",
+      "out_unlock:",
+      "    driver_unlock(drv);",
+      "    return ret;",
+      "}",
+    ]
+    expect(planCompletion({
+      languageId: "c",
+      linePrefix: "        ",
+      lineSuffix: "",
+      previousNonEmptyLine: lines[3],
+      nextNonEmptyLine: lines[5],
+      lines,
+      line: 4,
+      triggerKind: "automatic",
+    })).toMatchObject({
+      kind: "body-continuation",
+      cIntent: "error-path",
+      needsSymbolRetrieval: true,
+    })
+
+    for (const linePrefix of ["    writel(", "    FIELD_PREP(", "    ctrl = DEVICE_STATUS_REG | "]) {
+      expect(planCompletion({
+        languageId: "c",
+        linePrefix,
+        lineSuffix: ");",
+        triggerKind: "automatic",
+      })).toMatchObject({
+        kind: "ordinary-code",
+        cIntent: "mmio-register",
+        needsSymbolRetrieval: true,
+      })
+    }
+  })
+
+  test("does not attach C/C++-specific intents to non-C/C++ languages", () => {
+    const plan = planCompletion({
+      languageId: "typescript",
+      linePrefix: "    if (",
+      lineSuffix: ") {",
+      triggerKind: "automatic",
+    })
+    expect(plan).toMatchObject({
+      kind: "ordinary-code",
+      needsSymbolRetrieval: false,
+    })
+    expect(plan).not.toHaveProperty("cIntent")
+  })
+
   test("disables punctuation-only requests instead of calling FIM", () => {
     expect(planCompletion({
       languageId: "typescript",
@@ -175,6 +334,30 @@ describe("completion planner", () => {
       replaceCurrentWord: true,
       useFim: false,
       useInstruction: false,
+    })
+  })
+
+  test("carries source comments for C/C++ comment-to-code generation", () => {
+    expect(planCompletion({
+      languageId: "c",
+      linePrefix: "// Add project-style error cleanup before success return.",
+      lineSuffix: "",
+    })).toMatchObject({
+      kind: "comment-to-code",
+      sourceComment: "// Add project-style error cleanup before success return.",
+      useFim: false,
+      useInstruction: true,
+    })
+
+    expect(planCompletion({
+      languageId: "c",
+      linePrefix: "/* Add project-style error cleanup before success return. */",
+      lineSuffix: "",
+    })).toMatchObject({
+      kind: "comment-to-code",
+      sourceComment: "/* Add project-style error cleanup before success return. */",
+      useFim: false,
+      useInstruction: true,
     })
   })
 
@@ -295,6 +478,26 @@ describe("completion planner", () => {
     })
   })
 
+  test("routes C/C++ top-level declaration gaps to FIM", () => {
+    const lines = ["#include <stdint.h>", "", "typedef struct device device_t;"]
+    expect(planCompletion({
+      languageId: "c",
+      linePrefix: "",
+      lineSuffix: "",
+      previousNonEmptyLine: lines[0],
+      nextNonEmptyLine: lines[2],
+      lines,
+      line: 1,
+      triggerKind: "automatic",
+    })).toMatchObject({
+      kind: "top-level-declaration",
+      insertMode: "insert-at-cursor",
+      cIntent: "top-level-declaration",
+      useFim: true,
+      useInstruction: false,
+    })
+  })
+
   test("routes blank lines inside C function bodies as body continuations", () => {
     const lines = [
       "hal_status_t enable_uart(void)",
@@ -339,18 +542,7 @@ describe("completion planner", () => {
     })
   })
 
-  test("does not route top-level, aggregate, comment, or string blank lines as body continuations", () => {
-    const topLevel = ["int a;", "", "int b;"]
-    expect(planCompletion({
-      languageId: "c",
-      linePrefix: "",
-      lineSuffix: "",
-      previousNonEmptyLine: topLevel[0],
-      nextNonEmptyLine: topLevel[2],
-      lines: topLevel,
-      line: 1,
-    })).toMatchObject({ kind: "disabled" })
-
+  test("routes blank lines inside C aggregates and switch cases to FIM", () => {
     const aggregate = ["typedef struct {", "    ", "    uint32_t value;", "} cfg_t;"]
     expect(planCompletion({
       languageId: "c",
@@ -360,7 +552,42 @@ describe("completion planner", () => {
       nextNonEmptyLine: aggregate[2],
       lines: aggregate,
       line: 1,
-    })).toMatchObject({ kind: "disabled" })
+      triggerKind: "automatic",
+    })).toMatchObject({
+      kind: "ordinary-code",
+      useFim: true,
+      useInstruction: false,
+    })
+
+    const switchCase = ["void f(int state)", "{", "    switch (state) {", "    case 1:", "        ", "        break;", "    }", "}"]
+    expect(planCompletion({
+      languageId: "c",
+      linePrefix: "        ",
+      lineSuffix: "",
+      previousNonEmptyLine: switchCase[3],
+      nextNonEmptyLine: switchCase[5],
+      lines: switchCase,
+      line: 4,
+      triggerKind: "automatic",
+    })).toMatchObject({
+      kind: "body-continuation",
+      cIntent: "case-body",
+      useFim: true,
+      useInstruction: false,
+    })
+  })
+
+  test("does not route comment or string blank lines as C/C++ completions", () => {
+    const topLevel = ["int a;", "", "int b;"]
+    expect(planCompletion({
+      languageId: "c",
+      linePrefix: "",
+      lineSuffix: "",
+      previousNonEmptyLine: topLevel[0],
+      nextNonEmptyLine: topLevel[2],
+      lines: topLevel,
+      line: 1,
+    })).toMatchObject({ kind: "top-level-declaration" })
 
     const comment = ["void f(void)", "{", "    /*", "    ", "     */", "}"]
     expect(planCompletion({
@@ -371,6 +598,18 @@ describe("completion planner", () => {
       nextNonEmptyLine: comment[4],
       lines: comment,
       line: 3,
+    })).toMatchObject({ kind: "disabled" })
+
+    expect(planCompletion({
+      languageId: "c",
+      linePrefix: "     disabled",
+      lineSuffix: "",
+      currentWord: "disabled",
+      previousNonEmptyLine: comment[2],
+      nextNonEmptyLine: comment[4],
+      lines: comment,
+      line: 3,
+      triggerKind: "manual",
     })).toMatchObject({ kind: "disabled" })
 
     const string = ["void f(void)", "{", "    const char *s = \"", "    ", "    \";", "}"]

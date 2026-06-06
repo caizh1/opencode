@@ -1,4 +1,4 @@
-import type { CompletionInsertMode, CompletionPlan, CompletionPlanKind } from "./completion-types"
+import type { CompletionCIntent, CompletionInsertMode, CompletionPlan, CompletionPlanKind } from "./completion-types"
 
 export type CompletionPostprocessRejectReason =
   | "empty-output"
@@ -8,7 +8,7 @@ export type CompletionPostprocessRejectReason =
   | "low-confidence-output"
   | "suffix-duplicated-output"
 
-export type CompletionPostprocessPlan = Pick<CompletionPlan, "kind" | "insertMode" | "replaceCurrentWord" | "confidenceFloor">
+export type CompletionPostprocessPlan = Pick<CompletionPlan, "kind" | "insertMode" | "replaceCurrentWord" | "confidenceFloor" | "cIntent">
 
 export type CompletionPostprocessPrefixMode = "none" | "stripped" | "preserved" | "exact-echo"
 
@@ -142,18 +142,102 @@ export function completionPostprocessDebug(result: CompletionPostprocessResult):
   return (result as { [POSTPROCESS_DEBUG]?: CompletionPostprocessDebug })[POSTPROCESS_DEBUG]
 }
 
+export function trimCompletionForCIntent(input: {
+  text: string
+  cIntent?: CompletionCIntent
+  linePrefix: string
+  lineSuffix: string
+  languageId: string
+}) {
+  if (!isCStyleLanguage(input.languageId) || !input.cIntent) return input.text
+  const text = input.text.trimEnd()
+  switch (input.cIntent) {
+    case "member-access":
+      return trimMemberAccessCompletion(text)
+    case "call-args":
+      return trimCallArgsCompletion(text)
+    case "initializer":
+      return trimInitializerCompletion(text)
+    case "condition":
+      return trimConditionCompletion(text)
+    case "error-path":
+    case "body-statement":
+    case "case-body":
+      return trimShortStatementCompletion(text, input.cIntent === "error-path" ? 2 : 4)
+    default:
+      return text
+  }
+}
+
 export function planKindOnlyPostprocessPlan(input: {
   planKind?: CompletionPlanKind
   replaceCurrentWord?: boolean
   insertMode?: CompletionInsertMode
+  cIntent?: CompletionCIntent
 }): CompletionPostprocessPlan {
   const replaceCurrentWord = input.replaceCurrentWord ?? false
   return {
     kind: input.planKind ?? "ordinary-code",
     insertMode: input.insertMode ?? (replaceCurrentWord ? "replace-current-word" : "insert-at-cursor"),
     replaceCurrentWord,
+    ...(input.cIntent ? { cIntent: input.cIntent } : {}),
     confidenceFloor: 0,
   }
+}
+
+function trimMemberAccessCompletion(input: string) {
+  const first = firstCompletionLine(input)
+  const clipped = first.split(/[;{}]/)[0] ?? first
+  const match = /^[ \t]*([A-Za-z_][A-Za-z0-9_]*(?:(?:->|\.)[A-Za-z_][A-Za-z0-9_]*)?)/.exec(clipped)
+  return (match?.[1] ?? clipped).trim()
+}
+
+function trimCallArgsCompletion(input: string) {
+  const line = firstCompletionLine(input)
+  return stripTrailingCallBoundary(line)
+    .replace(/[ \t]*;\s*$/, "")
+    .trimEnd()
+}
+
+function trimInitializerCompletion(input: string) {
+  const beforeClose = input.split(/^[ \t]*};/m)[0] ?? input
+  return beforeClose
+    .replace(/[ \t]*};[\s\S]*$/, "")
+    .trimEnd()
+}
+
+function trimConditionCompletion(input: string) {
+  const line = firstCompletionLine(input)
+  const beforeBlock = line.split("{")[0] ?? line
+  return stripTrailingConditionBoundary(beforeBlock).trimEnd()
+}
+
+function trimShortStatementCompletion(input: string, maxNonEmptyLines: number) {
+  const lines = input.replace(/\r\n/g, "\n").split("\n")
+  const kept: string[] = []
+  let nonEmpty = 0
+  for (const line of lines) {
+    if (line.trim()) nonEmpty += 1
+    if (nonEmpty > maxNonEmptyLines) break
+    kept.push(line)
+  }
+  return kept.join("\n").trimEnd()
+}
+
+function firstCompletionLine(input: string) {
+  return input.replace(/\r\n/g, "\n").split("\n")[0] ?? ""
+}
+
+function stripTrailingCallBoundary(input: string) {
+  return input
+    .replace(/\)\s*;\s*$/, "")
+    .replace(/\)\s*$/, "")
+}
+
+function stripTrailingConditionBoundary(input: string) {
+  return input
+    .replace(/\)\s*$/, "")
+    .replace(/[ \t]*;\s*$/, "")
 }
 
 function normalizeRawText(input: string) {

@@ -913,8 +913,11 @@ function inlinePlan(insertMode: CompletionInsertMode, kind: CompletionPlanKind =
     replaceCurrentWord: insertMode === "replace-current-word" || insertMode === "replace-whole-line",
     needsSymbolRetrieval: false,
     needsTestRetrieval: false,
-    useFim: kind === "ordinary-code",
-    useInstruction: kind !== "ordinary-code" && kind !== "symbol-completion",
+    useFim: kind === "ordinary-code" || kind === "body-continuation" || kind === "top-level-declaration",
+    useInstruction: kind !== "ordinary-code" &&
+      kind !== "body-continuation" &&
+      kind !== "top-level-declaration" &&
+      kind !== "symbol-completion",
     maxTokens: 128,
     confidenceFloor: 0.5,
   }

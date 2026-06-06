@@ -12,11 +12,12 @@ import { completionFormatCommand } from "./completion-format-command"
 import { completionContextDebugSummary, type CompletionContextPack } from "./completion-context"
 import { scoreCEmbeddedCompletionQuality, type CEmbeddedCompletionFixture, type CEmbeddedTriggerKind } from "./completion-c-embedded-quality"
 import { inferCompletionIndent } from "./completion-indent"
-import { CompletionModelClient, completionModel } from "./completion-model-client"
+import { CompletionModelClient, completionModel, directCompletionRequestDiagnostic } from "./completion-model-client"
 import { runCompletionCandidatePipeline, type CompletionCandidatePipelineResult } from "./completion-candidate-pipeline"
 import { planCompletion } from "./completion-plan"
 import { resolveCompletionPlanAfterSymbolRetrieval, routeCompletionModel, routeLogValue, shouldRetryCompletionRejection, type CompletionModelRoute } from "./completion-router"
-import { CompletionRequestCoordinator, type CompletionRequestOutcome } from "./completion-request-coordinator"
+import { CompletionRequestCoordinator, type CompletionRequestCacheMetadata, type CompletionRequestOutcome } from "./completion-request-coordinator"
+import { completionRetrievalPlan, shouldRetrieveCompletionSnippetsForPlan, type CompletionRetrievalPreferredKind } from "./completion-retrieval"
 import { INLINE_COMPLETION_SESSION_TITLE } from "./completion-session"
 import { completionSnippetFromSymbol } from "./completion-snippets"
 import { resolveSymbols, symbolCandidateFromCodeGraph } from "./completion-symbol"
@@ -143,6 +144,7 @@ export class RemoteCompletionProvider implements vscode.InlineCompletionItemProv
       this.logCompletionTelemetry(settings, telemetry, started, false, "disabled-plan")
       return
     }
+    const cacheMetadata = completionRequestCacheMetadata(document, position, line, plan)
 
     const localFallback = buildCompletionEditResult({
       text: "",
@@ -150,9 +152,10 @@ export class RemoteCompletionProvider implements vscode.InlineCompletionItemProv
       preferCurrentWordReplacement: plan.replaceCurrentWord,
     }).edit
     const start = this.requests.request({
-      key: completionRequestKey(document, position, lineText, settings),
+      key: completionRequestKey(document, position, lineText, settings, plan),
       details,
       debounceMs: settings.completion.debounceMs,
+      cacheMetadata,
       localFallback,
       validateEdit: (edit) => this.validateInlineCompletionEditForReturn({
         edit,
@@ -190,7 +193,7 @@ export class RemoteCompletionProvider implements vscode.InlineCompletionItemProv
               telemetry,
               selectedCompletionInfo: context.selectedCompletionInfo,
             }),
-      onRemoteReady: () => this.triggerInlineSuggestRefresh(document, position, settings, details),
+      onRemoteReady: () => this.triggerInlineSuggestRefresh(document, cacheMetadata, settings, details),
     })
 
     if (start.immediate?.status === "ok") {
@@ -269,7 +272,7 @@ export class RemoteCompletionProvider implements vscode.InlineCompletionItemProv
         retrievedSnippets,
       })
       input.telemetry.modelRoute = completionTelemetryRoute(route)
-      this.logDebug(input.settings, `${routeLogValue(route)} ${input.details}`)
+      this.logDebug(input.settings, `${routeLogValue(route, input.settings)} ${input.details}`)
       if (route.kind === "none") {
         return this.noCompletionCandidateOutcome({
           route,
@@ -293,7 +296,6 @@ export class RemoteCompletionProvider implements vscode.InlineCompletionItemProv
           selectedCompletionInfo: input.selectedCompletionInfo,
         })
       }
-
       const contextStarted = Date.now()
       const prompt = await this.completionPromptForRoute({
         route,
@@ -347,6 +349,7 @@ export class RemoteCompletionProvider implements vscode.InlineCompletionItemProv
     telemetry: CompletionTelemetryDraft
     selectedCompletionInfo?: SelectedCompletionInfo
   }): Promise<CompletionRequestOutcome> {
+    let effectiveModelProfile: CompletionProfile | undefined
     try {
       const symbolStarted = Date.now()
       const retrievedSnippets = await this.retrieveCompletionSnippets({
@@ -366,7 +369,7 @@ export class RemoteCompletionProvider implements vscode.InlineCompletionItemProv
         retrievedSnippets,
       })
       input.telemetry.modelRoute = completionTelemetryRoute(route)
-      this.logDebug(input.settings, `${routeLogValue(route)} ${input.details}`)
+      this.logDebug(input.settings, `${routeLogValue(route, input.settings)} ${input.details}`)
       if (route.kind === "none") {
         return this.noCompletionCandidateOutcome({
           route,
@@ -390,6 +393,7 @@ export class RemoteCompletionProvider implements vscode.InlineCompletionItemProv
           selectedCompletionInfo: input.selectedCompletionInfo,
         })
       }
+      effectiveModelProfile = route.modelProfile
 
       const contextStarted = Date.now()
       const prompt = await this.completionPromptForRoute({
@@ -432,6 +436,15 @@ export class RemoteCompletionProvider implements vscode.InlineCompletionItemProv
       if (input.signal.aborted) {
         this.logCompletionTelemetry(input.settings, input.telemetry, input.started, false, "cancelled")
         return { status: "rejected", reason: "cancelled", source: "remote" }
+      }
+      const diagnostic = directCompletionRequestDiagnostic(error, effectiveModelProfile ?? input.settings.completion.profile)
+      if (diagnostic) {
+        this.logInfo(
+          input.settings,
+          `Completion failed: ${diagnostic} ${input.details} elapsedMs=${elapsedMs(input.started)}`,
+        )
+        this.logCompletionTelemetry(input.settings, input.telemetry, input.started, false, "direct-fim-endpoint-unsupported")
+        return { status: "rejected", reason: "direct-fim-endpoint-unsupported", source: "remote" }
       }
       this.logInfo(
         input.settings,
@@ -618,28 +631,49 @@ export class RemoteCompletionProvider implements vscode.InlineCompletionItemProv
     editInput: Omit<CompletionEditInput, "text">
   }): Promise<RetrievedCompletionSnippet[]> {
     if (!this.deps.codeGraph) return []
-    if (!input.plan.needsSymbolRetrieval && !input.plan.needsTestRetrieval) return []
+    if (!shouldRetrieveCompletionSnippetsForPlan(input.plan, input.document.languageId)) return []
 
-    const query = input.plan.targetSymbol || completionSymbolQuery(input.editInput)
-    if (!query) return []
+    const retrieval = completionRetrievalPlan({
+      plan: input.plan,
+      languageId: input.document.languageId,
+      linePrefix: input.editInput.linePrefix,
+      lineSuffix: input.editInput.lineSuffix,
+      currentWord: input.editInput.currentWord,
+    })
+    const queries = uniqueNonEmpty([
+      ...retrieval.queries,
+      completionSymbolQuery(input.editInput),
+    ]).slice(0, 4)
+    if (queries.length === 0) return []
 
     try {
-      const symbols = await this.deps.codeGraph.findSymbols({
-        query,
-        relatedPath: relativePath(input.document.uri),
-        limit: completionSymbolRetrievalLimit(input.plan),
+      const limit = completionSymbolRetrievalLimit(input.plan)
+      const batches = await Promise.all(queries.map(async (query) => {
+        const symbols = await this.deps.codeGraph!.findSymbols({
+          query,
+          relatedPath: relativePath(input.document.uri),
+          limit,
+        })
+        const resolved = resolveSymbols({
+          query,
+          relatedPath: relativePath(input.document.uri),
+          candidates: symbols.map(symbolCandidateFromCodeGraph),
+          cursorLine: input.editInput.position.line + 1,
+          preferNearbyAbove: input.plan.kind === "comment-symbol-reference",
+          limit,
+          unitTestTarget: input.plan.kind === "comment-to-test" || input.plan.kind === "natural-command",
+        })
+        return { query, symbols: symbols.length, resolved }
+      }))
+      const snippets = rankRetrievedCompletionSnippets({
+        snippets: batches.flatMap((batch) => batch.resolved.map(completionSnippetFromSymbol)),
+        preferredKinds: retrieval.preferredKinds,
+        limit,
       })
-      const resolved = resolveSymbols({
-        query,
-        relatedPath: relativePath(input.document.uri),
-        candidates: symbols.map(symbolCandidateFromCodeGraph),
-        cursorLine: input.editInput.position.line + 1,
-        preferNearbyAbove: input.plan.kind === "comment-symbol-reference",
-        limit: completionSymbolRetrievalLimit(input.plan),
-        unitTestTarget: input.plan.kind === "comment-to-test" || input.plan.kind === "natural-command",
-      })
-      this.logDebug(input.settings, `retrieved symbols=${symbols.length} resolved=${resolved.length} query="${quoteLogValue(query)}" ${input.details}`)
-      return resolved.map(completionSnippetFromSymbol)
+      const symbolCount = batches.reduce((sum, batch) => sum + batch.symbols, 0)
+      const resolvedCount = batches.reduce((sum, batch) => sum + batch.resolved.length, 0)
+      this.logDebug(input.settings, `retrieved symbols=${symbolCount} resolved=${resolvedCount} selected=${snippets.length} queries="${quoteLogValue(queries.join(","))}" policy=${retrieval.policyLabel} ${input.details}`)
+      return snippets
     } catch (error) {
       this.logDebug(input.settings, `symbol-retrieval skipped reason="${quoteLogValue(formatError(error))}" ${input.details}`)
       return []
@@ -658,16 +692,25 @@ export class RemoteCompletionProvider implements vscode.InlineCompletionItemProv
     if (!input.settings.codeGraph.enabled) return ""
     if (!isCEmbeddedLanguage(input.document.languageId)) return ""
 
+    const lineText = input.document.lineAt(input.position.line).text
+    const retrieval = completionRetrievalPlan({
+      plan: input.plan,
+      languageId: input.document.languageId,
+      linePrefix: lineText.slice(0, input.position.character),
+      lineSuffix: lineText.slice(input.position.character),
+      currentWord: currentWordBeforeCursor(lineText.slice(0, input.position.character), input.position.line)?.text,
+    })
     const question = completionEvidenceQuestion({
       document: input.document,
       position: input.position,
       plan: input.plan,
       retrievedSnippets: input.retrievedSnippets,
+      retrievalEvidenceQuestion: retrieval.evidenceQuestion,
     })
     if (!question) return ""
 
     try {
-      const result = await this.deps.codeGraph.queryEvidence(question)
+      const result = await this.deps.codeGraph.queryEvidence(question, { retrievalMode: "graph-only" })
       const text = result?.evidencePack.text.trim() ?? ""
       if (text) {
         this.logDebug(input.settings, `analysis-evidence selected bytes=${text.length} ${input.details}`)
@@ -701,6 +744,7 @@ export class RemoteCompletionProvider implements vscode.InlineCompletionItemProv
       plan: input.plan,
       retrievedSnippets: input.retrievedSnippets,
       selectedCompletionInfo: selectedCompletionInfoValue(input.selectedCompletionInfo),
+      documentSuffix: documentSuffixFromPosition(input.document, input.editInput.position),
     })
     input.telemetry.rawOutputLength = pipeline.rawText.length
     input.telemetry.latencyMs.postprocess = pipeline.latencyMs.postprocess
@@ -827,6 +871,7 @@ export class RemoteCompletionProvider implements vscode.InlineCompletionItemProv
       plan: input.plan,
       retrievedSnippets: input.retrievedSnippets,
       selectedCompletionInfo: selectedCompletionInfoValue(input.selectedCompletionInfo),
+      documentSuffix: documentSuffixFromPosition(input.document, input.editInput.position),
     })
     input.telemetry.rawOutputLength = pipeline.rawText.length
     input.telemetry.latencyMs.postprocess = pipeline.latencyMs.postprocess
@@ -971,18 +1016,19 @@ export class RemoteCompletionProvider implements vscode.InlineCompletionItemProv
 
   private triggerInlineSuggestRefresh(
     document: vscode.TextDocument,
-    position: vscode.Position,
+    metadata: CompletionRequestCacheMetadata,
     settings: RemoteSettings,
     details: string,
   ) {
     const active = vscode.window.activeTextEditor
-    if (!active || active.document.uri.toString() !== document.uri.toString()) return
-    if (!active.selection.active.isEqual(position)) return
+    if (!active || active.document.uri.toString() !== document.uri.toString()) return false
+    if (!activeEditorStillCompatible(active, metadata)) return false
 
     void vscode.commands.executeCommand("editor.action.inlineSuggest.trigger").then(
       () => this.logDebug(settings, `refresh-inline-suggest ${details}`),
       (error: unknown) => this.logDebug(settings, `refresh-inline-suggest failed=${formatError(error)} ${details}`),
     )
+    return true
   }
 
   private inlineItem(edit: CompletionEdit, document: vscode.TextDocument) {
@@ -1168,6 +1214,16 @@ function applyCompletionEditToText(text: string, edit: CompletionEdit, position:
   return [...before, ...replacement.split("\n"), ...after].join("\n")
 }
 
+function documentSuffixFromPosition(document: vscode.TextDocument, position: CompletionEditInput["position"]) {
+  const lastLine = document.lineCount - 1
+  return document.getText(new vscode.Range(
+    position.line,
+    position.character,
+    lastLine,
+    document.lineAt(lastLine).text.length,
+  ))
+}
+
 function completionRetryPrompt(prompt: string, editInput: Omit<CompletionEditInput, "text">, reason: string, textProfile: CompletionProfile) {
   const currentLine = truncateFeedback(`${editInput.linePrefix}${editInput.lineSuffix}`)
   const cursorPrefix = truncateFeedback(editInput.linePrefix)
@@ -1202,6 +1258,10 @@ function completionFimRetryPrompt(prompt: string, feedback: string, cursorPrefix
 
 function completionRetryFeedback(reason: string, currentLine: string) {
   switch (reason) {
+    case "low-intent-output":
+      return "Previous completion was rejected because it was generic success code that did not satisfy the source comment. Generate the smallest concrete code for the comment using visible local variables, existing cleanup/error style, and surrounding suffix context."
+    case "suffix-duplicated-output":
+      return "Previous completion was rejected because it copied code that already exists after the cursor. Generate only the missing code that belongs before the suffix; do not repeat the suffix."
     case "low-confidence-output":
       return "Previous completion was rejected because it contained only structural punctuation or otherwise lacked meaningful code."
     case "quality:placeholder":
@@ -1215,7 +1275,7 @@ function completionRetryFeedback(reason: string, currentLine: string) {
   }
 }
 
-function completionRequestKey(document: vscode.TextDocument, position: vscode.Position, lineText: string, settings: RemoteSettings) {
+function completionRequestKey(document: vscode.TextDocument, position: vscode.Position, lineText: string, settings: RemoteSettings, plan: CompletionPlan) {
   return [
     document.uri.toString(),
     document.languageId,
@@ -1225,7 +1285,51 @@ function completionRequestKey(document: vscode.TextDocument, position: vscode.Po
     position.line,
     position.character,
     lineText,
+    plan.sourceComment ?? "",
+    firstSuffixLineFromPosition(document, position),
   ].join("\u0000")
+}
+
+function completionRequestCacheMetadata(
+  document: vscode.TextDocument,
+  position: vscode.Position,
+  linePrefix: string,
+  plan: CompletionPlan,
+): CompletionRequestCacheMetadata {
+  return {
+    documentUri: document.uri.toString(),
+    languageId: document.languageId,
+    line: position.line,
+    position: {
+      line: position.line,
+      character: position.character,
+    },
+    linePrefix,
+    firstSuffixLine: firstSuffixLineFromPosition(document, position),
+    planKind: plan.kind,
+    sourceComment: plan.sourceComment ?? "",
+  }
+}
+
+function activeEditorStillCompatible(editor: vscode.TextEditor, metadata: CompletionRequestCacheMetadata) {
+  const active = editor.selection.active
+  if (active.line !== metadata.position.line) return false
+  if (active.character < metadata.position.character) return false
+  if (metadata.line < 0 || metadata.line >= editor.document.lineCount) return false
+  const lineText = editor.document.lineAt(metadata.line).text
+  const currentPrefix = lineText.slice(0, active.character)
+  if (!currentPrefix.startsWith(metadata.linePrefix)) return false
+  return firstSuffixLineFromPosition(editor.document, active) === metadata.firstSuffixLine
+}
+
+function firstSuffixLineFromPosition(document: vscode.TextDocument, position: vscode.Position) {
+  const currentSuffix = document.lineAt(position.line).text.slice(position.character)
+  if (currentSuffix.trim()) return currentSuffix.trim()
+  for (let line = position.line + 1; line < document.lineCount; line += 1) {
+    const text = document.lineAt(line).text.trim()
+    if (text) return text
+  }
+  return ""
 }
 
 function waitForOutcome(
@@ -1284,8 +1388,10 @@ function completionEvidenceQuestion(input: {
   position: vscode.Position
   plan: CompletionPlan
   retrievedSnippets: RetrievedCompletionSnippet[]
+  retrievalEvidenceQuestion?: string
 }) {
   const lineText = input.document.lineAt(input.position.line).text.trim()
+  const functionName = cLikeFunctionNameNearPosition(input.document, input.position)
   const symbols = uniqueNonEmpty([
     input.plan.targetSymbol,
     ...input.retrievedSnippets.map((snippet) => snippet.name),
@@ -1293,11 +1399,26 @@ function completionEvidenceQuestion(input: {
   const parts = [
     `inline completion for ${input.document.languageId} file ${relativePath(input.document.uri)}`,
     `plan ${input.plan.kind}`,
+    functionName ? `function ${functionName}` : "",
     symbols.length ? `symbols ${symbols.join(" ")}` : "",
     input.plan.sourceComment ? `comment ${input.plan.sourceComment}` : "",
+    input.retrievalEvidenceQuestion,
     lineText ? `cursor line ${lineText}` : "",
   ].filter(Boolean)
   return parts.join("\n")
+}
+
+function cLikeFunctionNameNearPosition(document: vscode.TextDocument, position: vscode.Position) {
+  if (document.languageId !== "c" && document.languageId !== "cpp") return ""
+  const keywords = new Set(["if", "for", "while", "switch", "return", "sizeof"])
+  for (let line = position.line; line >= Math.max(0, position.line - 80); line -= 1) {
+    const text = document.lineAt(line).text
+    const match = /\b([A-Za-z_][A-Za-z0-9_]*)\s*\([^;{}]*$/.exec(text) ??
+      /\b([A-Za-z_][A-Za-z0-9_]*)\s*\([^;{}]*\)\s*(?:\{|$)/.exec(text)
+    const name = match?.[1]
+    if (name && !keywords.has(name)) return name
+  }
+  return ""
 }
 
 function completionSymbolRetrievalLimit(plan: CompletionPlan) {
@@ -1443,6 +1564,38 @@ function zeroWidthRange(position: CompletionEditInput["position"]): CompletionRa
 
 function addCompletionTelemetryLatency(telemetry: CompletionTelemetryDraft, key: CompletionLatencyKey, ms: number) {
   telemetry.latencyMs[key] = (telemetry.latencyMs[key] ?? 0) + ms
+}
+
+function rankRetrievedCompletionSnippets(input: {
+  snippets: RetrievedCompletionSnippet[]
+  preferredKinds?: CompletionRetrievalPreferredKind[]
+  limit: number
+}) {
+  const byKey = new Map<string, RetrievedCompletionSnippet>()
+  for (const snippet of input.snippets) {
+    const key = [snippet.kind, snippet.path, snippet.name ?? "", snippet.line].join("\0")
+    const existing = byKey.get(key)
+    if (!existing || snippetScore(snippet, input.preferredKinds) > snippetScore(existing, input.preferredKinds)) {
+      byKey.set(key, snippet)
+    }
+  }
+  return [...byKey.values()]
+    .sort((left, right) =>
+      snippetScore(right, input.preferredKinds) - snippetScore(left, input.preferredKinds) ||
+      (left.path || "").localeCompare(right.path || "") ||
+      (left.name || "").localeCompare(right.name || ""))
+    .slice(0, Math.max(1, input.limit))
+}
+
+function snippetScore(snippet: RetrievedCompletionSnippet, preferredKinds: CompletionRetrievalPreferredKind[] | undefined) {
+  return (snippet.score ?? 0) + (preferredKinds?.includes(snippetPreferredKind(snippet)) ? 160 : 0)
+}
+
+function snippetPreferredKind(snippet: RetrievedCompletionSnippet): CompletionRetrievalPreferredKind {
+  if (/macro/i.test(snippet.kind)) return "macro"
+  if (/type|struct|union|enum|typedef/i.test(snippet.kind)) return "type"
+  if (/function|method|existing test/i.test(snippet.kind)) return "function"
+  return "global"
 }
 
 function uniqueNonEmpty(values: Array<string | undefined>) {

@@ -40,6 +40,8 @@ export function shouldRetryCompletionRejection(input: {
   textProfile: CompletionProfile
 }) {
   if (isRecoverableQualityRejection(input.reason)) return true
+  if (isCommentCodeInstructionPlan(input.plan) && input.reason === "low-intent-output") return true
+  if (isCommentCodeInstructionPlan(input.plan) && input.reason === "suffix-duplicated-output") return true
   if (input.textProfile === "qwen-coder-fim") return false
   if (input.reason === "misaligned-leading-newline") return true
   return input.reason === "low-confidence-output" && input.plan.useInstruction
@@ -49,6 +51,11 @@ function isRecoverableQualityRejection(reason: string) {
   return reason === "quality:placeholder" ||
     reason === "quality:C parse/compile" ||
     reason === "quality:markdown/explanation"
+}
+
+function isCommentCodeInstructionPlan(plan: CompletionPlan) {
+  return plan.kind === "comment-to-code" ||
+    (plan.kind === "previous-comment-continuation" && Boolean(plan.sourceComment) && !plan.needsTestRetrieval)
 }
 
 export function resolveCompletionPlanAfterSymbolRetrieval(plan: CompletionPlan, retrievedSnippets: RetrievedCompletionSnippet[]): CompletionPlan {
@@ -122,6 +129,7 @@ export function routeCompletionModel(input: RouteCompletionModelInput): Completi
       }
     case "ordinary-code":
     case "body-continuation":
+    case "top-level-declaration":
       return {
         kind: "model",
         reason: "ordinary-code",
@@ -130,7 +138,9 @@ export function routeCompletionModel(input: RouteCompletionModelInput): Completi
         textProfile: "qwen-coder-fim",
         maxTokens: plan.kind === "body-continuation"
           ? clampTokens(plan.maxTokens || 96, 96, 128)
-          : clampTokens(input.settings.completion.maxTokens || 192, 128, 256),
+          : plan.kind === "top-level-declaration"
+            ? clampTokens(input.settings.completion.maxTokens || plan.maxTokens || 192, 128, 192)
+            : clampTokens(input.settings.completion.maxTokens || 192, 128, 256),
         temperature: Math.min(input.settings.completion.temperature, 0.2),
         topP: input.settings.completion.topP,
       }
@@ -139,7 +149,7 @@ export function routeCompletionModel(input: RouteCompletionModelInput): Completi
   }
 }
 
-export function routeLogValue(route: CompletionModelRoute) {
+export function routeLogValue(route: CompletionModelRoute, settings?: RemoteSettings) {
   if (route.kind === "none") {
     return `route=none reason=${route.reason} maxTokens=0`
   }
@@ -150,9 +160,16 @@ export function routeLogValue(route: CompletionModelRoute) {
     `route=${route.promptKind}`,
     `reason=${route.reason}`,
     `modelProfile=${route.modelProfile}`,
+    settings?.completion.provider === "openai-compatible"
+      ? `effectiveProfile=${route.modelProfile}`
+      : "",
+    settings?.completion.provider === "openai-compatible"
+      ? `endpoint=${route.promptKind === "qwen-fim" ? "/completions" : "/chat/completions"}`
+      : "",
+    `promptKind=${route.promptKind}`,
     `maxTokens=${route.maxTokens}`,
     `temperature=${route.temperature}`,
-  ].join(" ")
+  ].filter(Boolean).join(" ")
 }
 
 function instructionRoute(input: RouteCompletionModelInput, maxTokens: number): CompletionModelRoute {

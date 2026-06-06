@@ -26,10 +26,25 @@ type CompletionRequestCoordinatorInput = {
   key: CompletionRequestKey
   details: string
   debounceMs: number
+  cacheMetadata?: CompletionRequestCacheMetadata
   localFallback?: CompletionEdit
   validateEdit?: (edit: CompletionEdit) => CompletionEditCacheValidation
   runRemote: (signal: AbortSignal) => Promise<CompletionRequestOutcome>
-  onRemoteReady?: () => void
+  onRemoteReady?: () => boolean | void
+}
+
+export type CompletionRequestCacheMetadata = {
+  documentUri: string
+  languageId: string
+  line: number
+  position: {
+    line: number
+    character: number
+  }
+  linePrefix: string
+  firstSuffixLine: string
+  planKind: string
+  sourceComment?: string
 }
 
 type CompletionEditCacheValidation =
@@ -51,9 +66,14 @@ type PendingRequest = {
   cancelReason?: string
 }
 
+type CachedCompletionEdit = {
+  edit: CompletionEdit
+  metadata?: CompletionRequestCacheMetadata
+}
+
 export class CompletionRequestCoordinator {
   private pending?: PendingRequest
-  private readonly cache = new Map<CompletionRequestKey, CompletionEdit>()
+  private readonly cache = new Map<CompletionRequestKey, CachedCompletionEdit>()
   private readonly delay: (ms: number, signal: AbortSignal) => Promise<void>
   private readonly logInfo: (message: string) => void
   private readonly maxCacheSize: number
@@ -67,13 +87,38 @@ export class CompletionRequestCoordinator {
   request(input: CompletionRequestCoordinatorInput): CompletionRequestStart {
     const cached = this.cache.get(input.key)
     if (cached) {
-      const validation = this.validateEdit(input, cached)
+      const validation = this.validateEdit(input, cached.edit)
       if (validation.status === "rejected") {
         this.cache.delete(input.key)
         this.logInfo(`cache-invalid reason=${validation.reason} ${input.details}`)
       } else {
-        this.cache.set(input.key, validation.edit)
-        this.logInfo(`cache-hit-validated ${input.details}`)
+        this.cache.set(input.key, {
+          edit: validation.edit,
+          metadata: input.cacheMetadata ?? cached.metadata,
+        })
+        this.logInfo(`cache-hit-exact ${input.details}`)
+        return {
+          immediate: {
+            status: "ok",
+            edit: validation.edit,
+            source: "cache",
+          },
+        }
+      }
+    }
+
+    const compatible = this.compatibleCachedEdit(input)
+    if (compatible) {
+      const validation = this.validateEdit(input, compatible.edit)
+      if (validation.status === "rejected") {
+        this.cache.delete(compatible.key)
+        this.logInfo(`cache-compatible-invalid reason=${validation.reason} ${input.details}`)
+      } else {
+        this.cache.set(input.key, {
+          edit: validation.edit,
+          metadata: input.cacheMetadata,
+        })
+        this.logInfo(`cache-hit-compatible ${input.details}`)
         return {
           immediate: {
             status: "ok",
@@ -145,9 +190,17 @@ export class CompletionRequestCoordinator {
             source: "remote",
           }
         }
-        this.cache.set(input.key, validation.edit)
+        this.cache.set(input.key, {
+          edit: validation.edit,
+          metadata: input.cacheMetadata,
+        })
         this.trimCache()
-        if (this.pending === pending) input.onRemoteReady?.()
+        const remoteReady = input.onRemoteReady?.()
+        if (remoteReady === true) {
+          this.logInfo(`remote-ready-compatible ${input.details}`)
+        } else if (remoteReady === false) {
+          this.logInfo(`remote-ready-stale ${input.details}`)
+        }
         return {
           status: "ok",
           edit: validation.edit,
@@ -181,6 +234,17 @@ export class CompletionRequestCoordinator {
     }
   }
 
+  private compatibleCachedEdit(input: CompletionRequestCoordinatorInput): { key: CompletionRequestKey; edit: CompletionEdit } | undefined {
+    if (!input.cacheMetadata) return
+    for (const [key, cached] of this.cache) {
+      if (key === input.key) continue
+      if (!cached.metadata) continue
+      const edit = adaptCompatibleCachedEdit(cached.edit, cached.metadata, input.cacheMetadata)
+      if (edit) return { key, edit }
+    }
+    return undefined
+  }
+
   private validateEdit(input: CompletionRequestCoordinatorInput, edit: CompletionEdit): CompletionEditCacheValidation {
     return input.validateEdit?.(edit) ?? {
       status: "ok",
@@ -202,6 +266,64 @@ export class CompletionRequestCoordinator {
       this.cache.delete(first)
     }
   }
+}
+
+function adaptCompatibleCachedEdit(
+  edit: CompletionEdit,
+  cached: CompletionRequestCacheMetadata,
+  current: CompletionRequestCacheMetadata,
+): CompletionEdit | undefined {
+  if (!isCompatibleCacheMetadata(cached, current)) return
+  const typed = current.linePrefix.slice(cached.linePrefix.length)
+  if (!typed) return edit
+
+  if (edit.replaceRange &&
+    edit.replaceRange.startLine === cached.position.line &&
+    edit.replaceRange.endLine === cached.position.line &&
+    edit.replaceRange.endCharacter === cached.position.character) {
+    return {
+      ...edit,
+      replaceRange: {
+        ...edit.replaceRange,
+        endCharacter: current.position.character,
+      },
+    }
+  }
+
+  if (!edit.replaceRange || isZeroWidthRangeAtPosition(edit.replaceRange, cached.position)) {
+    if (!edit.insertText.startsWith(typed)) return
+    return {
+      ...edit,
+      insertText: edit.insertText.slice(typed.length),
+      ...(edit.filterText?.startsWith(typed) ? { filterText: edit.filterText.slice(typed.length) } : {}),
+    }
+  }
+
+  return undefined
+}
+
+function isCompatibleCacheMetadata(cached: CompletionRequestCacheMetadata, current: CompletionRequestCacheMetadata) {
+  if (cached.documentUri !== current.documentUri) return false
+  if (cached.languageId !== current.languageId) return false
+  if (cached.line !== current.line) return false
+  if (cached.position.line !== current.position.line) return false
+  if (current.position.character < cached.position.character) return false
+  if (!current.linePrefix.startsWith(cached.linePrefix)) return false
+  if (cached.firstSuffixLine !== current.firstSuffixLine) return false
+  if (cached.planKind !== current.planKind) return false
+  if ((cached.sourceComment ?? "") !== (current.sourceComment ?? "")) return false
+  return true
+}
+
+function isZeroWidthRangeAtPosition(
+  range: CompletionEdit["replaceRange"],
+  position: CompletionRequestCacheMetadata["position"],
+) {
+  return Boolean(range) &&
+    range?.startLine === position.line &&
+    range.endLine === position.line &&
+    range.startCharacter === position.character &&
+    range.endCharacter === position.character
 }
 
 class CompletionRequestAbortError extends Error {}

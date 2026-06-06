@@ -132,6 +132,151 @@ describe("completion request coordinator", () => {
     })
   })
 
+  test("returns compatible cached edits when the current prefix extends the original request", async () => {
+    const logs: string[] = []
+    const coordinator = new CompletionRequestCoordinator({
+      delay: () => Promise.resolve(),
+      logInfo: (message) => logs.push(message),
+    })
+    const first = coordinator.request({
+      key: "line:r",
+      details: "line=1 character=5",
+      debounceMs: 0,
+      cacheMetadata: cacheMetadata({
+        linePrefix: "    r",
+        character: 5,
+        firstSuffixLine: "return 0;",
+      }),
+      runRemote: async () => ({
+        status: "ok",
+        edit: {
+          insertText: "req",
+          replaceRange: {
+            startLine: 0,
+            startCharacter: 4,
+            endLine: 0,
+            endCharacter: 5,
+          },
+          filterText: "req",
+        },
+        source: "remote",
+      }),
+    })
+    await first.pending
+
+    const second = coordinator.request({
+      key: "line:re",
+      details: "line=1 character=6",
+      debounceMs: 0,
+      cacheMetadata: cacheMetadata({
+        linePrefix: "    re",
+        character: 6,
+        firstSuffixLine: "return 0;",
+      }),
+      validateEdit: (edit) => edit.replaceRange?.endCharacter === 6
+        ? { status: "ok", edit }
+        : { status: "rejected", reason: "rangeText-not-prefix-of-filterText" },
+      runRemote: async () => {
+        throw new Error("compatible cache should avoid a remote request")
+      },
+    })
+
+    expect(second.immediate).toEqual({
+      status: "ok",
+      edit: {
+        insertText: "req",
+        replaceRange: {
+          startLine: 0,
+          startCharacter: 4,
+          endLine: 0,
+          endCharacter: 6,
+        },
+        filterText: "req",
+      },
+      source: "cache",
+    })
+    expect(logs).toContain("cache-hit-compatible line=1 character=6")
+  })
+
+  test("does not reuse compatible cache when the suffix line changes", async () => {
+    let requests = 0
+    const coordinator = new CompletionRequestCoordinator({
+      delay: () => Promise.resolve(),
+    })
+    const first = coordinator.request({
+      key: "line:r",
+      details: "line=1 character=5",
+      debounceMs: 0,
+      cacheMetadata: cacheMetadata({
+        linePrefix: "    r",
+        character: 5,
+        firstSuffixLine: "return 0;",
+      }),
+      runRemote: async () => {
+        requests += 1
+        return editOutcome
+      },
+    })
+    await first.pending
+
+    const second = coordinator.request({
+      key: "line:re-different-suffix",
+      details: "line=1 character=6",
+      debounceMs: 0,
+      cacheMetadata: cacheMetadata({
+        linePrefix: "    re",
+        character: 6,
+        firstSuffixLine: "return ret;",
+      }),
+      runRemote: async () => {
+        requests += 1
+        return {
+          status: "ok",
+          edit: {
+            insertText: "return ret;",
+          },
+          source: "remote",
+        }
+      },
+    })
+
+    expect(second.immediate).toBeUndefined()
+    expect(await second.pending).toMatchObject({
+      status: "ok",
+      source: "remote",
+    })
+    expect(requests).toBe(2)
+  })
+
+  test("logs whether remote ready refreshes are compatible or stale", async () => {
+    const logs: string[] = []
+    const coordinator = new CompletionRequestCoordinator({
+      delay: () => Promise.resolve(),
+      logInfo: (message) => logs.push(message),
+    })
+
+    const compatible = coordinator.request({
+      key: "compatible",
+      details: "line=1 character=5",
+      debounceMs: 0,
+      runRemote: async () => editOutcome,
+      onRemoteReady: () => true,
+    })
+    await compatible.pending
+
+    const stale = coordinator.request({
+      key: "stale",
+      details: "line=1 character=6",
+      debounceMs: 0,
+      runRemote: async () => editOutcome,
+      onRemoteReady: () => false,
+    })
+    await stale.pending
+
+    expect(logs).toContain("remote-ready-compatible line=1 character=5")
+    expect(logs).toContain("remote-ready-stale line=1 character=6")
+  })
+
   test("invalidates cached edits that no longer satisfy inline display invariants", async () => {
     let requests = 0
     let validations = 0
@@ -373,3 +518,23 @@ describe("completion request coordinator", () => {
     expect(await start.pending).toEqual(editOutcome)
   })
 })
+
+function cacheMetadata(input: {
+  linePrefix: string
+  character: number
+  firstSuffixLine: string
+}) {
+  return {
+    documentUri: "file:///workspace/src/driver.c",
+    languageId: "c",
+    line: 0,
+    position: {
+      line: 0,
+      character: input.character,
+    },
+    linePrefix: input.linePrefix,
+    firstSuffixLine: input.firstSuffixLine,
+    planKind: "ordinary-code",
+    sourceComment: "",
+  }
+}

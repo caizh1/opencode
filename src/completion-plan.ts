@@ -1,4 +1,10 @@
-import type { CompletionPlan } from "./completion-types"
+import type { CompletionCIntent, CompletionPlan } from "./completion-types"
+import {
+  cIntentNeedsSymbolRetrieval,
+  classifyCCompletionIntent,
+  isCCompletionLanguage,
+  looksLikeCaseBodyContext,
+} from "./completion-c-intent"
 
 export type CompletionPlanInput = {
   languageId: string
@@ -19,8 +25,8 @@ export function planCompletion(input: CompletionPlanInput): CompletionPlan {
   if (previousContinuation) return previousContinuation
 
   if (!trimmed && !input.lineSuffix.trim()) {
-    const bodyContinuation = bodyContinuationPlan(input)
-    if (bodyContinuation) return bodyContinuation
+    const blankLinePlan = cBlankLinePlan(input)
+    if (blankLinePlan) return blankLinePlan
     return disabledPlan()
   }
 
@@ -49,6 +55,7 @@ export function planCompletion(input: CompletionPlanInput): CompletionPlan {
       kind: "comment-to-test",
       insertMode: "insert-after-line",
       ...(targetSymbol ? { targetSymbol } : {}),
+      sourceComment: trimmed,
       replaceCurrentWord: false,
       needsSymbolRetrieval: true,
       needsTestRetrieval: true,
@@ -63,8 +70,9 @@ export function planCompletion(input: CompletionPlanInput): CompletionPlan {
     return {
       kind: "comment-to-code",
       insertMode: "insert-after-line",
+      sourceComment: trimmed,
       replaceCurrentWord: false,
-      needsSymbolRetrieval: false,
+      needsSymbolRetrieval: true,
       needsTestRetrieval: false,
       useFim: false,
       useInstruction: true,
@@ -73,12 +81,28 @@ export function planCompletion(input: CompletionPlanInput): CompletionPlan {
     }
   }
 
-  if (isInsideStringLiteral(input.linePrefix, input.languageId)) {
+  if (isInsideUnsafeInlineContext(input)) {
     return disabledPlan()
   }
 
-  if (isLowSignalInput(trimmed, currentWord)) {
+  if (isLowSignalInput(trimmed, currentWord) && !allowsLowSignalRequest(input, trimmed, currentWord)) {
     return disabledPlan()
+  }
+
+  const cIntent = classifyCCompletionIntent(input)
+
+  if (isCompactCIdentifierOnly(input, trimmed, currentWord)) {
+    return ordinaryCodePlan({
+      cIntent: cIntent ?? "symbol-prefix",
+      needsSymbolRetrieval: true,
+    })
+  }
+
+  if (cIntent && cIntent !== "symbol-prefix") {
+    return ordinaryCodePlan({
+      cIntent,
+      needsSymbolRetrieval: cIntentNeedsSymbolRetrieval(cIntent),
+    })
   }
 
   if (currentWord.length >= 3 && /^[A-Za-z_][A-Za-z0-9_]*$/.test(currentWord)) {
@@ -86,6 +110,7 @@ export function planCompletion(input: CompletionPlanInput): CompletionPlan {
       kind: "symbol-completion",
       insertMode: "replace-current-word",
       targetSymbol: currentWord,
+      ...(cIntent ? { cIntent } : {}),
       replaceCurrentWord: true,
       needsSymbolRetrieval: true,
       needsTestRetrieval: false,
@@ -96,17 +121,10 @@ export function planCompletion(input: CompletionPlanInput): CompletionPlan {
     }
   }
 
-  return {
-    kind: "ordinary-code",
-    insertMode: "insert-at-cursor",
-    replaceCurrentWord: false,
-    needsSymbolRetrieval: false,
-    needsTestRetrieval: false,
-    useFim: true,
-    useInstruction: false,
-    maxTokens: 96,
-    confidenceFloor: 0.35,
-  }
+  return ordinaryCodePlan({
+    cIntent,
+    needsSymbolRetrieval: cIntentNeedsSymbolRetrieval(cIntent),
+  })
 }
 
 function commentSymbolReferencePlan(input: CompletionPlanInput, trimmed: string, currentWord: string): CompletionPlan | undefined {
@@ -155,20 +173,84 @@ function previousCommentContinuationPlan(input: CompletionPlanInput, trimmed: st
 }
 
 function bodyContinuationPlan(input: CompletionPlanInput): CompletionPlan | undefined {
-  if (!supportsCBodyContinuation(input.languageId)) return
+  if (!isCCompletionLanguage(input.languageId)) return
   if (input.line === undefined || !input.lines) return
   if (!looksLikeBodyNeighborCode(input.previousNonEmptyLine) && !looksLikeBodyNeighborCode(input.nextNonEmptyLine)) return
-  if (!isCursorInCCodeBlock(input.lines, input.line, input.linePrefix.length)) return
+  const state = cCursorState(input.lines, input.line, input.linePrefix.length)
+  if (!state || state.inComment || state.inString) return
+  if (!state.stack.some((item) => item === "block")) return
 
+  return bodyContinuationPlanResult(input)
+}
+
+function cBlankLinePlan(input: CompletionPlanInput): CompletionPlan | undefined {
+  if (!isCCompletionLanguage(input.languageId)) return
+  if (input.line === undefined || !input.lines) return
+
+  const state = cCursorState(input.lines, input.line, input.linePrefix.length)
+  if (!state || state.inComment || state.inString) return
+
+  const top = state.stack.at(-1)
+  if (top === "aggregate") {
+    return ordinaryCodePlan({
+      maxTokens: 128,
+      cIntent: "initializer",
+      needsSymbolRetrieval: true,
+    })
+  }
+
+  const bodyContinuation = bodyContinuationPlan(input)
+  if (bodyContinuation) return bodyContinuation
+
+  if (state.stack.length === 0 && looksLikeTopLevelDeclarationGap(input.previousNonEmptyLine, input.nextNonEmptyLine)) {
+    return {
+      kind: "top-level-declaration",
+      insertMode: "insert-at-cursor",
+      cIntent: "top-level-declaration",
+      replaceCurrentWord: false,
+      needsSymbolRetrieval: false,
+      needsTestRetrieval: false,
+      useFim: true,
+      useInstruction: false,
+      maxTokens: isManualTrigger(input.triggerKind) ? 192 : 128,
+      confidenceFloor: 0.35,
+    }
+  }
+
+  return undefined
+}
+
+function bodyContinuationPlanResult(input: CompletionPlanInput): CompletionPlan {
+  const cIntent = classifyCCompletionIntent(input) ?? (looksLikeCaseBodyContext(input) ? "case-body" : "body-statement")
   return {
     kind: "body-continuation",
     insertMode: "insert-at-cursor",
+    cIntent,
     replaceCurrentWord: false,
-    needsSymbolRetrieval: false,
+    needsSymbolRetrieval: cIntentNeedsSymbolRetrieval(cIntent),
     needsTestRetrieval: false,
     useFim: true,
     useInstruction: false,
     maxTokens: isManualTrigger(input.triggerKind) ? 128 : 96,
+    confidenceFloor: 0.35,
+  }
+}
+
+function ordinaryCodePlan(input: {
+  maxTokens?: number
+  cIntent?: CompletionCIntent
+  needsSymbolRetrieval?: boolean
+} = {}): CompletionPlan {
+  return {
+    kind: "ordinary-code",
+    insertMode: "insert-at-cursor",
+    ...(input.cIntent ? { cIntent: input.cIntent } : {}),
+    replaceCurrentWord: false,
+    needsSymbolRetrieval: input.needsSymbolRetrieval ?? false,
+    needsTestRetrieval: false,
+    useFim: true,
+    useInstruction: false,
+    maxTokens: input.maxTokens ?? 96,
     confidenceFloor: 0.35,
   }
 }
@@ -187,9 +269,7 @@ function disabledPlan(): CompletionPlan {
   }
 }
 
-function supportsCBodyContinuation(languageId: string) {
-  return languageId === "c" || languageId === "cpp"
-}
+const supportsCBodyContinuation = isCCompletionLanguage
 
 function isManualTrigger(triggerKind: CompletionPlanInput["triggerKind"]) {
   return triggerKind === "manual" || triggerKind === "invoke"
@@ -201,6 +281,7 @@ function looksLikeUnitTestPrompt(trimmed: string) {
 
 function isSingleLineCommentPrompt(trimmed: string, languageId: string) {
   if (supportsSlashComments(languageId) && trimmed.startsWith("//")) return true
+  if (supportsSlashComments(languageId) && isClosedSingleLineBlockComment(trimmed)) return true
   if (supportsHashComments(languageId) && trimmed.startsWith("#") && !trimmed.startsWith("#!")) return true
   return false
 }
@@ -214,7 +295,15 @@ function unitTestTargetSymbol(trimmed: string) {
 }
 
 function stripSingleLineCommentMarker(trimmed: string) {
-  return trimmed.replace(/^\/\/\s*/, "").replace(/^#\s*/, "")
+  return trimmed
+    .replace(/^\/\/\s*/, "")
+    .replace(/^#\s*/, "")
+    .replace(/^\/\*\s*/, "")
+    .replace(/\s*\*\/$/, "")
+}
+
+function isClosedSingleLineBlockComment(trimmed: string) {
+  return /^\/\*[\s\S]*\*\/$/.test(trimmed) && !trimmed.slice(2, -2).includes("\n")
 }
 
 function looksLikeCodeCommentPrompt(trimmed: string) {
@@ -298,14 +387,20 @@ function looksLikeBodyNeighborCode(line: string | undefined) {
   return /[A-Za-z0-9_)}\];{]/.test(trimmed)
 }
 
-function isCursorInCCodeBlock(lines: string[], line: number, character: number) {
+function cCursorState(lines: string[], line: number, character: number) {
   const beforeCursor = [
     ...lines.slice(0, line),
     (lines[line] ?? "").slice(0, character),
   ].join("\n")
-  const state = scanCBlockState(beforeCursor)
-  if (state.inComment || state.inString) return false
-  return state.stack.some((item) => item === "block")
+  return scanCBlockState(beforeCursor)
+}
+
+function isInsideUnsafeInlineContext(input: CompletionPlanInput) {
+  if (isInsideStringLiteral(input.linePrefix, input.languageId)) return true
+  if (!isCCompletionLanguage(input.languageId)) return false
+  if (input.line === undefined || !input.lines) return false
+  const state = cCursorState(input.lines, input.line, input.linePrefix.length)
+  return Boolean(state?.inComment || state?.inString)
 }
 
 function scanCBlockState(input: string) {
@@ -395,7 +490,41 @@ function openBraceContext(sanitizedBeforeBrace: string): "block" | "aggregate" {
   if (/\b(?:struct|union|enum)\s+[A-Za-z_][A-Za-z0-9_]*\s*$/.test(tail)) return "aggregate"
   if (/\btypedef\s+(?:struct|union|enum)(?:\s+[A-Za-z_][A-Za-z0-9_]*)?\s*$/.test(tail)) return "aggregate"
   if (/\b(?:struct|union|enum)\s*$/.test(tail)) return "aggregate"
+  if (/(?:=|\[|,|\()\s*$/.test(tail) && !/\b(?:if|for|while|switch)\s*\([^{};]*$/.test(tail)) return "aggregate"
   return "block"
+}
+
+function allowsLowSignalRequest(input: CompletionPlanInput, trimmed: string, currentWord: string) {
+  if (isManualTrigger(input.triggerKind)) return true
+  return isCCompletionLanguage(input.languageId) && isShortIdentifierOnly(trimmed, currentWord)
+}
+
+function isShortIdentifierOnly(trimmed: string, currentWord: string) {
+  if (!currentWord || trimmed !== currentWord) return false
+  return currentWord.length <= 2 && /^[A-Za-z_][A-Za-z0-9_]*$/.test(currentWord)
+}
+
+function isCompactCIdentifierOnly(input: CompletionPlanInput, trimmed: string, currentWord: string) {
+  if (!isCCompletionLanguage(input.languageId)) return false
+  if (!currentWord || trimmed !== currentWord) return false
+  if (currentWord.length > 3) return false
+  return /^[A-Za-z_][A-Za-z0-9_]*$/.test(currentWord)
+}
+
+function looksLikeTopLevelDeclarationGap(previousLine: string | undefined, nextLine: string | undefined) {
+  return looksLikeTopLevelDeclarationNeighbor(previousLine) || looksLikeTopLevelDeclarationNeighbor(nextLine)
+}
+
+function looksLikeTopLevelDeclarationNeighbor(line: string | undefined) {
+  if (!line) return false
+  const trimmed = line.trim()
+  if (!trimmed) return false
+  if (/^(?:\/\/|\/\*|\*)/.test(trimmed)) return false
+  if (/^#\s*(?:include|define|if|ifdef|ifndef|endif|elif|else|pragma)\b/.test(trimmed)) return true
+  if (/^(?:typedef|struct|union|enum|extern|static|const|volatile|inline)\b/.test(trimmed)) return true
+  if (/^[A-Za-z_][A-Za-z0-9_\s*()]*[;{]$/.test(trimmed)) return true
+  if (/^[A-Z][A-Z0-9_]*\s*\(/.test(trimmed)) return true
+  return false
 }
 
 function isLowSignalInput(trimmed: string, currentWord: string) {

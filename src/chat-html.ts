@@ -12,6 +12,8 @@ const liquidIconNames: LiquidIconName[] = [
   "agent",
   "send",
   "stop",
+  "pause",
+  "play",
   "attach",
   "file",
   "selection",
@@ -2734,6 +2736,7 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
         <div class="ragActionbar oc-liquid-actionbar">
           <button id="saveRagSettings" class="oc-icon-btn oc-liquid-btn" type="button" title="Save RAG settings" aria-label="Save RAG settings">${liquidIcons.save}<span class="srOnly">Save RAG settings</span></button>
           <button id="testRagSettings" class="oc-icon-btn oc-liquid-btn" type="button" title="Test RAG configuration" aria-label="Test RAG configuration">${liquidIcons.beaker}<span class="srOnly">Test RAG configuration</span></button>
+          <button id="toggleRagIndexing" class="oc-icon-btn oc-liquid-btn" type="button" title="RAG indexing is not running" aria-label="RAG indexing is not running" disabled>${liquidIcons.pause}<span class="srOnly">RAG indexing is not running</span></button>
           <button id="setRagApiKey" class="oc-icon-btn oc-liquid-btn" type="button" title="Set RAG API key" aria-label="Set RAG API key">${liquidIcons.key}<span class="srOnly">Set RAG API key</span></button>
           <button id="discardRagSettings" class="oc-icon-btn oc-liquid-btn" type="button" title="Reset RAG edits" aria-label="Reset RAG edits">${liquidIcons.discard}<span class="srOnly">Reset RAG edits</span></button>
         </div>
@@ -2960,9 +2963,10 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
 		    el("saveCompletionSettings").addEventListener("click", saveCompletionSettings);
 		    el("setCompletionApiKey").addEventListener("click", () => vscode.postMessage({ type: "setCompletionApiKey" }));
 		    el("testCompletionApi").addEventListener("click", testCompletionApi);
-		    el("saveRagSettings").addEventListener("click", saveRagSettings);
-		    el("testRagSettings").addEventListener("click", testRagSettings);
-		    el("setRagApiKey").addEventListener("click", () => vscode.postMessage({ type: "setRagApiKey" }));
+			    el("saveRagSettings").addEventListener("click", saveRagSettings);
+			    el("testRagSettings").addEventListener("click", testRagSettings);
+			    el("toggleRagIndexing").addEventListener("click", toggleRagIndexing);
+			    el("setRagApiKey").addEventListener("click", () => vscode.postMessage({ type: "setRagApiKey" }));
     el("discardRagSettings").addEventListener("click", discardRagSettings);
 	    el("refresh").addEventListener("click", () => vscode.postMessage({ type: "refresh" }));
     el("syncState").addEventListener("click", () => vscode.postMessage({ type: "refresh" }));
@@ -3151,15 +3155,29 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
 	      });
 	    }
 
-		    function testRagSettings() {
-		      if (!validateRagEmbeddingBatchSizeInput()) return;
-		      userEditedRagSettings = false;
-		      renderRagStatus("Testing RAG configuration...", "info");
-	      vscode.postMessage({
-	        type: "testRagSettings",
-	        settings: ragSettingsPayload()
-		      });
-		    }
+			    function testRagSettings() {
+			      if (!validateRagEmbeddingBatchSizeInput()) return;
+			      userEditedRagSettings = false;
+			      renderRagStatus("Testing RAG configuration...", "info");
+		      vscode.postMessage({
+		        type: "testRagSettings",
+		        settings: ragSettingsPayload()
+			      });
+			    }
+
+      function toggleRagIndexing() {
+        const rag = state.codeGraph && state.codeGraph.rag;
+        if (!rag) return;
+        if (rag.availability === "indexing") {
+          renderRagStatus("Pausing RAG indexing...", "info");
+          vscode.postMessage({ type: "pauseRagIndexing" });
+          return;
+        }
+        if (rag.availability === "paused") {
+          renderRagStatus("Resuming RAG indexing...", "info");
+          vscode.postMessage({ type: "resumeRagIndexing" });
+        }
+      }
 
         function discardRagSettings() {
           userEditedRagSettings = false;
@@ -3602,11 +3620,13 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
 	        el("ragVectorTopK").value = String(rag.vectorTopK ?? 24);
 	        el("ragRerankTopK").value = String(rag.rerankTopK ?? 16);
 	      }
-		      const statusText = codeGraphRagMeta(state.codeGraph && state.codeGraph.rag);
-          renderRagCompactStatus(state.codeGraph && state.codeGraph.rag, statusText);
-		      if (statusText && !statusText.startsWith("RAG not configured")) renderRagStatus(statusText, statusText.includes("unavailable") ? "error" : "info");
-          else renderRagStatus("", "info");
-		    }
+			      const currentRagStatus = state.codeGraph && state.codeGraph.rag;
+			      const statusText = codeGraphRagMeta(currentRagStatus);
+          renderRagCompactStatus(currentRagStatus, statusText);
+          renderRagIndexingControl(currentRagStatus);
+			      if (statusText && !statusText.startsWith("RAG not configured")) renderRagStatus(statusText, statusText.includes("unavailable") ? "error" : "info");
+	          else renderRagStatus("", "info");
+			    }
 
 	    function renderRagStatus(message, status) {
 	      const detail = el("ragDetail");
@@ -3687,9 +3707,9 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
         return count + " diagnostics available; " + (included ? "included" : "excluded") + " in next prompt";
       }
 
-      function renderRagCompactStatus(rag, statusText) {
-        const chip = el("ragCompactStatus");
-        if (!chip) return;
+	      function renderRagCompactStatus(rag, statusText) {
+	        const chip = el("ragCompactStatus");
+	        if (!chip) return;
         let label = "off";
         let title = statusText || "RAG not configured";
         let statusClass = "warning";
@@ -3703,10 +3723,25 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
         chip.title = title;
         chip.classList.toggle("is-active", label === "ready");
         chip.classList.toggle("warning", statusClass === "warning");
-        chip.classList.toggle("error", statusClass === "error");
+	        chip.classList.toggle("error", statusClass === "error");
+	      }
+
+      function renderRagIndexingControl(rag) {
+        const button = el("toggleRagIndexing");
+        if (!button) return;
+        const indexing = Boolean(rag && rag.availability === "indexing");
+        const paused = Boolean(rag && rag.availability === "paused");
+        const label = indexing
+          ? "Pause RAG indexing"
+          : paused
+            ? "Resume RAG indexing"
+            : "RAG indexing is not running";
+        setIconOnlyButton(button, paused ? "play" : "pause", label);
+        button.disabled = !indexing && !paused;
+        button.classList.toggle("is-active", indexing || paused);
       }
 
-      function renderGuardSettings() {
+	      function renderGuardSettings() {
         const status = el("guardSettingsStatus");
         const detail = el("guardSettingsDetail");
         if (!status || !detail) return;
@@ -5482,14 +5517,14 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       if (!rag) return [];
       if (rag.availability === "indexing") {
         return [
-          { label: "Pause", message: "pauseCodeGraph", title: "Pause RAG indexing" },
-          { label: "Cancel", message: "cancelCodeGraph", title: "Cancel RAG indexing" },
+          { label: "Pause", message: "pauseRagIndexing", title: "Pause RAG indexing" },
+          { label: "Cancel", message: "cancelRagIndexing", title: "Cancel RAG indexing" },
         ];
       }
       if (rag.availability === "paused") {
         return [
-          { label: "Resume", message: "resumeCodeGraph", title: "Resume RAG indexing" },
-          { label: "Cancel", message: "cancelCodeGraph", title: "Cancel RAG indexing" },
+          { label: "Resume", message: "resumeRagIndexing", title: "Resume RAG indexing" },
+          { label: "Cancel", message: "cancelRagIndexing", title: "Cancel RAG indexing" },
         ];
       }
       return [];

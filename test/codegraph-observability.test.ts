@@ -52,6 +52,12 @@ describe("code graph query observability", () => {
     expect(querySource).toContain("elapsedMs")
   })
 
+  test("allows inline completion to request graph-only evidence without hybrid RAG", () => {
+    expect(serviceSource).toContain("queryEvidence(question: string, options: CodeGraphEvidenceQueryOptions = {})")
+    expect(serviceSource).toContain('const hybrid = options.retrievalMode === "graph-only" ? undefined : this.hybridOptions()')
+    expect(serviceSource).toContain("}, hybrid)")
+  })
+
   test("separates lightweight RAG probes from vector index rebuilds", () => {
     expect(serviceSource).toContain("async testRagConfiguration()")
     expect(serviceSource).toContain("async refreshRagConfiguration()")
@@ -168,14 +174,25 @@ describe("code graph query observability", () => {
     expect(serviceSource).toContain("resumeScheduledAt")
   })
 
-  test("treats manual RAG pause as a global gate until explicit resume", () => {
+  test("keeps code graph pause global while RAG-only pause avoids the job queue", () => {
     const pauseStart = serviceSource.indexOf("pauseIndexing(reason = \"paused by user\")")
     const pauseEnd = serviceSource.indexOf("resumeIndexing()", pauseStart)
     const pauseBody = serviceSource.slice(pauseStart, pauseEnd)
     expect(pauseBody).toContain("this.paused = true")
+    expect(pauseBody).toContain("this.jobs.pause()")
     expect(pauseBody).toContain("this.clearRagIndexResume()")
-    expect(pauseBody).toContain("this.pauseActiveRagIndex(reason)")
+    expect(pauseBody).toContain("this.pauseActiveRagIndex(reason,")
     expect(pauseBody).toContain("this.abortRagIndex(reason)")
+
+    const ragPauseStart = serviceSource.indexOf("pauseRagIndexing(reason = \"paused by user\")")
+    const ragPauseEnd = serviceSource.indexOf("resumeRagIndexing()", ragPauseStart)
+    const ragPauseBody = serviceSource.slice(ragPauseStart, ragPauseEnd)
+    expect(ragPauseBody).toContain("this.clearRagIndexResume()")
+    expect(ragPauseBody).toContain("this.pauseActiveRagIndex(reason,")
+    expect(ragPauseBody).toContain("this.abortRagIndex(reason)")
+    expect(ragPauseBody).not.toContain("this.paused = true")
+    expect(ragPauseBody).not.toContain("this.jobs.pause()")
+    expect(ragPauseBody).not.toContain('state: "paused"')
 
     const runStart = serviceSource.indexOf("private runPendingRagRefreshWhenReady")
     const runEnd = serviceSource.indexOf("private isCodeGraphReadyForRag", runStart)
@@ -188,6 +205,7 @@ describe("code graph query observability", () => {
     expect(serviceSource).toContain("private manualPausedRagSnapshot")
     expect(serviceSource).toContain("indexPausedReason: \"manual\"")
     expect(serviceSource).toContain("private resumeManualRagIndexing")
+    expect(serviceSource).toContain("cancelRagIndexing(reason = \"cancelled by user\")")
     expect(serviceSource).toContain("continuePreviousElapsed: true")
     expect(serviceSource).toContain("manual paused RAG index")
     expect(typesSource).toContain('"manual"')

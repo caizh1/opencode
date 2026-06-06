@@ -158,6 +158,8 @@ opencode serve
 
 inline completion 默认关闭。开启后，扩展会在编辑器中注册 VS Code inline completion provider。默认补全请求仍发送给远端 OpenCode；也可以把补全单独切换到 OpenAI-compatible 模型 API，聊天、历史、RAG/code graph 和 OpenCode agent 仍保持原有 OpenCode 路径。
 
+补全模块的完整实现细节、场景分支、调试日志和测试地图见 [代码补全模块 README](docs/code-completion.md)。
+
 启用方式：
 
 ```json

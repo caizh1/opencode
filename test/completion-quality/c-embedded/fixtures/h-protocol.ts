@@ -111,4 +111,15 @@ export default [
     maxLines: 1,
     modelOutputs: ["(const frame_header_t *)data;"],
   }),
+  cFixture({
+    id: "H11-switch-case-state-machine",
+    category: "H. State machines and protocol parsing",
+    path: "src/proto/state_machine.c",
+    document: doc("typedef enum { ST_IDLE, ST_BUSY, ST_ERROR } parser_state_t;\nhal_status_t handle_state(parser_state_t state)\n{\n    switch (state) {\n    case ST_BUSY:\n        <|cursor|>\n        break;\n    default:\n        return HAL_ERR;\n    }\n    return HAL_OK;\n}\n"),
+    triggerKind: "automatic",
+    expectedIntent: "complete a switch case body with a state transition",
+    mustContain: ["state = ST_IDLE;"],
+    maxLines: 1,
+    modelOutputs: ["state = ST_IDLE;"],
+  }),
 ]

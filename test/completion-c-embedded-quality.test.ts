@@ -130,6 +130,70 @@ describe("C/embedded completion quality scorer", () => {
     expect(score.issues.some((issue) => issue.kind === "C parse/compile" && issue.hardReject)).toBe(true)
   })
 
+  test("does not hard reject embedded project context missing from standalone clang", () => {
+    const vendorType = scoreCEmbeddedCompletionQuality(scoreInput({
+      acceptedText: "return HAL_OK;",
+      appliedText: [
+        "#include \"vendor_hal.h\"",
+        "hal_status_t driver_probe(VendorDevice *dev)",
+        "{",
+        "    return HAL_OK;",
+        "}",
+      ].join("\n"),
+      checks: ["checkCParseOrCompile"],
+    }))
+    expect(vendorType.issues.map((issue) => issue.kind)).toContain("C parse/compile")
+    expect(vendorType.issues.some((issue) => issue.kind === "C parse/compile" && issue.hardReject)).toBe(false)
+    expect(vendorType.gate).not.toBe("reject")
+
+    const rtosType = scoreCEmbeddedCompletionQuality(scoreInput({
+      acceptedText: "return HAL_OK;",
+      appliedText: [
+        "hal_status_t queue_attach(StaticQueue_t *queue)",
+        "{",
+        "    return HAL_OK;",
+        "}",
+      ].join("\n"),
+      checks: ["checkCParseOrCompile"],
+    }))
+    expect(rtosType.issues.map((issue) => issue.kind)).toContain("C parse/compile")
+    expect(rtosType.issues.some((issue) => issue.kind === "C parse/compile" && issue.hardReject)).toBe(false)
+    expect(rtosType.gate).not.toBe("reject")
+
+    const configMacro = scoreCEmbeddedCompletionQuality(scoreInput({
+      acceptedText: "if (CONFIG_DRIVER_ENABLED) {\n    return HAL_OK;\n}",
+      appliedText: [
+        "hal_status_t driver_enable(void)",
+        "{",
+        "    if (CONFIG_DRIVER_ENABLED) {",
+        "        return HAL_OK;",
+        "    }",
+        "    return HAL_ERR;",
+        "}",
+      ].join("\n"),
+      checks: ["checkCParseOrCompile"],
+    }))
+    expect(configMacro.issues.map((issue) => issue.kind)).toContain("C parse/compile")
+    expect(configMacro.issues.some((issue) => issue.kind === "C parse/compile" && issue.hardReject)).toBe(false)
+    expect(configMacro.gate).not.toBe("reject")
+
+    const projectInclude = scoreCEmbeddedCompletionQuality(scoreInput({
+      acceptedText: "return HAL_OK;",
+      appliedText: [
+        "#define DRIVER_CONFIG_HEADER \"driver_local_config.h\"",
+        "#include DRIVER_CONFIG_HEADER",
+        "hal_status_t driver_configure(void)",
+        "{",
+        "    return HAL_OK;",
+        "}",
+      ].join("\n"),
+      checks: ["checkCParseOrCompile"],
+    }))
+    expect(projectInclude.issues.map((issue) => issue.kind)).toContain("C parse/compile")
+    expect(projectInclude.issues.some((issue) => issue.kind === "C parse/compile" && issue.hardReject)).toBe(false)
+    expect(projectInclude.gate).not.toBe("reject")
+  })
+
   test("hard rejects Markdown and stray backticks in C completions", () => {
     const fenced = scoreCEmbeddedCompletionQuality(scoreInput({
       acceptedText: "```c\nreturn HAL_OK;\n```",

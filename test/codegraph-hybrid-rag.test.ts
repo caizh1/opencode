@@ -75,6 +75,30 @@ describe("hybrid offline evidence RAG", () => {
     expect(result?.trace?.some((step) => step.label === "fallback" && step.detail.includes("rerank provider"))).toBe(true)
     expect(result?.evidence.some((item) => item.reason.includes("vector:function"))).toBe(true)
   })
+
+  test("graph-only evidence retrieval avoids configured embedding and rerank providers", async () => {
+    const index = sampleIndex()
+    const buildEmbedding = fakeEmbeddingProvider()
+    const vectorIndex = await buildRagVectorIndex({ index, provider: buildEmbedding })
+    const embeddingCalls = { count: 0 }
+    const rerankCalls = { count: 0 }
+    const configuredHybrid = {
+      settings: settings({ embedding: true, rerank: true }),
+      embeddingProvider: countingEmbeddingProvider(embeddingCalls),
+      rerankProvider: countingRerankProvider(rerankCalls),
+      vectorIndex,
+    }
+    expect(configuredHybrid.vectorIndex.vectors.length).toBeGreaterThan(0)
+
+    const result = await queryEvidenceAsync(index, "who calls nand_read_page")
+
+    expect(result.answerPolicy.allowed).toBe(true)
+    expect(result.trace.steps.some((step) => step.label === "vector")).toBe(false)
+    expect(result.trace.steps.some((step) => step.label === "rerank")).toBe(false)
+    expect(result.evidencePack.evidence.some((item) => item.file === "boot/storage.c")).toBe(true)
+    expect(embeddingCalls.count).toBe(0)
+    expect(rerankCalls.count).toBe(0)
+  })
 })
 
 function sampleIndex(): CodeGraphIndex {
@@ -151,6 +175,28 @@ function fakeRerankProvider(): RerankProvider {
     id: "fake-rerank",
     model: "fake",
     rerank: async (input) => input.documents.map((_, index) => ({ index, score: index === 0 ? 0.1 : 0.9 })).reverse(),
+  }
+}
+
+function countingEmbeddingProvider(calls: { count: number }): EmbeddingProvider {
+  return {
+    id: "fake",
+    model: "fake",
+    embed: async (input) => {
+      calls.count += 1
+      return input.map(embedText)
+    },
+  }
+}
+
+function countingRerankProvider(calls: { count: number }): RerankProvider {
+  return {
+    id: "fake-rerank",
+    model: "fake-rerank",
+    rerank: async (input) => {
+      calls.count += 1
+      return input.documents.map((_, index) => ({ index, score: input.documents.length - index }))
+    },
   }
 }
 

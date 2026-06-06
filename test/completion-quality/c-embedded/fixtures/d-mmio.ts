@@ -1,4 +1,4 @@
-import { cFixture, doc, driverFn } from "./_helpers"
+import { cFixture, doc, driverFn, snippet } from "./_helpers"
 
 export default [
   cFixture({
@@ -110,5 +110,25 @@ export default [
     mustContain: ["volatile uint32_t"],
     maxLines: 1,
     modelOutputs: ["(*(uint32_t *)(UART1_BASE + 0x04u))"],
+  }),
+  cFixture({
+    id: "D11-field-prep-register-write",
+    category: "D. MMIO registers and volatile",
+    path: "src/driver/regmap.c",
+    document: doc("#define CTRL_MODE_MASK GENMASK(3, 0)\n#define CTRL_MODE_SHIFT 0u\n#define FIELD_PREP(mask, value) ((value) << CTRL_MODE_SHIFT)\nstatic inline void writel(uint32_t value, volatile uint32_t *addr) { *addr = value; }\nvolatile uint32_t CTRL_REG;\nhal_status_t set_mode(uint32_t mode)\n{\n    writel(<|cursor|>, &CTRL_REG);\n    return HAL_OK;\n}\n"),
+    retrievedSnippets: [
+      snippet({
+        kind: "macro",
+        name: "CTRL_MODE_MASK",
+        path: "include/chip/ctrl_regs.h",
+        text: "#define CTRL_MODE_MASK GENMASK(3, 0)\n#define FIELD_PREP(mask, value) ((value) << CTRL_MODE_SHIFT)\n",
+      }),
+    ],
+    triggerKind: "automatic",
+    expectedIntent: "fill a register write argument with an existing FIELD_PREP mask",
+    mustContain: ["writel(FIELD_PREP(CTRL_MODE_MASK, mode), &CTRL_REG);"],
+    contextMustContain: ["CTRL_MODE_MASK"],
+    maxLines: 1,
+    modelOutputs: ["FIELD_PREP(CTRL_MODE_MASK, mode)"],
   }),
 ]

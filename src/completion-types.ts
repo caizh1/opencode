@@ -1,6 +1,7 @@
 export type CompletionPlanKind =
   | "ordinary-code"
   | "body-continuation"
+  | "top-level-declaration"
   | "symbol-completion"
   | "comment-symbol-reference"
   | "previous-comment-continuation"
@@ -10,6 +11,19 @@ export type CompletionPlanKind =
   | "disabled"
 
 export type CompletionSymbolFallbackKind = "comment-to-code" | "comment-to-test"
+
+export type CompletionCIntent =
+  | "member-access"
+  | "symbol-prefix"
+  | "initializer"
+  | "call-args"
+  | "assignment-rhs"
+  | "case-body"
+  | "top-level-declaration"
+  | "body-statement"
+  | "condition"
+  | "error-path"
+  | "mmio-register"
 
 export type CompletionInsertMode =
   | "replace-current-word"
@@ -22,6 +36,7 @@ export type CompletionPlan = {
   insertMode: CompletionInsertMode
   targetSymbol?: string
   sourceComment?: string
+  cIntent?: CompletionCIntent
   symbolFallbackKind?: CompletionSymbolFallbackKind
   replaceCurrentWord: boolean
   needsSymbolRetrieval: boolean

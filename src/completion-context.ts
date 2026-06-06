@@ -110,7 +110,7 @@ export function completionContextDebugSummary(pack: CompletionContextPack) {
 function contextBlocks(input: PackCompletionContextInput): PackedContextBlock[] {
   const snippets = input.retrievedSnippets
   const target = targetSymbolBlocks(input.plan, snippets)
-  const similarTests = snippets.filter(isSimilarTest).map((snippet, index) => snippetBlock(snippet, "similar-test", 760 - index))
+  const similarTests = snippets.filter(isSimilarTest).map((snippet, index) => snippetBlock(snippet, "similar-test", 760 - index, input.plan))
   const testFramework = testFrameworkBlocks(input.plan, snippets)
   const includes = includeBlock(input.prefix, input.currentPath)
   const analysisEvidence = analysisEvidenceBlocks(input)
@@ -119,7 +119,7 @@ function contextBlocks(input: PackCompletionContextInput): PackedContextBlock[] 
 
   switch (input.plan.kind) {
     case "symbol-completion":
-      return target.length > 0 ? target : snippets.slice(0, 8).map((snippet, index) => snippetBlock(snippet, "target-symbol", 700 - index))
+      return target.length > 0 ? target : snippets.slice(0, 8).map((snippet, index) => snippetBlock(snippet, "target-symbol", 700 - index, input.plan))
     case "comment-symbol-reference":
       return target
     case "previous-comment-continuation":
@@ -132,6 +132,7 @@ function contextBlocks(input: PackCompletionContextInput): PackedContextBlock[] 
       return [...target, ...similarTests, ...testFramework, ...analysisEvidence, ...openTabs, ...current]
     case "ordinary-code":
     case "body-continuation":
+    case "top-level-declaration":
       return [...target, ...includes, ...analysisEvidence, ...openTabs, ...current]
     case "comment-to-code":
       return [...target, ...includes, ...analysisEvidence, ...openTabs, ...current]
@@ -148,11 +149,11 @@ function targetSymbolBlocks(plan: CompletionPlan, snippets: RetrievedCompletionS
     const name = snippet.name.toLowerCase()
     return name === target || name.startsWith(target) || target.startsWith(name)
   })
-  const fallback = preferred.length > 0 ? preferred : snippets.filter((snippet) => !isSimilarTest(snippet)).slice(0, 1)
-  return fallback.map((snippet, index) => snippetBlock(snippet, "target-symbol", 900 - index))
+  const fallback = preferred.length > 0 ? preferred : rankSnippetsForIntent(plan, snippets.filter((snippet) => !isSimilarTest(snippet))).slice(0, 3)
+  return fallback.map((snippet, index) => snippetBlock(snippet, "target-symbol", 900 - index, plan))
 }
 
-function snippetBlock(snippet: RetrievedCompletionSnippet, kind: PackedContextBlockKind, score: number): PackedContextBlock {
+function snippetBlock(snippet: RetrievedCompletionSnippet, kind: PackedContextBlockKind, score: number, plan?: CompletionPlan): PackedContextBlock {
   const title = snippet.name ? `${snippet.kind}: ${snippet.name}` : snippet.kind
   const text = [
     snippet.name ? `symbol: ${snippet.name}` : "",
@@ -163,7 +164,7 @@ function snippetBlock(snippet: RetrievedCompletionSnippet, kind: PackedContextBl
     title,
     filePath: snippet.path,
     text,
-    score: score + Math.min(Math.max(snippet.score ?? 0, 0), 100),
+    score: score + Math.min(Math.max(snippet.score ?? 0, 0), 100) + cIntentSnippetBoost(plan, snippet),
   })
 }
 
@@ -185,7 +186,9 @@ function testFrameworkBlocks(plan: CompletionPlan, snippets: RetrievedCompletion
 }
 
 function currentFileBlocks(input: PackCompletionContextInput): PackedContextBlock[] {
-  const ordinary = input.plan.kind === "ordinary-code" || input.plan.kind === "body-continuation"
+  const ordinary = input.plan.kind === "ordinary-code" ||
+    input.plan.kind === "body-continuation" ||
+    input.plan.kind === "top-level-declaration"
   const currentPrefix = tailLines(input.prefix, ordinary ? 60 : 120)
   const currentSuffix = headLines(input.suffix, ordinary ? 40 : 80)
   return [
@@ -247,9 +250,62 @@ function analysisEvidenceBlocks(input: PackCompletionContextInput): PackedContex
       title: "local analysis evidence",
       filePath: input.currentPath,
       text: limitSnippetText(text, "analysis-evidence"),
-      score: input.plan.useInstruction ? 700 : 610,
+      score: (input.plan.useInstruction ? 700 : 610) + cIntentEvidenceBoost(input.plan, text),
     }),
   ]
+}
+
+function rankSnippetsForIntent(plan: CompletionPlan, snippets: RetrievedCompletionSnippet[]) {
+  return [...snippets].sort((left, right) =>
+    cIntentSnippetBoost(plan, right) - cIntentSnippetBoost(plan, left) ||
+    (right.score ?? 0) - (left.score ?? 0) ||
+    (left.path || "").localeCompare(right.path || "") ||
+    (left.name || "").localeCompare(right.name || ""))
+}
+
+function cIntentSnippetBoost(plan: CompletionPlan | undefined, snippet: RetrievedCompletionSnippet) {
+  if (!plan?.cIntent) return 0
+  const haystack = `${snippet.kind}\n${snippet.name ?? ""}\n${snippet.path}\n${snippet.text}`
+  switch (plan.cIntent) {
+    case "member-access":
+      return (/\b(?:type|struct|union|typedef)\b/i.test(snippet.kind) ? 120 : 0) +
+        (/(?:->|\.)[A-Za-z_][A-Za-z0-9_]*/.test(haystack) ? 70 : 0)
+    case "call-args":
+      return (/\bfunction\b/i.test(snippet.kind) ? 120 : 0) +
+        (snippet.name && new RegExp(`\\b${escapeRegExp(snippet.name)}\\s*\\(`).test(snippet.text) ? 60 : 0)
+    case "initializer":
+      return (/\b(?:type|struct|union|typedef)\b/i.test(snippet.kind) ? 100 : 0) +
+        (/\.[A-Za-z_][A-Za-z0-9_]*\s*=/.test(snippet.text) ? 100 : 0)
+    case "condition":
+      return (/\b(?:enum|state|status|flags?)\b/i.test(haystack) ? 90 : 0) +
+        (/\b(?:if|while)\s*\(/.test(snippet.text) ? 70 : 0)
+    case "error-path":
+      return (/^[ \t]*[A-Za-z_][A-Za-z0-9_]*:\s*$/m.test(snippet.text) ? 120 : 0) +
+        (/\bgoto\s+[A-Za-z_][A-Za-z0-9_]*\s*;/.test(snippet.text) ? 120 : 0) +
+        (/\breturn\s+(?:ret|retval|err|errno|rc|status)\s*;/.test(snippet.text) ? 60 : 0)
+    case "mmio-register":
+      return (/\b(?:macro|global)\b/i.test(snippet.kind) ? 140 : 0) +
+        (/\b(?:BIT|GENMASK|FIELD_PREP|FIELD_GET|readl|writel|ioread|iowrite|volatile|barrier)\b/.test(haystack) ? 140 : 0) +
+        (/\b[A-Z][A-Z0-9_]*(?:_REG|_MASK|_SHIFT|_BIT|_BITS)\b/.test(haystack) ? 100 : 0)
+    case "case-body":
+      return (/\b(?:case|default)\b.*:/.test(snippet.text) ? 100 : 0) +
+        (/\b(?:enum|state|status)\b/i.test(haystack) ? 80 : 0)
+    default:
+      return 0
+  }
+}
+
+function cIntentEvidenceBoost(plan: CompletionPlan, text: string) {
+  switch (plan.cIntent) {
+    case "error-path":
+      return /\b(?:cleanup|label|goto|return\s+(?:ret|err|rc|status)|unlock|free|release)\b/i.test(text) ? 120 : 0
+    case "mmio-register":
+      return /\b(?:register|mmio|macro|bit|mask|readl|writel|volatile|barrier)\b/i.test(text) ? 120 : 0
+    case "condition":
+      return /\b(?:condition|state|enum|status|flag|guard)\b/i.test(text) ? 90 : 0
+    default:
+      return 0
+  }
 }
 
 function block(input: Omit<PackedContextBlock, "tokenEstimate">): PackedContextBlock {
@@ -257,6 +313,10 @@ function block(input: Omit<PackedContextBlock, "tokenEstimate">): PackedContextB
     ...input,
     tokenEstimate: estimateTokens(input.text),
   }
+}
+
+function escapeRegExp(input: string) {
+  return input.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
 }
 
 function isSimilarTest(snippet: RetrievedCompletionSnippet) {
@@ -332,6 +392,7 @@ function tokenBudgetForPlan(plan: CompletionPlan) {
       return 1800
     case "ordinary-code":
     case "body-continuation":
+    case "top-level-declaration":
     case "comment-to-code":
       return 900
     case "disabled":

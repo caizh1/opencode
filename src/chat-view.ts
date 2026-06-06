@@ -100,6 +100,9 @@ type ChatViewMessage =
   | { type: "pauseCodeGraph" }
   | { type: "resumeCodeGraph" }
   | { type: "cancelCodeGraph" }
+  | { type: "pauseRagIndexing" }
+  | { type: "resumeRagIndexing" }
+  | { type: "cancelRagIndexing" }
   | { type: "showCodeGraphStatus" }
   | { type: "refreshCodeIntelligence" }
   | { type: "openEvidence"; path: string; line?: number }
@@ -772,6 +775,18 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
           break
         case "cancelCodeGraph":
           this.deps.codeGraph?.cancelIndexing("requested from Code Intelligence UI")
+          this.postState()
+          break
+        case "pauseRagIndexing":
+          this.deps.codeGraph?.pauseRagIndexing("requested from RAG UI")
+          this.postState()
+          break
+        case "resumeRagIndexing":
+          this.deps.codeGraph?.resumeRagIndexing()
+          this.postState()
+          break
+        case "cancelRagIndexing":
+          this.deps.codeGraph?.cancelRagIndexing("requested from RAG UI")
           this.postState()
           break
         case "showCodeGraphStatus":

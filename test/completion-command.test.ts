@@ -53,7 +53,7 @@ describe("accepted completion formatting command wiring", () => {
     expect(completionSource).toContain("document.version")
     expect(completionSource).toContain("planCompletion")
     expect(completionSource).toContain("routeCompletionModel")
-    expect(completionSource).toContain("routeLogValue(route)")
+    expect(completionSource).toContain("routeLogValue(route, input.settings)")
     expect(completionSource).toContain("completionPromptForRoute")
     expect(completionSource).toContain("profile: route.modelProfile")
     expect(completionSource).toContain("maxTokens: route.maxTokens")
@@ -80,6 +80,10 @@ describe("accepted completion formatting command wiring", () => {
 
   test("completion provider retrieves a wider symbol set for test instruction context", () => {
     expect(completionSource).toContain("plan.needsTestRetrieval ? 30 : 8")
+  })
+
+  test("inline completion analysis evidence uses graph-only retrieval", () => {
+    expect(completionSource).toContain('this.deps.codeGraph.queryEvidence(question, { retrievalMode: "graph-only" })')
   })
 
   test("Qwen coder FIM prompt uses the expected token order", () => {

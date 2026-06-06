@@ -159,6 +159,66 @@ describe("completion context packer", () => {
     expect(formatRepoContext(pack)).toContain("UART_CTRL_ENABLE")
   })
 
+  test("prioritizes MMIO macro context for C/C++ register intents", () => {
+    const pack = packCompletionContext({
+      plan: cIntentPlan("mmio-register"),
+      languageId: "c",
+      currentPath: "src/drivers/ctrl.c",
+      prefix: "void ctrl_enable(void)\n{\n    writel(",
+      suffix: ");\n}\n",
+      retrievedSnippets: [
+        {
+          kind: "function",
+          path: "src/drivers/ctrl.c",
+          line: 40,
+          name: "ctrl_enable",
+          text: "int ctrl_enable(struct ctrl *ctrl) { return ctrl_start(ctrl); }",
+          score: 60,
+        },
+        {
+          kind: "macro",
+          path: "include/drivers/ctrl_regs.h",
+          line: 12,
+          name: "CTRL_STATUS_REG",
+          text: "#define CTRL_STATUS_REG 0x20\n#define CTRL_STATUS_READY BIT(0)\n#define CTRL_STATUS_MASK GENMASK(3, 0)",
+          score: 55,
+        },
+      ],
+      tokenBudget: 260,
+    })
+
+    expect(pack.selected[0]).toMatchObject({
+      kind: "target-symbol",
+      filePath: "include/drivers/ctrl_regs.h",
+    })
+    expect(formatRepoContext(pack)).toContain("CTRL_STATUS_READY")
+  })
+
+  test("prioritizes cleanup evidence for C/C++ error-path intents", () => {
+    const pack = packCompletionContext({
+      plan: cIntentPlan("error-path"),
+      languageId: "c",
+      currentPath: "src/drivers/probe.c",
+      prefix: "int driver_probe(struct device *dev)\n{\n    int ret;\n    if (ret) {\n        ",
+      suffix: "\n    }\nout_unlock:\n    driver_unlock(dev);\n    return ret;\n}\n",
+      retrievedSnippets: [
+        {
+          kind: "function",
+          path: "src/drivers/other.c",
+          line: 20,
+          name: "driver_probe_other",
+          text: "if (ret) {\n    goto out_unlock;\n}\nout_unlock:\n    driver_unlock(dev);\n    return ret;",
+          score: 50,
+        },
+      ],
+      analysisEvidenceText: "src/drivers/probe.c: cleanup labels include out_unlock; existing style uses goto out_unlock and return ret.",
+      tokenBudget: 360,
+    })
+
+    expect(pack.selected.map((block) => block.kind)).toContain("analysis-evidence")
+    expect(pack.selected[0].text).toContain("out_unlock")
+  })
+
   test("drops local analysis evidence when token budget is too small", () => {
     const pack = packCompletionContext({
       plan: ordinaryPlan(),
@@ -213,6 +273,31 @@ describe("completion context packer", () => {
     expect(prompt.indexOf("FLAG_READY")).toBeLessThan(prompt.indexOf("<|fim_prefix|>"))
   })
 
+  test("Qwen FIM prompt includes C intent metadata before FIM tokens", async () => {
+    const { buildQwenCoderFimPrompt } = await import("../src/context")
+    const prompt = buildQwenCoderFimPrompt({
+      document: fakeDocument("void f(struct req *req)\n{\n    req->", "c"),
+      position: { line: 2, character: "    req->".length },
+      settings: settings(),
+      plan: cIntentPlan("member-access"),
+      retrievedSnippets: [
+        {
+          kind: "type",
+          path: "include/req.h",
+          line: 4,
+          name: "struct req",
+          text: "struct req {\n    int status;\n};",
+          score: 80,
+        },
+      ],
+    })
+
+    expect(prompt).toContain("// intent: member-access")
+    expect(prompt).toContain("// retrieval:")
+    expect(prompt).toContain("// constraints: return only insertion text; preserve local style")
+    expect(prompt.indexOf("// intent: member-access")).toBeLessThan(prompt.indexOf("<|fim_prefix|>"))
+  })
+
   test("instruction prompt includes target symbol definition and similar tests", async () => {
     const { buildCompletionPrompt } = await import("../src/context")
     const line = "// unit test for epr_ppn_raw_write_cb_dfx()"
@@ -249,6 +334,52 @@ describe("completion context packer", () => {
 
     expect(prompt).toContain("Local analysis evidence:")
     expect(prompt).toContain("uart_bus_lock")
+  })
+
+  test("comment-to-code prompt names source comment, suffix, and current function context", async () => {
+    const { buildCompletionPrompt } = await import("../src/context")
+    const documentText = [
+      "static int driver_open(Device *dev)",
+      "{",
+      "    int ret;",
+      "    // Add project-style error cleanup before success return.",
+      "    ",
+      "    ret = driver_start(dev);",
+      "    if (ret < 0) {",
+      "        return ret;",
+      "    }",
+      "    return 0;",
+      "}",
+    ].join("\n")
+    const lines = documentText.split("\n")
+    const position = { line: 4, character: 4 }
+    const plan = planCompletion({
+      languageId: "c",
+      linePrefix: "    ",
+      lineSuffix: "",
+      previousNonEmptyLine: lines[3],
+      nextNonEmptyLine: lines[5],
+      lines,
+      line: position.line,
+    })
+    const prompt = await buildCompletionPrompt({
+      document: fakeDocument(documentText, "c"),
+      position,
+      settings: settings(),
+      plan,
+      retrievedSnippets: [],
+    })
+
+    expect(prompt).toContain("Source comment:")
+    expect(prompt).toContain("// Add project-style error cleanup before success return.")
+    expect(prompt).toContain("Insertion point:")
+    expect(prompt).toContain("First suffix line:")
+    expect(prompt).toContain("ret = driver_start(dev);")
+    expect(prompt).toContain("Current function context:")
+    expect(prompt).toContain("driver_open")
+    expect(prompt).toContain("int ret;")
+    expect(prompt).toContain("Do not copy code from the suffix")
+    expect(prompt).toContain("Do not return generic success code such as `return 0;`")
   })
 
   test("instruction prompt keeps full target function bodies when snippets include them", async () => {
@@ -450,6 +581,21 @@ function bodyContinuationPlan(): CompletionPlan {
     insertMode: "insert-at-cursor",
     replaceCurrentWord: false,
     needsSymbolRetrieval: false,
+    needsTestRetrieval: false,
+    useFim: true,
+    useInstruction: false,
+    maxTokens: 96,
+    confidenceFloor: 0.35,
+  }
+}
+
+function cIntentPlan(cIntent: NonNullable<CompletionPlan["cIntent"]>): CompletionPlan {
+  return {
+    kind: cIntent === "top-level-declaration" ? "top-level-declaration" : "ordinary-code",
+    insertMode: "insert-at-cursor",
+    cIntent,
+    replaceCurrentWord: false,
+    needsSymbolRetrieval: true,
     needsTestRetrieval: false,
     useFim: true,
     useInstruction: false,
