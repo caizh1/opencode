@@ -7,6 +7,7 @@ export type CompletionPostprocessRejectReason =
   | "explanation-only"
   | "low-confidence-output"
   | "suffix-duplicated-output"
+  | "protocol-artifact-output"
 
 export type CompletionPostprocessPlan = Pick<CompletionPlan, "kind" | "insertMode" | "replaceCurrentWord" | "confidenceFloor" | "cIntent">
 
@@ -50,6 +51,13 @@ const QWEN_SPECIAL_TOKEN_PATTERN = /<\|(?:fim_prefix|fim_middle|fim_suffix|fim_p
 export function postprocessCompletion(input: CompletionPostprocessInput): CompletionPostprocessResult {
   const currentLine = input.fullCurrentLine ?? `${input.linePrefix}${input.lineSuffix}`
   let text = normalizeRawText(input.rawText)
+  if (looksLikeProtocolArtifact(text)) {
+    return withPostprocessDebug({
+      text: "",
+      rejected: true,
+      reason: "protocol-artifact-output",
+    }, { prefixMode: "none" })
+  }
   text = firstFencedCode(text) ?? text
   text = stripWrappingFence(text)
   text = unwrapCStyleInlineCode(text, input.languageId)
@@ -247,6 +255,17 @@ function normalizeRawText(input: string) {
     .replace(/\r\n/g, "\n")
     .replace(QWEN_SPECIAL_TOKEN_PATTERN, "")
     .replace(/<\/s>/g, "")
+}
+
+function looksLikeProtocolArtifact(input: string) {
+  const text = input.trimStart()
+  if (!text) return false
+  if (/^<\/?(?:tool_call|tool_calls|function_call|tool_response|assistant_response)\b/i.test(text)) return true
+  if (/^<tool\b/i.test(text) && /<\/tool\b/i.test(text)) return true
+  if (/^```(?:json)?\s*\n?\s*\{[\s\S]*"(?:tool_call|tool_calls|function_call)"\s*:/i.test(text)) return true
+  if (/^\{[\s\S]{0,200}"(?:tool_call|tool_calls|function_call)"\s*:/i.test(text)) return true
+  if (/^\{[\s\S]{0,200}"name"\s*:\s*"[^"]+"[\s\S]{0,200}"arguments"\s*:/i.test(text)) return true
+  return false
 }
 
 function firstFencedCode(input: string) {

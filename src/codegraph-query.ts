@@ -1,4 +1,10 @@
 import { ensureDerivedIndex, moduleKey } from "./codegraph-index"
+import {
+  commentGuidedCoverageSummary,
+  commentGuidedScoreFromCoverage,
+  normalizeCommentGuidedTokens,
+  scoreCommentGuidedCandidate,
+} from "./completion-comment-guided-ranking"
 import { evidenceFromRagHit, searchRagVectorIndex } from "./rag-index"
 import type {
   CodeGraphCallSite,
@@ -348,6 +354,8 @@ type CompletionEvidenceQuestion = {
   intent?: string
   path?: string
   functionName?: string
+  sourceComment?: string
+  nearbyIdentifiers: string[]
   memberBase?: string
   memberPrefix?: string
   callee?: string
@@ -372,6 +380,8 @@ function parseCompletionEvidenceQuestion(question: string): CompletionEvidenceQu
     intent,
     path,
     functionName,
+    sourceComment: get("source-comment"),
+    nearbyIdentifiers: splitQuestionTokens(get("nearby-identifiers") ?? ""),
     memberBase: get("member-base"),
     memberPrefix: get("member-prefix"),
     callee: get("callee"),
@@ -412,8 +422,87 @@ function addCompletionEvidence(
     case "state-machine":
       addStateishEvidence(collector, maps, question, relatedPaths)
       return
+    case "comment-guided-c-code":
+      addCommentGuidedEvidence(collector, maps, question, relatedPaths)
+      return
     default:
       return
+  }
+}
+
+function addCommentGuidedEvidence(
+  collector: EvidenceCollector,
+  maps: GraphMaps,
+  question: CompletionEvidenceQuestion,
+  relatedPaths: Set<string>,
+) {
+  const commentTokens = normalizeCommentGuidedTokens(question.sourceComment ?? "")
+  if (commentTokens.normalizedTokens.length === 0 && relatedPaths.size === 0) return
+  const currentPath = question.path ? normalizePath(question.path) : undefined
+  const currentModule = currentPath ? moduleKey(currentPath) : undefined
+  const scoredFunctions = maps.functions.map((fn) => {
+    const normalizedFunctionPath = normalizePath(fn.path)
+    const isCurrentFunction = Boolean(
+      question.functionName &&
+      fn.name === question.functionName &&
+      currentPath &&
+      sameLogicalPath(normalizedFunctionPath, currentPath),
+    )
+    if (isCurrentFunction) return undefined
+    const graphProximityScore = relatedBoost(fn.path, relatedPaths) + (currentPath && sameLogicalPath(normalizedFunctionPath, currentPath) ? 20 : 0)
+    const sameModuleScore = currentModule && moduleKey(fn.path) === currentModule ? 50 : 0
+    const coverage = scoreCommentGuidedCandidate({
+      comment: commentTokens,
+      candidateText: `${fn.name}\n${fn.signature}\n${fn.snippet}`,
+      graphProximityScore,
+      sameModuleScore,
+    })
+    const score = commentGuidedScoreFromCoverage(coverage)
+    return { fn, score, coverage }
+  }).filter((item): item is { fn: CodeGraphFunction; score: number; coverage: ReturnType<typeof scoreCommentGuidedCandidate> } => item !== undefined && item.score > 80)
+    .sort((left, right) => right.score - left.score || left.fn.path.localeCompare(right.fn.path) || left.fn.startLine - right.fn.startLine)
+
+  for (const item of scoredFunctions.slice(0, 6)) {
+    const hasCoreCoverage = item.coverage.matchedActionTokens.length > 0 || item.coverage.matchedObjectTokens.length > 0
+    const reason = [
+      hasCoreCoverage ? "completion comment-semantic-match similar-function" : "completion helper-usage",
+      commentGuidedCoverageSummary(item.coverage),
+    ].filter(Boolean).join(" ")
+    collector.add(commentGuidedFunctionEvidence(item.fn, item.score, reason))
+  }
+
+  const scoredFiles = maps.files.map((file) => {
+    const normalizedFilePath = normalizePath(file.path)
+    if (currentPath && sameLogicalPath(normalizedFilePath, currentPath)) return undefined
+    const graphProximityScore = relatedBoost(file.path, relatedPaths) + (currentPath && sameLogicalPath(normalizedFilePath, currentPath) ? 20 : 0)
+    const sameModuleScore = currentModule && moduleKey(file.path) === currentModule ? 45 : 0
+    const coverage = scoreCommentGuidedCandidate({
+      comment: commentTokens,
+      candidateText: file.functions.map((fn) => `${fn.name}\n${fn.signature}\n${fn.snippet}`).join("\n"),
+      graphProximityScore,
+      sameModuleScore,
+    })
+    return { file, score: commentGuidedScoreFromCoverage(coverage), coverage }
+  }).filter((item): item is { file: CodeGraphFile; score: number; coverage: ReturnType<typeof scoreCommentGuidedCandidate> } => item !== undefined && item.score > 70)
+    .sort((left, right) => right.score - left.score || left.file.path.localeCompare(right.file.path))
+
+  for (const item of scoredFiles.slice(0, 4)) {
+    collector.add(fileEvidence(item.file, item.score, `completion similar-block same-module-flow ${commentGuidedCoverageSummary(item.coverage)}`))
+  }
+
+  if (currentModule) {
+    const stats = maps.derived.moduleStats[currentModule]
+    if (stats) {
+      collector.add({
+        path: currentModule,
+        startLine: 1,
+        endLine: 1,
+        kind: "module",
+        score: 150,
+        reason: "completion same-module-flow",
+        snippet: `module ${currentModule}: ${stats.files} file(s), ${stats.functions} function(s), hot symbols: ${stats.hotSymbols.join(", ") || "none"}`,
+      })
+    }
   }
 }
 
@@ -887,6 +976,21 @@ function functionEvidence(fn: CodeGraphFunction, score: number, reason: string):
   }
 }
 
+function commentGuidedFunctionEvidence(fn: CodeGraphFunction, score: number, reason: string): CodeGraphEvidence {
+  return {
+    path: fn.path,
+    startLine: fn.startLine,
+    endLine: fn.endLine,
+    kind: "function",
+    score,
+    reason,
+    snippet: [
+      `function: ${fn.name}`,
+      fn.snippet,
+    ].join("\n"),
+  }
+}
+
 function symbolEvidence(symbol: CodeGraphSymbol, score: number, reason: string): CodeGraphEvidence {
   return {
     path: symbol.path,
@@ -1296,6 +1400,12 @@ function ownArray<T>(record: Record<string, T[]>, key: string): T[] {
 
 function normalizePath(path: string) {
   return path.replace(/\\/g, "/")
+}
+
+function sameLogicalPath(left: string, right: string) {
+  const a = normalizePath(left)
+  const b = normalizePath(right)
+  return a === b || a.endsWith(`/${b}`) || b.endsWith(`/${a}`)
 }
 
 function limitText(text: string, maxBytes: number) {

@@ -1789,6 +1789,13 @@ export class LocalCodeGraphService implements vscode.Disposable {
     }
   }
 
+  private isManualRagIndexPaused() {
+    return Boolean(
+      this.ragIndex?.indexPausedReason === "manual"
+        || (this.ragStatusValue.availability === "paused" && this.ragStatusValue.indexPausedReason === "manual"),
+    )
+  }
+
   private scheduleRagRefreshAfterCodeGraphReady(changedPaths?: string[]) {
     this.queuePendingRagRefresh(changedPaths)
     this.schedulePendingRagWorkAfterCodeGraphReady("code graph ready")
@@ -1806,6 +1813,11 @@ export class LocalCodeGraphService implements vscode.Disposable {
       this.clearPendingRagWorkTimer()
       return
     }
+    if (this.isManualRagIndexPaused()) {
+      this.clearPendingRagWorkTimer()
+      this.output.appendLine(`[rag-index] pending RAG work preserved while RAG indexing is manually paused reason=${reason}`)
+      return
+    }
     if (this.paused) {
       this.clearPendingRagWorkTimer()
       this.output.appendLine(`[rag-index] pending RAG work preserved while indexing is paused reason=${reason}`)
@@ -1821,6 +1833,11 @@ export class LocalCodeGraphService implements vscode.Disposable {
   private runPendingRagRefreshWhenReady(reason: string, options: { restartInFlight?: boolean; ignorePrevious?: boolean; continuePreviousElapsed?: boolean } = {}) {
     if (this.disposed) return
     if (!this.pendingRagRefresh && !this.pendingRagResumeTrigger) return
+    if (this.isManualRagIndexPaused()) {
+      this.clearPendingRagWorkTimer()
+      this.output.appendLine(`[rag-index] pending RAG work preserved while RAG indexing is manually paused reason=${reason}`)
+      return
+    }
     if (this.paused) {
       this.clearPendingRagWorkTimer()
       this.output.appendLine(`[rag-index] pending RAG work preserved while indexing is paused reason=${reason}`)
@@ -1883,6 +1900,15 @@ export class LocalCodeGraphService implements vscode.Disposable {
   }
 
   private async refreshRagIndex(changedPaths?: string[], options: { restartInFlight?: boolean; reason?: string; continuePreviousElapsed?: boolean; ignorePrevious?: boolean } = {}) {
+    if (this.isManualRagIndexPaused()) {
+      this.queuePendingRagRefresh(changedPaths, {
+        ignorePrevious: options.ignorePrevious,
+        continuePreviousElapsed: options.continuePreviousElapsed,
+      })
+      this.clearPendingRagWorkTimer()
+      this.output.appendLine(`[rag-index] pending RAG work preserved while RAG indexing is manually paused reason=${options.reason ?? "manual-pause"}`)
+      return
+    }
     if (this.paused) {
       this.queuePendingRagRefresh(changedPaths, {
         ignorePrevious: options.ignorePrevious,
@@ -1918,6 +1944,12 @@ export class LocalCodeGraphService implements vscode.Disposable {
     }).finally(async () => {
       if (this.ragIndexController === controller) this.ragIndexController = undefined
       this.ragIndexInFlight = undefined
+      if (this.isManualRagIndexPaused()) {
+        if (this.pendingRagRefresh || this.pendingRagResumeTrigger) {
+          this.output.appendLine("[rag-index] pending RAG work preserved while RAG indexing is manually paused reason=active-build-finished")
+        }
+        return
+      }
       const pending = this.pendingRagRefresh
       const ignorePrevious = this.pendingRagRefreshIgnorePrevious
       const continuePreviousElapsed = this.pendingRagRefreshContinuePreviousElapsed

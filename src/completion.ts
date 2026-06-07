@@ -23,7 +23,7 @@ import { INLINE_COMPLETION_SESSION_TITLE } from "./completion-session"
 import { completionSnippetFromSymbol } from "./completion-snippets"
 import { resolveSymbols, symbolCandidateFromCodeGraph } from "./completion-symbol"
 import { fallbackCompletionText } from "./completion-test-fallback"
-import { completionTelemetryRoute, createCompletionRequestId, filePathHash, serializeCompletionDebugEvent, type CompletionDebugEvent, type CompletionTelemetryDraft } from "./completion-telemetry"
+import { COMPLETION_PLANNER_REVISION, completionTelemetryRoute, createCompletionRequestId, filePathHash, serializeCompletionDebugEvent, type CompletionDebugEvent, type CompletionTelemetryDraft } from "./completion-telemetry"
 import type { CompletionPlan, RetrievedCompletionSnippet } from "./completion-types"
 import { buildCompletionPrompt, buildQwenCoderFimPrompt, relativePath } from "./context"
 import { isSessionNotFoundError, parseModel, RemoteOpenCodeClient } from "./remote-client"
@@ -35,6 +35,7 @@ type CompletionDeps = {
   getSettings: () => RemoteSettings
   codeGraph?: CodeGraphContextProvider
   output: vscode.OutputChannel
+  extensionVersion?: string
 }
 
 type ModelCompletionRoute = Extract<CompletionModelRoute, { kind: "model" }>
@@ -121,10 +122,12 @@ export class RemoteCompletionProvider implements vscode.InlineCompletionItemProv
       }
     }
 
-    this.logInfo(settings, `triggered ${details}`)
+    this.logInfo(settings, `triggered ${completionPlannerLogDetails(plan, this.deps.extensionVersion)} ${details}`)
     const telemetry: CompletionTelemetryDraft = {
       requestId,
       completionId: requestId,
+      extensionVersion: this.deps.extensionVersion,
+      plannerRevision: COMPLETION_PLANNER_REVISION,
       languageId: document.languageId,
       filePathHash: filePathHash(document.uri.fsPath),
       triggerKind: completionTriggerKind(context.triggerKind),
@@ -133,6 +136,9 @@ export class RemoteCompletionProvider implements vscode.InlineCompletionItemProv
       insertMode: plan.insertMode,
       currentWord: currentWord?.text,
       targetSymbol: plan.targetSymbol,
+      sourceCommentHash: plan.sourceComment ? filePathHash(plan.sourceComment) : undefined,
+      sourceCommentPreview: plan.sourceComment,
+      commentGuidedSkipReason: plan.commentGuidedSkipReason,
       retrievalMode: "none",
       evidenceKinds: [],
       contextLevel: "none",
@@ -405,6 +411,7 @@ export class RemoteCompletionProvider implements vscode.InlineCompletionItemProv
         })
       }
       effectiveModelProfile = route.modelProfile
+      const routedDetails = `${input.details} ${routeRequestDetails(route, input.settings)}`
 
       const contextStarted = Date.now()
       const prompt = await this.completionPromptForRoute({
@@ -412,7 +419,7 @@ export class RemoteCompletionProvider implements vscode.InlineCompletionItemProv
         document: input.document,
         position: input.position,
         settings: input.settings,
-        details: input.details,
+        details: routedDetails,
         plan,
         retrievedSnippets,
         transport: "openai-compatible",
@@ -426,7 +433,7 @@ export class RemoteCompletionProvider implements vscode.InlineCompletionItemProv
         selectedContextText: prompt.selectedContextText,
         document: input.document,
         settings: input.settings,
-        details: input.details,
+        details: routedDetails,
         started: input.started,
         editInput: input.editInput,
         plan,
@@ -483,7 +490,15 @@ export class RemoteCompletionProvider implements vscode.InlineCompletionItemProv
       input.telemetry.selectedContextBlocks = completionTelemetrySelectedContextBlocks(pack)
       input.telemetry.droppedContextBlocks = completionTelemetryDroppedContextBlocks(pack)
       input.telemetry.evidenceKinds = completionTelemetryEvidenceKinds(pack, input.telemetry.evidenceKinds)
+      const droppedEvidenceKinds = completionTelemetryDroppedEvidenceKinds(pack)
+      input.telemetry.evidenceDroppedReason = droppedEvidenceKinds.length > 0 ? "token-budget" : undefined
+      input.telemetry.droppedEvidenceKinds = droppedEvidenceKinds.length > 0 ? droppedEvidenceKinds : undefined
+      const promptEvidence = completionTelemetryPromptEvidence(pack)
+      input.telemetry.evidencePromptBlocks = promptEvidence.blocks || undefined
+      input.telemetry.evidencePromptTokens = promptEvidence.tokens || undefined
+      input.telemetry.evidencePromptKinds = promptEvidence.kinds.length > 0 ? promptEvidence.kinds : undefined
       input.telemetry.contextLevel = completionTelemetryContextLevel(pack)
+      input.telemetry.contextWarnings = completionTelemetryContextWarnings(pack)
       this.logDebug(input.settings, `${completionContextDebugSummary(pack)} ${input.details}`)
     }
     const analysisEvidenceText = await this.retrieveCompletionAnalysisEvidence({
@@ -734,10 +749,31 @@ export class RemoteCompletionProvider implements vscode.InlineCompletionItemProv
           question,
           relatedPaths: [relativePath(input.document.uri)],
           domainHints: input.plan.domainHints,
+          prefix: completionRetrievalPrefix(input.document, input.position),
+          suffix: completionRetrievalSuffix(input.document, input.position),
         })
         input.telemetry.retrievalMode = mergeCompletionRetrievalMode(input.telemetry.retrievalMode, result.retrievalMode)
         input.telemetry.evidenceKinds = mergeCompletionEvidenceKinds(input.telemetry.evidenceKinds, result.evidenceKinds)
         input.telemetry.cEmbeddedEvidenceTrace = result.trace
+        input.telemetry.normalizedCommentTokens = result.trace.normalizedCommentTokens
+        input.telemetry.candidateTokenCoverage = result.trace.candidateTokenCoverage
+        input.telemetry.semanticCandidateTopK = result.trace.semanticCandidateTopK
+        input.telemetry.selectedSimilarFunctionNames = result.trace.selectedSimilarFunctionNames
+        input.telemetry.retrievalElapsedMs = result.trace.retrievalElapsedMs
+        input.telemetry.retrievalBudgetMs = result.trace.retrievalBudgetMs
+        input.telemetry.retrievalTimedOut = result.trace.retrievalTimedOut
+        input.telemetry.timeoutStage = result.trace.timeoutStage
+        input.telemetry.qaAlignedEvidence = result.trace.qaAlignedEvidence
+        input.telemetry.qaTopCandidate = result.trace.qaTopCandidate
+        input.telemetry.completionTopCandidate = result.trace.completionTopCandidate
+        input.telemetry.sharedTopCandidate = result.trace.sharedTopCandidate
+        input.telemetry.qaRetrievalTopK = result.trace.qaRetrievalTopK
+        input.telemetry.completionRetrievalTopK = result.trace.completionRetrievalTopK
+        input.telemetry.alignmentReason = result.trace.alignmentReason
+        input.telemetry.rerankEnabled = result.trace.rerankEnabled
+        input.telemetry.ragAvailable = result.trace.ragAvailable
+        input.telemetry.latencyBudgetMs = result.trace.latencyBudgetMs
+        input.telemetry.maxEvidence = result.trace.maxEvidence
         const text = result.text.trim()
         if (text) {
           this.logDebug(input.settings, `c-embedded-evidence selected=${result.selectedEvidenceCount} kinds="${quoteLogValue(result.evidenceKinds.join(","))}" fallback=${result.trace.ragFallbackTriggered ? "hybrid" : "none"} ${input.details}`)
@@ -1028,9 +1064,37 @@ export class RemoteCompletionProvider implements vscode.InlineCompletionItemProv
       insertMode: telemetry.insertMode,
       currentWord: telemetry.currentWord,
       targetSymbol: telemetry.targetSymbol,
+      sourceCommentHash: telemetry.sourceCommentHash,
+      sourceCommentPreview: telemetry.sourceCommentPreview,
+      commentGuidedSkipReason: telemetry.commentGuidedSkipReason,
       retrievalMode: telemetry.retrievalMode,
       evidenceKinds: telemetry.evidenceKinds,
+      evidenceDroppedReason: telemetry.evidenceDroppedReason,
+      droppedEvidenceKinds: telemetry.droppedEvidenceKinds,
+      evidencePromptBlocks: telemetry.evidencePromptBlocks,
+      evidencePromptTokens: telemetry.evidencePromptTokens,
+      evidencePromptKinds: telemetry.evidencePromptKinds,
       contextLevel: telemetry.contextLevel,
+      contextWarnings: telemetry.contextWarnings,
+      normalizedCommentTokens: telemetry.normalizedCommentTokens,
+      candidateTokenCoverage: telemetry.candidateTokenCoverage,
+      semanticCandidateTopK: telemetry.semanticCandidateTopK,
+      selectedSimilarFunctionNames: telemetry.selectedSimilarFunctionNames,
+      retrievalElapsedMs: telemetry.retrievalElapsedMs,
+      retrievalBudgetMs: telemetry.retrievalBudgetMs,
+      retrievalTimedOut: telemetry.retrievalTimedOut,
+      timeoutStage: telemetry.timeoutStage,
+      qaAlignedEvidence: telemetry.qaAlignedEvidence,
+      qaTopCandidate: telemetry.qaTopCandidate,
+      completionTopCandidate: telemetry.completionTopCandidate,
+      sharedTopCandidate: telemetry.sharedTopCandidate,
+      qaRetrievalTopK: telemetry.qaRetrievalTopK,
+      completionRetrievalTopK: telemetry.completionRetrievalTopK,
+      alignmentReason: telemetry.alignmentReason,
+      rerankEnabled: telemetry.rerankEnabled,
+      ragAvailable: telemetry.ragAvailable,
+      latencyBudgetMs: telemetry.latencyBudgetMs,
+      maxEvidence: telemetry.maxEvidence,
       promptKind: telemetry.promptKind,
       symbolCandidates: telemetry.symbolCandidates,
       selectedContextBlocks: telemetry.selectedContextBlocks,
@@ -1420,6 +1484,19 @@ function requestDetails(document: vscode.TextDocument, position: vscode.Position
   ].join(" ")
 }
 
+function routeRequestDetails(route: CompletionModelRoute, settings: RemoteSettings) {
+  if (route.kind !== "model") return ""
+  const transport = route.modelProfile === "qwen-coder-fim" ? "raw-completions" : "chat-completions"
+  return [
+    `configuredProfile=${settings.completion.profile}`,
+    `effectiveProfile=${route.modelProfile}`,
+    `promptKind=${route.promptKind}`,
+    settings.completion.provider === "openai-compatible"
+      ? `transport=${transport}`
+      : "",
+  ].filter(Boolean).join(" ")
+}
+
 function elapsedMs(started: number) {
   return Date.now() - started
 }
@@ -1445,19 +1522,53 @@ function completionEvidenceQuestion(input: {
     input.plan.targetSymbol,
     ...input.retrievedSnippets.map((snippet) => snippet.name),
   ]).slice(0, 8)
+  const nearbyCommentTokens = nearbyCompletionCommentTokens(input.document, input.position)
   const parts = [
     `inline completion for ${input.document.languageId} file ${relativePath(input.document.uri)}`,
     `current-path: ${relativePath(input.document.uri)}`,
     `plan ${input.plan.kind}`,
-    input.plan.cIntent ? `completion-intent: ${input.plan.cIntent}` : "",
+    input.plan.cIntent && input.plan.kind !== "comment-guided-c-code" ? `completion-intent: ${input.plan.cIntent}` : "",
     functionName ? `function: ${functionName}` : "",
+    nearbyCommentTokens.length ? `nearby-comment-tokens: ${nearbyCommentTokens.join(" ")}` : "",
     symbols.length ? `symbols ${symbols.join(" ")}` : "",
     symbols.length ? `symbols: ${symbols.join(" ")}` : "",
-    input.plan.sourceComment ? `comment ${input.plan.sourceComment}` : "",
+    input.plan.sourceComment ? `source-comment: ${input.plan.sourceComment}` : "",
     input.retrievalEvidenceQuestion,
     lineText ? `cursor line ${lineText}` : "",
   ].filter(Boolean)
   return parts.join("\n")
+}
+
+function completionRetrievalPrefix(document: vscode.TextDocument, position: vscode.Position) {
+  const before = Math.max(0, position.line - 80)
+  return document.getText(new vscode.Range(before, 0, position.line, position.character))
+}
+
+function completionRetrievalSuffix(document: vscode.TextDocument, position: vscode.Position) {
+  const after = Math.min(document.lineCount - 1, position.line + 60)
+  return document.getText(new vscode.Range(position.line, position.character, after, document.lineAt(after).text.length))
+}
+
+function nearbyCompletionCommentTokens(document: vscode.TextDocument, position: vscode.Position) {
+  if (!isCEmbeddedLanguage(document.languageId)) return []
+  const tokens: string[] = []
+  for (let line = position.line; line >= Math.max(0, position.line - 8); line -= 1) {
+    const raw = document.lineAt(line).text
+    const text = line === position.line ? raw.slice(0, position.character) : raw
+    const commentText = commentPortion(text)
+    if (!commentText) continue
+    tokens.push(...(commentText.match(/\b[A-Za-z_][A-Za-z0-9_]{2,}\b/g) ?? []))
+  }
+  return uniqueNonEmpty(tokens.reverse()).slice(-8)
+}
+
+function commentPortion(line: string) {
+  const slash = line.indexOf("//")
+  if (slash >= 0) return line.slice(slash + 2)
+  const block = line.indexOf("/*")
+  if (block >= 0) return line.slice(block + 2)
+  const continuation = /^\s*\*\s?(.*)$/.exec(line)
+  return continuation?.[1] ?? ""
 }
 
 function completionAnalysisEvidenceOptions(document: vscode.TextDocument): CodeGraphEvidenceQueryOptions {
@@ -1490,6 +1601,9 @@ function updateCompletionTelemetryPlan(telemetry: CompletionTelemetryDraft, plan
   telemetry.insertMode = plan.insertMode
   telemetry.targetSymbol = plan.targetSymbol
   telemetry.cIntent = plan.cIntent
+  telemetry.sourceCommentHash = plan.sourceComment ? filePathHash(plan.sourceComment) : undefined
+  telemetry.sourceCommentPreview = plan.sourceComment
+  telemetry.commentGuidedSkipReason = plan.commentGuidedSkipReason
 }
 
 function completionTelemetryPromptKind(route: CompletionModelRoute): NonNullable<CompletionDebugEvent["promptKind"]> {
@@ -1512,6 +1626,18 @@ function deterministicCompletionMessage(text: string): OpenCodeMessage {
 
 function formatError(error: unknown) {
   return error instanceof Error ? error.message : String(error)
+}
+
+function completionPlannerLogDetails(plan: CompletionPlan, extensionVersion: string | undefined) {
+  return [
+    `plannerRevision=${COMPLETION_PLANNER_REVISION}`,
+    extensionVersion ? `extensionVersion=${quoteLogValue(extensionVersion)}` : "",
+    `planKind=${plan.kind}`,
+    plan.cIntent ? `cIntent=${quoteLogValue(plan.cIntent)}` : "",
+    plan.targetSymbol ? `targetSymbol="${quoteLogValue(plan.targetSymbol)}"` : "",
+    plan.sourceComment ? `sourceCommentPreview="${quoteLogValue(truncateLine(plan.sourceComment))}"` : "",
+    plan.commentGuidedSkipReason ? `commentGuidedSkipReason=${quoteLogValue(plan.commentGuidedSkipReason)}` : "",
+  ].filter(Boolean).join(" ")
 }
 
 function quoteLogValue(value: string) {
@@ -1621,6 +1747,37 @@ function completionTelemetryEvidenceKinds(pack: CompletionContextPack, existing:
     ...pack.selected.map((block) => block.kind),
   ])
   return [...kinds].sort()
+}
+
+function completionTelemetryDroppedEvidenceKinds(pack: CompletionContextPack) {
+  const kinds = new Set(
+    pack.dropped
+      .filter((block) => block.kind === "analysis-evidence" || block.kind === "c-embedded-evidence")
+      .map((block) => block.kind === "c-embedded-evidence" ? block.title.split(":")[0]?.trim() || block.kind : block.kind),
+  )
+  return [...kinds].sort()
+}
+
+function completionTelemetryPromptEvidence(pack: CompletionContextPack) {
+  const blocks = pack.selected.filter((block) => block.kind === "analysis-evidence" || block.kind === "c-embedded-evidence")
+  return {
+    blocks: blocks.length,
+    tokens: blocks.reduce((sum, block) => sum + block.tokenEstimate, 0),
+    kinds: uniqueNonEmpty(blocks.map((block) => block.kind === "c-embedded-evidence" ? block.title.split(":")[0]?.trim() : block.kind)),
+  }
+}
+
+function completionTelemetryContextWarnings(pack: CompletionContextPack) {
+  const selectedKinds = new Set(pack.selected.map((block) => block.kind))
+  const warnings = [
+    !selectedKinds.has("current-prefix") && pack.dropped.some((block) => block.kind === "current-prefix")
+      ? "dropped-current-prefix"
+      : "",
+    !selectedKinds.has("current-suffix") && pack.dropped.some((block) => block.kind === "current-suffix")
+      ? "dropped-current-suffix"
+      : "",
+  ].filter(Boolean)
+  return warnings.length > 0 ? warnings : undefined
 }
 
 function mergeCompletionEvidenceKinds(existing: string[] | undefined, next: string[]) {

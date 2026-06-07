@@ -56,6 +56,7 @@ export type CompletionQualityFixture = {
   }
   expectedIntent: string
   expectedPatterns: string[]
+  expectedSimilarFunction?: string
   forbiddenPatterns: string[]
   mustUseExistingSymbols: string[]
   mustMatchLocalStyle: boolean | string[]
@@ -113,12 +114,17 @@ export type CompletionQualityRecord = {
   rejectReason?: string
   evidenceKinds: string[]
   contextLevel: string
+  contextWarnings?: string[]
   retrievalMode?: string
   actualCompletionBackend?: "direct-qwen" | "mock-provider"
   ablationVariant?: "baseline" | "p2-evidence"
   transport?: CompletionTransport
   model?: string
   promptEvidenceMatched?: boolean
+  evidencePromptBlocks?: number
+  evidencePromptTokens?: number
+  evidencePromptKinds?: string[]
+  protocolArtifact?: boolean
   rawOutputLength?: number
   finalInsertTextLength?: number
   retrievalPolicy?: CompletionRetrievalPolicy
@@ -133,6 +139,26 @@ export type CompletionQualityRecord = {
   qualityMetricValid?: boolean
   failureReason?: string
   cEmbeddedEvidenceTrace?: CompletionDebugEvent["cEmbeddedEvidenceTrace"]
+  normalizedCommentTokens?: string[]
+  candidateTokenCoverage?: CompletionDebugEvent["candidateTokenCoverage"]
+  semanticCandidateTopK?: CompletionDebugEvent["semanticCandidateTopK"]
+  selectedSimilarFunctionNames?: string[]
+  correctFunctionInCandidates?: boolean
+  retrievalElapsedMs?: number
+  retrievalBudgetMs?: number
+  retrievalTimedOut?: boolean
+  timeoutStage?: string
+  qaAlignedEvidence?: boolean
+  qaTopCandidate?: string
+  completionTopCandidate?: string
+  sharedTopCandidate?: string
+  qaRetrievalTopK?: string[]
+  completionRetrievalTopK?: string[]
+  alignmentReason?: string
+  rerankEnabled?: boolean
+  ragAvailable?: boolean
+  latencyBudgetMs?: number
+  maxEvidence?: number
 }
 
 export type CompletionQualitySummary = {
@@ -147,6 +173,7 @@ export type CompletionQualitySummary = {
   style_match_rate: number
   retrieval_hit_rate: number
   promptEvidenceMatched?: number
+  protocol_artifact_rate?: number
   prompt_token_count: {
     avg: number
     p50: number
@@ -207,6 +234,7 @@ export type CompletionQualityLatestReportRecord = {
   evidenceKinds: string[]
   selectedEvidenceCount: number
   contextLevel: string
+  contextWarnings?: string[]
   promptKind: string
   transport?: CompletionTransport
   model?: string
@@ -221,12 +249,36 @@ export type CompletionQualityLatestReportRecord = {
   rawOutputLength?: number
   finalInsertTextLength?: number
   promptEvidenceMatched?: boolean
+  evidencePromptBlocks?: number
+  evidencePromptTokens?: number
+  evidencePromptKinds?: string[]
+  protocolArtifact?: boolean
   failureReason?: string
   ragFallbackTriggered?: boolean
   ragFallbackReason?: string
   graphEvidenceCount?: number
   ragEvidenceCount?: number
   finalSelectedEvidenceCount?: number
+  normalizedCommentTokens?: string[]
+  candidateTokenCoverage?: CompletionDebugEvent["candidateTokenCoverage"]
+  semanticCandidateTopK?: CompletionDebugEvent["semanticCandidateTopK"]
+  selectedSimilarFunctionNames?: string[]
+  correctFunctionInCandidates?: boolean
+  retrievalElapsedMs?: number
+  retrievalBudgetMs?: number
+  retrievalTimedOut?: boolean
+  timeoutStage?: string
+  qaAlignedEvidence?: boolean
+  qaTopCandidate?: string
+  completionTopCandidate?: string
+  sharedTopCandidate?: string
+  qaRetrievalTopK?: string[]
+  completionRetrievalTopK?: string[]
+  alignmentReason?: string
+  rerankEnabled?: boolean
+  ragAvailable?: boolean
+  latencyBudgetMs?: number
+  maxEvidence?: number
 }
 
 type CompletionQualityRetrievalTrace = {
@@ -509,10 +561,11 @@ async function runDirectQwenAblationFixture(input: {
       tokenEstimate: block.tokenEstimate,
     })),
   } as CompletionDebugEvent)
+  const promptEvidence = promptEvidenceStats(selectedEvidence)
   const evidenceText = [selectedContextText, ...retrievedSnippets.map((snippet) => snippet.text)].join("\n")
   const rawOutputLength = rawText.length
   const finalInsertTextLength = finalInsert.length
-  const promptEvidenceMatched = promptEvidenceMatch(prompt, evidenceKindValues)
+  const promptEvidenceMatched = promptEvidenceMatch(prompt, promptEvidence.kinds)
   const record: CompletionQualityRecord = {
     name: input.fixture.name,
     file: input.fixture.file,
@@ -537,12 +590,17 @@ async function runDirectQwenAblationFixture(input: {
     rejectReason: pipeline.rejectionReason,
     evidenceKinds: evidenceKindValues.length ? evidenceKindValues : evidenceKinds(contextPack),
     contextLevel: contextLevel(contextPack),
+    contextWarnings: contextWarnings(contextPack),
     retrievalMode,
     actualCompletionBackend: "direct-qwen",
     ablationVariant: input.variant,
     transport: input.config.transport,
     model: input.config.model,
     promptEvidenceMatched,
+    evidencePromptBlocks: promptEvidence.blocks,
+    evidencePromptTokens: promptEvidence.tokens,
+    evidencePromptKinds: promptEvidence.kinds,
+    protocolArtifact: hasProtocolArtifact(rawText) || hasProtocolArtifact(finalInsert),
     rawOutputLength,
     finalInsertTextLength,
     retrievalPolicy: resolvedPlan.retrievalPolicy,
@@ -554,6 +612,26 @@ async function runDirectQwenAblationFixture(input: {
     selectedEvidence,
     retrievalTrace: codeGraph.trace,
     cEmbeddedEvidenceTrace: evidenceResult?.trace,
+    normalizedCommentTokens: evidenceResult?.trace.normalizedCommentTokens,
+    candidateTokenCoverage: evidenceResult?.trace.candidateTokenCoverage,
+    semanticCandidateTopK: evidenceResult?.trace.semanticCandidateTopK,
+    selectedSimilarFunctionNames: evidenceResult?.trace.selectedSimilarFunctionNames,
+    correctFunctionInCandidates: correctFunctionInCandidates(input.fixture, evidenceResult?.trace),
+    retrievalElapsedMs: evidenceResult?.trace.retrievalElapsedMs,
+    retrievalBudgetMs: evidenceResult?.trace.retrievalBudgetMs,
+    retrievalTimedOut: evidenceResult?.trace.retrievalTimedOut,
+    timeoutStage: evidenceResult?.trace.timeoutStage,
+    qaAlignedEvidence: evidenceResult?.trace.qaAlignedEvidence,
+    qaTopCandidate: evidenceResult?.trace.qaTopCandidate,
+    completionTopCandidate: evidenceResult?.trace.completionTopCandidate,
+    sharedTopCandidate: evidenceResult?.trace.sharedTopCandidate,
+    qaRetrievalTopK: evidenceResult?.trace.qaRetrievalTopK,
+    completionRetrievalTopK: evidenceResult?.trace.completionRetrievalTopK,
+    alignmentReason: evidenceResult?.trace.alignmentReason,
+    rerankEnabled: evidenceResult?.trace.rerankEnabled,
+    ragAvailable: evidenceResult?.trace.ragAvailable,
+    latencyBudgetMs: evidenceResult?.trace.latencyBudgetMs,
+    maxEvidence: evidenceResult?.trace.maxEvidence,
     failureReason: pipeline.rejectionReason,
   }
   if (input.variant === "baseline" && baselineEvidence?.evidencePack.text.trim()) {
@@ -647,6 +725,8 @@ async function directAblationAnalysisEvidence(input: {
       question,
       relatedPaths,
       domainHints: input.plan.domainHints,
+      prefix: documentPrefixForBenchmark(input.document, input.position),
+      suffix: documentSuffixForBenchmark(input.document, input.position),
     })
     return {
       text: result.text.trim(),
@@ -817,6 +897,7 @@ function writeDirectAblationDump(input: {
       evidenceKinds: record.evidenceKinds,
       selectedEvidenceCount: record.cEmbeddedEvidenceTrace?.finalSelectedEvidenceCount ?? record.selectedEvidence?.length ?? 0,
       contextLevel: record.contextLevel,
+      contextWarnings: record.contextWarnings,
       promptKind: record.promptKind,
       transport: record.transport,
       model: record.model,
@@ -831,12 +912,36 @@ function writeDirectAblationDump(input: {
       rawOutputLength: record.rawOutputLength,
       finalInsertTextLength: record.finalInsertTextLength,
       promptEvidenceMatched: record.promptEvidenceMatched,
+      evidencePromptBlocks: record.evidencePromptBlocks,
+      evidencePromptTokens: record.evidencePromptTokens,
+      evidencePromptKinds: record.evidencePromptKinds,
+      protocolArtifact: record.protocolArtifact,
       failureReason: record.failureReason ?? record.rejectReason,
       ragFallbackTriggered: record.cEmbeddedEvidenceTrace?.ragFallbackTriggered,
       ragFallbackReason: record.cEmbeddedEvidenceTrace?.ragFallbackReason,
       graphEvidenceCount: record.cEmbeddedEvidenceTrace?.graphEvidenceCount,
       ragEvidenceCount: record.cEmbeddedEvidenceTrace?.ragEvidenceCount,
       finalSelectedEvidenceCount: record.cEmbeddedEvidenceTrace?.finalSelectedEvidenceCount,
+      normalizedCommentTokens: record.normalizedCommentTokens,
+      candidateTokenCoverage: record.candidateTokenCoverage,
+      semanticCandidateTopK: record.semanticCandidateTopK,
+      selectedSimilarFunctionNames: record.selectedSimilarFunctionNames,
+      correctFunctionInCandidates: record.correctFunctionInCandidates,
+      retrievalElapsedMs: record.retrievalElapsedMs,
+      retrievalBudgetMs: record.retrievalBudgetMs,
+      retrievalTimedOut: record.retrievalTimedOut,
+      timeoutStage: record.timeoutStage,
+      qaAlignedEvidence: record.qaAlignedEvidence,
+      qaTopCandidate: record.qaTopCandidate,
+      completionTopCandidate: record.completionTopCandidate,
+      sharedTopCandidate: record.sharedTopCandidate,
+      qaRetrievalTopK: record.qaRetrievalTopK,
+      completionRetrievalTopK: record.completionRetrievalTopK,
+      alignmentReason: record.alignmentReason,
+      rerankEnabled: record.rerankEnabled,
+      ragAvailable: record.ragAvailable,
+      latencyBudgetMs: record.latencyBudgetMs,
+      maxEvidence: record.maxEvidence,
     })
   }
   const report = {
@@ -1051,6 +1156,25 @@ function promptEvidenceMatch(prompt: string, evidenceKinds: string[]) {
   return evidenceKinds.every((kind) => prompt.includes(kind))
 }
 
+function promptEvidenceStats(blocks: DumpEvidenceBlock[]) {
+  const evidence = blocks.filter((block) => block.kind === "c-embedded-evidence" || block.kind === "analysis-evidence")
+  return {
+    blocks: evidence.length,
+    tokens: evidence.reduce((sum, block) => sum + block.tokenEstimate, 0),
+    kinds: uniqueNonEmpty(evidence.map((block) => block.kind === "c-embedded-evidence" ? block.title.split(":")[0]?.trim() || block.kind : block.kind)),
+  }
+}
+
+function hasProtocolArtifact(text: string | undefined) {
+  const value = text?.trimStart() ?? ""
+  if (!value) return false
+  if (/^<\/?(?:tool_call|tool_calls|function_call|tool_response|assistant_response)\b/i.test(value)) return true
+  if (/^<tool\b/i.test(value) && /<\/tool\b/i.test(value)) return true
+  if (/^\{[\s\S]{0,200}"(?:tool_call|tool_calls|function_call)"\s*:/i.test(value)) return true
+  if (/^\{[\s\S]{0,200}"name"\s*:\s*"[^"]+"[\s\S]{0,200}"arguments"\s*:/i.test(value)) return true
+  return false
+}
+
 function mergeRetrievalModeForBenchmark(left: string | undefined, right: string | undefined) {
   if (left === "hybrid" || right === "hybrid") return "hybrid"
   if (left === "graph-only" || right === "graph-only") return "graph-only"
@@ -1133,6 +1257,22 @@ function completionEvidenceQuestionForBenchmark(input: {
     input.retrievalEvidenceQuestion,
     lineText ? `cursor line ${lineText}` : "",
   ].filter(Boolean).join("\n")
+}
+
+function documentPrefixForBenchmark(document: ReturnType<typeof fakeTextDocument>["vscodeDocument"], position: { line: number; character: number }) {
+  const startLine = Math.max(0, position.line - 80)
+  return document.getText({
+    start: { line: startLine, character: 0 },
+    end: position,
+  })
+}
+
+function documentSuffixForBenchmark(document: ReturnType<typeof fakeTextDocument>["vscodeDocument"], position: { line: number; character: number }) {
+  const endLine = Math.min(document.lineCount - 1, position.line + 60)
+  return document.getText({
+    start: position,
+    end: { line: endLine, character: document.lineAt(endLine).text.length },
+  })
 }
 
 function cLikeFunctionNameNearPositionForBenchmark(document: ReturnType<typeof fakeTextDocument>["vscodeDocument"], position: { line: number }) {
@@ -1435,6 +1575,7 @@ async function runDirectCompletionQualityFixture(input: {
     rejectReason: pipeline.rejectionReason,
     evidenceKinds: evidenceKinds(contextPack),
     contextLevel: contextLevel(contextPack),
+    contextWarnings: contextWarnings(contextPack),
     retrievalMode: retrievedSnippets.length > 0 ? "fixture-snippets" : "none",
     retrievalPolicy: resolvedPlan.retrievalPolicy,
     domainHints: resolvedPlan.domainHints,
@@ -1726,6 +1867,13 @@ async function runProviderDryRunCompletionQualityFixture(fixture: CompletionQual
   )
   const telemetry = latestTelemetry(output.lines)
   const selectedEvidence = selectedEvidenceBlocks(promptCapture.prompt, telemetry)
+  const promptEvidence = telemetry?.evidencePromptBlocks !== undefined
+    ? {
+        blocks: telemetry.evidencePromptBlocks ?? 0,
+        tokens: telemetry.evidencePromptTokens ?? 0,
+        kinds: telemetry.evidencePromptKinds ?? [],
+      }
+    : promptEvidenceStats(selectedEvidence)
   const itemInsert = inlineInsertText(items)
   const rawText = promptCapture.rawOutput
   const finalInsert = itemInsert || (telemetry?.filterText ?? "") || rawText
@@ -1757,13 +1905,39 @@ async function runProviderDryRunCompletionQualityFixture(fixture: CompletionQual
     rejectReason: telemetry?.rejectReason,
     evidenceKinds: telemetry?.evidenceKinds ?? selectedEvidence.map((block) => block.kind),
     contextLevel: telemetry?.contextLevel ?? contextLevelFromEvidence(selectedEvidence),
+    contextWarnings: telemetry?.contextWarnings,
     retrievalMode: telemetry?.retrievalMode ?? retrievalModeFromTrace(codeGraph.trace),
+    evidencePromptBlocks: promptEvidence.blocks,
+    evidencePromptTokens: promptEvidence.tokens,
+    evidencePromptKinds: promptEvidence.kinds,
+    promptEvidenceMatched: promptEvidenceMatch(promptCapture.prompt, promptEvidence.kinds),
+    protocolArtifact: hasProtocolArtifact(rawText) || hasProtocolArtifact(finalInsert),
     retrievalPolicy: initialPlan.retrievalPolicy,
     domainHints: initialPlan.domainHints,
     finalPrompt: promptCapture.prompt,
     selectedEvidence,
     retrievalTrace: codeGraph.trace,
     cEmbeddedEvidenceTrace: telemetry?.cEmbeddedEvidenceTrace,
+    normalizedCommentTokens: telemetry?.normalizedCommentTokens,
+    candidateTokenCoverage: telemetry?.candidateTokenCoverage,
+    semanticCandidateTopK: telemetry?.semanticCandidateTopK,
+    selectedSimilarFunctionNames: telemetry?.selectedSimilarFunctionNames,
+    correctFunctionInCandidates: correctFunctionInCandidates(fixture, telemetry),
+    retrievalElapsedMs: telemetry?.retrievalElapsedMs,
+    retrievalBudgetMs: telemetry?.retrievalBudgetMs,
+    retrievalTimedOut: telemetry?.retrievalTimedOut,
+    timeoutStage: telemetry?.timeoutStage,
+    qaAlignedEvidence: telemetry?.qaAlignedEvidence,
+    qaTopCandidate: telemetry?.qaTopCandidate,
+    completionTopCandidate: telemetry?.completionTopCandidate,
+    sharedTopCandidate: telemetry?.sharedTopCandidate,
+    qaRetrievalTopK: telemetry?.qaRetrievalTopK,
+    completionRetrievalTopK: telemetry?.completionRetrievalTopK,
+    alignmentReason: telemetry?.alignmentReason,
+    rerankEnabled: telemetry?.rerankEnabled,
+    ragAvailable: telemetry?.ragAvailable,
+    latencyBudgetMs: telemetry?.latencyBudgetMs,
+    maxEvidence: telemetry?.maxEvidence,
     failureReason: telemetry?.rejectReason ?? (finalInsert ? undefined : "no-visible-inline-item"),
   }
   return record
@@ -1827,6 +2001,7 @@ export function summarizeCompletionQuality(
     style_match_rate: rate(records, (record) => record.styleMatch),
     retrieval_hit_rate: rate(records, (record) => record.retrievalHit),
     promptEvidenceMatched: rate(records, (record) => Boolean(record.promptEvidenceMatched)),
+    protocol_artifact_rate: rate(records, (record) => Boolean(record.protocolArtifact)),
     prompt_token_count: distribution(records.map((record) => record.promptTokenCount)),
     raw_output_length: distribution(records.map((record) => record.rawOutputLength ?? record.rawModelOutputSample.length)),
     final_insert_text_length: distribution(records.map((record) => record.finalInsertTextLength ?? record.finalInsertTextSample.length)),
@@ -1892,6 +2067,7 @@ function writeLatestDump(input: {
       evidenceKinds: record.evidenceKinds,
       selectedEvidenceCount: record.cEmbeddedEvidenceTrace?.finalSelectedEvidenceCount ?? record.selectedEvidence?.length ?? 0,
       contextLevel: record.contextLevel,
+      contextWarnings: record.contextWarnings,
       promptKind: record.promptKind,
       promptTokenEstimate: record.promptTokenCount,
       finalPromptPath: promptPath ? relative(process.cwd(), promptPath) : undefined,
@@ -1899,12 +2075,37 @@ function writeLatestDump(input: {
       retrievalPolicy: record.retrievalPolicy,
       domainHints: record.domainHints,
       mockVisibleCandidate: record.finalInsertTextSample,
+      promptEvidenceMatched: record.promptEvidenceMatched,
+      evidencePromptBlocks: record.evidencePromptBlocks,
+      evidencePromptTokens: record.evidencePromptTokens,
+      evidencePromptKinds: record.evidencePromptKinds,
+      protocolArtifact: record.protocolArtifact,
       failureReason: record.failureReason ?? record.rejectReason,
       ragFallbackTriggered: record.cEmbeddedEvidenceTrace?.ragFallbackTriggered,
       ragFallbackReason: record.cEmbeddedEvidenceTrace?.ragFallbackReason,
       graphEvidenceCount: record.cEmbeddedEvidenceTrace?.graphEvidenceCount,
       ragEvidenceCount: record.cEmbeddedEvidenceTrace?.ragEvidenceCount,
       finalSelectedEvidenceCount: record.cEmbeddedEvidenceTrace?.finalSelectedEvidenceCount,
+      normalizedCommentTokens: record.normalizedCommentTokens,
+      candidateTokenCoverage: record.candidateTokenCoverage,
+      semanticCandidateTopK: record.semanticCandidateTopK,
+      selectedSimilarFunctionNames: record.selectedSimilarFunctionNames,
+      correctFunctionInCandidates: record.correctFunctionInCandidates,
+      retrievalElapsedMs: record.retrievalElapsedMs,
+      retrievalBudgetMs: record.retrievalBudgetMs,
+      retrievalTimedOut: record.retrievalTimedOut,
+      timeoutStage: record.timeoutStage,
+      qaAlignedEvidence: record.qaAlignedEvidence,
+      qaTopCandidate: record.qaTopCandidate,
+      completionTopCandidate: record.completionTopCandidate,
+      sharedTopCandidate: record.sharedTopCandidate,
+      qaRetrievalTopK: record.qaRetrievalTopK,
+      completionRetrievalTopK: record.completionRetrievalTopK,
+      alignmentReason: record.alignmentReason,
+      rerankEnabled: record.rerankEnabled,
+      ragAvailable: record.ragAvailable,
+      latencyBudgetMs: record.latencyBudgetMs,
+      maxEvidence: record.maxEvidence,
     })
   }
   const report: CompletionQualityLatestReport = {
@@ -1962,15 +2163,56 @@ function evidenceDump(record: CompletionQualityRecord) {
     },
     retrievalMode: record.retrievalMode ?? "none",
     cEmbeddedEvidenceTrace: record.cEmbeddedEvidenceTrace,
+    normalizedCommentTokens: record.normalizedCommentTokens,
+    candidateTokenCoverage: record.candidateTokenCoverage,
+    semanticCandidateTopK: record.semanticCandidateTopK,
+    selectedSimilarFunctionNames: record.selectedSimilarFunctionNames,
+    correctFunctionInCandidates: record.correctFunctionInCandidates,
+    retrievalElapsedMs: record.retrievalElapsedMs,
+    retrievalBudgetMs: record.retrievalBudgetMs,
+    retrievalTimedOut: record.retrievalTimedOut,
+    timeoutStage: record.timeoutStage,
+    qaAlignedEvidence: record.qaAlignedEvidence,
+    qaTopCandidate: record.qaTopCandidate,
+    completionTopCandidate: record.completionTopCandidate,
+    sharedTopCandidate: record.sharedTopCandidate,
+    qaRetrievalTopK: record.qaRetrievalTopK,
+    completionRetrievalTopK: record.completionRetrievalTopK,
+    alignmentReason: record.alignmentReason,
+    rerankEnabled: record.rerankEnabled,
+    ragAvailable: record.ragAvailable,
+    latencyBudgetMs: record.latencyBudgetMs,
+    maxEvidence: record.maxEvidence,
     selectedEvidence: record.selectedEvidence ?? [],
     evidenceKinds: record.evidenceKinds,
     selectedEvidenceCount: record.cEmbeddedEvidenceTrace?.finalSelectedEvidenceCount ?? record.selectedEvidence?.length ?? 0,
+    evidencePromptBlocks: record.evidencePromptBlocks,
+    evidencePromptTokens: record.evidencePromptTokens,
+    evidencePromptKinds: record.evidencePromptKinds,
+    protocolArtifact: record.protocolArtifact,
     rawModelOutputSample: record.rawModelOutputSample,
     finalInsertTextSample: record.finalInsertTextSample,
     postprocessReason: record.postprocessReason,
     pipelineDecision: record.visible ? "accepted" : "rejected",
     failureReason: record.failureReason ?? record.rejectReason,
   }
+}
+
+function correctFunctionInCandidates(
+  fixture: CompletionQualityFixture,
+  trace: Pick<CompletionDebugEvent, "semanticCandidateTopK" | "selectedSimilarFunctionNames" | "qaRetrievalTopK" | "completionRetrievalTopK" | "sharedTopCandidate" | "qaTopCandidate" | "completionTopCandidate"> | undefined,
+) {
+  const expected = fixture.expectedSimilarFunction?.trim().toLowerCase()
+  if (!expected) return undefined
+  return [
+    ...(trace?.selectedSimilarFunctionNames ?? []),
+    ...(trace?.semanticCandidateTopK ?? []).map((item) => item.name ?? ""),
+    ...(trace?.qaRetrievalTopK ?? []),
+    ...(trace?.completionRetrievalTopK ?? []),
+    trace?.sharedTopCandidate ?? "",
+    trace?.qaTopCandidate ?? "",
+    trace?.completionTopCandidate ?? "",
+  ].some((name) => name.toLowerCase() === expected)
 }
 
 function printPromptSamples(records: CompletionQualityRecord[], options: { samplePrompts: number; sampleSeed?: number }) {
@@ -2274,6 +2516,16 @@ function contextLevel(pack: CompletionContextPack | undefined) {
   if (tokens < 500) return "light"
   if (tokens < 1600) return "standard"
   return "rich"
+}
+
+function contextWarnings(pack: CompletionContextPack | undefined) {
+  if (!pack) return undefined
+  const selectedKinds = new Set(pack.selected.map((block) => block.kind))
+  const warnings = [
+    !selectedKinds.has("current-prefix") && pack.dropped.some((block) => block.kind === "current-prefix") ? "dropped-current-prefix" : "",
+    !selectedKinds.has("current-suffix") && pack.dropped.some((block) => block.kind === "current-suffix") ? "dropped-current-suffix" : "",
+  ].filter(Boolean)
+  return warnings.length ? warnings : undefined
 }
 
 function matchesPattern(text: string, pattern: string) {

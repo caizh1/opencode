@@ -127,6 +127,17 @@ export function routeCompletionModel(input: RouteCompletionModelInput): Completi
         temperature: 0,
         topP: input.settings.completion.topP,
       }
+    case "comment-guided-c-code":
+      return {
+        kind: "model",
+        reason: "ordinary-code",
+        promptKind: "qwen-fim",
+        modelProfile: input.settings.completion.profile,
+        textProfile: input.settings.completion.profile,
+        maxTokens: clampTokens(plan.maxTokens || 128, 96, 192),
+        temperature: Math.min(input.settings.completion.temperature, 0.2),
+        topP: input.settings.completion.topP,
+      }
     case "ordinary-code":
     case "c-embedded-code":
     case "body-continuation":
@@ -159,15 +170,19 @@ export function routeLogValue(route: CompletionModelRoute, settings?: RemoteSett
   if (route.kind === "deterministic-symbol") {
     return `route=deterministic-symbol reason=${route.reason} maxTokens=0`
   }
+  const rawFimTransport = route.modelProfile === "qwen-coder-fim"
   return [
     `route=${route.promptKind}`,
     `reason=${route.reason}`,
     `modelProfile=${route.modelProfile}`,
     settings?.completion.provider === "openai-compatible"
+      ? `configuredProfile=${settings.completion.profile}`
+      : "",
+    settings?.completion.provider === "openai-compatible"
       ? `effectiveProfile=${route.modelProfile}`
       : "",
     settings?.completion.provider === "openai-compatible"
-      ? `endpoint=${route.promptKind === "qwen-fim" ? "/completions" : "/chat/completions"}`
+      ? `endpoint=${rawFimTransport ? "/completions" : "/chat/completions"}`
       : "",
     `promptKind=${route.promptKind}`,
     `maxTokens=${route.maxTokens}`,

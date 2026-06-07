@@ -1,5 +1,6 @@
 import * as cp from "node:child_process"
 import * as vscode from "vscode"
+import type { QueryEvidenceResult } from "./analysis-types"
 import type { CodeGraphContextProvider } from "./codegraph-types"
 import type { TrackedEditorContext } from "./editor-context"
 import {
@@ -11,6 +12,7 @@ import {
 } from "./completion-context"
 import type { CompletionPlan, RetrievedCompletionSnippet } from "./completion-types"
 import type { ChatContextOptions, RemoteSettings } from "./types"
+import { retrieveRepositoryEvidenceForIntent } from "./repository-evidence"
 
 type FileContext = {
   uri: vscode.Uri
@@ -94,7 +96,13 @@ export async function buildChatPrompt(input: {
         maxFanout: input.settings.codeGraph.maxFanout,
       })
     : undefined
-  const analysisEvidence = input.settings.codeGraph.enabled ? await input.codeGraph?.queryEvidence(input.question) : undefined
+  const analysisEvidence = input.settings.codeGraph.enabled ? await retrieveChatAnalysisEvidence({
+    question: input.question,
+    settings: input.settings,
+    codeGraph: input.codeGraph,
+    relatedPaths,
+    editorContext: input.editorContext,
+  }) : undefined
 
   if (input.settings.context.localOnlyMode) chunks.push(localContextContract())
 
@@ -111,6 +119,27 @@ export async function buildChatPrompt(input: {
   if (codeGraph?.text) chunks.push(`Local code graph evidence:\n${codeGraph.text}`)
   if (analysisEvidence) chunks.push(`Local analysis evidence pack:\n${formatAnalysisEvidence(analysisEvidence)}`)
   return chunks.join("\n\n")
+}
+
+async function retrieveChatAnalysisEvidence(input: {
+  question: string
+  settings: RemoteSettings
+  codeGraph?: CodeGraphContextProvider
+  relatedPaths: string[]
+  editorContext?: TrackedEditorContext
+}): Promise<QueryEvidenceResult | undefined> {
+  if (!input.codeGraph) return undefined
+  const currentFile = input.editorContext?.uri ? relativePath(input.editorContext.uri) : input.relatedPaths[0] ?? ""
+  const shared = await retrieveRepositoryEvidenceForIntent({
+    codeGraph: input.codeGraph,
+    mode: "qa",
+    task: "body-statement",
+    question: input.question,
+    currentFile,
+    maxEvidence: input.settings.analysis.maxEvidenceItems,
+    maxBytes: input.settings.analysis.maxEvidenceBytes,
+  })
+  return shared.retrievalResult ?? input.codeGraph.queryEvidence(input.question)
 }
 
 export async function addActiveFileToContext(store: LocalContextStore) {
@@ -259,10 +288,13 @@ function completionFimIntentBlock(input: {
   const selected = input.contextPack?.selected.length ?? input.retrievedSnippets.length
   return [
     `// intent: ${input.plan.cIntent}`,
+    input.plan.kind === "comment-guided-c-code" && input.plan.sourceComment
+      ? `// source-comment: ${oneLine(input.plan.sourceComment).slice(0, 180)}`
+      : "",
     `// retrieval: ${selected} context block(s) selected for this inline hole`,
     "// constraints: return only insertion text; preserve local style",
     "",
-  ].join("\n")
+  ].filter((line) => line !== "").join("\n")
 }
 
 function buildInstructionCompletionPrompt(input: {

@@ -5,6 +5,7 @@ export type CompletionPlanKind =
   | "top-level-declaration"
   | "symbol-completion"
   | "comment-symbol-reference"
+  | "comment-guided-c-code"
   | "previous-comment-continuation"
   | "comment-to-code"
   | "comment-to-test"
@@ -59,9 +60,11 @@ export type CompletionPlan = {
   useFim: boolean
   useInstruction: boolean
   maxTokens: number
+  retrievalBudgetMs?: number
   confidenceFloor: number
   retrievalPolicy?: CompletionRetrievalPolicy
   domainHints?: string[]
+  commentGuidedSkipReason?: string
 }
 
 export type RetrievedCompletionSnippet = {

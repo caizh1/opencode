@@ -10,6 +10,8 @@ export type PackedContextBlockKind =
   | "include"
   | "open-tab"
   | "analysis-evidence"
+  | "c-embedded-evidence"
+  | "source-comment"
   | "recent-file"
 
 export interface PackedContextBlock {
@@ -49,6 +51,12 @@ export type PackCompletionContextInput = {
 export function packCompletionContext(input: PackCompletionContextInput): CompletionContextPack {
   const tokenBudget = input.tokenBudget ?? tokenBudgetForPlan(input.plan)
   const blocks = contextBlocks(input).sort((left, right) => right.score - left.score || left.title.localeCompare(right.title))
+  if (input.plan.kind === "c-embedded-code" || input.plan.kind === "comment-guided-c-code") return packCEmbeddedContextBlocks(blocks, tokenBudget, input.plan)
+
+  return packGreedyContextBlocks(blocks, tokenBudget)
+}
+
+function packGreedyContextBlocks(blocks: PackedContextBlock[], tokenBudget: number): CompletionContextPack {
   const selected: PackedContextBlock[] = []
   const dropped: PackedContextBlock[] = []
   let tokenEstimate = 0
@@ -62,6 +70,55 @@ export function packCompletionContext(input: PackCompletionContextInput): Comple
       dropped.push(block)
     }
   }
+
+  return {
+    selected,
+    dropped,
+    tokenBudget,
+    tokenEstimate,
+  }
+}
+
+function packCEmbeddedContextBlocks(blocks: PackedContextBlock[], tokenBudget: number, plan: CompletionPlan): CompletionContextPack {
+  const selected: PackedContextBlock[] = []
+  const dropped: PackedContextBlock[] = []
+  const selectedSet = new Set<PackedContextBlock>()
+  const evidenceLimit = promptEvidenceLimitForPlan(plan)
+  const evidenceTokenLimit = promptEvidenceTokenLimitForPlan(plan)
+  let selectedEvidence = 0
+  let selectedEvidenceTokens = 0
+  let tokenEstimate = 0
+
+  const trySelect = (block: PackedContextBlock | undefined) => {
+    if (!block || block.tokenEstimate <= 0 || selectedSet.has(block)) return false
+    const evidenceBlock = isCompletionEvidenceContextBlock(block)
+    if (evidenceBlock && selectedEvidence >= evidenceLimit) return false
+    if (evidenceBlock && selectedEvidenceTokens + block.tokenEstimate > evidenceTokenLimit) return false
+    if (tokenEstimate + block.tokenEstimate > tokenBudget) return false
+    selected.push(block)
+    selectedSet.add(block)
+    if (evidenceBlock) {
+      selectedEvidence += 1
+      selectedEvidenceTokens += block.tokenEstimate
+    }
+    tokenEstimate += block.tokenEstimate
+    return true
+  }
+
+  trySelect(blocks.find((block) => block.kind === "current-prefix"))
+  trySelect(blocks.find((block) => block.kind === "current-suffix"))
+  trySelect(blocks.find((block) => block.kind === "source-comment"))
+  for (const block of blocks.filter(isCompletionEvidenceContextBlock)) {
+    trySelect(block)
+  }
+  for (const block of blocks) {
+    trySelect(block)
+  }
+  for (const block of blocks) {
+    if (!selectedSet.has(block) && block.tokenEstimate > 0) dropped.push(block)
+  }
+
+  selected.sort((left, right) => right.score - left.score || left.title.localeCompare(right.title))
 
   return {
     selected,
@@ -116,6 +173,7 @@ function contextBlocks(input: PackCompletionContextInput): PackedContextBlock[] 
   const analysisEvidence = analysisEvidenceBlocks(input)
   const current = currentFileBlocks(input)
   const openTabs = openTabBlocks(input)
+  const sourceComment = sourceCommentBlock(input)
 
   switch (input.plan.kind) {
     case "symbol-completion":
@@ -132,9 +190,10 @@ function contextBlocks(input: PackCompletionContextInput): PackedContextBlock[] 
       return [...target, ...similarTests, ...testFramework, ...analysisEvidence, ...openTabs, ...current]
     case "ordinary-code":
     case "c-embedded-code":
+    case "comment-guided-c-code":
     case "body-continuation":
     case "top-level-declaration":
-      return [...target, ...includes, ...analysisEvidence, ...openTabs, ...current]
+      return [...target, ...sourceComment, ...includes, ...analysisEvidence, ...openTabs, ...current]
     case "comment-to-code":
       return [...target, ...includes, ...analysisEvidence, ...openTabs, ...current]
     case "disabled":
@@ -143,6 +202,12 @@ function contextBlocks(input: PackCompletionContextInput): PackedContextBlock[] 
 }
 
 function targetSymbolBlocks(plan: CompletionPlan, snippets: RetrievedCompletionSnippet[]) {
+  if (plan.kind === "comment-guided-c-code") {
+    const target = plan.targetSymbol?.toLowerCase()
+    if (!target) return []
+    const exact = snippets.find((snippet) => snippet.name?.toLowerCase() === target)
+    return exact ? [snippetBlock(exact, "target-symbol", 900, plan)] : []
+  }
   const target = plan.targetSymbol?.toLowerCase()
   const preferred = snippets.filter((snippet) => {
     if (!snippet.name) return false
@@ -189,10 +254,12 @@ function testFrameworkBlocks(plan: CompletionPlan, snippets: RetrievedCompletion
 function currentFileBlocks(input: PackCompletionContextInput): PackedContextBlock[] {
   const ordinary = input.plan.kind === "ordinary-code" ||
     input.plan.kind === "c-embedded-code" ||
+    input.plan.kind === "comment-guided-c-code" ||
     input.plan.kind === "body-continuation" ||
     input.plan.kind === "top-level-declaration"
-  const currentPrefix = tailLines(input.prefix, ordinary ? 60 : 120)
-  const currentSuffix = headLines(input.suffix, ordinary ? 40 : 80)
+  const cEmbeddedWithEvidence = (input.plan.kind === "c-embedded-code" || input.plan.kind === "comment-guided-c-code") && Boolean(input.analysisEvidenceText?.trim())
+  const currentPrefix = tailLines(input.prefix, cEmbeddedWithEvidence ? 44 : ordinary ? 60 : 120)
+  const currentSuffix = headLines(input.suffix, cEmbeddedWithEvidence ? 24 : ordinary ? 40 : 80)
   return [
     currentPrefix
       ? block({
@@ -213,6 +280,20 @@ function currentFileBlocks(input: PackCompletionContextInput): PackedContextBloc
         })
       : undefined,
   ].filter((item): item is PackedContextBlock => Boolean(item))
+}
+
+function sourceCommentBlock(input: PackCompletionContextInput): PackedContextBlock[] {
+  const sourceComment = input.plan.sourceComment?.trim()
+  if (!sourceComment || input.plan.kind !== "comment-guided-c-code") return []
+  return [
+    block({
+      kind: "source-comment",
+      title: "source comment",
+      filePath: input.currentPath,
+      text: sourceComment,
+      score: 760,
+    }),
+  ]
 }
 
 function openTabBlocks(input: PackCompletionContextInput): PackedContextBlock[] {
@@ -246,6 +327,18 @@ function includeBlock(prefix: string, currentPath: string): PackedContextBlock[]
 function analysisEvidenceBlocks(input: PackCompletionContextInput): PackedContextBlock[] {
   const text = input.analysisEvidenceText?.trim()
   if (!text) return []
+  if (input.plan.kind === "c-embedded-code" || input.plan.kind === "comment-guided-c-code") {
+    const cEvidence = cEmbeddedEvidenceBlocks(input, text)
+    if (cEvidence.length > 0) return cEvidence
+    return splitAnalysisEvidenceText(text, 1200).slice(0, 4).map((chunk, index) =>
+      block({
+        kind: "analysis-evidence",
+        title: index === 0 ? "local analysis evidence" : `local analysis evidence ${index + 1}`,
+        filePath: input.currentPath,
+        text: limitSnippetText(chunk, "analysis-evidence"),
+        score: 700 - index * 8 + cIntentEvidenceBoost(input.plan, chunk),
+      }))
+  }
   return [
     block({
       kind: "analysis-evidence",
@@ -255,6 +348,71 @@ function analysisEvidenceBlocks(input: PackCompletionContextInput): PackedContex
       score: (input.plan.useInstruction ? 700 : 610) + cIntentEvidenceBoost(input.plan, text),
     }),
   ]
+}
+
+function cEmbeddedEvidenceBlocks(input: PackCompletionContextInput, text: string): PackedContextBlock[] {
+  if (!/^C evidence:\s*c-[A-Za-z0-9-]+/m.test(text)) return []
+  const blocks: PackedContextBlock[] = []
+  for (const section of splitCEmbeddedEvidenceSections(text)) {
+    const meta = parseCEmbeddedEvidenceSection(section, input.currentPath)
+    const title = [meta.kind, meta.symbol].filter(Boolean).join(": ")
+    blocks.push(block({
+      kind: "c-embedded-evidence",
+      title: title || "c embedded evidence",
+      filePath: meta.path,
+      text: input.plan.kind === "comment-guided-c-code"
+        ? limitText(section.trim(), 620)
+        : limitSnippetText(section.trim(), "c-embedded-evidence"),
+      score: 780 + Math.min(Number.isFinite(meta.score) ? Math.max(meta.score, 0) : 0, 120) + cIntentEvidenceBoost(input.plan, section),
+    }))
+  }
+  return blocks
+}
+
+function splitCEmbeddedEvidenceSections(text: string) {
+  const sections: string[] = []
+  const lines = text.split(/\r?\n/)
+  let current: string[] = []
+  for (const line of lines) {
+    if (/^C evidence:\s*c-[A-Za-z0-9-]+/.test(line)) {
+      if (current.length) sections.push(current.join("\n"))
+      current = [line]
+      continue
+    }
+    if (current.length) current.push(line)
+  }
+  if (current.length) sections.push(current.join("\n"))
+  return sections
+}
+
+function parseCEmbeddedEvidenceSection(section: string, currentPath: string) {
+  const kind = /^C evidence:\s*(c-[A-Za-z0-9-]+)/m.exec(section)?.[1] ?? "c-evidence"
+  const symbol = /^Symbol:\s*(.+)$/m.exec(section)?.[1]?.trim()
+  const source = /^Source:\s*(.+):(\d+)(?:-\d+)?$/m.exec(section)
+  const score = Number(/^Score:\s*(\d+)/m.exec(section)?.[1] ?? 0)
+  return {
+    kind,
+    symbol,
+    path: source?.[1] ?? currentPath,
+    score,
+  }
+}
+
+function splitAnalysisEvidenceText(input: string, maxChars: number) {
+  const chunks: string[] = []
+  const lines = input.split(/\r?\n/)
+  let current = ""
+  for (const line of lines) {
+    const next = current ? `${current}\n${line}` : line
+    if (next.length > maxChars && current) {
+      chunks.push(current)
+      current = line
+    } else {
+      current = next
+    }
+  }
+  if (current.trim()) chunks.push(current)
+  return chunks.length > 0 ? chunks : [input]
 }
 
 function rankSnippetsForIntent(plan: CompletionPlan, snippets: RetrievedCompletionSnippet[]) {
@@ -375,9 +533,34 @@ function snippetTextLimit(kind: PackedContextBlockKind) {
       return 1800
     case "analysis-evidence":
       return 3200
+    case "c-embedded-evidence":
+      return 900
     default:
       return 3000
   }
+}
+
+function isCompletionEvidenceContextBlock(block: PackedContextBlock) {
+  return block.kind === "c-embedded-evidence" || block.kind === "analysis-evidence"
+}
+
+function promptEvidenceLimitForPlan(plan: CompletionPlan) {
+  if (plan.kind === "comment-guided-c-code") return 3
+  switch (plan.cIntent) {
+    case "member-access":
+    case "call-args":
+    case "initializer":
+    case "error-path":
+    case "state-machine":
+    case "mmio-register":
+      return 4
+    default:
+      return 2
+  }
+}
+
+function promptEvidenceTokenLimitForPlan(plan: CompletionPlan) {
+  return plan.kind === "comment-guided-c-code" ? 450 : Number.POSITIVE_INFINITY
 }
 
 function uniqueLines(lines: string[]) {
@@ -400,6 +583,8 @@ function tokenBudgetForPlan(plan: CompletionPlan) {
       return 120
     case "previous-comment-continuation":
       return plan.needsTestRetrieval ? 1800 : 900
+    case "comment-guided-c-code":
+      return 900
     case "comment-to-test":
     case "natural-command":
       return 1800
@@ -433,6 +618,12 @@ function isCEmbeddedContext(input: PackCompletionContextInput, path: string, tex
 
 function estimateTokens(input: string) {
   return Math.max(1, Math.ceil(input.length / 4))
+}
+
+function limitText(input: string, maxChars: number) {
+  const normalized = input.trim()
+  if (normalized.length <= maxChars) return normalized
+  return `${normalized.slice(0, maxChars).replace(/\s+$/, "")}\n/* completion context truncated */`
 }
 
 function formatContextBlock(block: PackedContextBlock) {

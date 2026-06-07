@@ -214,6 +214,7 @@ describe("phase 10 completion e2e fixtures", () => {
       character: 4,
       rawText: "return 0;",
       languageId: "c",
+      plan: commentToCodeInstructionPlan("// Add project-style error cleanup before success return."),
     })
 
     expect(first.result).toMatchObject({
@@ -237,6 +238,7 @@ describe("phase 10 completion e2e fixtures", () => {
         "}",
       ].join("\n"),
       languageId: "c",
+      plan: commentToCodeInstructionPlan("// Add project-style error cleanup before success return."),
     })
 
     expect(retry.result).toMatchObject({
@@ -261,6 +263,7 @@ describe("phase 10 completion e2e fixtures", () => {
       character: 4,
       rawText: "ret = driver_start(dev);\nif (ret < 0) {\n    return ret;\n}",
       languageId: "c",
+      plan: commentToCodeInstructionPlan("// Add project-style error cleanup before success return."),
     })
 
     expect(snapshot.result).toMatchObject({
@@ -402,6 +405,7 @@ function runPipelineForDocument(input: {
   character: number
   rawText: string
   languageId: string
+  plan?: CompletionPlan
 }) {
   const document = fakeTextDocument(input.documentText, input.languageId)
   const position = { line: input.line, character: input.character }
@@ -415,7 +419,7 @@ function runPipelineForDocument(input: {
     linePrefix,
     fallbackIndentUnit: "    ",
   })
-  const plan = planCompletion({
+  const plan = input.plan ?? planCompletion({
     languageId: document.languageId,
     linePrefix,
     lineSuffix,
@@ -443,6 +447,20 @@ function runPipelineForDocument(input: {
     documentSuffix: documentSuffixAfter(document.lines, position),
   })
   return { plan, result }
+}
+
+function commentToCodeInstructionPlan(sourceComment: string): CompletionPlan {
+  return {
+    kind: "comment-to-code",
+    insertMode: "insert-after-line",
+    sourceComment,
+    replaceCurrentWord: false,
+    needsSymbolRetrieval: false,
+    needsTestRetrieval: false,
+    useFim: false,
+    useInstruction: true,
+    maxTokens: 256,
+  }
 }
 
 function fakeTextDocument(text: string, languageId: string) {

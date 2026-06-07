@@ -4,6 +4,7 @@ import {
   completionUiWorkspaceSettings,
   parseArgs,
   reconcileAcceptance,
+  selectQemuP2Scenarios,
   selectQemuScenarios,
   type UiResult,
 } from "../scripts/completion-c-embedded-ui"
@@ -55,7 +56,22 @@ describe("C/embedded UI matrix script settings", () => {
     expect(options.workspace).toBe("/tmp/opencode-qemu-completion-ui-138")
     expect(options.sourceWorkspace).toBe("/Users/archer/Work/qemu")
     expect(options.scenarioLimit).toBe(72)
+    expect(options.qemuCodeGraph).toBe("off")
+    expect(options.qemuIndexWaitMs).toBe(0)
+    expect(options.qemuIndexMaxFiles).toBe(50000)
     expect(options.restoreAfterEach).toBe(true)
+  })
+
+  test("parses qemu P2 matrix with repo-local output and codegraph enabled", () => {
+    const options = parseArgs(["--qemu-p2-matrix", "--prepare-only", "--restore-after-each"])
+
+    expect(options.qemuDirect).toBe(true)
+    expect(options.qemuP2Matrix).toBe(true)
+    expect(options.workspace).toContain(".completion-quality/qemu-p2-ui")
+    expect(options.scenarioLimit).toBe(12)
+    expect(options.qemuCodeGraph).toBe("on")
+    expect(options.qemuIndexWaitMs).toBe(240000)
+    expect(options.qemuIndexMaxFiles).toBe(5000)
   })
 
   test("builds deterministic qemu scenarios with temporary completion gaps", () => {
@@ -77,6 +93,52 @@ describe("C/embedded UI matrix script settings", () => {
     expect(scenarios[0].mutation?.insertedText).toContain("<|cursor|>")
     expect(scenarios[0].mutation?.text).not.toContain("<|cursor|>")
     expect(scenarios[0].cursor.line).toBeGreaterThan(0)
+  })
+
+  test("builds P2 qemu scenarios for all evidence-builder intents", () => {
+    const files = [
+      {
+        path: "backends/member.c",
+        absolutePath: "/qemu/backends/member.c",
+        text: "void f(void)\n{\n    DeviceState *dev;\n}\n",
+      },
+      {
+        path: "backends/call.c",
+        absolutePath: "/qemu/backends/call.c",
+        text: "void f(void)\n{\n    qemu_opts_del(opts);\n}\n",
+      },
+      {
+        path: "hw/init.c",
+        absolutePath: "/qemu/hw/init.c",
+        text: "static const TypeInfo info = {\n    .name = TYPE_SAMPLE,\n};\n",
+      },
+      {
+        path: "backends/error.c",
+        absolutePath: "/qemu/backends/error.c",
+        text: "int f(void)\n{\n    goto out;\nout:\n    return 0;\n}\n",
+      },
+      {
+        path: "backends/state.c",
+        absolutePath: "/qemu/backends/state.c",
+        text: "void f(void)\n{\n    state = RUN_STATE_RUNNING;\n}\n",
+      },
+      {
+        path: "hw/mmio.c",
+        absolutePath: "/qemu/hw/mmio.c",
+        text: "#define SAMPLE_CTRL_MASK GENMASK(3, 0)\n",
+      },
+    ]
+    const scenarios = selectQemuP2Scenarios(files, 12)
+
+    expect(scenarios.map((scenario) => scenario.category)).toEqual([
+      "QEMU P2 member-access",
+      "QEMU P2 call-args",
+      "QEMU P2 initializer",
+      "QEMU P2 error-path",
+      "QEMU P2 state-machine",
+      "QEMU P2 mmio-register",
+    ])
+    expect(scenarios.every((scenario) => scenario.mutation?.insertedText.includes("<|cursor|>"))).toBe(true)
   })
 
   test("keeps accepted inline telemetry as the primary UI row when later cursor telemetry is disabled", () => {
@@ -107,7 +169,7 @@ describe("C/embedded UI matrix script settings", () => {
     const result = uiResult("H02-crc-check")
     const output = [
       '[OpenCode Remote] completion request requestId=cc-h02 path="/tmp/opencode-c-embedded-ui-matrix/scenarios/H02-crc-check/src/proto/frame.c"',
-      '[completion-telemetry] {"requestId":"cc-h02","planKind":"ordinary-code","modelRoute":"fim","insertMode":"insert-at-cursor","accepted":true,"filterText":"crc16(data, len) != expected"}',
+      '[completion-telemetry] {"requestId":"cc-h02","planKind":"c-embedded-code","cIntent":"call-args","retrievalMode":"hybrid","evidenceKinds":["current-prefix","c-callee-signature","c-call-example"],"cEmbeddedEvidenceTrace":{"finalSelectedEvidenceCount":3,"minimumUsefulEvidenceMet":true},"contextLevel":"standard","promptKind":"qwen-fim","modelRoute":"fim","insertMode":"insert-at-cursor","accepted":true,"filterText":"crc16(data, len) != expected"}',
       '[OpenCode Remote] returned source=remote range=3:8-3:8 insertMode=insert-at-cursor firstLine="crc16(data, len) != expected" requestId=cc-h02',
     ].join("\n")
 
@@ -117,6 +179,14 @@ describe("C/embedded UI matrix script settings", () => {
     reconcileAcceptance([result])
 
     expect(result.inlineReturned).toBe(true)
+    expect(result.planKind).toBe("c-embedded-code")
+    expect(result.actualCIntent).toBe("call-args")
+    expect(result.retrievalMode).toBe("hybrid")
+    expect(result.evidenceKinds).toContain("c-callee-signature")
+    expect(result.evidenceKinds).toContain("c-call-example")
+    expect(result.selectedEvidenceCount).toBe(3)
+    expect(result.contextLevel).toBe("standard")
+    expect(result.promptKind).toBe("qwen-fim")
     expect(result.commitAttempted).toBe(true)
     expect(result.textApplied).toBe(false)
     expect(result.acceptedAndApplied).toBe(false)
@@ -137,6 +207,8 @@ function uiResult(id: string): UiResult {
     textApplied: false,
     acceptedAndApplied: false,
     changed: false,
+    evidenceKinds: [],
+    selectedEvidenceCount: 0,
     inlineFirstLines: [],
     qualityRejected: false,
     flags: {

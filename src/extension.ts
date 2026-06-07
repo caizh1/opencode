@@ -6,6 +6,7 @@ import { RemoteChatViewProvider } from "./chat-view"
 import { LocalAnalysisBridge } from "./analysis-bridge"
 import { LocalCodeGraphService } from "./codegraph-service"
 import { RemoteCompletionProvider } from "./completion"
+import { COMPLETION_PLANNER_REVISION } from "./completion-telemetry"
 import { registerCompletionFormatCommand } from "./completion-format-command"
 import { addPickedFilesToContext, LocalContextStore } from "./context"
 import { EditorContextTracker } from "./editor-context"
@@ -41,6 +42,10 @@ type ConnectionProbeResult =
 
 export async function activate(context: vscode.ExtensionContext) {
   const output = vscode.window.createOutputChannel("OpenCode Remote")
+  const extensionVersion = typeof context.extension.packageJSON?.version === "string"
+    ? context.extension.packageJSON.version
+    : undefined
+  output.appendLine(`[activation] extensionVersion=${extensionVersion ?? "unknown"} plannerRevision=${COMPLETION_PLANNER_REVISION}`)
   const contextStore = new LocalContextStore()
   const editorContextTracker = new EditorContextTracker()
   const status = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100)
@@ -310,7 +315,7 @@ export async function activate(context: vscode.ExtensionContext) {
     context.subscriptions.push(
       vscode.languages.registerInlineCompletionItemProvider(
         { scheme: "file" },
-        new RemoteCompletionProvider({ getClient, getCompletionApiKey: () => readCompletionApiKey(context), getSettings, codeGraph, output }),
+        new RemoteCompletionProvider({ getClient, getCompletionApiKey: () => readCompletionApiKey(context), getSettings, codeGraph, output, extensionVersion }),
       ),
     )
   } catch (error) {

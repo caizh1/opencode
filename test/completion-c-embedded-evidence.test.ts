@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test"
 import { queryEvidenceAsync } from "../src/codegraph-analysis"
 import { parseCFile } from "../src/codegraph-c-parser"
 import { hydrateCodeGraphIndex } from "../src/codegraph-index"
-import { buildCEmbeddedCompletionEvidence } from "../src/completion-c-embedded-evidence"
+import { buildCEmbeddedCompletionEvidence, shouldBuildCEmbeddedCompletionEvidence } from "../src/completion-c-embedded-evidence"
 import type { CodeGraphContextProvider, CodeGraphEvidenceQueryOptions } from "../src/codegraph-types"
 import type { CompletionCIntent, CompletionPlan } from "../src/completion-types"
 
@@ -23,7 +23,7 @@ describe("generic C embedded completion evidence builder", () => {
     expect(result.evidenceKinds).toContain("c-same-usage")
     expect(result.text).toContain("base-type: dev_ctx_t")
     expect(result.text).toContain("fields:")
-    expect(result.text).toContain("ctx-&gt;status")
+    expect(result.text).toContain("ctx->status")
   })
 
   test("builds call-args callee signature, call examples, and return handling evidence", async () => {
@@ -102,6 +102,65 @@ describe("generic C embedded completion evidence builder", () => {
     expect(result.text).toContain("writel")
   })
 
+  test("builds generic structured evidence for weak body-statement intent", async () => {
+    const result = await buildEvidence("body-statement", [
+      "inline completion for c file drivers/dev.c",
+      "current-path: drivers/dev.c",
+      "function: dev_probe",
+      "completion-intent: body-statement",
+      "nearby-comment-tokens: enable controller flags",
+      "current-word: dev",
+    ])
+
+    expect(shouldBuildCEmbeddedCompletionEvidence(plan("body-statement"))).toBe(true)
+    expect(result.trace.ragFallbackTriggered).toBe(false)
+    expect(result.selectedEvidenceCount).toBeGreaterThan(0)
+    expect(result.evidenceKinds.some((kind) => [
+      "c-helper-usage",
+      "c-type-definition",
+      "c-macro-definition",
+      "c-local-context",
+      "c-symbol-definition",
+      "c-call-style",
+    ].includes(kind))).toBe(true)
+    expect(result.text).toContain("C evidence: c-")
+    expect(result.text).toContain("Source:")
+    expect(result.text).toContain("Code:")
+    expect(result.text).not.toContain("<evidence")
+    expect(result.text).toContain("Reason:")
+    expect(result.text).toContain("Domain boost:")
+  })
+
+  test("builds comment-guided semantic and similar function evidence", async () => {
+    const commentPlan: CompletionPlan = {
+      ...plan("body-statement"),
+      kind: "comment-guided-c-code",
+      sourceComment: "// step2: enable controller flags",
+      needsSymbolRetrieval: false,
+      maxTokens: 128,
+    }
+    const result = await buildCEmbeddedCompletionEvidence({
+      codeGraph: miniProvider(),
+      plan: commentPlan,
+      question: [
+        "inline completion for c file drivers/dev.c",
+        "current-path: drivers/dev.c",
+        "function: dev_probe",
+        "completion-intent: comment-guided-c-code",
+        "source-comment: step2: enable controller flags",
+        "nearby-identifiers: ctx ret",
+      ].join("\n"),
+      relatedPaths: ["drivers/dev.c"],
+    })
+
+    expect(shouldBuildCEmbeddedCompletionEvidence(commentPlan)).toBe(true)
+    expect(result.selectedEvidenceCount).toBeGreaterThan(0)
+    expect(result.evidenceKinds.some((kind) => kind === "c-comment-semantic-match" || kind === "c-similar-function")).toBe(true)
+    expect(result.text).toContain("C evidence:")
+    expect(result.text).toMatch(/c-comment-semantic-match|c-similar-function/)
+    expect(result.trace.minimumUsefulEvidenceMet).toBe(true)
+  })
+
   test("uses minimumUsefulEvidence only to trigger hybrid fallback trace", async () => {
     const calls: string[] = []
     const provider = miniProvider((mode) => calls.push(mode))
@@ -119,9 +178,10 @@ describe("generic C embedded completion evidence builder", () => {
 
     expect(calls).toEqual(["graph-only", "hybrid"])
     expect(result.trace.ragFallbackTriggered).toBe(true)
-    expect(result.trace.graphEvidenceCount).toBe(0)
-    expect(result.trace.finalSelectedEvidenceCount).toBe(0)
-    expect(result.text).toBe("")
+    expect(result.trace.graphEvidenceCount).toBeGreaterThan(0)
+    expect(result.trace.finalSelectedEvidenceCount).toBeGreaterThan(0)
+    expect(result.text).toContain("C evidence: c-")
+    expect(result.text).not.toContain("<evidence")
   })
 })
 

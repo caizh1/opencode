@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import { completionRetrievalPlan, completionRetrievalQuery, shouldRetrieveCompletionSnippetsForPlan } from "../src/completion-retrieval"
 import { planCompletion } from "../src/completion-plan"
+import type { CompletionPlan } from "../src/completion-types"
 
 describe("completion retrieval planning", () => {
   test("derives lightweight C/C++ retrieval queries from inline intent", () => {
@@ -187,6 +188,59 @@ describe("completion retrieval planning", () => {
     expect(plan.queries.length).toBeLessThanOrEqual(4)
   })
 
+  test("adds nearby comment tokens to generic C embedded body evidence questions", () => {
+    const linePrefix = [
+      "int controller_init(struct controller *ctrl)",
+      "{",
+      "    // wait controller clock stable before enabling transfers",
+      "    ",
+    ].join("\n")
+    const plan = completionRetrievalPlan({
+      plan: bodyStatementPlan(),
+      languageId: "c",
+      linePrefix,
+      lineSuffix: "",
+    })
+
+    expect(plan.policyLabel).toBe("c-body-statement")
+    expect(plan.evidenceQuestion).toContain("completion-intent: body-statement")
+    expect(plan.evidenceQuestion).toContain("nearby-comment-tokens:")
+    expect(plan.evidenceQuestion).toContain("controller")
+    expect(plan.evidenceQuestion).toContain("clock")
+    expect(plan.queries.some((query) => ["clock", "controller", "enabling", "transfers"].includes(query))).toBe(true)
+  })
+
+  test("builds semantic retrieval for comment-guided C code without target-symbol lookup", () => {
+    const completionPlan: CompletionPlan = {
+      kind: "comment-guided-c-code",
+      insertMode: "insert-at-cursor",
+      sourceComment: "// step2: wait nfc clock reset",
+      cIntent: "body-statement",
+      replaceCurrentWord: false,
+      needsSymbolRetrieval: false,
+      needsIntentRetrieval: true,
+      needsTestRetrieval: false,
+      useFim: true,
+      useInstruction: false,
+      maxTokens: 128,
+      confidenceFloor: 0.35,
+    }
+    const plan = completionRetrievalPlan({
+      plan: completionPlan,
+      languageId: "c",
+      linePrefix: "int controller_init(void)\n{\n    // step2: wait nfc clock reset\n    ",
+      lineSuffix: "\n    return 0;\n}",
+    })
+
+    expect(plan.policyLabel).toBe("c-comment-guided-code")
+    expect(plan.evidenceQuestion).toContain("completion-intent: comment-guided-c-code")
+    expect(plan.evidenceQuestion).toContain("source-comment: step2: wait nfc clock reset")
+    expect(plan.evidenceQuestion).toContain("nearby-identifiers:")
+    expect(plan.queries).toContain("wait")
+    expect(plan.queries).toContain("nfc")
+    expect(plan.queries).not.toContain("step2")
+  })
+
   test("enables ordinary C/C++ retrieval for intent-bearing plans only", () => {
     const cPlan = planCompletion({
       languageId: "c",
@@ -203,3 +257,19 @@ describe("completion retrieval planning", () => {
     expect(shouldRetrieveCompletionSnippetsForPlan(tsPlan, "typescript")).toBe(false)
   })
 })
+
+function bodyStatementPlan(): CompletionPlan {
+  return {
+    kind: "c-embedded-code",
+    insertMode: "insert-at-cursor",
+    cIntent: "body-statement",
+    replaceCurrentWord: false,
+    needsSymbolRetrieval: true,
+    needsIntentRetrieval: true,
+    needsTestRetrieval: false,
+    useFim: true,
+    useInstruction: false,
+    maxTokens: 96,
+    confidenceFloor: 0.35,
+  }
+}

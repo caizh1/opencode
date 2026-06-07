@@ -427,7 +427,7 @@ describe("completion planner", () => {
 
   test("routes the line after a comment intent to instruction continuation", () => {
     expect(planCompletion({
-      languageId: "c",
+      languageId: "typescript",
       previousNonEmptyLine: "// 任意描述 alpha_feature_finalize",
       linePrefix: "",
       lineSuffix: "",
@@ -445,7 +445,7 @@ describe("completion planner", () => {
 
   test("keeps previous comment continuation ahead of current-word symbol completion", () => {
     expect(planCompletion({
-      languageId: "c",
+      languageId: "typescript",
       previousNonEmptyLine: "// in order to test alpha_feature_finalize",
       linePrefix: "stat",
       lineSuffix: "",
@@ -456,6 +456,126 @@ describe("completion planner", () => {
       targetSymbol: "alpha_feature_finalize",
       needsTestRetrieval: true,
       useInstruction: true,
+    })
+  })
+
+  test("routes implementation comments inside C bodies through comment-guided FIM without weak target symbols", () => {
+    const lines = [
+      "int controller_init(struct controller *ctrl)",
+      "{",
+      "    // step2: wait nfc clock reset",
+      "    ",
+      "    return 0;",
+      "}",
+    ]
+    expect(planCompletion({
+      languageId: "c",
+      previousNonEmptyLine: lines[2],
+      linePrefix: lines[3],
+      lineSuffix: "",
+      lines,
+      line: 3,
+      triggerKind: "automatic",
+    })).toMatchObject({
+      kind: "comment-guided-c-code",
+      insertMode: "insert-at-cursor",
+      sourceComment: "// step2: wait nfc clock reset",
+      cIntent: "body-statement",
+      useFim: true,
+      useInstruction: false,
+      needsIntentRetrieval: true,
+      maxTokens: 128,
+    })
+    expect(planCompletion({
+      languageId: "c",
+      previousNonEmptyLine: lines[2],
+      linePrefix: lines[3],
+      lineSuffix: "",
+      lines,
+      line: 3,
+      triggerKind: "automatic",
+    }).targetSymbol).toBeUndefined()
+  })
+
+  test("routes compact step comments in C bodies through comment-guided FIM", () => {
+    const lines = [
+      "static int nfi_hal_controller_init(void)",
+      "{",
+      "    //step2. wait nfc clock rest",
+      "    ",
+      "    MSG(NFI_HAL_CTRL_DRV_C, 0, \"step2. wait nfc clock rest\\r\\n\");",
+      "}",
+    ]
+    const plan = planCompletion({
+      languageId: "c",
+      previousNonEmptyLine: lines[2],
+      nextNonEmptyLine: lines[4],
+      linePrefix: lines[3],
+      lineSuffix: "",
+      lines,
+      line: 3,
+      triggerKind: "automatic",
+    })
+
+    expect(plan).toMatchObject({
+      kind: "comment-guided-c-code",
+      sourceComment: "//step2. wait nfc clock rest",
+      cIntent: "body-statement",
+      useFim: true,
+      useInstruction: false,
+    })
+    expect(plan.targetSymbol).toBeUndefined()
+  })
+
+  test("does not let implementation comments fall back to previous-comment continuation", () => {
+    const lines = [
+      "/* header intentionally omits an opening brace in the fixture */",
+      "    //step2. wait nfc clock rest",
+      "    ",
+      "    ret = controller_enable(ctrl);",
+    ]
+    const plan = planCompletion({
+      languageId: "c",
+      previousNonEmptyLine: lines[1],
+      nextNonEmptyLine: lines[3],
+      linePrefix: lines[2],
+      lineSuffix: "",
+      lines,
+      line: 2,
+      triggerKind: "automatic",
+    })
+
+    expect(plan.kind).not.toBe("previous-comment-continuation")
+    expect(plan).toMatchObject({
+      kind: "comment-guided-c-code",
+      sourceComment: "//step2. wait nfc clock rest",
+    })
+    expect(plan.targetSymbol).toBeUndefined()
+  })
+
+  test("filters weak flow words from comment-derived target symbols without affecting code prefixes", () => {
+    const weakComments = ["// step1", "// stage2", "// phase3", "// path", "// flow", "// init", "// start", "// end", "// done"]
+    for (const previousNonEmptyLine of weakComments) {
+      expect(planCompletion({
+        languageId: "typescript",
+        previousNonEmptyLine,
+        linePrefix: "",
+        lineSuffix: "",
+      })).toMatchObject({
+        kind: "disabled",
+      })
+    }
+
+    expect(planCompletion({
+      languageId: "c",
+      linePrefix: "    step2",
+      lineSuffix: "",
+      currentWord: "step2",
+      triggerKind: "automatic",
+    })).toMatchObject({
+      kind: "c-embedded-code",
+      targetSymbol: "step2",
+      cIntent: "symbol-prefix",
     })
   })
 

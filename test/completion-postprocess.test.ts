@@ -319,6 +319,28 @@ describe("completion postprocessor", () => {
     })
   })
 
+  test("rejects tool protocol artifacts before they can become ghost text", () => {
+    for (const rawText of [
+      "<tool_call>\n{\"name\":\"delay_us\",\"arguments\":{\"us\":100}}\n</tool_call>",
+      "<function_call name=\"delay_us\">{\"us\":100}</function_call>",
+      "{\"tool_call\":{\"name\":\"delay_us\",\"arguments\":{\"us\":100}}}",
+      "{\"name\":\"delay_us\",\"arguments\":{\"us\":100}}",
+    ]) {
+      expect(postprocessCompletion({
+        rawText,
+        linePrefix: "    ",
+        lineSuffix: "",
+        languageId: "c",
+        plan: ordinaryPlan(),
+        indent: indent("    ", "    "),
+      })).toEqual({
+        text: "",
+        rejected: true,
+        reason: "protocol-artifact-output",
+      })
+    }
+  })
+
   test("rejects structural-only outputs for comment code generation", () => {
     const linePrefix = "// arbitrary words target_symbol"
     for (const rawText of ["}", ";", "{}", "};"]) {

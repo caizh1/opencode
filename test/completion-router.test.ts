@@ -36,6 +36,7 @@ describe("completion model router", () => {
       settings: settings({ provider: "openai-compatible", profile: "generic-chat" }),
     })
 
+    expect(routeLogValue(route, settings({ provider: "openai-compatible", profile: "generic-chat" }))).toContain("configuredProfile=generic-chat")
     expect(routeLogValue(route, settings({ provider: "openai-compatible", profile: "generic-chat" }))).toContain("effectiveProfile=qwen-coder-fim")
     expect(routeLogValue(route, settings({ provider: "openai-compatible", profile: "generic-chat" }))).toContain("endpoint=/completions")
     expect(routeLogValue(route, settings({ provider: "openai-compatible", profile: "generic-chat" }))).toContain("promptKind=qwen-fim")
@@ -66,6 +67,41 @@ describe("completion model router", () => {
       maxTokens: 128,
       temperature: 0.2,
     })
+  })
+
+  test("routes comment-guided C code to FIM prompt style using the configured direct profile", () => {
+    const route = routeCompletionModel({
+      plan: {
+        kind: "comment-guided-c-code",
+        insertMode: "insert-at-cursor",
+        sourceComment: "// step2: wait nfc clock reset",
+        cIntent: "body-statement",
+        replaceCurrentWord: false,
+        needsSymbolRetrieval: false,
+        needsIntentRetrieval: true,
+        needsTestRetrieval: false,
+        useFim: true,
+        useInstruction: false,
+        maxTokens: 128,
+        confidenceFloor: 0.35,
+      },
+      settings: settings({ provider: "openai-compatible", profile: "generic-chat", maxTokens: 512, temperature: 0.8 }),
+    })
+
+    expect(route).toMatchObject({
+      kind: "model",
+      reason: "ordinary-code",
+      promptKind: "qwen-fim",
+      modelProfile: "generic-chat",
+      textProfile: "generic-chat",
+      maxTokens: 128,
+      temperature: 0.2,
+    })
+    const log = routeLogValue(route, settings({ provider: "openai-compatible", profile: "generic-chat" }))
+    expect(log).toContain("configuredProfile=generic-chat")
+    expect(log).toContain("effectiveProfile=generic-chat")
+    expect(log).toContain("promptKind=qwen-fim")
+    expect(log).toContain("endpoint=/chat/completions")
   })
 
   test("routes comment-to-test prompts to instruction mode without FIM", () => {

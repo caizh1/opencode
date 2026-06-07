@@ -41,6 +41,13 @@ export type UiResult = {
   acceptedAndApplied: boolean
   changed: boolean
   planKind?: string
+  actualCIntent?: string
+  retrievalMode?: string
+  evidenceKinds: string[]
+  selectedEvidenceCount: number
+  contextLevel?: string
+  promptKind?: string
+  cEmbeddedEvidenceTrace?: Record<string, unknown>
   modelRoute?: string
   insertMode?: string
   inlineFirstLines: string[]
@@ -60,6 +67,10 @@ export type UiMatrixOptions = {
   waitMs: number
   fixtureFilter?: string
   qemuDirect: boolean
+  qemuP2Matrix: boolean
+  qemuCodeGraph: "off" | "on"
+  qemuIndexWaitMs: number
+  qemuIndexMaxFiles: number
   sourceWorkspace: string
   scenarioLimit: number
   restoreAfterEach: boolean
@@ -68,6 +79,7 @@ export type UiMatrixOptions = {
 const CURSOR = "<|cursor|>"
 const DEFAULT_WORKSPACE = "/tmp/opencode-c-embedded-ui-matrix"
 const DEFAULT_QEMU_WORKSPACE = "/tmp/opencode-qemu-completion-ui-138"
+const DEFAULT_QEMU_P2_WORKSPACE = join(process.cwd(), ".completion-quality", "qemu-p2-ui")
 const DEFAULT_QEMU_SOURCE_WORKSPACE = "/Users/archer/Work/qemu"
 const DEFAULT_CODE_APP = "/Applications/Visual Studio Code.app"
 const BEFORE_TEXT = new WeakMap<UiResult, string>()
@@ -76,6 +88,23 @@ type OutputLogSnapshot = Map<string, number>
 
 async function main() {
   const options = parseArgs(process.argv.slice(2))
+  if (options.qemuP2Matrix) {
+    await runQemuP2Matrix(options)
+    return
+  }
+  const run = await runUiMatrix(options)
+  printRunPaths(run)
+}
+
+type UiMatrixRun = {
+  options: UiMatrixOptions
+  manifestPath: string
+  paths: ReturnType<typeof reportPaths>
+  results: UiResult[]
+  outputText: string
+}
+
+async function runUiMatrix(options: UiMatrixOptions): Promise<UiMatrixRun> {
   const scenarios = options.qemuDirect
     ? await prepareQemuScenarios(options)
     : await prepareWorkspace(selectFixtures(await loadFixtures(), options), options)
@@ -86,6 +115,8 @@ async function main() {
     sourceWorkspace: options.qemuDirect ? options.sourceWorkspace : undefined,
     codeWorkspace: options.qemuDirect ? qemuCodeWorkspacePath(options) : undefined,
     mode: options.qemuDirect ? "qemu-direct" : options.all ? "all" : "sample",
+    qemuP2Matrix: options.qemuP2Matrix || undefined,
+    qemuCodeGraph: options.qemuDirect ? options.qemuCodeGraph : undefined,
     restoreAfterEach: options.qemuDirect ? options.restoreAfterEach : undefined,
     scenarios: scenarios.map((scenario) => ({
       id: scenario.id,
@@ -121,11 +152,55 @@ async function main() {
     await writeFile(paths.fixPlan, renderQemuFixPlan(results, options, outputText))
   }
 
-  console.log(`workspace=${options.workspace}`)
-  console.log(`manifest=${manifestPath}`)
-  console.log(`results=${resultsPath}`)
-  console.log(`report=${reportPath}`)
-  if (options.qemuDirect) console.log(`fixPlan=${paths.fixPlan}`)
+  return { options, manifestPath, paths, results, outputText }
+}
+
+async function runQemuP2Matrix(options: UiMatrixOptions) {
+  await rm(options.workspace, { recursive: true, force: true })
+  await mkdir(options.workspace, { recursive: true })
+  const variants: Array<{ name: string; codeGraph: UiMatrixOptions["qemuCodeGraph"] }> = [
+    { name: "baseline-codegraph-off", codeGraph: "off" },
+    { name: "p2-codegraph-on", codeGraph: "on" },
+  ]
+  const runs: UiMatrixRun[] = []
+  for (const variant of variants) {
+    const run = await runUiMatrix({
+      ...options,
+      qemuP2Matrix: true,
+      qemuDirect: true,
+      qemuCodeGraph: variant.codeGraph,
+      workspace: join(options.workspace, variant.name),
+    })
+    runs.push(run)
+    printRunPaths(run)
+  }
+
+  const reportPath = join(options.workspace, "qemu-p2-ui-comparison-report.md")
+  const summaryPath = join(options.workspace, "qemu-p2-ui-summary.json")
+  await writeFile(reportPath, renderQemuP2ComparisonReport(runs))
+  await writeFile(summaryPath, `${JSON.stringify({
+    generatedAt: new Date().toISOString(),
+    workspace: options.workspace,
+    sourceWorkspace: options.sourceWorkspace,
+    variants: runs.map((run) => ({
+      name: p2VariantName(run.options),
+      codeGraph: run.options.qemuCodeGraph,
+      report: run.paths.report,
+      results: run.paths.results,
+      summary: p2EvidenceSummary(run.results, run.outputText),
+    })),
+  }, null, 2)}\n`)
+
+  console.log(`p2ComparisonReport=${reportPath}`)
+  console.log(`p2Summary=${summaryPath}`)
+}
+
+function printRunPaths(run: UiMatrixRun) {
+  console.log(`workspace=${run.options.workspace}`)
+  console.log(`manifest=${run.manifestPath}`)
+  console.log(`results=${run.paths.results}`)
+  console.log(`report=${run.paths.report}`)
+  if (run.options.qemuDirect) console.log(`fixPlan=${run.paths.fixPlan}`)
 }
 
 async function loadFixtures() {
@@ -209,6 +284,7 @@ async function driveVsCode(scenarios: UiScenario[], options: UiMatrixOptions, re
     "tell application \"Visual Studio Code\" to activate",
   ])
   await delay(1000)
+  const codeGraphIndexOutput = await ensureQemuCodeGraphIndexed(options)
   await clearOpenCodeOutput()
   const outputLogSnapshot = await snapshotOpenCodeOutputLogs()
 
@@ -227,6 +303,7 @@ async function driveVsCode(scenarios: UiScenario[], options: UiMatrixOptions, re
       execFileSync(codeCli, ["-r", "--goto", `${scenario.mainFile}:${scenario.cursor.line + 1}:${scenario.cursor.character + 1}`], { stdio: "ignore" })
       await delay(500)
       await focusEditorGroup()
+      await goToLineColumn(scenario.cursor, smartLineStartColumn(before, scenario.cursor.line))
       if (scenario.triggerKind === "automatic") {
         runAppleScript([
           "tell application \"Visual Studio Code\" to activate",
@@ -264,7 +341,27 @@ async function driveVsCode(scenarios: UiScenario[], options: UiMatrixOptions, re
     }
   }
 
-  return outputWithLogFallback(await copyOpenCodeOutput(), await readOpenCodeOutputLogDelta(outputLogSnapshot))
+  const completionOutput = outputWithLogFallback(await copyOpenCodeOutput(), await readOpenCodeOutputLogDelta(outputLogSnapshot))
+  return [codeGraphIndexOutput, completionOutput].filter(Boolean).join("\n")
+}
+
+async function ensureQemuCodeGraphIndexed(options: UiMatrixOptions) {
+  if (!options.qemuDirect || options.qemuCodeGraph !== "on") return ""
+  const snapshot = await snapshotOpenCodeOutputLogs()
+  vscodeCommand("OpenCode Remote: Rebuild Local Code Graph")
+  const started = Date.now()
+  let latest = ""
+  while (Date.now() - started < options.qemuIndexWaitMs) {
+    await delay(2000)
+    latest = await readOpenCodeOutputLogDelta(snapshot)
+    if (/\[codegraph\] indexed \d+ file\(s\), \d+ function\(s\)/.test(latest)) {
+      return completionMatrixLogBlock("codegraph-index", latest)
+    }
+    if (/\[codegraph\] indexing failed:/.test(latest)) {
+      return completionMatrixLogBlock("codegraph-index", latest)
+    }
+  }
+  return completionMatrixLogBlock("codegraph-index", `${latest}\n[ui-matrix] codegraph index wait timed out after ${options.qemuIndexWaitMs}ms`)
 }
 
 async function clearOpenCodeOutput() {
@@ -318,6 +415,23 @@ async function focusEditorGroup() {
     "delay 0.4",
     "end tell",
   ])
+}
+
+async function goToLineColumn(cursor: UiScenario["cursor"], startColumn: number) {
+  const rightMoves = Math.max(0, Math.min(500, cursor.character - startColumn))
+  runAppleScript([
+    "tell application \"Visual Studio Code\" to activate",
+    "tell application \"System Events\"",
+    "key code 123 using command down",
+    ...(rightMoves > 0 ? [`repeat ${rightMoves} times`, "key code 124", "delay 0.02", "end repeat"] : []),
+    "delay 0.4",
+    "end tell",
+  ])
+}
+
+function smartLineStartColumn(text: string, line: number) {
+  const value = text.replace(/\r\n/g, "\n").split("\n")[line] ?? ""
+  return /^\s*/.exec(value)?.[0]?.length ?? 0
 }
 
 async function saveActiveEditor() {
@@ -419,6 +533,11 @@ function completionOutputLines(output: string) {
     .join("\n")
 }
 
+function completionMatrixLogBlock(label: string, text: string) {
+  const trimmed = text.trim()
+  return trimmed ? `[ui-matrix:${label}]\n${trimmed}\n[/ui-matrix:${label}]` : ""
+}
+
 export function applyOutputTelemetry(results: UiResult[], output: string) {
   const byRequest = new Map<string, UiResult>()
   for (const line of output.split(/\r?\n/)) {
@@ -453,7 +572,7 @@ export function applyOutputTelemetry(results: UiResult[], output: string) {
           result.inlineSuggestion = true
           rememberInlineFirstLine(result, stringValue(event.filterText))
         }
-        if (accepted || !result.inlineSuggestion) {
+        if (accepted || shouldUseTelemetryAsPrimary(result, event)) {
           assignPrimaryTelemetry(result, event)
         }
       } catch {
@@ -465,11 +584,35 @@ export function applyOutputTelemetry(results: UiResult[], output: string) {
 
 function assignPrimaryTelemetry(result: UiResult, event: Record<string, unknown>) {
   const planKind = stringValue(event.planKind)
+  const cIntent = stringValue(event.cIntent)
+  const retrievalMode = stringValue(event.retrievalMode)
+  const contextLevel = stringValue(event.contextLevel)
+  const promptKind = stringValue(event.promptKind)
   const modelRoute = stringValue(event.modelRoute)
   const insertMode = stringValue(event.insertMode)
   if (planKind) result.planKind = planKind
+  if (cIntent) result.actualCIntent = cIntent
+  if (retrievalMode) result.retrievalMode = retrievalMode
+  const evidenceKinds = stringArrayValue(event.evidenceKinds)
+  if (evidenceKinds.length) result.evidenceKinds = uniqueStrings([...result.evidenceKinds, ...evidenceKinds])
+  const selectedEvidenceCount = selectedEvidenceCountValue(event)
+  if (selectedEvidenceCount !== undefined) result.selectedEvidenceCount = Math.max(result.selectedEvidenceCount, selectedEvidenceCount)
+  if (contextLevel) result.contextLevel = contextLevel
+  if (promptKind) result.promptKind = promptKind
+  if (event.cEmbeddedEvidenceTrace && typeof event.cEmbeddedEvidenceTrace === "object") {
+    result.cEmbeddedEvidenceTrace = event.cEmbeddedEvidenceTrace as Record<string, unknown>
+  }
   if (modelRoute) result.modelRoute = modelRoute
   if (insertMode) result.insertMode = insertMode
+}
+
+function shouldUseTelemetryAsPrimary(result: UiResult, event: Record<string, unknown>) {
+  if (!result.planKind) return true
+  const rejectReason = stringValue(event.rejectReason)
+  if (rejectReason === "cancelled" || rejectReason === "remote-error") return false
+  if (stringArrayValue(event.evidenceKinds).some((kind) => kind.startsWith("c-"))) return true
+  if (event.cEmbeddedEvidenceTrace) return true
+  return false
 }
 
 export function reconcileAcceptance(results: UiResult[]) {
@@ -525,6 +668,7 @@ function addFlags(result: UiResult, rejectReason: string) {
 
 function renderReport(results: UiResult[], options: UiMatrixOptions, output = "") {
   const total = results.length
+  const p2Summary = p2EvidenceSummary(results, output)
   const changed = results.filter((result) => result.changed).length
   const accepted = results.filter((result) => result.acceptedAndApplied).length
   const inlineReturned = results.filter((result) => result.inlineReturned).length
@@ -544,6 +688,9 @@ function renderReport(results: UiResult[], options: UiMatrixOptions, output = ""
     result.triggerKind,
     String(result.inlineReturned),
     result.planKind ?? "",
+    result.actualCIntent ?? "",
+    result.retrievalMode ?? "",
+    result.evidenceKinds.join(", "),
     result.modelRoute ?? "",
     result.notes.join("; ").replace(/\|/g, "/"),
   ].join(" | "))
@@ -553,8 +700,10 @@ function renderReport(results: UiResult[], options: UiMatrixOptions, output = ""
     `workspace: ${options.workspace}`,
     options.qemuDirect ? `source workspace: ${options.sourceWorkspace}` : "",
     options.qemuDirect ? `transient code-workspace: ${qemuCodeWorkspacePath(options)}` : "",
-    options.qemuDirect ? "transient qemu settings: codeGraph.enabled=false, rag.embedding.resumeAutomatically=false; completion endpoint/model/profile inherited" : "",
+    options.qemuDirect ? `transient qemu settings: codeGraph.enabled=${options.qemuCodeGraph === "on"}, rag.embedding.resumeAutomatically=false; completion endpoint/model/profile inherited` : "",
     `mode: ${options.qemuDirect ? "qemu-direct" : options.all ? "all" : "sample"}`,
+    options.qemuDirect ? `qemuCodeGraph: ${options.qemuCodeGraph}` : "",
+    options.qemuDirect && options.qemuCodeGraph === "on" ? `qemuCodeGraphIndex: maxFiles=${options.qemuIndexMaxFiles}, waitMs=${options.qemuIndexWaitMs}, indexed=${countPattern(output, "[codegraph] indexed ")}` : "",
     `provider: openai-compatible`,
     `direct config source: ${directConfigSource(options)}`,
     `workspace overrides: ${workspaceOverrideLabels(options).join(", ") || "none"}`,
@@ -572,6 +721,11 @@ function renderReport(results: UiResult[], options: UiMatrixOptions, output = ""
     `- direct config missing: ${countPattern(output, "direct completion API base URL") + countPattern(output, "direct completion model is not configured")}`,
     `- cache revalidated: ${countPattern(output, "returned source=cache revalidated=true")}`,
     `- output bytes: ${output.length}`,
+    `- p2 c-* evidence scenarios: ${p2Summary.p2EvidenceScenarios}`,
+    `- p2 c-* evidence rows: ${p2Summary.p2EvidenceRows}`,
+    `- p2 selected evidence avg: ${p2Summary.selectedEvidenceCountAvg.toFixed(2)}`,
+    `- p2 minimum useful met: ${p2Summary.minimumUsefulEvidenceMet}`,
+    `- p2 evidence kinds: ${p2Summary.p2EvidenceKinds.join(", ") || "none"}`,
     "",
     "## Category Summary",
     "",
@@ -581,14 +735,14 @@ function renderReport(results: UiResult[], options: UiMatrixOptions, output = ""
     "",
     "## Failure Scenarios",
     "",
-    "| fixture | category | path | cursor | trigger | inline returned | planKind | modelRoute | notes |",
-    "|---|---|---|---:|---|---:|---|---|---|",
-    ...(failureRows.length ? failureRows.map((row) => `| ${row} |`) : ["| none |  |  |  |  |  |  |  |  |"]),
+    "| fixture | category | path | cursor | trigger | inline returned | planKind | cIntent | retrieval | evidenceKinds | modelRoute | notes |",
+    "|---|---|---|---:|---|---:|---|---|---|---|---|---|",
+    ...(failureRows.length ? failureRows.map((row) => `| ${row} |`) : ["| none |  |  |  |  |  |  |  |  |  |  |  |"]),
     "",
     "## Scenarios",
     "",
-    "| fixture | category | path | trigger | inline | commit | applied | accepted | changed | planKind | modelRoute | insertMode | notes |",
-    "|---|---|---|---:|---:|---:|---:|---:|---:|---|---|---|---|",
+    "| fixture | category | path | trigger | inline | commit | applied | accepted | changed | planKind | cIntent | retrieval | evidenceCount | evidenceKinds | context | prompt | modelRoute | insertMode | notes |",
+    "|---|---|---|---:|---:|---:|---:|---:|---:|---|---|---|---:|---|---|---|---|---|---|",
     ...results.map((result) => [
       result.id,
       result.category.replace(/\|/g, "/"),
@@ -600,6 +754,12 @@ function renderReport(results: UiResult[], options: UiMatrixOptions, output = ""
       String(result.acceptedAndApplied),
       String(result.changed),
       result.planKind ?? "",
+      result.actualCIntent ?? "",
+      result.retrievalMode ?? "",
+      String(result.selectedEvidenceCount),
+      result.evidenceKinds.join(", "),
+      result.contextLevel ?? "",
+      result.promptKind ?? "",
       result.modelRoute ?? "",
       result.insertMode ?? "",
       result.notes.join("; ").replace(/\|/g, "/"),
@@ -714,6 +874,125 @@ function renderQemuFixPlan(results: UiResult[], options: UiMatrixOptions, output
   return `${lines.join("\n")}\n`
 }
 
+function renderQemuP2ComparisonReport(runs: UiMatrixRun[]) {
+  const p2Run = runs.find((run) => run.options.qemuCodeGraph === "on")
+  const p2Summary = p2Run ? p2EvidenceSummary(p2Run.results, p2Run.outputText) : undefined
+  const p2Indexed = p2Run ? countPattern(p2Run.outputText, "[codegraph] indexed ") : 0
+  const lines = [
+    "# QEMU P2 UI Evidence Matrix Report",
+    "",
+    `generatedAt: ${new Date().toISOString()}`,
+    `source workspace: ${runs[0]?.options.sourceWorkspace ?? ""}`,
+    `matrix workspace: ${runs[0] ? dirname(runs[0].options.workspace) : ""}`,
+    "",
+    "## Variant Summary",
+    "",
+    "| variant | codeGraph | scenarios | inline returned | accepted/applied | c-* evidence scenarios | c-* evidence rows | selected evidence avg | minimum useful met | evidence kinds | report |",
+    "|---|---|---:|---:|---:|---:|---:|---:|---:|---|---|",
+    ...runs.map((run) => {
+      const summary = p2EvidenceSummary(run.results, run.outputText)
+      return [
+        p2VariantName(run.options),
+        run.options.qemuCodeGraph,
+        String(run.results.length),
+        String(run.results.filter((result) => result.inlineReturned).length),
+        String(run.results.filter((result) => result.acceptedAndApplied).length),
+        String(summary.p2EvidenceScenarios),
+        String(summary.p2EvidenceRows),
+        summary.selectedEvidenceCountAvg.toFixed(2),
+        String(summary.minimumUsefulEvidenceMet),
+        summary.p2EvidenceKinds.join(", ") || "none",
+        run.paths.report,
+      ].join(" | ")
+    }).map((row) => `| ${row} |`),
+    "",
+    "## P2 UI Effect Interpretation",
+    "",
+    ...p2EffectInterpretation(p2Summary, p2Indexed),
+    "",
+    "## P2 Evidence By Scenario",
+    "",
+    "| variant | fixture | category | path | planKind | cIntent | retrieval | evidenceCount | evidenceKinds | minimumUseful |",
+    "|---|---|---|---|---|---|---|---:|---|---:|",
+    ...runs.flatMap((run) => run.results.map((result) => [
+      p2VariantName(run.options),
+      result.id,
+      result.category.replace(/\|/g, "/"),
+      result.relativePath ?? result.path,
+      result.planKind ?? "",
+      result.actualCIntent ?? "",
+      result.retrievalMode ?? "",
+      String(result.selectedEvidenceCount),
+      result.evidenceKinds.join(", ") || "none",
+      String(Boolean(result.cEmbeddedEvidenceTrace?.minimumUsefulEvidenceMet)),
+    ].join(" | "))).map((row) => `| ${row} |`),
+    "",
+    "## Acceptance Notes",
+    "",
+    "- This matrix is valid for P2 only when the `p2-codegraph-on` variant shows one or more `c-*` evidence kinds.",
+    "- `baseline-codegraph-off` is expected to show prefix/suffix/open-tab evidence only.",
+    "- Qwen output quality should be interpreted separately from acceptance-command stability; the P2 signal here is whether intent evidence reaches the final UI completion path.",
+    "",
+  ]
+  return `${lines.join("\n")}\n`
+}
+
+function p2EffectInterpretation(summary: ReturnType<typeof p2EvidenceSummary> | undefined, indexedCount: number) {
+  if (!summary) {
+    return ["- No `p2-codegraph-on` variant was found, so this run cannot verify the P2 UI path."]
+  }
+  if (indexedCount > 0 && summary.p2EvidenceRows === 0) {
+    return [
+      "- Code graph indexing completed, but no `c-*` P2 evidence reached completion telemetry or the final UI prompt path.",
+      "- Treat this as a failed P2 UI-effect observation, not as a model-quality result. Next debugging target: verify intent evidence builder invocation and whether selected analysis evidence is packed into the Qwen FIM prompt.",
+    ]
+  }
+  if (summary.p2EvidenceRows > 0) {
+    return [
+      "- `c-*` P2 evidence reached the UI completion path. Inspect per-scenario rows below to confirm whether the evidence is intent-appropriate and useful.",
+    ]
+  }
+  return [
+    "- No codegraph indexing marker was observed and no `c-*` P2 evidence reached the UI path. Re-run with codegraph enabled/indexed before judging P2 evidence quality.",
+  ]
+}
+
+function p2EvidenceSummary(results: UiResult[], output: string) {
+  const telemetry = completionTelemetryEvents(output)
+  const evidenceKinds = uniqueStrings([
+    ...results.flatMap((result) => result.evidenceKinds),
+    ...telemetry.flatMap((event) => stringArrayValue(event.evidenceKinds)),
+  ])
+  const p2EvidenceKinds = evidenceKinds.filter((kind) => kind.startsWith("c-")).sort()
+  const selectedCounts = results.map((result) => result.selectedEvidenceCount).filter((count) => count > 0)
+  const traceRows = telemetry.filter((event) => event.cEmbeddedEvidenceTrace)
+  return {
+    p2EvidenceKinds,
+    p2EvidenceScenarios: results.filter((result) => result.evidenceKinds.some((kind) => kind.startsWith("c-"))).length,
+    p2EvidenceRows: telemetry.filter((event) => stringArrayValue(event.evidenceKinds).some((kind) => kind.startsWith("c-"))).length,
+    selectedEvidenceCountAvg: selectedCounts.length ? selectedCounts.reduce((sum, count) => sum + count, 0) / selectedCounts.length : 0,
+    minimumUsefulEvidenceMet: traceRows.filter((event) => Boolean((event.cEmbeddedEvidenceTrace as Record<string, unknown> | undefined)?.minimumUsefulEvidenceMet)).length,
+  }
+}
+
+function completionTelemetryEvents(output: string) {
+  const events: Array<Record<string, unknown>> = []
+  for (const line of output.split(/\r?\n/)) {
+    const telemetryMatch = /\[completion-telemetry\]\s+(\{.*\})/.exec(line)
+    if (!telemetryMatch) continue
+    try {
+      events.push(JSON.parse(telemetryMatch[1]) as Record<string, unknown>)
+    } catch {
+      // Ignore malformed telemetry in copied output.
+    }
+  }
+  return events
+}
+
+function p2VariantName(options: UiMatrixOptions) {
+  return basename(options.workspace)
+}
+
 function categoryStats(results: UiResult[]) {
   return results.reduce((stats, result) => {
     stats.set(result.category, [...(stats.get(result.category) ?? []), result])
@@ -755,6 +1034,8 @@ function emptyResult(scenario: UiScenario): UiResult {
     textApplied: false,
     acceptedAndApplied: false,
     changed: false,
+    evidenceKinds: [],
+    selectedEvidenceCount: 0,
     inlineFirstLines: [],
     qualityRejected: false,
     flags: {
@@ -910,9 +1191,11 @@ async function prepareQemuScenarios(options: UiMatrixOptions) {
   await writeQemuCodeWorkspace(options, sourceWorkspace)
   const files = await qemuFileEntries(sourceWorkspace)
   const selected = filterQemuScenarios(
-    selectQemuScenarios(files, Math.max(options.scenarioLimit || 72, 72)),
+    options.qemuP2Matrix
+      ? selectQemuP2Scenarios(files, Math.max(options.scenarioLimit || 12, 12))
+      : selectQemuScenarios(files, Math.max(options.scenarioLimit || 72, 72)),
     options.fixtureFilter,
-  ).slice(0, options.scenarioLimit || 72)
+  ).slice(0, options.scenarioLimit || (options.qemuP2Matrix ? 12 : 72))
   return selected.map((scenario) => ({
     ...scenario,
     openTabs: qemuOpenTabs(sourceWorkspace, scenario.relativePath, files),
@@ -920,19 +1203,29 @@ async function prepareQemuScenarios(options: UiMatrixOptions) {
 }
 
 async function writeQemuCodeWorkspace(options: UiMatrixOptions, sourceWorkspace: string) {
+  const codeGraphEnabled = options.qemuCodeGraph === "on"
+  const codeGraphSettings = codeGraphEnabled
+    ? {
+      "opencode.remote.codeGraph.maxFiles": options.qemuIndexMaxFiles,
+      "opencode.remote.codeGraph.workerConcurrency": 8,
+      "opencode.remote.codeGraph.queryCacheSize": 200,
+    }
+    : {}
   await writeFile(qemuCodeWorkspacePath(options), `${JSON.stringify({
     folders: [{ path: sourceWorkspace }],
     settings: {
       "opencode.remote.completion.enabled": true,
       "opencode.remote.completion.logLevel": "debug",
       "opencode.remote.completion.debounceMs": 0,
-      "opencode.remote.codeGraph.enabled": false,
+      "opencode.remote.codeGraph.enabled": codeGraphEnabled,
       "opencode.remote.codeGraph.promptOnWorkspaceOpen": false,
+      ...codeGraphSettings,
       "opencode.remote.rag.embedding.resumeAutomatically": false,
       "editor.inlineSuggest.enabled": true,
       "editor.tabCompletion": "off",
       "editor.acceptSuggestionOnEnter": "off",
       "files.autoSave": "off",
+      "files.saveConflictResolution": "overwriteFileOnDisk",
     },
   }, null, 2)}\n`)
 }
@@ -978,6 +1271,86 @@ export function selectQemuScenarios(files: QemuFileEntry[], limit: number) {
       } satisfies UiScenario]
     })
   }).slice(0, limit || 72)
+}
+
+type QemuCursorMutation = NonNullable<UiScenario["mutation"]> & {
+  cursor: UiScenario["cursor"]
+}
+
+type QemuP2Category = {
+  key: string
+  category: string
+  triggerKind: CEmbeddedCompletionFixture["triggerKind"]
+  build: (file: QemuFileEntry) => QemuCursorMutation | undefined
+}
+
+const QEMU_P2_CATEGORIES: QemuP2Category[] = [
+  {
+    key: "member-access",
+    category: "QEMU P2 member-access",
+    triggerKind: "automatic",
+    build: qemuP2MemberAccessMutation,
+  },
+  {
+    key: "call-args",
+    category: "QEMU P2 call-args",
+    triggerKind: "automatic",
+    build: qemuP2CallArgsMutation,
+  },
+  {
+    key: "initializer",
+    category: "QEMU P2 initializer",
+    triggerKind: "automatic",
+    build: qemuP2InitializerMutation,
+  },
+  {
+    key: "error-path",
+    category: "QEMU P2 error-path",
+    triggerKind: "automatic",
+    build: qemuP2ErrorPathMutation,
+  },
+  {
+    key: "state-machine",
+    category: "QEMU P2 state-machine",
+    triggerKind: "automatic",
+    build: qemuP2StateMachineMutation,
+  },
+  {
+    key: "mmio-register",
+    category: "QEMU P2 mmio-register",
+    triggerKind: "automatic",
+    build: qemuP2MmioRegisterMutation,
+  },
+]
+
+export function selectQemuP2Scenarios(files: QemuFileEntry[], limit: number) {
+  const perCategory = Math.max(1, Math.ceil((limit || 12) / QEMU_P2_CATEGORIES.length))
+  const used = new Set<string>()
+  const scenarios: UiScenario[] = []
+  for (const category of QEMU_P2_CATEGORIES) {
+    let picked = 0
+    for (const file of files) {
+      if (picked >= perCategory) break
+      if (used.has(file.path)) continue
+      const mutation = category.build(file)
+      if (!mutation) continue
+      used.add(file.path)
+      picked += 1
+      scenarios.push({
+        id: `P2-${category.key}-${picked}`,
+        category: category.category,
+        triggerKind: category.triggerKind,
+        mainFile: file.absolutePath,
+        relativePath: file.path,
+        mutation: {
+          text: mutation.text,
+          insertedText: mutation.insertedText,
+        },
+        cursor: mutation.cursor,
+      })
+    }
+  }
+  return scenarios.slice(0, limit || 12)
 }
 
 function requireCleanQemuWorkspace(sourceWorkspace: string) {
@@ -1054,6 +1427,118 @@ function qemuMutation(file: QemuFileEntry, category: QemuCategory) {
   }
 }
 
+function qemuP2MemberAccessMutation(file: QemuFileEntry): QemuCursorMutation | undefined {
+  if (!file.path.endsWith(".c")) return
+  const lines = fileLines(file)
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index] ?? ""
+    const match = /^(\s*)(?:const\s+)?(?:struct\s+)?[A-Za-z_][A-Za-z0-9_]*(?:\s+[A-Za-z_][A-Za-z0-9_]*)*\s*\*\s*([A-Za-z_][A-Za-z0-9_]*)\s*(?:=|;|,)/.exec(line)
+    const variable = match?.[2]
+    if (!match || !variable || /^(?:const|void|static|return)$/.test(variable)) continue
+    return insertCursorLineMutation(lines, index + 1, `${match[1]}if (${variable}->${CURSOR}) {`)
+  }
+}
+
+function qemuP2CallArgsMutation(file: QemuFileEntry): QemuCursorMutation | undefined {
+  if (!file.path.endsWith(".c")) return
+  const lines = fileLines(file)
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index] ?? ""
+    const match = /^(\s*)(?:[A-Za-z_][A-Za-z0-9_]*\s*=\s*)?([A-Za-z_][A-Za-z0-9_]*)\s*\([^;{}]*\)\s*;/.exec(line)
+    const callee = match?.[2]
+    if (!match || !callee || /^(?:if|for|while|switch|return|sizeof)$/.test(callee)) continue
+    if (/^[A-Z0-9_]+$/.test(callee)) continue
+    return insertCursorLineMutation(lines, index + 1, `${match[1]}${callee}(${CURSOR});`)
+  }
+}
+
+function qemuP2InitializerMutation(file: QemuFileEntry): QemuCursorMutation | undefined {
+  const lines = fileLines(file)
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index] ?? ""
+    const match = /^(\s*)\.([A-Za-z_][A-Za-z0-9_]*)\s*=/.exec(line)
+    if (!match) continue
+    return replaceCursorLineMutation(lines, index, `${match[1]}.${match[2]} = ${CURSOR},`)
+  }
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index] ?? ""
+    const match = /^(\s*)(?:static\s+)?(?:const\s+)?(?:struct\s+)?[A-Za-z_][A-Za-z0-9_]*(?:\s+[A-Za-z_][A-Za-z0-9_]*)*\s+[A-Za-z_][A-Za-z0-9_]*(?:\[[^\]]*\])?\s*=\s*\{\s*$/.exec(line)
+    if (!match) continue
+    return insertCursorLineMutation(lines, index + 1, `${match[1]}    .ops = ${CURSOR},`)
+  }
+}
+
+function qemuP2ErrorPathMutation(file: QemuFileEntry): QemuCursorMutation | undefined {
+  if (!file.path.endsWith(".c")) return
+  const lines = fileLines(file)
+  const labels = new Set(lines.flatMap((line) => {
+    const match = /^\s*([A-Za-z_][A-Za-z0-9_]*):\s*(?:\/\/.*)?$/.exec(line)
+    return match?.[1] ? [match[1]] : []
+  }))
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index] ?? ""
+    const match = /^(\s*)goto\s+([A-Za-z_][A-Za-z0-9_]*)\s*;/.exec(line)
+    if (!match || (labels.size && !labels.has(match[2]))) continue
+    return replaceCursorLineMutation(lines, index, `${match[1]}goto ${CURSOR};`)
+  }
+}
+
+function qemuP2StateMachineMutation(file: QemuFileEntry): QemuCursorMutation | undefined {
+  const lines = fileLines(file)
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index] ?? ""
+    if (!/\b(?:state|status|mode|phase)\b|(?:_STATE_|_STATUS_|_MODE_|_PHASE_|RUN_STATE_)/i.test(line)) continue
+    const indent = /^\s*/.exec(line)?.[0] ?? ""
+    return insertCursorLineMutation(lines, index + 1, `${indent}state = ${CURSOR};`)
+  }
+}
+
+function qemuP2MmioRegisterMutation(file: QemuFileEntry): QemuCursorMutation | undefined {
+  const lines = fileLines(file)
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index] ?? ""
+    if (!/\b(?:FIELD_PREP|FIELD_GET|GENMASK|BIT|readl|writel|ioread(?:8|16|32|64)?|iowrite(?:8|16|32|64)?)\b|(?:_REG|_MASK|_SHIFT|_BIT|_STATUS|_CTRL)\b/.test(line)) continue
+    const indent = /^#/.test(line) ? "" : /^\s*/.exec(line)?.[0] ?? ""
+    return insertCursorLineMutation(lines, index + 1, `${indent}FIELD_PREP(${CURSOR});`)
+  }
+}
+
+function fileLines(file: QemuFileEntry) {
+  return file.text.replace(/\r\n/g, "\n").split("\n")
+}
+
+function insertCursorLineMutation(lines: string[], index: number, lineWithCursor: string): QemuCursorMutation {
+  return cursorLinesMutation([
+    ...lines.slice(0, index),
+    lineWithCursor,
+    ...lines.slice(index),
+  ], lineWithCursor)
+}
+
+function replaceCursorLineMutation(lines: string[], index: number, lineWithCursor: string): QemuCursorMutation {
+  return cursorLinesMutation([
+    ...lines.slice(0, index),
+    lineWithCursor,
+    ...lines.slice(index + 1),
+  ], lineWithCursor)
+}
+
+function cursorLinesMutation(linesWithCursor: string[], insertedText: string): QemuCursorMutation {
+  const textWithCursor = linesWithCursor.join("\n")
+  const offset = textWithCursor.indexOf(CURSOR)
+  if (offset < 0) throw new Error("Generated QEMU P2 mutation is missing cursor marker.")
+  const prefix = textWithCursor.slice(0, offset)
+  const cursorLines = prefix.split("\n")
+  return {
+    text: textWithCursor.replace(CURSOR, ""),
+    insertedText,
+    cursor: {
+      line: cursorLines.length - 1,
+      character: cursorLines.at(-1)?.length ?? 0,
+    },
+  }
+}
+
 function qemuOpenTabs(sourceWorkspace: string, relativePath: string | undefined, files: QemuFileEntry[]) {
   if (!relativePath) return []
   const stem = relativePath.replace(/\.[^.]+$/, "")
@@ -1076,6 +1561,7 @@ export function completionUiWorkspaceSettings(options: Pick<UiMatrixOptions, "ap
     "editor.acceptSuggestionOnEnter": "off",
     "extensions.ignoreRecommendations": true,
     "files.autoSave": "off",
+    "files.saveConflictResolution": "overwriteFileOnDisk",
   }
   if (options.profile) settings["opencode.remote.completion.profile"] = options.profile
   if (options.apiBaseUrl) settings["opencode.remote.completion.apiBaseUrl"] = options.apiBaseUrl
@@ -1088,12 +1574,16 @@ export function parseArgs(args: string[]): UiMatrixOptions {
     const index = args.indexOf(name)
     return index >= 0 ? args[index + 1] ?? fallback : fallback
   }
-  const qemuDirect = args.includes("--qemu-direct")
+  const qemuP2Matrix = args.includes("--qemu-p2-matrix") || args.includes("--qemu-p2-ui")
+  const qemuDirect = args.includes("--qemu-direct") || qemuP2Matrix
   const profile = readProfile(value("--profile", ""))
+  const qemuCodeGraph = readQemuCodeGraphMode(value("--qemu-codegraph", qemuP2Matrix ? "on" : "off"))
+  const qemuIndexWaitMs = Number(value("--qemu-index-wait-ms", qemuP2Matrix ? "240000" : "0")) || 0
+  const qemuIndexMaxFiles = Number(value("--qemu-index-max-files", qemuP2Matrix ? "5000" : "50000")) || (qemuP2Matrix ? 5000 : 50000)
   return {
     all: args.includes("--all"),
     drive: !args.includes("--no-drive") && !args.includes("--prepare-only"),
-    workspace: value("--workspace", qemuDirect ? DEFAULT_QEMU_WORKSPACE : DEFAULT_WORKSPACE),
+    workspace: value("--workspace", qemuP2Matrix ? DEFAULT_QEMU_P2_WORKSPACE : qemuDirect ? DEFAULT_QEMU_WORKSPACE : DEFAULT_WORKSPACE),
     codeApp: value("--code-app", DEFAULT_CODE_APP),
     apiBaseUrl: value("--api-base-url", "") || undefined,
     model: value("--model", "") || undefined,
@@ -1101,8 +1591,12 @@ export function parseArgs(args: string[]): UiMatrixOptions {
     waitMs: Number(value("--wait-ms", "12000")) || 12000,
     fixtureFilter: value("--fixture-filter", "") || undefined,
     qemuDirect,
+    qemuP2Matrix,
+    qemuCodeGraph,
+    qemuIndexWaitMs,
+    qemuIndexMaxFiles,
     sourceWorkspace: resolve(value("--source-workspace", DEFAULT_QEMU_SOURCE_WORKSPACE)),
-    scenarioLimit: Number(value("--scenario-limit", qemuDirect ? "72" : "0")) || (qemuDirect ? 72 : 0),
+    scenarioLimit: Number(value("--scenario-limit", qemuP2Matrix ? "12" : qemuDirect ? "72" : "0")) || (qemuDirect ? (qemuP2Matrix ? 12 : 72) : 0),
     restoreAfterEach: args.includes("--restore-after-each"),
   }
 }
@@ -1128,6 +1622,11 @@ function readProfile(input: string): CompletionProfile | undefined {
   if (input === "generic-chat" || input === "qwen-coder-fim") return input
   if (!input) return undefined
   throw new Error(`Unsupported completion profile: ${input}`)
+}
+
+function readQemuCodeGraphMode(input: string): UiMatrixOptions["qemuCodeGraph"] {
+  if (input === "on" || input === "off") return input
+  throw new Error(`Unsupported qemu codegraph mode: ${input}. Expected "on" or "off".`)
 }
 
 function directConfigSource(options: UiMatrixOptions) {
@@ -1185,6 +1684,26 @@ function delay(ms: number) {
 
 function stringValue(input: unknown) {
   return typeof input === "string" ? input : undefined
+}
+
+function stringArrayValue(input: unknown) {
+  return Array.isArray(input) ? input.filter((item): item is string => typeof item === "string") : []
+}
+
+function selectedEvidenceCountValue(event: Record<string, unknown>) {
+  const direct = finiteNumberValue(event.selectedEvidenceCount)
+  if (direct !== undefined) return direct
+  const trace = event.cEmbeddedEvidenceTrace
+  if (!trace || typeof trace !== "object") return undefined
+  return finiteNumberValue((trace as Record<string, unknown>).finalSelectedEvidenceCount)
+}
+
+function finiteNumberValue(input: unknown) {
+  return typeof input === "number" && Number.isFinite(input) ? input : undefined
+}
+
+function uniqueStrings(items: string[]) {
+  return [...new Set(items.filter(Boolean))]
 }
 
 if (import.meta.main) {

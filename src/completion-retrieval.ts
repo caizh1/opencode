@@ -1,4 +1,5 @@
 import { isCCompletionLanguage } from "./completion-c-intent"
+import { normalizeCommentGuidedTokens } from "./completion-comment-guided-ranking"
 import type { CompletionPlan } from "./completion-types"
 
 export type CompletionRetrievalPreferredKind = "type" | "macro" | "function" | "global" | "field"
@@ -23,6 +24,7 @@ export function shouldRetrieveCompletionSnippetsForPlan(plan: CompletionPlan, la
   if (!isCCompletionLanguage(languageId)) return false
   return plan.kind === "ordinary-code" ||
     plan.kind === "c-embedded-code" ||
+    plan.kind === "comment-guided-c-code" ||
     plan.kind === "body-continuation" ||
     plan.kind === "top-level-declaration"
 }
@@ -32,6 +34,10 @@ export function completionRetrievalQuery(input: CompletionRetrievalQueryInput) {
 }
 
 export function completionRetrievalPlan(input: CompletionRetrievalQueryInput): CompletionRetrievalPlan {
+  if (input.plan.kind === "comment-guided-c-code") {
+    return commentGuidedCCodePlan(input)
+  }
+
   if (input.plan.targetSymbol) {
     return retrievalPlan({
       queries: [input.plan.targetSymbol],
@@ -88,12 +94,14 @@ export function completionRetrievalPlan(input: CompletionRetrievalQueryInput): C
         preferredKinds: ["type", "macro", "function", "global"],
       })
     case "body-statement":
+      const bodyCommentTokens = nearbyCommentTokens(input.linePrefix)
       return retrievalPlan({
-        queries: [input.currentWord, lastIdentifier(input.linePrefix), recentStatementIdentifier(input.linePrefix)],
+        queries: [input.currentWord, lastIdentifier(input.linePrefix), recentStatementIdentifier(input.linePrefix), ...bodyCommentTokens.slice(0, 2)],
         evidenceQuestion: evidenceQuestion("body-statement", [
           ["last-identifier", lastIdentifier(input.linePrefix)],
           ["recent-identifier", recentStatementIdentifier(input.linePrefix)],
           ["current-word", input.currentWord],
+          ["nearby-comment-tokens", bodyCommentTokens.join(" ")],
         ], "Find visible local helpers, macros, nearby body-statement style, and same-module embedded C examples."),
         policyLabel: "c-body-statement",
         preferredKinds: ["function", "macro", "type", "global"],
@@ -132,13 +140,40 @@ export function completionRetrievalPlan(input: CompletionRetrievalQueryInput): C
         preferredKinds: ["type", "macro", "function", "global"],
       })
     default:
+      const commentTokens = nearbyCommentTokens(input.linePrefix)
       return retrievalPlan({
-        queries: [input.currentWord, lastIdentifier(input.linePrefix)],
-        evidenceQuestion: "Find local symbols and nearby usage relevant to this inline completion.",
+        queries: [input.currentWord, lastIdentifier(input.linePrefix), ...commentTokens.slice(0, 2)],
+        evidenceQuestion: evidenceQuestion("generic-c-embedded", [
+          ["current-word", input.currentWord],
+          ["last-identifier", lastIdentifier(input.linePrefix)],
+          ["nearby-comment-tokens", commentTokens.join(" ")],
+        ], "Find local symbols, helper calls, macros, type hints, and nearby usage relevant to this inline completion."),
         policyLabel: "generic-completion",
         preferredKinds: ["function", "type", "macro", "global"],
       })
   }
+}
+
+function commentGuidedCCodePlan(input: CompletionRetrievalQueryInput): CompletionRetrievalPlan {
+  const commentText = stripCommentMarker(input.plan.sourceComment ?? "")
+  const commentTokens = semanticCommentTokens(commentText)
+  const nearby = uniqueNonEmpty([
+    ...trailingIdentifiers(input.linePrefix).slice(-6),
+    lastIdentifier(input.linePrefix),
+    recentStatementIdentifier(input.linePrefix),
+  ])
+  return retrievalPlan({
+    queries: [...commentTokens.slice(0, 3), ...nearby.slice(0, 2)],
+    evidenceQuestion: evidenceQuestion("comment-guided-c-code", [
+      ["source-comment", commentText],
+      ["nearby-identifiers", nearby.join(" ")],
+      ["line-prefix-shape", lineShape(input.linePrefix)],
+      ["line-suffix-shape", lineShape(input.lineSuffix)],
+      ["current-word", input.currentWord],
+    ], "Find short, similar C functions, code blocks, and same-module flow examples that implement the source comment near this cursor."),
+    policyLabel: "c-comment-guided-code",
+    preferredKinds: ["function", "macro", "type", "global"],
+  })
 }
 
 function memberAccessPlan(input: CompletionRetrievalQueryInput): CompletionRetrievalPlan {
@@ -256,6 +291,30 @@ function evidenceQuestion(intent: string, fields: Array<[string, string | undefi
   ].join("\n")
 }
 
+function stripCommentMarker(input: string) {
+  return input
+    .trim()
+    .replace(/^\/\/\s*/, "")
+    .replace(/^#\s*/, "")
+    .replace(/^\/\*\s*/, "")
+    .replace(/\s*\*\/$/, "")
+    .trim()
+}
+
+function semanticCommentTokens(input: string) {
+  return normalizeCommentGuidedTokens(input).normalizedTokens
+}
+
+function lineShape(input: string) {
+  const line = input.split(/\r?\n/).at(-1)?.trim() ?? ""
+  if (!line) return "blank"
+  if (/\b(?:if|while|for|switch)\s*\([^)]*$/.test(line)) return "condition"
+  if (/\bgoto\s+[A-Za-z_][A-Za-z0-9_]*?$/.test(line)) return "goto"
+  if (/\.\s*[A-Za-z_][A-Za-z0-9_]*\s*=\s*$/.test(line)) return "initializer"
+  if (/[A-Za-z_][A-Za-z0-9_]*\s*\([^)]*$/.test(line)) return "call"
+  return "statement"
+}
+
 function uniqueNonEmpty(items: Array<string | undefined>) {
   const seen = new Set<string>()
   const result: string[] = []
@@ -333,6 +392,16 @@ function lastIdentifier(input: string) {
 
 function trailingIdentifiers(input: string) {
   return (input.match(/\b[A-Za-z_][A-Za-z0-9_]*\b/g) ?? []).slice(-4).reverse()
+}
+
+function nearbyCommentTokens(input: string) {
+  const commentLines = input
+    .replace(/\r\n/g, "\n")
+    .split("\n")
+    .slice(-8)
+    .filter((line) => /^\s*(?:(?:\/\/)|(?:\/\*)|\*)/.test(line))
+  const tokens = commentLines.flatMap((line) => line.match(/\b[A-Za-z_][A-Za-z0-9_]{2,}\b/g) ?? [])
+  return uniqueNonEmpty(tokens).slice(-6).reverse()
 }
 
 function mmioIdentifiers(input: string) {

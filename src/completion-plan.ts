@@ -19,10 +19,21 @@ export type CompletionPlanInput = {
   triggerKind?: "automatic" | "manual" | "invoke" | string
 }
 
+type CommentGuidedCCodeAnalysis = {
+  plan?: CompletionPlan
+  sourceComment?: string
+  implementationLike: boolean
+  blocksPreviousContinuation: boolean
+  skipReason?: string
+}
+
 export function planCompletion(input: CompletionPlanInput): CompletionPlan {
   const trimmed = input.linePrefix.trim()
   const currentWord = input.currentWord ?? ""
-  const previousContinuation = previousCommentContinuationPlan(input, trimmed, currentWord)
+  const commentGuidedCCode = analyzeCommentGuidedCCodePlan(input, trimmed, currentWord)
+  if (commentGuidedCCode.plan) return commentGuidedCCode.plan
+
+  const previousContinuation = previousCommentContinuationPlan(input, trimmed, currentWord, commentGuidedCCode)
   if (previousContinuation) return previousContinuation
 
   const commentSymbolPlan = commentSymbolReferencePlan(input, trimmed, currentWord)
@@ -151,10 +162,18 @@ function commentSymbolReferencePlan(input: CompletionPlanInput, trimmed: string,
   }
 }
 
-function previousCommentContinuationPlan(input: CompletionPlanInput, trimmed: string, currentWord: string): CompletionPlan | undefined {
+function previousCommentContinuationPlan(
+  input: CompletionPlanInput,
+  trimmed: string,
+  currentWord: string,
+  commentGuided?: CommentGuidedCCodeAnalysis,
+): CompletionPlan | undefined {
   const sourceComment = input.previousNonEmptyLine?.trim()
   if (!sourceComment || !isSingleLineCommentPrompt(sourceComment, input.languageId)) return
   if (!looksLikeContinuationLine(trimmed, currentWord)) return
+  if (commentGuided?.blocksPreviousContinuation) {
+    return bodyContinuationFallbackPlan(input, commentGuided.skipReason ?? "comment-guided-blocked-previous-continuation")
+  }
 
   const targetSymbol = commentTargetSymbol(sourceComment)
   if (!targetSymbol && !looksLikeCodeCommentPrompt(sourceComment)) return
@@ -173,7 +192,106 @@ function previousCommentContinuationPlan(input: CompletionPlanInput, trimmed: st
     useInstruction: true,
     maxTokens: testIntent ? 768 : 384,
     confidenceFloor: testIntent ? 0.55 : 0.5,
+    commentGuidedSkipReason: commentGuided?.skipReason,
   }
+}
+
+function analyzeCommentGuidedCCodePlan(input: CompletionPlanInput, trimmed: string, currentWord: string): CommentGuidedCCodeAnalysis {
+  if (!isCCompletionLanguage(input.languageId)) return { implementationLike: false, blocksPreviousContinuation: false, skipReason: "not-c-language" }
+  const sourceComment = input.previousNonEmptyLine?.trim()
+  if (!sourceComment) return { implementationLike: false, blocksPreviousContinuation: false, skipReason: "missing-previous-comment" }
+  if (!isSingleLineCommentPrompt(sourceComment, input.languageId)) return { sourceComment, implementationLike: false, blocksPreviousContinuation: false, skipReason: "previous-line-not-comment" }
+  if (!looksLikeContinuationLine(trimmed, currentWord)) return { sourceComment, implementationLike: false, blocksPreviousContinuation: false, skipReason: "not-continuation-line" }
+  if (!looksLikeImplementationComment(sourceComment)) return { sourceComment, implementationLike: false, blocksPreviousContinuation: false, skipReason: "comment-not-implementation-like" }
+
+  const blocksPreviousContinuation = true
+  if (input.line === undefined || !input.lines) {
+    return {
+      sourceComment,
+      implementationLike: true,
+      blocksPreviousContinuation,
+      skipReason: "missing-document-lines",
+    }
+  }
+
+  const state = cCursorState(input.lines, input.line, input.linePrefix.length)
+  if (state?.inComment) return { sourceComment, implementationLike: true, blocksPreviousContinuation, skipReason: "cursor-in-comment" }
+  if (state?.inString) return { sourceComment, implementationLike: true, blocksPreviousContinuation, skipReason: "cursor-in-string" }
+  if (!commentGuidedCCodeBodyContext(input, state)) {
+    return {
+      sourceComment,
+      implementationLike: true,
+      blocksPreviousContinuation,
+      skipReason: state ? "not-c-body-context" : "unknown-c-cursor-state",
+    }
+  }
+
+  const cIntent = classifyCCompletionIntent(input) ?? (looksLikeCaseBodyContext(input) ? "case-body" : "body-statement")
+  const manual = isManualTrigger(input.triggerKind)
+  const targetSymbol = strongCommentCodeSymbol(sourceComment)
+  return {
+    sourceComment,
+    implementationLike: true,
+    blocksPreviousContinuation,
+    plan: {
+      kind: "comment-guided-c-code",
+      insertMode: trimmed || input.lineSuffix.trim() ? "replace-whole-line" : "insert-at-cursor",
+      sourceComment,
+      ...(targetSymbol ? { targetSymbol } : {}),
+      cIntent,
+      replaceCurrentWord: Boolean(trimmed || input.lineSuffix.trim()),
+      needsSymbolRetrieval: Boolean(targetSymbol),
+      needsIntentRetrieval: true,
+      needsTestRetrieval: false,
+      useFim: true,
+      useInstruction: false,
+      maxTokens: manual ? 192 : 128,
+      retrievalBudgetMs: manual ? 5000 : 2500,
+      confidenceFloor: 0.35,
+    },
+  }
+}
+
+function bodyContinuationFallbackPlan(input: CompletionPlanInput, commentGuidedSkipReason: string): CompletionPlan | undefined {
+  if (!isCCompletionLanguage(input.languageId)) return
+  if (input.line === undefined || !input.lines) return
+  if (isInsideUnsafeInlineContext(input)) return disabledPlanWithCommentGuidedSkip(commentGuidedSkipReason)
+  const state = cCursorState(input.lines, input.line, input.linePrefix.length)
+  if (!commentGuidedCCodeBodyContext(input, state)) return
+  return {
+    ...bodyContinuationPlanResult(input),
+    commentGuidedSkipReason,
+  }
+}
+
+function disabledPlanWithCommentGuidedSkip(commentGuidedSkipReason: string): CompletionPlan {
+  return {
+    ...disabledPlan(),
+    commentGuidedSkipReason,
+  }
+}
+
+function commentGuidedCCodeBodyContext(input: CompletionPlanInput, state: ReturnType<typeof cCursorState>) {
+  if (state?.stack.some((item) => item === "block")) return true
+  if (state?.stack.some((item) => item === "aggregate")) return false
+  return looksLikeIndentedCBodyContinuation(input) || looksLikeCBodyNeighborCode(input.nextNonEmptyLine)
+}
+
+function looksLikeIndentedCBodyContinuation(input: CompletionPlanInput) {
+  if (!/^\s+$/.test(input.linePrefix) || input.linePrefix.length === 0) return false
+  return looksLikeCBodyNeighborCode(input.nextNonEmptyLine) || looksLikeCBodyNeighborCode(input.previousNonEmptyLine)
+}
+
+function looksLikeCBodyNeighborCode(line: string | undefined) {
+  if (!line) return false
+  const trimmed = line.trim()
+  if (!trimmed) return false
+  if (/^(?:\/\/|\/\*|\*)/.test(trimmed)) return false
+  if (/^#\s*(?:include|define|if|ifdef|ifndef|endif|elif|else|pragma)\b/.test(trimmed)) return false
+  if (/^(?:case\b|default\s*:)/.test(trimmed)) return true
+  if (/[;{}:]$/.test(trimmed)) return true
+  if (/^(?:if|for|while|switch|return|goto|break|continue)\b/.test(trimmed)) return true
+  return /^[A-Za-z_][A-Za-z0-9_]*(?:\s*(?:=|\(|->|\.))/.test(trimmed)
 }
 
 function bodyContinuationPlan(input: CompletionPlanInput): CompletionPlan | undefined {
@@ -316,6 +434,15 @@ function looksLikeCodeCommentPrompt(trimmed: string) {
   return /\b(?:add|create|generate|implement|write|fix|return|test|function|method|class)\b/i.test(text)
 }
 
+function looksLikeImplementationComment(comment: string) {
+  const text = stripSingleLineCommentMarker(comment).trim()
+  if (text.length < 4) return false
+  if (/^(?:step|stage|phase)\s*\d+\b/i.test(text)) return true
+  if (/^\d+\s*[).:-]\s*\S/.test(text)) return true
+  return /\b(?:add|apply|build|call|check|clear|close|configure|disable|enable|finish|free|handle|init|initialize|load|open|parse|poll|prepare|process|read|release|reset|restore|return|save|set|shutdown|start|stop|store|sync|update|validate|wait|write)\b/i.test(text) ||
+    /(?:等待|复位|重置|使能|关闭|打开|初始化|配置|检查|释放|清理|读取|写入|返回|调用|处理|更新)/.test(text)
+}
+
 function commentSymbolFallbackKind(trimmed: string) {
   if (looksLikeUnitTestPrompt(trimmed)) return "comment-to-test" as const
   if (looksLikeCodeCommentPrompt(trimmed)) return "comment-to-code" as const
@@ -328,6 +455,7 @@ function looksLikeCommentIdentifierPrefix(currentWord: string) {
 
 function looksLikeCommentSymbolPrefix(currentWord: string) {
   if (currentWord.length < 3) return false
+  if (isWeakCommentTargetSymbol(currentWord)) return false
   if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(currentWord)) return false
   return currentWord.includes("_") || /[A-Z]/.test(currentWord) || /\d/.test(currentWord)
 }
@@ -342,6 +470,19 @@ function commentTargetSymbol(comment: string) {
   const text = stripSingleLineCommentMarker(comment)
   const identifiers = text.match(/\b[A-Za-z_][A-Za-z0-9_]*\b/g) ?? []
   return identifiers.filter(looksLikeCommentSymbolPrefix).at(-1)
+}
+
+function strongCommentCodeSymbol(comment: string) {
+  const text = stripSingleLineCommentMarker(comment)
+  const explicit = [
+    ...text.matchAll(/[`"'“”‘’]([A-Za-z_][A-Za-z0-9_]{2,})[`"'“”‘’]/g),
+    ...text.matchAll(/\b([A-Za-z_][A-Za-z0-9_]{2,})\s*\(/g),
+  ].map((match) => match[1])
+  return explicit.find((symbol) => symbol && looksLikeCommentSymbolPrefix(symbol))
+}
+
+function isWeakCommentTargetSymbol(input: string) {
+  return /^(?:step\d*|stage\d*|phase\d*|path\d*|flow\d*|init|start|end|done)$/i.test(input)
 }
 
 function looksLikeTestIntentComment(comment: string) {

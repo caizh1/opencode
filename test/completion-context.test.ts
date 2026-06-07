@@ -234,6 +234,150 @@ describe("completion context packer", () => {
     expect(pack.dropped.map((block) => block.kind)).toContain("analysis-evidence")
   })
 
+  test("delivers structured C embedded evidence within a 900 token budget", () => {
+    const prefix = [
+      "static int driver_submit(struct driver_ctx *ctx)",
+      "{",
+      ...Array.from({ length: 48 }, (_, index) => `    uint32_t local_${index} = ctx->status + ${index};`),
+      "    ctx->",
+    ].join("\n")
+    const pack = packCompletionContext({
+      plan: cEmbeddedIntentPlan("member-access"),
+      languageId: "c",
+      currentPath: "src/drivers/submit.c",
+      prefix,
+      suffix: "\n    return 0;\n}\n",
+      retrievedSnippets: [],
+      openTabs: [
+        {
+          path: "include/large_context.h",
+          languageId: "c",
+          text: "uint32_t unrelated_table[256];\n".repeat(120),
+        },
+      ],
+      analysisEvidenceText: [
+        "C embedded evidence for intent: member-access",
+        "",
+        "C evidence: c-base-type",
+        "Symbol: driver_ctx",
+        "Source: include/driver.h:10",
+        "Reason: completion base-type",
+        "Score: 300",
+        "Retrieval source: graph",
+        "Domain boost: no",
+        "Code:",
+        "base-type: struct driver_ctx",
+        "",
+        "C evidence: c-struct-definition",
+        "Symbol: driver_ctx",
+        "Source: include/driver.h:10-18",
+        "Reason: completion struct-definition",
+        "Score: 290",
+        "Retrieval source: graph",
+        "Domain boost: no",
+        "Code:",
+        "struct driver_ctx { int status; int flags; };",
+        "",
+        "C evidence: c-same-usage",
+        "Source: src/drivers/other.c:42",
+        "Reason: completion same-field-usage",
+        "Score: 260",
+        "Retrieval source: graph",
+        "Domain boost: no",
+        "Code:",
+        "if (ctx->status) return ctx->status;",
+      ].join("\n"),
+      tokenBudget: 900,
+    })
+
+    const selectedKinds = pack.selected.map((block) => block.kind)
+    expect(selectedKinds).toContain("current-prefix")
+    expect(selectedKinds).toContain("c-embedded-evidence")
+    expect(formatRepoContext(pack)).toContain('kind="c-embedded-evidence"')
+    expect(formatRepoContext(pack)).toContain("base-type: struct driver_ctx")
+    expect(formatRepoContext(pack)).toContain("C evidence: c-base-type")
+    expect(formatRepoContext(pack)).not.toContain("<c-embedded-evidence")
+    expect(formatRepoContext(pack)).not.toContain("<evidence")
+    expect(pack.selected.filter((block) => block.kind === "c-embedded-evidence").length).toBeGreaterThanOrEqual(2)
+    expect(pack.tokenEstimate).toBeLessThanOrEqual(900)
+  })
+
+  test("comment-guided C code keeps prefix and suffix ahead of source comment and evidence", () => {
+    const plan: CompletionPlan = {
+      kind: "comment-guided-c-code",
+      insertMode: "insert-at-cursor",
+      sourceComment: "// step2: wait nfc clock reset",
+      cIntent: "body-statement",
+      replaceCurrentWord: false,
+      needsSymbolRetrieval: false,
+      needsIntentRetrieval: true,
+      needsTestRetrieval: false,
+      useFim: true,
+      useInstruction: false,
+      maxTokens: 128,
+      confidenceFloor: 0.35,
+    }
+    const pack = packCompletionContext({
+      plan,
+      languageId: "c",
+      currentPath: "backend/hal/nfi_hal_ctrl_drv.c",
+      prefix: [
+        "int nfi_hal_controller_init(void)",
+        "{",
+        "    nfi_power_on();",
+        "    // step2: wait nfc clock reset",
+        "    ",
+      ].join("\n"),
+      suffix: [
+        "",
+        "    nfi_enable();",
+        "    return 0;",
+        "}",
+      ].join("\n"),
+      retrievedSnippets: [],
+      openTabs: [{
+        path: "backend/hal/noisy.c",
+        languageId: "c",
+        text: "void noisy(void) {\n" + "    unrelated();\n".repeat(500) + "}",
+      }],
+      analysisEvidenceText: [
+        "C embedded evidence for intent: comment-guided-c-code",
+        "",
+        "C evidence: c-similar-function",
+        "Symbol: nfdrv_wait_nfc_clk_reset",
+        "Source: backend/hal/ctrl_drv/nfdrv_init.c:759-762",
+        "Reason: completion comment-semantic-match similar-function",
+        "Score: 420",
+        "Retrieval source: graph",
+        "Domain boost: no",
+        "Code:",
+        "void nfdrv_wait_nfc_clk_reset(void)\n{\n    delay_us(10);\n}",
+        "",
+        "C evidence: c-same-module-flow",
+        "Source: backend/hal:1",
+        "Reason: completion same-module-flow",
+        "Score: 160",
+        "Retrieval source: graph",
+        "Domain boost: no",
+        "Code:",
+        "module backend/hal: controller init flow helpers",
+      ].join("\n"),
+      tokenBudget: 900,
+    })
+
+    const selectedKinds = pack.selected.map((block) => block.kind)
+    expect(selectedKinds).toContain("current-prefix")
+    expect(selectedKinds).toContain("current-suffix")
+    expect(selectedKinds).toContain("source-comment")
+    expect(pack.selected.some((block) => block.kind === "c-embedded-evidence" && block.title.startsWith("c-similar-function"))).toBe(true)
+    expect(pack.dropped.find((block) => block.kind === "current-prefix")).toBeUndefined()
+    expect(pack.dropped.find((block) => block.kind === "current-suffix")).toBeUndefined()
+    const prompt = formatRepoContext(pack)
+    expect(prompt).toContain("// step2: wait nfc clock reset")
+    expect(prompt).toContain("C evidence: c-similar-function")
+    expect(prompt).toContain("nfdrv_wait_nfc_clk_reset")
+  })
+
   test("Qwen FIM prompt includes packed repo context before FIM tokens", async () => {
     const { buildQwenCoderFimPrompt } = await import("../src/context")
     const prompt = buildQwenCoderFimPrompt({
@@ -336,8 +480,8 @@ describe("completion context packer", () => {
     expect(prompt).toContain("uart_bus_lock")
   })
 
-  test("comment-to-code prompt names source comment, suffix, and current function context", async () => {
-    const { buildCompletionPrompt } = await import("../src/context")
+  test("comment-guided C code prompt keeps source comment, prefix, and suffix in FIM context", async () => {
+    const { buildQwenCoderFimPrompt } = await import("../src/context")
     const documentText = [
       "static int driver_open(Device *dev)",
       "{",
@@ -362,7 +506,8 @@ describe("completion context packer", () => {
       lines,
       line: position.line,
     })
-    const prompt = await buildCompletionPrompt({
+    expect(plan.kind).toBe("comment-guided-c-code")
+    const prompt = buildQwenCoderFimPrompt({
       document: fakeDocument(documentText, "c"),
       position,
       settings: settings(),
@@ -370,16 +515,16 @@ describe("completion context packer", () => {
       retrievedSnippets: [],
     })
 
-    expect(prompt).toContain("Source comment:")
+    expect(prompt).toContain("<|fim_prefix|>")
+    expect(prompt).toContain("<|fim_suffix|>")
+    expect(prompt).toContain('kind="source-comment"')
+    expect(prompt).toContain('kind="current-prefix"')
+    expect(prompt).toContain('kind="current-suffix"')
     expect(prompt).toContain("// Add project-style error cleanup before success return.")
-    expect(prompt).toContain("Insertion point:")
-    expect(prompt).toContain("First suffix line:")
     expect(prompt).toContain("ret = driver_start(dev);")
-    expect(prompt).toContain("Current function context:")
     expect(prompt).toContain("driver_open")
     expect(prompt).toContain("int ret;")
-    expect(prompt).toContain("Do not copy code from the suffix")
-    expect(prompt).toContain("Do not return generic success code such as `return 0;`")
+    expect(prompt).not.toContain("Task:\nGenerate code that satisfies the source comment.")
   })
 
   test("instruction prompt keeps full target function bodies when snippets include them", async () => {
@@ -601,6 +746,14 @@ function cIntentPlan(cIntent: NonNullable<CompletionPlan["cIntent"]>): Completio
     useInstruction: false,
     maxTokens: 96,
     confidenceFloor: 0.35,
+  }
+}
+
+function cEmbeddedIntentPlan(cIntent: NonNullable<CompletionPlan["cIntent"]>): CompletionPlan {
+  return {
+    ...cIntentPlan(cIntent),
+    kind: "c-embedded-code",
+    needsIntentRetrieval: true,
   }
 }
 

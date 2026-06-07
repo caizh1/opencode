@@ -143,6 +143,9 @@ describe("completion quality benchmark fixtures", () => {
       expect(promptText).toMatch(/<\|fim_prefix\|>|<prefix>/)
       const allPromptText = promptFiles.map((file) => readFileSync(join(promptsDir, file), "utf8")).join("\n")
       const allEvidenceText = evidenceFiles.map((file) => readFileSync(join(evidenceDir, file), "utf8")).join("\n")
+      expect(allPromptText).toContain("C evidence:")
+      expect(allPromptText).not.toContain("<c-embedded-evidence")
+      expect(allPromptText).not.toContain("<evidence ")
       for (const evidenceKind of [
         "c-base-type",
         "c-struct-definition",
@@ -181,6 +184,7 @@ describe("completion quality benchmark fixtures", () => {
       }
       expect(summary.qwen_fim.count).toBeGreaterThan(0)
       expect(summary.deterministic_symbol.count).toBeGreaterThanOrEqual(0)
+      expect(summary.protocol_artifact_rate).toBe(0)
       expect(report.runMode).toBe("mock-dry-run")
       expect(report.qualityMetricValid).toBe(false)
       expect(report.records[0]).toEqual(expect.objectContaining({
@@ -196,6 +200,10 @@ describe("completion quality benchmark fixtures", () => {
         finalEvidencePath: expect.any(String),
         retrievalPolicy: expect.any(Object),
         domainHints: expect.any(Array),
+        evidencePromptBlocks: expect.any(Number),
+        evidencePromptTokens: expect.any(Number),
+        evidencePromptKinds: expect.any(Array),
+        protocolArtifact: expect.any(Boolean),
         mockVisibleCandidate: expect.any(String),
       }))
       expect(report.records.some((record) => record.actualCIntent === "member-access" && Array.isArray(record.evidenceKinds) && record.evidenceKinds.includes("c-base-type"))).toBe(true)
@@ -204,6 +212,45 @@ describe("completion quality benchmark fixtures", () => {
       expect(report.records.some((record) => record.actualCIntent === "error-path" && Array.isArray(record.evidenceKinds) && record.evidenceKinds.includes("c-cleanup-pattern"))).toBe(true)
       expect(report.records.some((record) => record.actualCIntent === "state-machine" && Array.isArray(record.evidenceKinds) && record.evidenceKinds.includes("c-state-machine"))).toBe(true)
       expect(report.records.some((record) => record.actualCIntent === "mmio-register" && Array.isArray(record.evidenceKinds) && record.evidenceKinds.includes("c-register-macro"))).toBe(true)
+
+      const commentGuidedRanking = report.records.find((record) => record.fixtureName === "generic-c-comment-guided-nfc-clock-reset-ranking")
+      expect(commentGuidedRanking).toEqual(expect.objectContaining({
+        actualPlanKind: "comment-guided-c-code",
+        actualCIntent: "body-statement",
+        promptKind: "qwen-fim",
+        correctFunctionInCandidates: true,
+        retrievalTimedOut: false,
+      }))
+      expect(commentGuidedRanking?.normalizedCommentTokens).toEqual(expect.arrayContaining(["wait", "nfc", "clock"]))
+      expect(commentGuidedRanking?.evidenceKinds).toEqual(expect.arrayContaining([
+        expect.stringMatching(/^c-(comment-semantic-match|similar-function|same-module-flow|helper-usage)$/),
+      ]))
+      expect(commentGuidedRanking?.selectedSimilarFunctionNames).toContain("nfdrv_wait_nfc_clk_reset")
+      expect(commentGuidedRanking?.candidateTokenCoverage?.some((coverage) =>
+        coverage.actionTokenCoverage > 0 && coverage.objectTokenCoverage > 0,
+      )).toBe(true)
+      expect(commentGuidedRanking?.semanticCandidateTopK?.some((candidate) =>
+        candidate.name === "nfdrv_wait_nfc_clk_reset",
+      )).toBe(true)
+      expect(commentGuidedRanking?.qaRetrievalTopK).toEqual(expect.arrayContaining(["nfdrv_wait_nfc_clk_reset"]))
+      expect(commentGuidedRanking?.completionRetrievalTopK).toEqual(expect.arrayContaining(["nfdrv_wait_nfc_clk_reset"]))
+      expect(commentGuidedRanking?.completionTopCandidate).toEqual(expect.any(String))
+      expect(commentGuidedRanking?.alignmentReason).toEqual(expect.stringMatching(/^(aligned|latency-budget|max-evidence|token-budget|rerank-disabled|rag-unavailable|graph-only-fallback|not-in-index|projection-trimmed)$/))
+      expect(commentGuidedRanking?.rerankEnabled).toEqual(expect.any(Boolean))
+      expect(commentGuidedRanking?.ragAvailable).toEqual(expect.any(Boolean))
+
+      const commentPrompt = readFileSync(join(promptsDir, "generic-c-comment-guided-nfc-clock-reset-ranking.txt"), "utf8")
+      const commentEvidence = JSON.parse(readFileSync(join(evidenceDir, "generic-c-comment-guided-nfc-clock-reset-ranking.json"), "utf8")) as {
+        selectedEvidence?: Array<{ kind?: string; title?: string; text?: string }>
+      }
+      expect(commentPrompt).toContain('kind="source-comment"')
+      expect(commentPrompt).toContain('kind="current-prefix"')
+      expect(commentPrompt).toContain('kind="current-suffix"')
+      expect(commentPrompt).toContain("C evidence: c-comment-semantic-match")
+      expect(commentPrompt).toContain("nfdrv_wait_nfc_clk_reset")
+      expect(commentEvidence.selectedEvidence?.some((block) =>
+        block.kind === "target-symbol" && /nfc_aes_for_no_meta_get|nfc_cdma_desc_zero_init/.test(`${block.title ?? ""}\n${block.text ?? ""}`),
+      )).toBe(false)
 
       const joinedLogs = logs.join("\n")
       for (const domain of expectedDomains) {
