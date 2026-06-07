@@ -161,6 +161,67 @@ describe("code graph query context", () => {
     expect(result?.truncated).toBe(true)
     expect(result?.omittedCandidates).toBeGreaterThan(0)
   })
+
+  test("retrieves generic C embedded completion evidence by intent", () => {
+    const index = completionEvidenceIndex()
+
+    const member = retrieveEvidence({
+      index,
+      question: [
+        "inline completion for c file drivers/uart/uart.c",
+        "completion-intent: member-access",
+        "member-base: req",
+        "member-prefix: sta",
+      ].join("\n"),
+      maxBytes: 60000,
+    })
+    expect(member?.evidence.some((item) => item.reason.includes("struct-field") && item.snippet.includes("status"))).toBe(true)
+
+    const callArgs = retrieveEvidence({
+      index,
+      question: [
+        "inline completion for c file drivers/uart/uart.c",
+        "completion-intent: call-args",
+        "callee: driver_start",
+      ].join("\n"),
+      maxBytes: 60000,
+    })
+    expect(callArgs?.evidence.some((item) => item.reason.includes("call-site") && item.snippet.includes("driver_start(dev, &default_ops)"))).toBe(true)
+
+    const initializer = retrieveEvidence({
+      index,
+      question: [
+        "inline completion for c file drivers/uart/uart.c",
+        "completion-intent: initializer",
+        "initializer-field: on_event",
+      ].join("\n"),
+      maxBytes: 60000,
+    })
+    expect(initializer?.evidence.some((item) => item.reason.includes("initializer-example") && item.snippet.includes(".on_event"))).toBe(true)
+
+    const errorPath = retrieveEvidence({
+      index,
+      question: [
+        "inline completion for c file drivers/uart/uart.c",
+        "completion-intent: error-path",
+        "function: driver_probe",
+        "goto-label-prefix: out_",
+      ].join("\n"),
+      maxBytes: 60000,
+    })
+    expect(errorPath?.evidence.some((item) => item.reason.includes("cleanup-label") && item.snippet.includes("driver_unlock"))).toBe(true)
+
+    const mmio = retrieveEvidence({
+      index,
+      question: [
+        "inline completion for c file drivers/uart/uart.c",
+        "completion-intent: mmio-register",
+        "register-tokens: FIELD_PREP UART_CTRL_ENABLE",
+      ].join("\n"),
+      maxBytes: 60000,
+    })
+    expect(mmio?.evidence.some((item) => item.reason.includes("register-family") && item.snippet.includes("UART_CTRL_ENABLE_MASK"))).toBe(true)
+  })
 })
 
 function sampleIndex(): CodeGraphIndex {
@@ -251,6 +312,52 @@ int epr_ppn_raw_read(void) { return 0; }
       size: 1,
       text: `
 int test_epr_ppn_raw_write_with_cb_dfx(void) { return epr_ppn_raw_write_with_cb_dfx(); }
+`,
+    }),
+  ]
+  return {
+    version: 1,
+    rootPath: "/repo",
+    rootName: "repo",
+    updatedAt: 1,
+    truncated: false,
+    files: Object.fromEntries(files.map((file) => [file.path, file])),
+  }
+}
+
+function completionEvidenceIndex(): CodeGraphIndex {
+  const files = [
+    parseCFile({
+      path: "drivers/uart/uart.c",
+      hash: "uart",
+      size: 1,
+      text: `
+#define UART_CTRL_REG 0x00u
+#define UART_CTRL_ENABLE BIT(0)
+#define UART_CTRL_ENABLE_MASK GENMASK(0, 0)
+typedef void (*driver_cb_t)(uint32_t event);
+static void driver_on_event(uint32_t event) { (void)event; }
+typedef struct { uint32_t status; uint32_t state; } request_t;
+typedef struct { driver_cb_t on_event; uint32_t mask; } driver_ops_t;
+static const driver_ops_t default_ops = { .on_event = driver_on_event, .mask = BIT(0), };
+
+int driver_start(struct device *dev, const driver_ops_t *ops) { return 0; }
+
+int driver_probe(request_t *req, struct device *dev)
+{
+  int ret = driver_lock(dev);
+  if (ret) {
+    goto out_unlock;
+  }
+  ret = driver_start(dev, &default_ops);
+  if (ret) {
+    goto out_unlock;
+  }
+  return req->status;
+out_unlock:
+  driver_unlock(dev);
+  return ret;
+}
 `,
     }),
   ]

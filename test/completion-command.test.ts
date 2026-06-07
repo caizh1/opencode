@@ -74,6 +74,14 @@ describe("accepted completion formatting command wiring", () => {
     expect(completionSource).toContain("completionTelemetrySymbolCandidates")
     expect(completionSource).toContain("selectedContextBlocks")
     expect(completionSource).toContain("droppedContextBlocks")
+    expect(completionSource).toContain("completionId: requestId")
+    expect(completionSource).toContain("cIntent: plan.cIntent")
+    expect(completionSource).toContain("retrievalMode")
+    expect(completionSource).toContain("completionTelemetryEvidenceKinds")
+    expect(completionSource).toContain("completionTelemetryContextLevel")
+    expect(completionSource).toContain("completionTelemetryPromptKind")
+    expect(completionSource).toContain("completionTelemetryTrimReason")
+    expect(completionSource).toContain("completionTelemetryFinalInsertLength")
     expect(completionSource).toContain("rejectReason")
     expect(completionSource).toContain("latencyMs")
   })
@@ -82,8 +90,9 @@ describe("accepted completion formatting command wiring", () => {
     expect(completionSource).toContain("plan.needsTestRetrieval ? 30 : 8")
   })
 
-  test("inline completion analysis evidence uses graph-only retrieval", () => {
-    expect(completionSource).toContain('this.deps.codeGraph.queryEvidence(question, { retrievalMode: "graph-only" })')
+  test("inline completion analysis evidence uses hybrid-ready retrieval options", () => {
+    expect(completionSource).toContain("completionAnalysisEvidenceOptions")
+    expect(completionSource).toContain('retrievalMode: "hybrid"')
   })
 
   test("Qwen coder FIM prompt uses the expected token order", () => {

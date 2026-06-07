@@ -163,6 +163,8 @@ export function trimCompletionForCIntent(input: {
     case "error-path":
     case "body-statement":
     case "case-body":
+    case "switch-case":
+    case "state-machine":
       return trimShortStatementCompletion(text, input.cIntent === "error-path" ? 2 : 4)
     default:
       return text

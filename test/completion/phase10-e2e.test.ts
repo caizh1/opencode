@@ -85,7 +85,7 @@ describe("phase 10 completion e2e fixtures", () => {
     })
 
     expect(snapshot).toMatchObject({
-      planKind: "ordinary-code",
+      planKind: "c-embedded-code",
       modelRoute: "fim",
       modelCalled: true,
     })
@@ -102,7 +102,7 @@ describe("phase 10 completion e2e fixtures", () => {
     })
 
     expect(snapshot).toMatchObject({
-      planKind: "top-level-declaration",
+      planKind: "c-embedded-code",
       modelRoute: "fim",
       modelCalled: true,
       rejectionReason: undefined,
@@ -122,14 +122,14 @@ describe("phase 10 completion e2e fixtures", () => {
     })
 
     expect(snapshot).toMatchObject({
-      planKind: "symbol-completion",
+      planKind: "c-embedded-code",
       selectedSymbol: TARGET_SYMBOL,
       modelRoute: "deterministic-symbol",
       modelCalled: false,
-      insertText: TARGET_SYMBOL,
+      insertText: "ite_with_cb_dfx",
       finalRange: {
         startLine: 0,
-        startCharacter: 4,
+        startCharacter: line.length,
         endLine: 0,
         endCharacter: line.length,
       },

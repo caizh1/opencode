@@ -100,6 +100,10 @@ describe("extension manifest", () => {
     expect(manifest.contributes?.commands).toContainEqual(expect.objectContaining({
       command: "opencode.remote.completion.setApiKey",
     }))
+    expect(manifest.contributes?.commands).toContainEqual(expect.objectContaining({
+      command: "opencode.remote.completion.runDirectAblation",
+    }))
+    expect(manifest.activationEvents).toContain("onCommand:opencode.remote.completion.runDirectAblation")
   })
 
   test("contributes local code graph settings", () => {

@@ -1,5 +1,6 @@
 export type CompletionPlanKind =
   | "ordinary-code"
+  | "c-embedded-code"
   | "body-continuation"
   | "top-level-declaration"
   | "symbol-completion"
@@ -12,6 +13,15 @@ export type CompletionPlanKind =
 
 export type CompletionSymbolFallbackKind = "comment-to-code" | "comment-to-test"
 
+export type CompletionRetrievalPolicyKind = "function" | "type" | "macro" | "global" | "field"
+
+export type CompletionRetrievalPolicy = {
+  label: string
+  intent: CompletionCIntent
+  queryMode: "c-embedded-intent"
+  preferredKinds: CompletionRetrievalPolicyKind[]
+}
+
 export type CompletionCIntent =
   | "member-access"
   | "symbol-prefix"
@@ -19,7 +29,11 @@ export type CompletionCIntent =
   | "call-args"
   | "assignment-rhs"
   | "case-body"
+  | "switch-case"
   | "top-level-declaration"
+  | "top-level-decl"
+  | "preprocessor"
+  | "state-machine"
   | "body-statement"
   | "condition"
   | "error-path"
@@ -40,11 +54,14 @@ export type CompletionPlan = {
   symbolFallbackKind?: CompletionSymbolFallbackKind
   replaceCurrentWord: boolean
   needsSymbolRetrieval: boolean
+  needsIntentRetrieval?: boolean
   needsTestRetrieval: boolean
   useFim: boolean
   useInstruction: boolean
   maxTokens: number
   confidenceFloor: number
+  retrievalPolicy?: CompletionRetrievalPolicy
+  domainHints?: string[]
 }
 
 export type RetrievedCompletionSnippet = {

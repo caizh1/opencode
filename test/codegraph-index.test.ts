@@ -43,7 +43,7 @@ describe("code graph derived index", () => {
     expect(index.derived?.callerIdsByCallee["toString"]).toEqual(["drivers/prototype.c:caller:5"])
   })
 
-  test("hydrates legacy indexes with version three metadata", () => {
+  test("hydrates legacy indexes with version four metadata", () => {
     const index = hydrateCodeGraphIndex({
       version: 1,
       rootPath: "/repo",
@@ -53,7 +53,7 @@ describe("code graph derived index", () => {
       files: sampleFiles(),
     })
 
-    expect(index.version).toBe(3)
+    expect(index.version).toBe(4)
     expect(index.derived?.functionIdsByName.storage_boot).toEqual(["boot/storage.c:storage_boot:3"])
     expect(index.derived?.symbolsByName.storage_boot[0].kind).toBe("function")
     expect(index.stats?.files).toBe(2)
@@ -61,7 +61,7 @@ describe("code graph derived index", () => {
     expect(index.stats?.types).toBe(0)
   })
 
-  test("hydrates version two files without v3 fields", () => {
+  test("hydrates version two files without current fields", () => {
     const [path, file] = Object.entries(sampleFiles())[0]
     const legacyFile = { ...file }
     delete (legacyFile as Partial<CodeGraphFile>).types
@@ -77,7 +77,7 @@ describe("code graph derived index", () => {
       files: { [path]: legacyFile as CodeGraphFile },
     })
 
-    expect(index.version).toBe(3)
+    expect(index.version).toBe(4)
     expect(index.files[path].tokens.length).toBeGreaterThan(0)
     expect(index.derived?.postingsByTerm.nand.length).toBeGreaterThan(0)
   })

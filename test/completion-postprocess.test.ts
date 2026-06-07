@@ -187,7 +187,7 @@ describe("completion postprocessor", () => {
     })
   })
 
-  test("keeps deterministic current-word symbol expansions intact", () => {
+  test("normalizes C embedded symbol-prefix full candidates to cursor suffixes", () => {
     expect(postprocessCompletion({
       rawText: "epr_ppn_raw_write_with_cb_dfx",
       linePrefix: "    epr_ppn_raw_wr",
@@ -201,8 +201,8 @@ describe("completion postprocessor", () => {
         currentWord: "epr_ppn_raw_wr",
       }),
       indent: indent("    ", "    "),
-    })).toEqual({
-      text: "epr_ppn_raw_write_with_cb_dfx",
+    })).toMatchObject({
+      text: "ite_with_cb_dfx",
     })
   })
 

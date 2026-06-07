@@ -44,6 +44,9 @@ int nand_read_page(struct nand_chip *chip, uint32_t page)
     expect(parsed.functions[0].isStatic).toBe(true)
     const readPage = parsed.functions.find((item) => item.name === "nand_read_page")
     expect(readPage?.calls.map((call) => call.name)).toEqual(["nand_wait_ready", "dma_submit", "ecc_check"])
+    expect(parsed.types.find((item) => item.name === "nand_chip")?.fields?.map((field) => field.name)).toContain("ready")
+    expect(readPage?.calls.find((call) => call.name === "dma_submit")?.args).toEqual(["page"])
+    expect(readPage?.calls.find((call) => call.name === "ecc_check")?.returnHandling).toBe("return")
   })
 
   test("handles multi-line signatures", () => {
@@ -67,5 +70,59 @@ storage_submit(
     expect(parsed.functions[0].name).toBe("storage_submit")
     expect(parsed.functions[0].signature).toContain("storage_submit")
     expect(parsed.functions[0].calls.map((call) => call.name)).toEqual(["queue_request"])
+  })
+
+  test("extracts completion evidence for C embedded fields, call sites, initializers, error labels, and register macro families", () => {
+    const parsed = parseCFile({
+      path: "drivers/uart/uart.c",
+      hash: "evidence",
+      size: 1,
+      text: `
+#define UART_CTRL_REG 0x00u
+#define UART_CTRL_ENABLE BIT(0)
+#define UART_CTRL_ENABLE_MASK GENMASK(0, 0)
+typedef void (*driver_cb_t)(uint32_t event);
+static void driver_on_event(uint32_t event) { (void)event; }
+typedef struct { driver_cb_t on_event; uint32_t mask; } driver_ops_t;
+static const driver_ops_t default_ops = { .on_event = driver_on_event, .mask = BIT(0), };
+
+int driver_probe(struct device *dev)
+{
+  int ret = driver_lock(dev);
+  if (ret) {
+    goto out_unlock;
+  }
+  ret = driver_start(dev, &default_ops);
+  if (ret) {
+    goto out_unlock;
+  }
+  return 0;
+out_unlock:
+  driver_unlock(dev);
+  return ret;
+}
+`,
+    })
+
+    expect(parsed.types.find((item) => item.name === "driver_ops_t")?.fields?.map((field) => field.name)).toEqual(["on_event", "mask"])
+    expect(parsed.callSites.find((item) => item.callee === "driver_start")).toMatchObject({
+      caller: "driver_probe",
+      args: ["dev", "&default_ops"],
+      returnHandling: "assignment:ret",
+    })
+    expect(parsed.initializers[0]).toMatchObject({
+      typeName: "driver_ops_t",
+      fields: ["on_event", "mask"],
+    })
+    expect(parsed.errorLabels.find((item) => item.name === "out_unlock")).toMatchObject({
+      functionName: "driver_probe",
+      cleanupCalls: ["driver_unlock"],
+      returnStyle: "return ret;",
+    })
+    expect(parsed.registerMacroFamilies.find((item) => item.family === "UART_CTRL")?.macros.map((item) => item.name)).toEqual([
+      "UART_CTRL_REG",
+      "UART_CTRL_ENABLE",
+      "UART_CTRL_ENABLE_MASK",
+    ])
   })
 })

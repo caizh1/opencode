@@ -76,6 +76,28 @@ describe("hybrid offline evidence RAG", () => {
     expect(result?.evidence.some((item) => item.reason.includes("vector:function"))).toBe(true)
   })
 
+  test("uses hybrid vector and rerank evidence for completion-intent questions", async () => {
+    const index = sampleIndex()
+    const embedding = fakeEmbeddingProvider()
+    const vectorIndex = await buildRagVectorIndex({ index, provider: embedding })
+    const result = await queryEvidenceAsync(index, [
+      "inline completion for c file drivers/nand/nand.c",
+      "current-path: drivers/nand/nand.c",
+      "completion-intent: call-args",
+      "callee: nand_read_page",
+    ].join("\n"), undefined, {
+      settings: settings({ embedding: true, rerank: true }),
+      embeddingProvider: embedding,
+      rerankProvider: fakeRerankProvider(),
+      vectorIndex,
+    }, ["drivers/nand/nand.c"])
+
+    expect(result.trace.steps.some((step) => step.label === "hybrid-retrieval")).toBe(true)
+    expect(result.trace.steps.some((step) => step.label === "vector")).toBe(true)
+    expect(result.trace.steps.some((step) => step.label === "rerank")).toBe(true)
+    expect(result.evidencePack.evidence.some((item) => item.file === "drivers/nand/nand.c")).toBe(true)
+  })
+
   test("graph-only evidence retrieval avoids configured embedding and rerank providers", async () => {
     const index = sampleIndex()
     const buildEmbedding = fakeEmbeddingProvider()

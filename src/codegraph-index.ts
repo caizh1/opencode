@@ -10,7 +10,7 @@ import type {
   CodeGraphSymbol,
 } from "./codegraph-types"
 
-export const CURRENT_CODE_GRAPH_INDEX_VERSION = 3 as const
+export const CURRENT_CODE_GRAPH_INDEX_VERSION = 4 as const
 export type CodeGraphYield = () => Promise<void>
 
 function emptyRecord<T>(): Record<string, T> {
@@ -131,6 +131,9 @@ export function buildDerivedIndex(files: Record<string, CodeGraphFile>): CodeGra
     }
     for (const type of file.types) {
       addSymbol(symbolsByName, symbolsByPath, typeSymbol(file.path, type))
+      for (const field of type.fields ?? []) {
+        addSymbol(symbolsByName, symbolsByPath, fieldSymbol(file.path, type.name, field))
+      }
     }
     for (const global of file.globals) {
       addSymbol(symbolsByName, symbolsByPath, globalSymbol(file.path, global.name, global.line, global.snippet))
@@ -218,7 +221,10 @@ export async function buildDerivedIndexAsync(
     }
 
     for (const macro of file.macros) addSymbol(symbolsByName, symbolsByPath, macroSymbol(file.path, macro.name, macro.line, macro.snippet ?? ""))
-    for (const type of file.types) addSymbol(symbolsByName, symbolsByPath, typeSymbol(file.path, type))
+    for (const type of file.types) {
+      addSymbol(symbolsByName, symbolsByPath, typeSymbol(file.path, type))
+      for (const field of type.fields ?? []) addSymbol(symbolsByName, symbolsByPath, fieldSymbol(file.path, type.name, field))
+    }
     for (const global of file.globals) addSymbol(symbolsByName, symbolsByPath, globalSymbol(file.path, global.name, global.line, global.snippet))
     for (const token of file.tokens) {
       addPosting(postingsByTerm, token.term, {
@@ -383,10 +389,27 @@ function normalizeFile(file: CodeGraphFile): CodeGraphFile {
     sha256: file.sha256 ?? file.hash,
     module: file.module ?? moduleKey(file.path),
     shard: file.shard ?? shardKeyForPath(file.path),
-    types: file.types ?? [],
+    types: (file.types ?? []).map((type) => ({ ...type, fields: type.fields ?? [] })),
     globals: file.globals ?? [],
+    callSites: file.callSites ?? legacyCallSites(file),
+    initializers: file.initializers ?? [],
+    errorLabels: file.errorLabels ?? [],
+    registerMacroFamilies: file.registerMacroFamilies ?? [],
     tokens: file.tokens ?? legacyTokensForFile(file),
   }
+}
+
+function legacyCallSites(file: CodeGraphFile) {
+  return file.functions.flatMap((fn) =>
+    fn.calls.map((call) => ({
+      callee: call.name,
+      caller: fn.name,
+      callerId: fn.id,
+      line: call.line,
+      args: call.args ?? [],
+      snippet: call.snippet ?? "",
+      returnHandling: call.returnHandling,
+    })))
 }
 
 function legacyTokensForFile(file: CodeGraphFile) {
@@ -462,6 +485,19 @@ function typeSymbol(path: string, type: CodeGraphFile["types"][number]): CodeGra
     endLine: type.endLine,
     signature: type.kind,
     snippet: type.snippet,
+  }
+}
+
+function fieldSymbol(path: string, typeName: string, field: NonNullable<CodeGraphFile["types"][number]["fields"]>[number]): CodeGraphSymbol {
+  return {
+    id: `${path}:field:${typeName}:${field.name}:${field.line}`,
+    kind: "field",
+    name: field.name,
+    path,
+    startLine: field.line,
+    endLine: field.line,
+    signature: `${typeName}.${field.name}: ${field.type}`,
+    snippet: field.snippet,
   }
 }
 

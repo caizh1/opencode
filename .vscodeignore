@@ -8,6 +8,7 @@ dist/test/**
 script/**
 .gitignore
 .opencode/**
+.completion-quality/**
 opencode.json
 opencode_ui_readability_plan.md
 bun.lock

@@ -1,7 +1,7 @@
 import { isCCompletionLanguage } from "./completion-c-intent"
 import type { CompletionPlan } from "./completion-types"
 
-export type CompletionRetrievalPreferredKind = "type" | "macro" | "function" | "global"
+export type CompletionRetrievalPreferredKind = "type" | "macro" | "function" | "global" | "field"
 
 export type CompletionRetrievalPlan = {
   queries: string[]
@@ -19,9 +19,10 @@ export type CompletionRetrievalQueryInput = {
 }
 
 export function shouldRetrieveCompletionSnippetsForPlan(plan: CompletionPlan, languageId: string) {
-  if (plan.needsSymbolRetrieval || plan.needsTestRetrieval) return true
+  if (plan.needsSymbolRetrieval || plan.needsIntentRetrieval || plan.needsTestRetrieval) return true
   if (!isCCompletionLanguage(languageId)) return false
   return plan.kind === "ordinary-code" ||
+    plan.kind === "c-embedded-code" ||
     plan.kind === "body-continuation" ||
     plan.kind === "top-level-declaration"
 }
@@ -55,7 +56,10 @@ export function completionRetrievalPlan(input: CompletionRetrievalQueryInput): C
     case "symbol-prefix":
       return retrievalPlan({
         queries: [input.currentWord, lastIdentifier(input.linePrefix)],
-        evidenceQuestion: `C/C++ inline completion for symbol-prefix ${input.currentWord || lastIdentifier(input.linePrefix)}; find matching symbols, declarations, macros, and nearby usage.`,
+        evidenceQuestion: evidenceQuestion("symbol-prefix", [
+          ["current-word", input.currentWord],
+          ["last-identifier", lastIdentifier(input.linePrefix)],
+        ], "Find matching symbols, declarations, macros, and nearby usage."),
         policyLabel: "c-symbol-prefix",
         preferredKinds: ["function", "type", "macro", "global"],
       })
@@ -72,24 +76,59 @@ export function completionRetrievalPlan(input: CompletionRetrievalQueryInput): C
     case "mmio-register":
       return mmioRegisterPlan(input)
     case "case-body":
+    case "switch-case":
       return retrievalPlan({
         queries: [switchSubject(input.linePrefix), input.currentWord, lastIdentifier(input.linePrefix)],
-        evidenceQuestion: "C/C++ inline completion for switch/case body; find state machine branches, enum values, and nearby case handling style.",
+        evidenceQuestion: evidenceQuestion("case-body", [
+          ["switch-subject", switchSubject(input.linePrefix)],
+          ["current-word", input.currentWord],
+          ["last-identifier", lastIdentifier(input.linePrefix)],
+        ], "Find state machine branches, enum values, legal transitions, and nearby case handling style."),
         policyLabel: "c-case-body",
         preferredKinds: ["type", "macro", "function", "global"],
       })
     case "body-statement":
       return retrievalPlan({
         queries: [input.currentWord, lastIdentifier(input.linePrefix), recentStatementIdentifier(input.linePrefix)],
-        evidenceQuestion: "C/C++ inline completion for a function body statement; find visible local helpers, macros, and nearby body-statement style.",
+        evidenceQuestion: evidenceQuestion("body-statement", [
+          ["last-identifier", lastIdentifier(input.linePrefix)],
+          ["recent-identifier", recentStatementIdentifier(input.linePrefix)],
+          ["current-word", input.currentWord],
+        ], "Find visible local helpers, macros, nearby body-statement style, and same-module embedded C examples."),
         policyLabel: "c-body-statement",
         preferredKinds: ["function", "macro", "type", "global"],
       })
     case "top-level-declaration":
+    case "top-level-decl":
       return retrievalPlan({
         queries: [input.currentWord, lastIdentifier(input.linePrefix)],
-        evidenceQuestion: "C/C++ inline completion for top-level declaration; find nearby typedefs, macros, globals, function prototypes, and declarations.",
+        evidenceQuestion: evidenceQuestion("top-level-declaration", [
+          ["current-word", input.currentWord],
+          ["last-identifier", lastIdentifier(input.linePrefix)],
+        ], "Find nearby typedefs, macros, globals, function prototypes, and declarations."),
         policyLabel: "c-top-level-declaration",
+        preferredKinds: ["type", "macro", "function", "global"],
+      })
+    case "preprocessor":
+      return retrievalPlan({
+        queries: [preprocessorIdentifier(input.linePrefix), input.currentWord, lastIdentifier(input.linePrefix)],
+        evidenceQuestion: evidenceQuestion("preprocessor", [
+          ["directive", preprocessorDirective(input.linePrefix)],
+          ["current-word", input.currentWord],
+          ["last-identifier", lastIdentifier(input.linePrefix)],
+        ], "Find matching macros, include guards, compile-time constants, and nearby preprocessor style."),
+        policyLabel: "c-preprocessor",
+        preferredKinds: ["macro", "type", "global", "function"],
+      })
+    case "state-machine":
+      return retrievalPlan({
+        queries: [stateMachineIdentifier(input.linePrefix), input.currentWord, lastIdentifier(input.linePrefix)],
+        evidenceQuestion: evidenceQuestion("state-machine", [
+          ["symbols", uniqueNonEmpty([stateMachineIdentifier(input.linePrefix), input.currentWord, lastIdentifier(input.linePrefix)]).join(" ")],
+          ["current-word", input.currentWord],
+          ["recent-identifier", recentStatementIdentifier(input.linePrefix)],
+        ], "Find state variables, enum values, legal transitions, switch branches, and nearby state-machine update style."),
+        policyLabel: "c-state-machine",
         preferredKinds: ["type", "macro", "function", "global"],
       })
     default:
@@ -107,9 +146,13 @@ function memberAccessPlan(input: CompletionRetrievalQueryInput): CompletionRetri
   const member = input.currentWord || memberAccessMemberPrefix(input.linePrefix)
   return retrievalPlan({
     queries: [base, member, recentStatementIdentifier(input.linePrefix)],
-    evidenceQuestion: `C/C++ inline completion for member-access on base ${base || "<unknown>"} with member prefix ${member || "<none>"}; find type definitions, struct fields, and nearby field usage.`,
+    evidenceQuestion: evidenceQuestion("member-access", [
+      ["member-base", base],
+      ["member-prefix", member],
+      ["recent-identifier", recentStatementIdentifier(input.linePrefix)],
+    ], "Find base expression type, struct or union fields, and nearby field usage examples."),
     policyLabel: "c-member-access",
-    preferredKinds: ["type", "global", "function"],
+    preferredKinds: ["field", "type", "global", "function"],
   })
 }
 
@@ -117,9 +160,12 @@ function initializerPlan(input: CompletionRetrievalQueryInput): CompletionRetrie
   const field = designatedInitializerField(input.linePrefix)
   return retrievalPlan({
     queries: [field, input.currentWord, lastIdentifier(input.linePrefix)],
-    evidenceQuestion: `C/C++ inline completion for initializer field ${field || input.currentWord || "<unknown>"}; find struct or typedef definitions, callback signatures, and similar initializer examples.`,
+    evidenceQuestion: evidenceQuestion("initializer", [
+      ["initializer-field", field || input.currentWord],
+      ["last-identifier", lastIdentifier(input.linePrefix)],
+    ], "Find aggregate type, struct fields, callback signatures, field order, and similar designated initializer examples."),
     policyLabel: "c-initializer",
-    preferredKinds: ["type", "function", "global"],
+    preferredKinds: ["field", "type", "function", "global"],
   })
 }
 
@@ -127,7 +173,11 @@ function callArgsPlan(input: CompletionRetrievalQueryInput): CompletionRetrieval
   const callee = callExpressionCallee(input.linePrefix)
   return retrievalPlan({
     queries: [callee, assignmentLhsIdentifier(input.linePrefix), input.currentWord],
-    evidenceQuestion: `C/C++ inline completion for call-args of ${callee || "<unknown>"}; find callee declaration, nearby call-site examples, argument order, and return handling.`,
+    evidenceQuestion: evidenceQuestion("call-args", [
+      ["callee", callee],
+      ["assignment-lhs", assignmentLhsIdentifier(input.linePrefix)],
+      ["current-word", input.currentWord],
+    ], "Find callee declaration, nearby call-site examples, argument order, and return handling."),
     policyLabel: "c-call-args",
     preferredKinds: ["function", "type", "macro", "global"],
   })
@@ -137,7 +187,11 @@ function assignmentPlan(input: CompletionRetrievalQueryInput): CompletionRetriev
   const lhs = assignmentLhsIdentifier(input.linePrefix)
   return retrievalPlan({
     queries: [lhs, input.currentWord, lastIdentifier(input.linePrefix)],
-    evidenceQuestion: `C/C++ inline completion for assignment RHS of ${lhs || "<unknown>"}; find value producers, macros, return values, and nearby assignments.`,
+    evidenceQuestion: evidenceQuestion("assignment-rhs", [
+      ["assignment-lhs", lhs],
+      ["current-word", input.currentWord],
+      ["last-identifier", lastIdentifier(input.linePrefix)],
+    ], "Find value producers, macros, return values, and nearby assignments."),
     policyLabel: "c-assignment-rhs",
     preferredKinds: ["function", "macro", "global", "type"],
   })
@@ -147,7 +201,11 @@ function conditionPlan(input: CompletionRetrievalQueryInput): CompletionRetrieva
   const identifiers = trailingIdentifiers(input.linePrefix).filter((item) => !/^(?:if|while)$/.test(item))
   return retrievalPlan({
     queries: [input.currentWord, ...identifiers, recentStatementIdentifier(input.linePrefix)],
-    evidenceQuestion: "C/C++ inline completion for condition expression; find current function variables, status or state enum values, condition branch examples, and nearby guard style.",
+    evidenceQuestion: evidenceQuestion("condition", [
+      ["symbols", identifiers.join(" ")],
+      ["current-word", input.currentWord],
+      ["recent-identifier", recentStatementIdentifier(input.linePrefix)],
+    ], "Find current function variables, status or state enum values, condition branch examples, and nearby guard style."),
     policyLabel: "c-condition",
     preferredKinds: ["type", "macro", "function", "global"],
   })
@@ -158,7 +216,11 @@ function errorPathPlan(input: CompletionRetrievalQueryInput): CompletionRetrieva
   const lhs = assignmentLhsIdentifier(input.linePrefix)
   return retrievalPlan({
     queries: [label, input.currentWord, lhs, "goto", "ret"],
-    evidenceQuestion: `C/C++ inline completion for error-path${label ? ` label ${label}` : ""}; find cleanup labels, goto out-style exits, ret/err handling, unlock/free cleanup, and same-file cleanup examples.`,
+    evidenceQuestion: evidenceQuestion("error-path", [
+      ["goto-label-prefix", label],
+      ["assignment-lhs", lhs],
+      ["current-word", input.currentWord],
+    ], "Find same-function cleanup labels, goto out-style exits, ret/err handling, unlock/free/release cleanup order, and same-file cleanup examples."),
     policyLabel: "c-error-path",
     preferredKinds: ["function", "global", "type", "macro"],
   })
@@ -168,7 +230,9 @@ function mmioRegisterPlan(input: CompletionRetrievalQueryInput): CompletionRetri
   const helpers = mmioIdentifiers(input.linePrefix)
   return retrievalPlan({
     queries: [...helpers, input.currentWord, registerLikeIdentifier(input.linePrefix), lastIdentifier(input.linePrefix)],
-    evidenceQuestion: "C/C++ inline completion for MMIO/register access; find register macros, bit masks, read/write helpers, volatile or barrier usage, and nearby register access examples.",
+    evidenceQuestion: evidenceQuestion("mmio-register", [
+      ["register-tokens", uniqueNonEmpty([...helpers, input.currentWord, registerLikeIdentifier(input.linePrefix), lastIdentifier(input.linePrefix)]).join(" ")],
+    ], "Find register macro families, bit masks, shifts, read/write helpers, volatile or barrier usage, and nearby register access examples."),
     policyLabel: "c-mmio-register",
     preferredKinds: ["macro", "global", "function"],
   })
@@ -179,6 +243,17 @@ function retrievalPlan(input: Omit<CompletionRetrievalPlan, "queries"> & { queri
     ...input,
     queries: uniqueNonEmpty(input.queries).slice(0, 4),
   }
+}
+
+function evidenceQuestion(intent: string, fields: Array<[string, string | undefined]>, instruction: string) {
+  return [
+    `completion-intent: ${intent}`,
+    ...fields
+      .map(([key, value]) => [key, value?.trim()] as const)
+      .filter(([, value]) => Boolean(value))
+      .map(([key, value]) => `${key}: ${value}`),
+    `goal: ${instruction}`,
+  ].join("\n")
 }
 
 function uniqueNonEmpty(items: Array<string | undefined>) {
@@ -229,6 +304,21 @@ function gotoLabelPrefix(linePrefix: string) {
 function switchSubject(linePrefix: string) {
   const match = /\bswitch\s*\(\s*([A-Za-z_][A-Za-z0-9_]*)/.exec(linePrefix)
   return match?.[1] ?? ""
+}
+
+function preprocessorDirective(linePrefix: string) {
+  const match = /^\s*#\s*([A-Za-z_][A-Za-z0-9_]*)?/.exec(linePrefix)
+  return match?.[1] ?? ""
+}
+
+function preprocessorIdentifier(linePrefix: string) {
+  const withoutDirective = linePrefix.replace(/^\s*#\s*[A-Za-z_][A-Za-z0-9_]*/, "")
+  return lastIdentifier(withoutDirective)
+}
+
+function stateMachineIdentifier(linePrefix: string) {
+  const match = /\b([A-Za-z_][A-Za-z0-9_]*(?:state|status|mode|phase)|(?:state|status|mode|phase)[A-Za-z_][A-Za-z0-9_]*)\b/i.exec(linePrefix)
+  return match?.[1] ?? switchSubject(linePrefix)
 }
 
 function recentStatementIdentifier(input: string) {

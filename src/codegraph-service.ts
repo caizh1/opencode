@@ -552,7 +552,7 @@ export class LocalCodeGraphService implements vscode.Disposable {
   async queryEvidence(question: string, options: CodeGraphEvidenceQueryOptions = {}): Promise<QueryEvidenceResult | undefined> {
     if (!this.getSettings().codeGraph.enabled) return undefined
     if (!this.index) await this.ensureIndexLoaded()
-    const activeIndex = await this.activeIndexForQuestion(question, [])
+    const activeIndex = await this.activeIndexForQuestion(question, options.relatedPaths ?? [])
     if (!activeIndex) return undefined
     const settings = this.getSettings()
     const hybrid = options.retrievalMode === "graph-only" ? undefined : this.hybridOptions()
@@ -562,7 +562,7 @@ export class LocalCodeGraphService implements vscode.Disposable {
       maxFileSliceBytes: settings.analysis.maxFileSliceBytes,
       maxGraphEdges: settings.analysis.maxGraphEdges,
       maxPaths: settings.analysis.maxPaths,
-    }, hybrid)
+    }, hybrid, options.relatedPaths ?? [])
     this.lastAnalysisTrace = result.trace
     return result
   }

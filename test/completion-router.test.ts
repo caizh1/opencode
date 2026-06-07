@@ -63,7 +63,7 @@ describe("completion model router", () => {
       promptKind: "qwen-fim",
       modelProfile: "qwen-coder-fim",
       textProfile: "qwen-coder-fim",
-      maxTokens: 192,
+      maxTokens: 128,
       temperature: 0.2,
     })
   })
@@ -125,7 +125,7 @@ describe("completion model router", () => {
     expect(route).toEqual({
       kind: "deterministic-symbol",
       reason: "high-confidence-symbol",
-      text: "epr_ppn_raw_write_with_cb_dfx",
+      text: "ite_with_cb_dfx",
       maxTokens: 0,
       textProfile: "generic-chat",
     })
@@ -342,7 +342,7 @@ describe("completion model router", () => {
     })).toBe(false)
   })
 
-  test("uses a small FIM assist route for low-confidence symbol completions", () => {
+  test("uses generic embedded FIM for low-confidence C symbol prefixes", () => {
     const route = routeCompletionModel({
       plan: planCompletion({
         languageId: "c",
@@ -358,11 +358,11 @@ describe("completion model router", () => {
 
     expect(route).toMatchObject({
       kind: "model",
-      reason: "symbol-assist",
+      reason: "ordinary-code",
       promptKind: "qwen-fim",
       modelProfile: "qwen-coder-fim",
       textProfile: "qwen-coder-fim",
-      maxTokens: 64,
+      maxTokens: 96,
       temperature: 0,
     })
   })

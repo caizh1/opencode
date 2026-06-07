@@ -298,7 +298,7 @@ export async function runAnalysisTool(input: RunAnalysisToolInput): Promise<Anal
   }
 }
 
-export function queryEvidence(index: CodeGraphIndex, question: string, budget: AnalysisBudget = DEFAULT_ANALYSIS_BUDGET): QueryEvidenceResult {
+export function queryEvidence(index: CodeGraphIndex, question: string, budget: AnalysisBudget = DEFAULT_ANALYSIS_BUDGET, relatedPaths: string[] = []): QueryEvidenceResult {
   const traceId = createTraceId()
   const steps: AnalysisQueryTraceStep[] = []
   const started = Date.now()
@@ -309,6 +309,7 @@ export function queryEvidence(index: CodeGraphIndex, question: string, budget: A
   const retrieval = retrieveEvidence({
     index,
     question,
+    relatedPaths,
     maxBytes: budget.maxEvidenceBytes,
     maxDepth: 4,
     maxFanout: Math.min(80, budget.maxGraphEdges),
@@ -354,8 +355,9 @@ export async function queryEvidenceAsync(
   question: string,
   budget: AnalysisBudget = DEFAULT_ANALYSIS_BUDGET,
   hybrid?: HybridRetrievalOptions,
+  relatedPaths: string[] = [],
 ): Promise<QueryEvidenceResult> {
-  if (!hybrid) return queryEvidence(index, question, budget)
+  if (!hybrid) return queryEvidence(index, question, budget, relatedPaths)
   const traceId = createTraceId()
   const steps: AnalysisQueryTraceStep[] = []
   const started = Date.now()
@@ -366,6 +368,7 @@ export async function queryEvidenceAsync(
   const retrieval = await retrieveHybridEvidence({
     index,
     question,
+    relatedPaths,
     maxBytes: budget.maxEvidenceBytes,
     maxDepth: 4,
     maxFanout: Math.min(80, budget.maxGraphEdges),

@@ -5,6 +5,7 @@ import {
   isCCompletionLanguage,
   looksLikeCaseBodyContext,
 } from "./completion-c-intent"
+import { planCEmbeddedCompletion } from "./completion-c-embedded-intent"
 
 export type CompletionPlanInput = {
   languageId: string
@@ -23,12 +24,6 @@ export function planCompletion(input: CompletionPlanInput): CompletionPlan {
   const currentWord = input.currentWord ?? ""
   const previousContinuation = previousCommentContinuationPlan(input, trimmed, currentWord)
   if (previousContinuation) return previousContinuation
-
-  if (!trimmed && !input.lineSuffix.trim()) {
-    const blankLinePlan = cBlankLinePlan(input)
-    if (blankLinePlan) return blankLinePlan
-    return disabledPlan()
-  }
 
   const commentSymbolPlan = commentSymbolReferencePlan(input, trimmed, currentWord)
   if (commentSymbolPlan) return commentSymbolPlan
@@ -82,6 +77,15 @@ export function planCompletion(input: CompletionPlanInput): CompletionPlan {
   }
 
   if (isInsideUnsafeInlineContext(input)) {
+    return disabledPlan()
+  }
+
+  const cEmbeddedPlan = planCEmbeddedCompletion(input)
+  if (cEmbeddedPlan) return cEmbeddedPlan
+
+  if (!trimmed && !input.lineSuffix.trim()) {
+    const blankLinePlan = cBlankLinePlan(input)
+    if (blankLinePlan) return blankLinePlan
     return disabledPlan()
   }
 

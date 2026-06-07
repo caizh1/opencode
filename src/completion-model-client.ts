@@ -1,5 +1,7 @@
 import type { CompletionProfile, OpenCodeMessage, OpenCodePart, RemoteSettings } from "./types"
 
+export type CompletionTransport = "raw-completions" | "chat-completions"
+
 const QWEN_CODER_FIM_STOP = [
   "<|fim_prefix|>",
   "<|fim_suffix|>",
@@ -43,6 +45,8 @@ export class CompletionModelClient {
     temperature?: number
     topP?: number
     profile?: CompletionProfile
+    transport?: CompletionTransport
+    seed?: number
   }): Promise<OpenCodeMessage> {
     const baseUrl = this.settings.completion.apiBaseUrl
     const model = completionModel(this.settings)
@@ -50,7 +54,8 @@ export class CompletionModelClient {
     if (!model) throw new CompletionModelRequestError(0, "Completion model is required.")
 
     const profile = input.profile ?? this.settings.completion.profile
-    if (profile === "qwen-coder-fim") {
+    const transport = input.transport ?? (profile === "qwen-coder-fim" ? "raw-completions" : "chat-completions")
+    if (transport === "raw-completions") {
       return this.completeRawFim({
         prompt: input.prompt,
         signal: input.signal,
@@ -59,22 +64,26 @@ export class CompletionModelClient {
         maxTokens: input.maxTokens,
         temperature: input.temperature,
         topP: input.topP,
+        seed: input.seed,
       })
     }
 
-    const body = await this.postJson(chatCompletionsUrl(baseUrl), {
+    const body: Record<string, unknown> = {
+      model,
+      messages: completionMessages(input.prompt),
+      max_tokens: input.maxTokens ?? this.settings.completion.maxTokens,
+      temperature: input.temperature ?? this.settings.completion.temperature,
+      top_p: input.topP ?? this.settings.completion.topP,
+    }
+    if (Number.isFinite(input.seed)) body.seed = input.seed
+
+    const response = await this.postJson(chatCompletionsUrl(baseUrl), {
       method: "POST",
       signal: input.signal,
       headers: this.headers(),
-      body: JSON.stringify({
-        model,
-        messages: completionMessages(input.prompt),
-        max_tokens: input.maxTokens ?? this.settings.completion.maxTokens,
-        temperature: input.temperature ?? this.settings.completion.temperature,
-        top_p: input.topP ?? this.settings.completion.topP,
-      }),
+      body: JSON.stringify(body),
     })
-    return normalizeChatCompletionMessage(body)
+    return normalizeChatCompletionMessage(response)
   }
 
   private async completeRawFim(input: {
@@ -85,19 +94,23 @@ export class CompletionModelClient {
     maxTokens?: number
     temperature?: number
     topP?: number
+    seed?: number
   }) {
+    const requestBody: Record<string, unknown> = {
+      model: input.model,
+      prompt: input.prompt,
+      max_tokens: input.maxTokens ?? this.settings.completion.maxTokens,
+      temperature: input.temperature ?? this.settings.completion.temperature,
+      top_p: input.topP ?? this.settings.completion.topP,
+      stop: QWEN_CODER_FIM_STOP,
+    }
+    if (Number.isFinite(input.seed)) requestBody.seed = input.seed
+
     const body = await this.postJson(completionsUrl(input.baseUrl), {
       method: "POST",
       signal: input.signal,
       headers: this.headers(),
-      body: JSON.stringify({
-        model: input.model,
-        prompt: input.prompt,
-        max_tokens: input.maxTokens ?? this.settings.completion.maxTokens,
-        temperature: input.temperature ?? this.settings.completion.temperature,
-        top_p: input.topP ?? this.settings.completion.topP,
-        stop: QWEN_CODER_FIM_STOP,
-      }),
+      body: JSON.stringify(requestBody),
     })
     return normalizeRawCompletionMessage(body)
   }

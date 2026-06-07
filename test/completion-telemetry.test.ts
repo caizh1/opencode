@@ -26,15 +26,23 @@ describe("completion telemetry", () => {
   test("serializes stable event fields and redacts path-like content", () => {
     const event: CompletionDebugEvent = {
       requestId: "cc-test-1",
+      completionId: "cc-test-1",
       languageId: "typescript",
       filePathHash: filePathHash("/Users/archer/Work/opencode/src/secret.ts"),
       triggerKind: "automatic",
       planKind: "ordinary-code",
+      cIntent: "body-statement",
       insertMode: "insert-at-cursor",
       currentWord: "value",
+      retrievalMode: "hybrid",
+      evidenceKinds: ["target-symbol", "analysis-evidence"],
+      contextLevel: "standard",
+      promptKind: "qwen-fim",
       modelRoute: "fim",
       rawOutputLength: 24,
       normalizedOutputLength: 12,
+      trimReason: "c-intent-trim",
+      finalInsertLength: 10,
       finalRange: {
         startLine: 0,
         startCharacter: 4,
@@ -60,10 +68,18 @@ describe("completion telemetry", () => {
 
     expect(parsed).toMatchObject({
       requestId: "cc-test-1",
+      completionId: "cc-test-1",
       languageId: "typescript",
       planKind: "ordinary-code",
+      cIntent: "body-statement",
+      retrievalMode: "hybrid",
+      evidenceKinds: ["target-symbol", "analysis-evidence"],
+      contextLevel: "standard",
+      promptKind: "qwen-fim",
       insertMode: "insert-at-cursor",
       modelRoute: "fim",
+      trimReason: "c-intent-trim",
+      finalInsertLength: 10,
       accepted: false,
       rejectReason: "echoed-prefix",
     })

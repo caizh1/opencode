@@ -259,6 +259,7 @@ function symbolKindFromCodeGraph(kind: CodeGraphSymbolKind): SymbolCandidateKind
       return "macro"
     case "type":
       return "type"
+    case "field":
     case "global":
       return "variable"
     case "file":

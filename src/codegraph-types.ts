@@ -17,6 +17,16 @@ export type CodeGraphMacro = {
 export type CodeGraphCall = {
   name: string
   line: number
+  args?: string[]
+  snippet?: string
+  returnHandling?: string
+}
+
+export type CodeGraphTypeField = {
+  name: string
+  type: string
+  line: number
+  snippet: string
 }
 
 export type CodeGraphTypeSymbol = {
@@ -25,11 +35,55 @@ export type CodeGraphTypeSymbol = {
   startLine: number
   endLine: number
   snippet: string
+  fields?: CodeGraphTypeField[]
 }
 
 export type CodeGraphGlobalSymbol = {
   name: string
   line: number
+  snippet: string
+}
+
+export type CodeGraphCallSite = {
+  callee: string
+  caller: string
+  callerId: string
+  line: number
+  args: string[]
+  snippet: string
+  returnHandling?: string
+}
+
+export type CodeGraphInitializerExample = {
+  typeName?: string
+  line: number
+  endLine: number
+  fields: string[]
+  snippet: string
+}
+
+export type CodeGraphErrorLabel = {
+  name: string
+  functionName: string
+  functionId: string
+  line: number
+  snippet: string
+  cleanupCalls: string[]
+  returnStyle?: string
+}
+
+export type CodeGraphRegisterMacro = {
+  name: string
+  line: number
+  suffix: string
+  snippet: string
+}
+
+export type CodeGraphRegisterMacroFamily = {
+  family: string
+  path: string
+  line: number
+  macros: CodeGraphRegisterMacro[]
   snippet: string
 }
 
@@ -88,6 +142,10 @@ export type CodeGraphFile = {
   functions: CodeGraphFunction[]
   types: CodeGraphTypeSymbol[]
   globals: CodeGraphGlobalSymbol[]
+  callSites?: CodeGraphCallSite[]
+  initializers?: CodeGraphInitializerExample[]
+  errorLabels?: CodeGraphErrorLabel[]
+  registerMacroFamilies?: CodeGraphRegisterMacroFamily[]
   tokens: CodeGraphFileToken[]
   astSummary?: CodeGraphAstSummary
 }
@@ -112,7 +170,7 @@ export type CodeGraphIndexStats = {
   skippedFiles: number
 }
 
-export type CodeGraphSymbolKind = "function" | "macro" | "type" | "global" | "file"
+export type CodeGraphSymbolKind = "function" | "macro" | "type" | "global" | "field" | "file"
 
 export type CodeGraphSymbol = {
   id: string
@@ -159,7 +217,7 @@ export type CodeGraphDerivedIndex = {
 }
 
 export type CodeGraphIndex = {
-  version: 1 | 2 | 3
+  version: 1 | 2 | 3 | 4
   rootPath: string
   rootName: string
   updatedAt: number
@@ -172,7 +230,7 @@ export type CodeGraphIndex = {
 }
 
 export type CodeGraphShardManifest = {
-  version: 2 | 3
+  version: 2 | 3 | 4
   rootPath: string
   rootName: string
   updatedAt: number
@@ -193,7 +251,7 @@ export type CodeGraphShardInfo = {
 }
 
 export type CodeGraphShardData = {
-  version: 2 | 3
+  version: 2 | 3 | 4
   key: string
   files: Record<string, CodeGraphFile>
 }
@@ -251,6 +309,7 @@ export type CodeGraphEvidenceRetrievalMode = "hybrid" | "graph-only"
 
 export type CodeGraphEvidenceQueryOptions = {
   retrievalMode?: CodeGraphEvidenceRetrievalMode
+  relatedPaths?: string[]
 }
 
 export type CodeGraphContextProvider = {

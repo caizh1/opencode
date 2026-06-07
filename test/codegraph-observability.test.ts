@@ -52,10 +52,10 @@ describe("code graph query observability", () => {
     expect(querySource).toContain("elapsedMs")
   })
 
-  test("allows inline completion to request graph-only evidence without hybrid RAG", () => {
+  test("allows evidence queries to request graph-only mode while passing related paths", () => {
     expect(serviceSource).toContain("queryEvidence(question: string, options: CodeGraphEvidenceQueryOptions = {})")
     expect(serviceSource).toContain('const hybrid = options.retrievalMode === "graph-only" ? undefined : this.hybridOptions()')
-    expect(serviceSource).toContain("}, hybrid)")
+    expect(serviceSource).toContain("}, hybrid, options.relatedPaths ?? [])")
   })
 
   test("separates lightweight RAG probes from vector index rebuilds", () => {

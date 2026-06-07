@@ -74,22 +74,23 @@ describe("completion planner", () => {
     })
   })
 
-  test("routes identifier continuations through symbol completion", () => {
+  test("routes C identifier continuations through generic embedded symbol-prefix planning", () => {
     expect(planCompletion({
       languageId: "c",
       linePrefix: "epr_ppn_raw_wr",
       lineSuffix: "",
       currentWord: "epr_ppn_raw_wr",
     })).toMatchObject({
-      kind: "symbol-completion",
-      insertMode: "replace-current-word",
+      kind: "c-embedded-code",
+      cIntent: "symbol-prefix",
+      insertMode: "insert-at-cursor",
       targetSymbol: "epr_ppn_raw_wr",
-      replaceCurrentWord: true,
+      replaceCurrentWord: false,
       needsSymbolRetrieval: true,
+      needsIntentRetrieval: true,
       needsTestRetrieval: false,
-      useFim: false,
+      useFim: true,
       useInstruction: false,
-      maxTokens: 48,
     })
   })
 
@@ -162,7 +163,7 @@ describe("completion planner", () => {
         currentWord,
         triggerKind: "automatic",
       })).toMatchObject({
-        kind: "ordinary-code",
+        kind: "c-embedded-code",
         useFim: true,
         useInstruction: false,
         cIntent: "symbol-prefix",
@@ -177,9 +178,10 @@ describe("completion planner", () => {
       lineSuffix: "",
       triggerKind: "automatic",
     })).toMatchObject({
-      kind: "ordinary-code",
+      kind: "c-embedded-code",
       cIntent: "member-access",
       needsSymbolRetrieval: true,
+      needsIntentRetrieval: true,
     })
 
     expect(planCompletion({
@@ -188,9 +190,10 @@ describe("completion planner", () => {
       lineSuffix: ");",
       triggerKind: "automatic",
     })).toMatchObject({
-      kind: "ordinary-code",
+      kind: "c-embedded-code",
       cIntent: "call-args",
       needsSymbolRetrieval: true,
+      needsIntentRetrieval: true,
     })
 
     expect(planCompletion({
@@ -199,9 +202,10 @@ describe("completion planner", () => {
       lineSuffix: ",",
       triggerKind: "automatic",
     })).toMatchObject({
-      kind: "ordinary-code",
+      kind: "c-embedded-code",
       cIntent: "initializer",
       needsSymbolRetrieval: true,
+      needsIntentRetrieval: true,
     })
 
     expect(planCompletion({
@@ -210,9 +214,10 @@ describe("completion planner", () => {
       lineSuffix: "",
       triggerKind: "automatic",
     })).toMatchObject({
-      kind: "ordinary-code",
+      kind: "c-embedded-code",
       cIntent: "assignment-rhs",
       needsSymbolRetrieval: true,
+      needsIntentRetrieval: true,
     })
   })
 
@@ -224,9 +229,10 @@ describe("completion planner", () => {
         lineSuffix: ") {",
         triggerKind: "automatic",
       })).toMatchObject({
-        kind: "ordinary-code",
+        kind: "c-embedded-code",
         cIntent: "condition",
         needsSymbolRetrieval: true,
+        needsIntentRetrieval: true,
       })
     }
 
@@ -236,9 +242,10 @@ describe("completion planner", () => {
       lineSuffix: ";",
       triggerKind: "automatic",
     })).toMatchObject({
-      kind: "ordinary-code",
+      kind: "c-embedded-code",
       cIntent: "error-path",
       needsSymbolRetrieval: true,
+      needsIntentRetrieval: true,
     })
 
     const lines = [
@@ -263,9 +270,10 @@ describe("completion planner", () => {
       line: 4,
       triggerKind: "automatic",
     })).toMatchObject({
-      kind: "body-continuation",
+      kind: "c-embedded-code",
       cIntent: "error-path",
       needsSymbolRetrieval: true,
+      needsIntentRetrieval: true,
     })
 
     for (const linePrefix of ["    writel(", "    FIELD_PREP(", "    ctrl = DEVICE_STATUS_REG | "]) {
@@ -275,9 +283,10 @@ describe("completion planner", () => {
         lineSuffix: ");",
         triggerKind: "automatic",
       })).toMatchObject({
-        kind: "ordinary-code",
+        kind: "c-embedded-code",
         cIntent: "mmio-register",
         needsSymbolRetrieval: true,
+        needsIntentRetrieval: true,
       })
     }
   })
@@ -458,9 +467,11 @@ describe("completion planner", () => {
       lineSuffix: "",
       currentWord: "stat",
     })).toMatchObject({
-      kind: "symbol-completion",
-      insertMode: "replace-current-word",
+      kind: "c-embedded-code",
+      cIntent: "symbol-prefix",
+      insertMode: "insert-at-cursor",
       targetSymbol: "stat",
+      useFim: true,
       useInstruction: false,
     })
   })
@@ -490,9 +501,9 @@ describe("completion planner", () => {
       line: 1,
       triggerKind: "automatic",
     })).toMatchObject({
-      kind: "top-level-declaration",
+      kind: "c-embedded-code",
       insertMode: "insert-at-cursor",
-      cIntent: "top-level-declaration",
+      cIntent: "top-level-decl",
       useFim: true,
       useInstruction: false,
     })
@@ -517,7 +528,8 @@ describe("completion planner", () => {
       line: 3,
       triggerKind: "automatic",
     })).toMatchObject({
-      kind: "body-continuation",
+      kind: "c-embedded-code",
+      cIntent: "body-statement",
       insertMode: "insert-at-cursor",
       useFim: true,
       useInstruction: false,
@@ -537,7 +549,8 @@ describe("completion planner", () => {
       line: 3,
       triggerKind: "manual",
     })).toMatchObject({
-      kind: "body-continuation",
+      kind: "c-embedded-code",
+      cIntent: "body-statement",
       maxTokens: 128,
     })
   })
@@ -554,12 +567,13 @@ describe("completion planner", () => {
       line: 1,
       triggerKind: "automatic",
     })).toMatchObject({
-      kind: "ordinary-code",
+      kind: "c-embedded-code",
+      cIntent: "initializer",
       useFim: true,
       useInstruction: false,
     })
 
-    const switchCase = ["void f(int state)", "{", "    switch (state) {", "    case 1:", "        ", "        break;", "    }", "}"]
+    const switchCase = ["void f(int opcode)", "{", "    switch (opcode) {", "    case 1:", "        ", "        break;", "    }", "}"]
     expect(planCompletion({
       languageId: "c",
       linePrefix: "        ",
@@ -570,8 +584,8 @@ describe("completion planner", () => {
       line: 4,
       triggerKind: "automatic",
     })).toMatchObject({
-      kind: "body-continuation",
-      cIntent: "case-body",
+      kind: "c-embedded-code",
+      cIntent: "switch-case",
       useFim: true,
       useInstruction: false,
     })
@@ -587,7 +601,7 @@ describe("completion planner", () => {
       nextNonEmptyLine: topLevel[2],
       lines: topLevel,
       line: 1,
-    })).toMatchObject({ kind: "top-level-declaration" })
+    })).toMatchObject({ kind: "c-embedded-code", cIntent: "top-level-decl" })
 
     const comment = ["void f(void)", "{", "    /*", "    ", "     */", "}"]
     expect(planCompletion({

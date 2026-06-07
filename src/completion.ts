@@ -1,5 +1,5 @@
 import * as vscode from "vscode"
-import type { CodeGraphContextProvider } from "./codegraph-types"
+import type { CodeGraphContextProvider, CodeGraphEvidenceQueryOptions } from "./codegraph-types"
 import {
   buildCompletionEditResult,
   adaptAndValidateInlineCompletionEdit,
@@ -10,6 +10,7 @@ import {
 } from "./completion-edit"
 import { completionFormatCommand } from "./completion-format-command"
 import { completionContextDebugSummary, type CompletionContextPack } from "./completion-context"
+import { buildCEmbeddedCompletionEvidence, shouldBuildCEmbeddedCompletionEvidence } from "./completion-c-embedded-evidence"
 import { scoreCEmbeddedCompletionQuality, type CEmbeddedCompletionFixture, type CEmbeddedTriggerKind } from "./completion-c-embedded-quality"
 import { inferCompletionIndent } from "./completion-indent"
 import { CompletionModelClient, completionModel, directCompletionRequestDiagnostic } from "./completion-model-client"
@@ -123,13 +124,19 @@ export class RemoteCompletionProvider implements vscode.InlineCompletionItemProv
     this.logInfo(settings, `triggered ${details}`)
     const telemetry: CompletionTelemetryDraft = {
       requestId,
+      completionId: requestId,
       languageId: document.languageId,
       filePathHash: filePathHash(document.uri.fsPath),
       triggerKind: completionTriggerKind(context.triggerKind),
       planKind: plan.kind,
+      cIntent: plan.cIntent,
       insertMode: plan.insertMode,
       currentWord: currentWord?.text,
       targetSymbol: plan.targetSymbol,
+      retrievalMode: "none",
+      evidenceKinds: [],
+      contextLevel: "none",
+      promptKind: "none",
       modelRoute: "none",
       accepted: false,
       latencyMs: {
@@ -261,6 +268,7 @@ export class RemoteCompletionProvider implements vscode.InlineCompletionItemProv
         details: input.details,
         plan: input.plan,
         editInput: input.editInput,
+        telemetry: input.telemetry,
       })
       input.telemetry.latencyMs.symbol = elapsedMs(symbolStarted)
       input.telemetry.symbolCandidates = completionTelemetrySymbolCandidates(retrievedSnippets)
@@ -272,6 +280,7 @@ export class RemoteCompletionProvider implements vscode.InlineCompletionItemProv
         retrievedSnippets,
       })
       input.telemetry.modelRoute = completionTelemetryRoute(route)
+      input.telemetry.promptKind = completionTelemetryPromptKind(route)
       this.logDebug(input.settings, `${routeLogValue(route, input.settings)} ${input.details}`)
       if (route.kind === "none") {
         return this.noCompletionCandidateOutcome({
@@ -358,6 +367,7 @@ export class RemoteCompletionProvider implements vscode.InlineCompletionItemProv
         details: input.details,
         plan: input.plan,
         editInput: input.editInput,
+        telemetry: input.telemetry,
       })
       input.telemetry.latencyMs.symbol = elapsedMs(symbolStarted)
       input.telemetry.symbolCandidates = completionTelemetrySymbolCandidates(retrievedSnippets)
@@ -369,6 +379,7 @@ export class RemoteCompletionProvider implements vscode.InlineCompletionItemProv
         retrievedSnippets,
       })
       input.telemetry.modelRoute = completionTelemetryRoute(route)
+      input.telemetry.promptKind = completionTelemetryPromptKind(route)
       this.logDebug(input.settings, `${routeLogValue(route, input.settings)} ${input.details}`)
       if (route.kind === "none") {
         return this.noCompletionCandidateOutcome({
@@ -471,6 +482,8 @@ export class RemoteCompletionProvider implements vscode.InlineCompletionItemProv
       selectedContextText = pack.selected.map((block) => block.text).join("\n")
       input.telemetry.selectedContextBlocks = completionTelemetrySelectedContextBlocks(pack)
       input.telemetry.droppedContextBlocks = completionTelemetryDroppedContextBlocks(pack)
+      input.telemetry.evidenceKinds = completionTelemetryEvidenceKinds(pack, input.telemetry.evidenceKinds)
+      input.telemetry.contextLevel = completionTelemetryContextLevel(pack)
       this.logDebug(input.settings, `${completionContextDebugSummary(pack)} ${input.details}`)
     }
     const analysisEvidenceText = await this.retrieveCompletionAnalysisEvidence({
@@ -480,6 +493,7 @@ export class RemoteCompletionProvider implements vscode.InlineCompletionItemProv
       details: input.details,
       plan: input.plan,
       retrievedSnippets: input.retrievedSnippets,
+      telemetry: input.telemetry,
     })
 
     if (input.route.promptKind === "qwen-fim") {
@@ -629,6 +643,7 @@ export class RemoteCompletionProvider implements vscode.InlineCompletionItemProv
     details: string
     plan: CompletionPlan
     editInput: Omit<CompletionEditInput, "text">
+    telemetry: CompletionTelemetryDraft
   }): Promise<RetrievedCompletionSnippet[]> {
     if (!this.deps.codeGraph) return []
     if (!shouldRetrieveCompletionSnippetsForPlan(input.plan, input.document.languageId)) return []
@@ -645,6 +660,7 @@ export class RemoteCompletionProvider implements vscode.InlineCompletionItemProv
       completionSymbolQuery(input.editInput),
     ]).slice(0, 4)
     if (queries.length === 0) return []
+    input.telemetry.retrievalMode = mergeCompletionRetrievalMode(input.telemetry.retrievalMode, "graph-only")
 
     try {
       const limit = completionSymbolRetrievalLimit(input.plan)
@@ -687,6 +703,7 @@ export class RemoteCompletionProvider implements vscode.InlineCompletionItemProv
     details: string
     plan: CompletionPlan
     retrievedSnippets: RetrievedCompletionSnippet[]
+    telemetry: CompletionTelemetryDraft
   }) {
     if (!this.deps.codeGraph) return ""
     if (!input.settings.codeGraph.enabled) return ""
@@ -710,7 +727,27 @@ export class RemoteCompletionProvider implements vscode.InlineCompletionItemProv
     if (!question) return ""
 
     try {
-      const result = await this.deps.codeGraph.queryEvidence(question, { retrievalMode: "graph-only" })
+      if (shouldBuildCEmbeddedCompletionEvidence(input.plan)) {
+        const result = await buildCEmbeddedCompletionEvidence({
+          codeGraph: this.deps.codeGraph,
+          plan: input.plan,
+          question,
+          relatedPaths: [relativePath(input.document.uri)],
+          domainHints: input.plan.domainHints,
+        })
+        input.telemetry.retrievalMode = mergeCompletionRetrievalMode(input.telemetry.retrievalMode, result.retrievalMode)
+        input.telemetry.evidenceKinds = mergeCompletionEvidenceKinds(input.telemetry.evidenceKinds, result.evidenceKinds)
+        input.telemetry.cEmbeddedEvidenceTrace = result.trace
+        const text = result.text.trim()
+        if (text) {
+          this.logDebug(input.settings, `c-embedded-evidence selected=${result.selectedEvidenceCount} kinds="${quoteLogValue(result.evidenceKinds.join(","))}" fallback=${result.trace.ragFallbackTriggered ? "hybrid" : "none"} ${input.details}`)
+        }
+        return text
+      }
+
+      const options = completionAnalysisEvidenceOptions(input.document)
+      input.telemetry.retrievalMode = mergeCompletionRetrievalMode(input.telemetry.retrievalMode, options.retrievalMode ?? "graph-only")
+      const result = await this.deps.codeGraph.queryEvidence(question, options)
       const text = result?.evidencePack.text.trim() ?? ""
       if (text) {
         this.logDebug(input.settings, `analysis-evidence selected bytes=${text.length} ${input.details}`)
@@ -749,6 +786,8 @@ export class RemoteCompletionProvider implements vscode.InlineCompletionItemProv
     input.telemetry.rawOutputLength = pipeline.rawText.length
     input.telemetry.latencyMs.postprocess = pipeline.latencyMs.postprocess
     input.telemetry.normalizedOutputLength = pipeline.postprocessText.length
+    input.telemetry.trimReason = completionTelemetryTrimReason(pipeline)
+    input.telemetry.finalInsertLength = completionTelemetryFinalInsertLength(pipeline)
     input.telemetry.latencyMs.edit = pipeline.latencyMs.edit
     const rawFirstLine = firstLogLine(pipeline.rawText)
     const postprocessFirstLine = firstLogLine(pipeline.postprocessText)
@@ -876,6 +915,8 @@ export class RemoteCompletionProvider implements vscode.InlineCompletionItemProv
     input.telemetry.rawOutputLength = pipeline.rawText.length
     input.telemetry.latencyMs.postprocess = pipeline.latencyMs.postprocess
     input.telemetry.normalizedOutputLength = pipeline.postprocessText.length
+    input.telemetry.trimReason = completionTelemetryTrimReason(pipeline)
+    input.telemetry.finalInsertLength = completionTelemetryFinalInsertLength(pipeline)
     input.telemetry.latencyMs.edit = pipeline.latencyMs.edit
     const rawFirstLine = firstLogLine(pipeline.rawText)
     const postprocessFirstLine = firstLogLine(pipeline.postprocessText)
@@ -978,19 +1019,27 @@ export class RemoteCompletionProvider implements vscode.InlineCompletionItemProv
   ) {
     this.logDebug(settings, serializeCompletionDebugEvent({
       requestId: telemetry.requestId,
+      completionId: telemetry.completionId,
       languageId: telemetry.languageId,
       filePathHash: telemetry.filePathHash,
       triggerKind: telemetry.triggerKind,
       planKind: telemetry.planKind,
+      cIntent: telemetry.cIntent,
       insertMode: telemetry.insertMode,
       currentWord: telemetry.currentWord,
       targetSymbol: telemetry.targetSymbol,
+      retrievalMode: telemetry.retrievalMode,
+      evidenceKinds: telemetry.evidenceKinds,
+      contextLevel: telemetry.contextLevel,
+      promptKind: telemetry.promptKind,
       symbolCandidates: telemetry.symbolCandidates,
       selectedContextBlocks: telemetry.selectedContextBlocks,
       droppedContextBlocks: telemetry.droppedContextBlocks,
       modelRoute: telemetry.modelRoute,
       rawOutputLength: telemetry.rawOutputLength,
       normalizedOutputLength: telemetry.normalizedOutputLength,
+      trimReason: telemetry.trimReason,
+      finalInsertLength: telemetry.finalInsertLength,
       finalRange: telemetry.finalRange,
       filterText: telemetry.filterText,
       accepted,
@@ -1398,14 +1447,24 @@ function completionEvidenceQuestion(input: {
   ]).slice(0, 8)
   const parts = [
     `inline completion for ${input.document.languageId} file ${relativePath(input.document.uri)}`,
+    `current-path: ${relativePath(input.document.uri)}`,
     `plan ${input.plan.kind}`,
-    functionName ? `function ${functionName}` : "",
+    input.plan.cIntent ? `completion-intent: ${input.plan.cIntent}` : "",
+    functionName ? `function: ${functionName}` : "",
     symbols.length ? `symbols ${symbols.join(" ")}` : "",
+    symbols.length ? `symbols: ${symbols.join(" ")}` : "",
     input.plan.sourceComment ? `comment ${input.plan.sourceComment}` : "",
     input.retrievalEvidenceQuestion,
     lineText ? `cursor line ${lineText}` : "",
   ].filter(Boolean)
   return parts.join("\n")
+}
+
+function completionAnalysisEvidenceOptions(document: vscode.TextDocument): CodeGraphEvidenceQueryOptions {
+  return {
+    retrievalMode: "hybrid",
+    relatedPaths: [relativePath(document.uri)],
+  }
 }
 
 function cLikeFunctionNameNearPosition(document: vscode.TextDocument, position: vscode.Position) {
@@ -1430,6 +1489,13 @@ function updateCompletionTelemetryPlan(telemetry: CompletionTelemetryDraft, plan
   telemetry.planKind = plan.kind
   telemetry.insertMode = plan.insertMode
   telemetry.targetSymbol = plan.targetSymbol
+  telemetry.cIntent = plan.cIntent
+}
+
+function completionTelemetryPromptKind(route: CompletionModelRoute): NonNullable<CompletionDebugEvent["promptKind"]> {
+  if (route.kind === "none") return "none"
+  if (route.kind === "deterministic-symbol") return "deterministic-symbol"
+  return route.promptKind
 }
 
 function deterministicCompletionMessage(text: string): OpenCodeMessage {
@@ -1511,14 +1577,10 @@ function currentWordBeforeCursor(linePrefix: string, line: number): { text: stri
 }
 
 function completionTriggerKind(kind: vscode.InlineCompletionTriggerKind | undefined) {
-  switch (kind) {
-    case vscode.InlineCompletionTriggerKind.Invoke:
-      return "invoke"
-    case vscode.InlineCompletionTriggerKind.Automatic:
-      return "automatic"
-    default:
-      return kind === undefined ? undefined : String(kind)
-  }
+  const enumValues = vscode.InlineCompletionTriggerKind
+  if (enumValues && kind === enumValues.Invoke) return "invoke"
+  if (enumValues && kind === enumValues.Automatic) return "automatic"
+  return kind === undefined ? undefined : String(kind)
 }
 
 function completionTelemetrySymbolCandidates(snippets: RetrievedCompletionSnippet[]) {
@@ -1551,6 +1613,46 @@ function completionTelemetryDroppedContextBlocks(pack: CompletionContextPack) {
     reason: "token-budget",
   }))
   return blocks.length > 0 ? blocks : undefined
+}
+
+function completionTelemetryEvidenceKinds(pack: CompletionContextPack, existing: string[] | undefined) {
+  const kinds = new Set([
+    ...(existing ?? []),
+    ...pack.selected.map((block) => block.kind),
+  ])
+  return [...kinds].sort()
+}
+
+function mergeCompletionEvidenceKinds(existing: string[] | undefined, next: string[]) {
+  const kinds = new Set([...(existing ?? []), ...next])
+  return [...kinds].sort()
+}
+
+function completionTelemetryContextLevel(pack: CompletionContextPack): NonNullable<CompletionDebugEvent["contextLevel"]> {
+  if (pack.tokenEstimate <= 0 || pack.selected.length === 0) return "none"
+  if (pack.tokenEstimate < 500) return "light"
+  if (pack.tokenEstimate < 1600) return "standard"
+  return "rich"
+}
+
+function mergeCompletionRetrievalMode(
+  current: CompletionDebugEvent["retrievalMode"],
+  next: NonNullable<CompletionDebugEvent["retrievalMode"]>,
+): NonNullable<CompletionDebugEvent["retrievalMode"]> {
+  if (current === "hybrid" || next === "hybrid") return "hybrid"
+  if (current === "graph-only" || next === "graph-only") return "graph-only"
+  return "none"
+}
+
+function completionTelemetryTrimReason(pipeline: CompletionCandidatePipelineResult) {
+  if (pipeline.postprocessDebug.stripReason) return pipeline.postprocessDebug.stripReason
+  const sourceText = pipeline.postprocessText || pipeline.fallbackText
+  if (sourceText && pipeline.candidateText && sourceText !== pipeline.candidateText) return "c-intent-trim"
+  return pipeline.reasons.find((reason) => reason.startsWith("postprocess:") || reason.startsWith("fallback:"))
+}
+
+function completionTelemetryFinalInsertLength(pipeline: CompletionCandidatePipelineResult) {
+  return pipeline.edit?.insertText.length ?? pipeline.editText.length
 }
 
 function zeroWidthRange(position: CompletionEditInput["position"]): CompletionRange {
@@ -1592,6 +1694,7 @@ function snippetScore(snippet: RetrievedCompletionSnippet, preferredKinds: Compl
 }
 
 function snippetPreferredKind(snippet: RetrievedCompletionSnippet): CompletionRetrievalPreferredKind {
+  if (/field|member/i.test(snippet.kind)) return "field"
   if (/macro/i.test(snippet.kind)) return "macro"
   if (/type|struct|union|enum|typedef/i.test(snippet.kind)) return "type"
   if (/function|method|existing test/i.test(snippet.kind)) return "function"

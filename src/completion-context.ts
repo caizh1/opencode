@@ -131,6 +131,7 @@ function contextBlocks(input: PackCompletionContextInput): PackedContextBlock[] 
     case "natural-command":
       return [...target, ...similarTests, ...testFramework, ...analysisEvidence, ...openTabs, ...current]
     case "ordinary-code":
+    case "c-embedded-code":
     case "body-continuation":
     case "top-level-declaration":
       return [...target, ...includes, ...analysisEvidence, ...openTabs, ...current]
@@ -187,6 +188,7 @@ function testFrameworkBlocks(plan: CompletionPlan, snippets: RetrievedCompletion
 
 function currentFileBlocks(input: PackCompletionContextInput): PackedContextBlock[] {
   const ordinary = input.plan.kind === "ordinary-code" ||
+    input.plan.kind === "c-embedded-code" ||
     input.plan.kind === "body-continuation" ||
     input.plan.kind === "top-level-declaration"
   const currentPrefix = tailLines(input.prefix, ordinary ? 60 : 120)
@@ -277,6 +279,7 @@ function cIntentSnippetBoost(plan: CompletionPlan | undefined, snippet: Retrieve
       return (/\b(?:type|struct|union|typedef)\b/i.test(snippet.kind) ? 100 : 0) +
         (/\.[A-Za-z_][A-Za-z0-9_]*\s*=/.test(snippet.text) ? 100 : 0)
     case "condition":
+    case "state-machine":
       return (/\b(?:enum|state|status|flags?)\b/i.test(haystack) ? 90 : 0) +
         (/\b(?:if|while)\s*\(/.test(snippet.text) ? 70 : 0)
     case "error-path":
@@ -288,6 +291,7 @@ function cIntentSnippetBoost(plan: CompletionPlan | undefined, snippet: Retrieve
         (/\b(?:BIT|GENMASK|FIELD_PREP|FIELD_GET|readl|writel|ioread|iowrite|volatile|barrier)\b/.test(haystack) ? 140 : 0) +
         (/\b[A-Z][A-Z0-9_]*(?:_REG|_MASK|_SHIFT|_BIT|_BITS)\b/.test(haystack) ? 100 : 0)
     case "case-body":
+    case "switch-case":
       return (/\b(?:case|default)\b.*:/.test(snippet.text) ? 100 : 0) +
         (/\b(?:enum|state|status)\b/i.test(haystack) ? 80 : 0)
     default:
@@ -297,12 +301,21 @@ function cIntentSnippetBoost(plan: CompletionPlan | undefined, snippet: Retrieve
 
 function cIntentEvidenceBoost(plan: CompletionPlan, text: string) {
   switch (plan.cIntent) {
+    case "member-access":
+      return /\b(?:struct-field|fields?:|member-base|member-prefix)\b/i.test(text) ? 140 : 0
+    case "call-args":
+      return /\b(?:call-site|return-handling|argument order|callee)\b/i.test(text) ? 130 : 0
+    case "initializer":
+      return /\b(?:initializer-example|initializer type|fields?:|\.[A-Za-z_][A-Za-z0-9_]*\s*=)\b/i.test(text) ? 130 : 0
     case "error-path":
-      return /\b(?:cleanup|label|goto|return\s+(?:ret|err|rc|status)|unlock|free|release)\b/i.test(text) ? 120 : 0
+      return /\b(?:cleanup-label|cleanup|label|goto|return\s+(?:ret|err|rc|status)|unlock|free|release)\b/i.test(text) ? 130 : 0
     case "mmio-register":
-      return /\b(?:register|mmio|macro|bit|mask|readl|writel|volatile|barrier)\b/i.test(text) ? 120 : 0
+      return /\b(?:register-family|register|mmio|macro|bit|mask|shift|readl|writel|volatile|barrier)\b/i.test(text) ? 130 : 0
     case "condition":
-      return /\b(?:condition|state|enum|status|flag|guard)\b/i.test(text) ? 90 : 0
+    case "state-machine":
+    case "case-body":
+    case "switch-case":
+      return /\b(?:state-context|condition|state|enum|status|flag|guard|transition)\b/i.test(text) ? 100 : 0
     default:
       return 0
   }
@@ -391,6 +404,7 @@ function tokenBudgetForPlan(plan: CompletionPlan) {
     case "natural-command":
       return 1800
     case "ordinary-code":
+    case "c-embedded-code":
     case "body-continuation":
     case "top-level-declaration":
     case "comment-to-code":

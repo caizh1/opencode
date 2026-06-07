@@ -128,6 +128,7 @@ export function routeCompletionModel(input: RouteCompletionModelInput): Completi
         topP: input.settings.completion.topP,
       }
     case "ordinary-code":
+    case "c-embedded-code":
     case "body-continuation":
     case "top-level-declaration":
       return {
@@ -136,7 +137,9 @@ export function routeCompletionModel(input: RouteCompletionModelInput): Completi
         promptKind: "qwen-fim",
         modelProfile: "qwen-coder-fim",
         textProfile: "qwen-coder-fim",
-        maxTokens: plan.kind === "body-continuation"
+        maxTokens: plan.kind === "c-embedded-code"
+          ? clampTokens(plan.maxTokens || 128, 96, 256)
+          : plan.kind === "body-continuation"
           ? clampTokens(plan.maxTokens || 96, 96, 128)
           : plan.kind === "top-level-declaration"
             ? clampTokens(input.settings.completion.maxTokens || plan.maxTokens || 192, 128, 192)
@@ -186,7 +189,7 @@ function instructionRoute(input: RouteCompletionModelInput, maxTokens: number): 
 }
 
 function deterministicSymbolText(plan: CompletionPlan, snippets: RetrievedCompletionSnippet[]) {
-  if (plan.kind !== "symbol-completion" && plan.kind !== "comment-symbol-reference") return ""
+  if (plan.kind !== "symbol-completion" && plan.kind !== "comment-symbol-reference" && !isCEmbeddedSymbolPrefixPlan(plan)) return ""
   const target = plan.targetSymbol?.toLowerCase()
   if (!target) return ""
 
@@ -197,7 +200,15 @@ function deterministicSymbolText(plan: CompletionPlan, snippets: RetrievedComple
     return (snippet.score ?? 0) >= 1000
   })
 
-  return selected?.name ?? ""
+  if (!selected?.name) return ""
+  if (isCEmbeddedSymbolPrefixPlan(plan)) {
+    return selected.name.slice(plan.targetSymbol?.length ?? 0)
+  }
+  return selected.name
+}
+
+function isCEmbeddedSymbolPrefixPlan(plan: CompletionPlan) {
+  return plan.kind === "c-embedded-code" && plan.cIntent === "symbol-prefix" && Boolean(plan.targetSymbol)
 }
 
 function exactSymbolText(plan: CompletionPlan, snippets: RetrievedCompletionSnippet[]) {

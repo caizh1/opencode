@@ -5,14 +5,28 @@ export type CompletionTelemetryRoute = "fim" | "instruction" | "deterministic-sy
 
 export interface CompletionDebugEvent {
   requestId: string
+  completionId?: string
   languageId: string
   filePathHash?: string
   triggerKind?: string
 
   planKind: CompletionPlanKind
+  cIntent?: string
   insertMode: CompletionInsertMode
   currentWord?: string
   targetSymbol?: string
+  retrievalMode?: "none" | "graph-only" | "hybrid"
+  evidenceKinds?: string[]
+  cEmbeddedEvidenceTrace?: {
+    ragFallbackTriggered: boolean
+    ragFallbackReason?: string
+    graphEvidenceCount: number
+    ragEvidenceCount: number
+    finalSelectedEvidenceCount: number
+    minimumUsefulEvidenceMet: boolean
+  }
+  contextLevel?: "none" | "light" | "standard" | "rich"
+  promptKind?: "qwen-fim" | "instruction" | "deterministic-symbol" | "none"
 
   symbolCandidates?: Array<{
     name: string
@@ -37,6 +51,8 @@ export interface CompletionDebugEvent {
   modelRoute: CompletionTelemetryRoute
   rawOutputLength?: number
   normalizedOutputLength?: number
+  trimReason?: string
+  finalInsertLength?: number
 
   finalRange?: {
     startLine: number
@@ -93,8 +109,19 @@ export function serializeCompletionDebugEvent(event: CompletionDebugEvent) {
 export function sanitizeCompletionDebugEvent(event: CompletionDebugEvent): CompletionDebugEvent {
   return {
     ...event,
+    completionId: event.completionId ? truncateTelemetryText(event.completionId, 80) : undefined,
+    cIntent: event.cIntent ? truncateTelemetryText(event.cIntent, 80) : undefined,
     currentWord: event.currentWord ? truncateTelemetryText(event.currentWord, 80) : undefined,
     targetSymbol: event.targetSymbol ? truncateTelemetryText(event.targetSymbol, 120) : undefined,
+    evidenceKinds: event.evidenceKinds?.map((kind) => truncateTelemetryText(kind, 60)).slice(0, 16),
+    cEmbeddedEvidenceTrace: event.cEmbeddedEvidenceTrace ? {
+      ragFallbackTriggered: Boolean(event.cEmbeddedEvidenceTrace.ragFallbackTriggered),
+      ragFallbackReason: event.cEmbeddedEvidenceTrace.ragFallbackReason ? truncateTelemetryText(event.cEmbeddedEvidenceTrace.ragFallbackReason, 180) : undefined,
+      graphEvidenceCount: finiteNumber(event.cEmbeddedEvidenceTrace.graphEvidenceCount),
+      ragEvidenceCount: finiteNumber(event.cEmbeddedEvidenceTrace.ragEvidenceCount),
+      finalSelectedEvidenceCount: finiteNumber(event.cEmbeddedEvidenceTrace.finalSelectedEvidenceCount),
+      minimumUsefulEvidenceMet: Boolean(event.cEmbeddedEvidenceTrace.minimumUsefulEvidenceMet),
+    } : undefined,
     symbolCandidates: event.symbolCandidates?.map((candidate) => ({
       name: truncateTelemetryText(candidate.name, 120),
       kind: truncateTelemetryText(candidate.kind, 40),
@@ -112,6 +139,7 @@ export function sanitizeCompletionDebugEvent(event: CompletionDebugEvent): Compl
       title: truncateTelemetryText(block.title, 120),
       reason: truncateTelemetryText(block.reason, 80),
     })),
+    trimReason: event.trimReason ? truncateTelemetryText(event.trimReason, 120) : undefined,
     filterText: event.filterText ? truncateTelemetryText(event.filterText, 160) : undefined,
     rejectReason: event.rejectReason ? truncateTelemetryText(event.rejectReason, 80) : undefined,
     latencyMs: sanitizeLatency(event.latencyMs),

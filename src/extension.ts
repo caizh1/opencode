@@ -1,4 +1,7 @@
 import * as vscode from "vscode"
+import { spawn } from "node:child_process"
+import { existsSync } from "node:fs"
+import { join } from "node:path"
 import { RemoteChatViewProvider } from "./chat-view"
 import { LocalAnalysisBridge } from "./analysis-bridge"
 import { LocalCodeGraphService } from "./codegraph-service"
@@ -215,6 +218,9 @@ export async function activate(context: vscode.ExtensionContext) {
         chatProvider.refreshState()
       }
     }),
+    vscode.commands.registerCommand("opencode.remote.completion.runDirectAblation", async () => {
+      await runDirectQwenAblationCommand(context, output)
+    }),
     vscode.commands.registerCommand("opencode.remote.completion.commitInlineSuggestion", async () => {
       await vscode.commands.executeCommand("editor.action.inlineSuggest.commit")
     }),
@@ -415,6 +421,74 @@ function readPackageJsonVersion(packageJSON: unknown) {
   if (!packageJSON || typeof packageJSON !== "object" || !("version" in packageJSON)) return undefined
   const version = (packageJSON as { version?: unknown }).version
   return typeof version === "string" && version.trim() ? version.trim() : undefined
+}
+
+async function runDirectQwenAblationCommand(context: vscode.ExtensionContext, output: vscode.OutputChannel) {
+  const settings = readRemoteSettings()
+  const apiKey = await readCompletionApiKey(context)
+  const apiBaseUrl = settings.completion.apiBaseUrl.trim()
+  const model = settings.completion.model.trim() || settings.defaultModel.trim()
+  if (!apiBaseUrl || !model) {
+    const message = "Direct Qwen ablation requires inline completion API Base URL and model in VS Code settings."
+    output.appendLine(`[completion-ablation] ${message}`)
+    void vscode.window.showErrorMessage(message)
+    return
+  }
+
+  const cwd = completionBenchmarkCwd(context)
+  const env: NodeJS.ProcessEnv = {
+    ...process.env,
+    COMPLETION_API_BASE_URL: apiBaseUrl,
+    COMPLETION_MODEL: model,
+    COMPLETION_TRANSPORT: "raw-completions",
+    COMPLETION_PROMPT_STYLE: "qwen-fim",
+    COMPLETION_TEMPERATURE: "0",
+    COMPLETION_MAX_TOKENS: String(settings.completion.maxTokens || 128),
+    COMPLETION_TOP_P: String(settings.completion.topP ?? 1),
+  }
+  if (apiKey?.trim()) env.COMPLETION_API_KEY = apiKey.trim()
+
+  output.show(true)
+  output.appendLine(`[completion-ablation] starting direct-qwen ablation cwd=${cwd}`)
+  output.appendLine(`[completion-ablation] apiBaseUrl=${apiBaseUrl} model=${model} apiKey=${apiKey?.trim() ? "present" : "empty"} transport=raw-completions promptStyle=qwen-fim`)
+  await vscode.window.withProgress({
+    location: vscode.ProgressLocation.Notification,
+    title: "Running Direct Qwen completion ablation",
+    cancellable: false,
+  }, () => new Promise<void>((resolve) => {
+    const child = spawn("bun", ["run", "benchmark:completion-quality", "--", "--direct-qwen-ablation"], {
+      cwd,
+      env,
+      shell: false,
+    })
+    child.stdout.on("data", (chunk) => output.append(chunk.toString()))
+    child.stderr.on("data", (chunk) => output.append(chunk.toString()))
+    child.on("error", (error) => {
+      const message = `Direct Qwen ablation failed to start: ${error.message}`
+      output.appendLine(`[completion-ablation] ${message}`)
+      void vscode.window.showErrorMessage(message)
+      resolve()
+    })
+    child.on("close", (code) => {
+      if (code === 0) {
+        output.appendLine("[completion-ablation] completed; see docs/completion-p2-direct-qwen-ablation-report.md")
+        void vscode.window.showInformationMessage("Direct Qwen completion ablation completed.")
+      } else {
+        const message = `Direct Qwen ablation failed with exit code ${code ?? "unknown"}.`
+        output.appendLine(`[completion-ablation] ${message}`)
+        void vscode.window.showErrorMessage(message)
+      }
+      resolve()
+    })
+  }))
+}
+
+function completionBenchmarkCwd(context: vscode.ExtensionContext) {
+  for (const folder of vscode.workspace.workspaceFolders ?? []) {
+    const root = folder.uri.fsPath
+    if (existsSync(join(root, "package.json")) && existsSync(join(root, "scripts", "completion-quality-benchmark.ts"))) return root
+  }
+  return context.extensionUri.fsPath
 }
 
 async function probeClient(target: RemoteOpenCodeClient, timeoutMs: number): Promise<ConnectionProbeResult> {

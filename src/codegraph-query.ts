@@ -1,10 +1,13 @@
 import { ensureDerivedIndex, moduleKey } from "./codegraph-index"
 import { evidenceFromRagHit, searchRagVectorIndex } from "./rag-index"
 import type {
+  CodeGraphCallSite,
   CodeGraphDerivedIndex,
+  CodeGraphErrorLabel,
   CodeGraphEvidence,
   CodeGraphFile,
   CodeGraphFunction,
+  CodeGraphInitializerExample,
   CodeGraphIndex,
   CodeGraphPosting,
   CodeGraphPromptContext,
@@ -13,6 +16,7 @@ import type {
   CodeGraphRetrievalResult,
   CodeGraphSymbol,
   CodeGraphSymbolCandidate,
+  CodeGraphTypeSymbol,
 } from "./codegraph-types"
 import type { HybridRetrievalOptions, HybridRetrievalTrace, RerankProvider } from "./rag-types"
 
@@ -125,6 +129,7 @@ export function retrieveEvidence(input: {
   const candidates = new EvidenceCollector()
 
   addRelatedPathEvidence(candidates, maps, relatedPaths)
+  addCompletionEvidence(candidates, maps, parseCompletionEvidenceQuestion(input.question), relatedPaths)
   addSymbolEvidence(candidates, maps, symbols, relatedPaths)
   addPostingEvidence(candidates, maps, terms, relatedPaths, maxFanout)
   addModuleEvidence(candidates, maps, mode, terms, relatedPaths, maxFanout)
@@ -335,6 +340,339 @@ function addRelatedPathEvidence(collector: EvidenceCollector, maps: GraphMaps, r
     for (const symbol of ownArray(maps.derived.symbolsByPath, path).slice(0, 12)) {
       if (symbol.kind === "file") continue
       collector.add(symbolEvidence(symbol, 130, "symbol in related file"))
+    }
+  }
+}
+
+type CompletionEvidenceQuestion = {
+  intent?: string
+  path?: string
+  functionName?: string
+  memberBase?: string
+  memberPrefix?: string
+  callee?: string
+  initializerField?: string
+  gotoLabelPrefix?: string
+  switchSubject?: string
+  registerTokens: string[]
+  symbols: string[]
+}
+
+function parseCompletionEvidenceQuestion(question: string): CompletionEvidenceQuestion | undefined {
+  const lines = question.split(/\r?\n/)
+  const get = (key: string) => {
+    const prefix = `${key}:`
+    return lines.find((line) => line.toLowerCase().startsWith(prefix))?.slice(prefix.length).trim()
+  }
+  const intent = get("completion-intent")
+  if (!intent) return undefined
+  const path = get("current-path") ?? /file\s+([^\s]+)/.exec(question)?.[1]
+  const functionName = get("function") ?? get("current-function")
+  return {
+    intent,
+    path,
+    functionName,
+    memberBase: get("member-base"),
+    memberPrefix: get("member-prefix"),
+    callee: get("callee"),
+    initializerField: get("initializer-field"),
+    gotoLabelPrefix: get("goto-label-prefix"),
+    switchSubject: get("switch-subject"),
+    registerTokens: splitQuestionTokens(get("register-tokens") ?? ""),
+    symbols: splitQuestionTokens(get("symbols") ?? ""),
+  }
+}
+
+function addCompletionEvidence(
+  collector: EvidenceCollector,
+  maps: GraphMaps,
+  question: CompletionEvidenceQuestion | undefined,
+  relatedPaths: Set<string>,
+) {
+  if (!question?.intent) return
+  switch (question.intent) {
+    case "member-access":
+      addStructFieldEvidence(collector, maps, question, relatedPaths)
+      return
+    case "call-args":
+      addCallSiteEvidence(collector, maps, question, relatedPaths)
+      return
+    case "initializer":
+      addInitializerEvidence(collector, maps, question, relatedPaths)
+      return
+    case "error-path":
+      addErrorPathEvidence(collector, maps, question, relatedPaths)
+      return
+    case "mmio-register":
+      addRegisterFamilyEvidence(collector, maps, question, relatedPaths)
+      return
+    case "condition":
+    case "case-body":
+    case "switch-case":
+    case "state-machine":
+      addStateishEvidence(collector, maps, question, relatedPaths)
+      return
+    default:
+      return
+  }
+}
+
+function addStructFieldEvidence(
+  collector: EvidenceCollector,
+  maps: GraphMaps,
+  question: CompletionEvidenceQuestion,
+  relatedPaths: Set<string>,
+) {
+  const prefix = question.memberPrefix?.toLowerCase() ?? ""
+  const base = question.memberBase?.toLowerCase() ?? ""
+  const path = question.path ? normalizePath(question.path) : undefined
+  for (const file of maps.files) {
+    const fileBoost = path && normalizePath(file.path) === path ? 90 : relatedBoost(file.path, relatedPaths)
+    const baseTypeNames = base ? typeNamesForBase(file, base, question.functionName) : []
+    const functionContext = functionForQuestion(file, question.functionName)
+    for (const baseTypeName of baseTypeNames) {
+      collector.add({
+        path: file.path,
+        startLine: functionContext?.startLine ?? 1,
+        endLine: functionContext?.startLine ?? 1,
+        kind: "type",
+        score: 330 + fileBoost,
+        reason: "completion base-type",
+        snippet: [
+          `member-base: ${question.memberBase ?? base}`,
+          `base-type: ${baseTypeName}`,
+          question.functionName ? `function: ${question.functionName}` : "",
+        ].filter(Boolean).join("\n"),
+      })
+    }
+    for (const type of file.types) {
+      const fields = (type.fields ?? []).filter((field) => !prefix || field.name.toLowerCase().startsWith(prefix) || snakeCasePrefixMatch(field.name.toLowerCase(), prefix))
+      if (fields.length === 0) continue
+      const typeBoost = baseTypeNames.some((name) => typeNameMatches(type.name, name)) ? 110 : 0
+      if (!typeBoost && prefix.length < 2 && !fileBoost) continue
+      collector.add({
+        path: file.path,
+        startLine: type.startLine,
+        endLine: type.endLine,
+        kind: "type",
+        score: 250 + typeBoost + fileBoost,
+        reason: `completion struct-definition struct-field${typeBoost ? " base-type" : ""}`,
+        snippet: structFieldSnippet(type.name, fields, type.snippet),
+      })
+      for (const usage of fieldUsageEvidence(file, fields.map((field) => field.name), typeBoost ? base : "")) {
+        collector.add({
+          path: file.path,
+          startLine: usage.line,
+          endLine: usage.line,
+          kind: "field",
+          score: 210 + typeBoost + fileBoost,
+          reason: "completion same-field-usage",
+          snippet: usage.snippet,
+        })
+      }
+    }
+  }
+}
+
+function addCallSiteEvidence(
+  collector: EvidenceCollector,
+  maps: GraphMaps,
+  question: CompletionEvidenceQuestion,
+  relatedPaths: Set<string>,
+) {
+  const callee = question.callee?.toLowerCase()
+  if (!callee) return
+  for (const fn of maps.byLowerName.get(callee) ?? []) {
+    collector.add({
+      path: fn.path,
+      startLine: fn.startLine,
+      endLine: fn.startLine,
+      kind: "function",
+      score: 330 + relatedBoost(fn.path, relatedPaths),
+      reason: "completion callee-signature",
+      snippet: [
+        `callee: ${fn.name}`,
+        `signature: ${fn.signature}`,
+        firstSnippetLine(fn.snippet),
+      ].filter(Boolean).join("\n"),
+    })
+  }
+  for (const file of maps.files) {
+    for (const site of file.callSites ?? []) {
+      if (site.callee.toLowerCase() !== callee) continue
+      collector.add(callSiteEvidence(file, site, 245 + relatedBoost(file.path, relatedPaths), "completion call-example call-site"))
+      if (site.returnHandling) {
+        collector.add(callSiteEvidence(file, site, 230 + relatedBoost(file.path, relatedPaths), "completion return-handling"))
+      }
+    }
+  }
+}
+
+function addInitializerEvidence(
+  collector: EvidenceCollector,
+  maps: GraphMaps,
+  question: CompletionEvidenceQuestion,
+  relatedPaths: Set<string>,
+) {
+  const field = question.initializerField?.toLowerCase() ?? ""
+  for (const file of maps.files) {
+    for (const type of file.types) {
+      const fields = type.fields ?? []
+      const matchingFields = fields.filter((item) => !field || item.name.toLowerCase().startsWith(field) || snakeCasePrefixMatch(item.name.toLowerCase(), field))
+      if (matchingFields.length === 0) continue
+      collector.add({
+        path: file.path,
+        startLine: type.startLine,
+        endLine: type.endLine,
+        kind: "type",
+        score: 235 + relatedBoost(file.path, relatedPaths) + (field ? 70 : 0),
+        reason: "completion initializer struct-definition",
+        snippet: structFieldSnippet(type.name, matchingFields, type.snippet),
+      })
+      for (const callbackField of matchingFields.filter((item) => isCallbackField(item.type) || /(?:cb|callback|handler|hook|ops|fn|func|irq|trace|read|write|open|close)/i.test(item.name))) {
+        collector.add({
+          path: file.path,
+          startLine: callbackField.line,
+          endLine: callbackField.line,
+          kind: "field",
+          score: 255 + relatedBoost(file.path, relatedPaths),
+          reason: "completion callback-signature",
+          snippet: [
+            `type: ${type.name}`,
+            `field: ${callbackField.name}`,
+            `callback-signature: ${callbackField.type}`,
+            callbackField.snippet,
+          ].join("\n"),
+        })
+      }
+    }
+    for (const initializer of file.initializers ?? []) {
+      const fieldMatch = field && initializer.fields.some((name) => name.toLowerCase().startsWith(field) || snakeCasePrefixMatch(name.toLowerCase(), field))
+      if (field && !fieldMatch) continue
+      collector.add(initializerEvidence(file, initializer, 235 + relatedBoost(file.path, relatedPaths) + (fieldMatch ? 80 : 0), "completion initializer-example"))
+      if (initializer.typeName) {
+        for (const type of matchingTypes(maps, initializer.typeName)) {
+          collector.add({
+            path: file.path,
+            startLine: type.startLine,
+            endLine: type.endLine,
+            kind: "type",
+            score: 250 + relatedBoost(file.path, relatedPaths),
+            reason: "completion initializer struct-definition",
+            snippet: structFieldSnippet(type.name, type.fields ?? [], type.snippet),
+          })
+        }
+      }
+    }
+  }
+}
+
+function addErrorPathEvidence(
+  collector: EvidenceCollector,
+  maps: GraphMaps,
+  question: CompletionEvidenceQuestion,
+  relatedPaths: Set<string>,
+) {
+  const labelPrefix = question.gotoLabelPrefix?.toLowerCase() ?? ""
+  const fnName = question.functionName?.toLowerCase()
+  for (const file of maps.files) {
+    for (const label of file.errorLabels ?? []) {
+      const labelMatch = !labelPrefix || label.name.toLowerCase().startsWith(labelPrefix) || snakeCasePrefixMatch(label.name.toLowerCase(), labelPrefix)
+      const functionMatch = fnName && label.functionName.toLowerCase() === fnName
+      if (!labelMatch && !functionMatch) continue
+      const score = 250 + relatedBoost(file.path, relatedPaths) + (functionMatch ? 110 : 0)
+      collector.add(errorLabelEvidence(file, label, score, "completion error-labels cleanup-label"))
+      if (label.cleanupCalls.length > 0) collector.add(errorLabelEvidence(file, label, score - 5, "completion cleanup-pattern"))
+      if (label.returnStyle) collector.add(errorLabelEvidence(file, label, score - 10, "completion return-style"))
+    }
+  }
+}
+
+function addRegisterFamilyEvidence(
+  collector: EvidenceCollector,
+  maps: GraphMaps,
+  question: CompletionEvidenceQuestion,
+  relatedPaths: Set<string>,
+) {
+  const tokens = new Set(question.registerTokens.map((token) => token.toLowerCase()))
+  for (const symbol of question.symbols) tokens.add(symbol.toLowerCase())
+  for (const file of maps.files) {
+    for (const family of file.registerMacroFamilies ?? []) {
+      const familyTerms = [family.family, ...family.macros.map((macro) => macro.name), ...family.macros.map((macro) => macro.suffix)].flatMap(tokenizeIdentifier)
+      const tokenMatch = familyTerms.some((term) => tokens.has(term)) ||
+        [...tokens].some((token) => family.family.toLowerCase().includes(token) || family.macros.some((macro) => macro.name.toLowerCase().includes(token)))
+      if (!tokenMatch && tokens.size > 0) continue
+      collector.add({
+        path: file.path,
+        startLine: family.line,
+        endLine: Math.max(family.line, ...family.macros.map((macro) => macro.line)),
+        kind: "macro",
+        score: 255 + relatedBoost(file.path, relatedPaths) + (tokenMatch ? 90 : 0),
+        reason: "completion register-family",
+        snippet: family.snippet,
+      })
+    }
+    for (const usage of registerAccessEvidence(file)) {
+      const tokenMatch = [...tokens].some((token) => usage.snippet.toLowerCase().includes(token))
+      if (!tokenMatch && tokens.size > 0) continue
+      collector.add({
+        path: file.path,
+        startLine: usage.line,
+        endLine: usage.line,
+        kind: "function",
+        score: 220 + relatedBoost(file.path, relatedPaths) + (tokenMatch ? 70 : 0),
+        reason: "completion register-access-example",
+        snippet: usage.snippet,
+      })
+    }
+  }
+}
+
+function addStateishEvidence(
+  collector: EvidenceCollector,
+  maps: GraphMaps,
+  question: CompletionEvidenceQuestion,
+  relatedPaths: Set<string>,
+) {
+  const tokens = uniqueStrings([question.switchSubject, ...question.symbols].filter((value): value is string => Boolean(value)).flatMap(tokenizeIdentifier))
+  for (const file of maps.files) {
+    for (const type of file.types) {
+      const haystack = `${type.name}\n${type.snippet}`.toLowerCase()
+      if (tokens.length === 0 ? !/\b(?:state|status|enum)\b/i.test(haystack) : !tokens.some((token) => haystack.includes(token))) continue
+      collector.add({
+        path: file.path,
+        startLine: type.startLine,
+        endLine: type.endLine,
+        kind: "type",
+        score: 220 + relatedBoost(file.path, relatedPaths),
+        reason: type.kind === "enum" ? "completion state-enum" : "completion state-context",
+        snippet: type.snippet,
+      })
+    }
+    for (const macro of file.macros) {
+      const haystack = macro.name.toLowerCase()
+      if (!stateMacroLike(macro.name)) continue
+      if (tokens.length > 0 && !tokens.some((token) => haystack.includes(token))) continue
+      collector.add({
+        path: file.path,
+        startLine: macro.line,
+        endLine: macro.line,
+        kind: "macro",
+        score: 210 + relatedBoost(file.path, relatedPaths),
+        reason: "completion state-macro",
+        snippet: macro.snippet ?? macro.name,
+      })
+    }
+    for (const usage of stateCaseEvidence(file, tokens)) {
+      collector.add({
+        path: file.path,
+        startLine: usage.line,
+        endLine: usage.line,
+        kind: "function",
+        score: 215 + relatedBoost(file.path, relatedPaths),
+        reason: "completion state-case",
+        snippet: usage.snippet,
+      })
     }
   }
 }
@@ -561,6 +899,56 @@ function symbolEvidence(symbol: CodeGraphSymbol, score: number, reason: string):
   }
 }
 
+function callSiteEvidence(file: CodeGraphFile, site: CodeGraphCallSite, score: number, reason: string): CodeGraphEvidence {
+  return {
+    path: file.path,
+    startLine: site.line,
+    endLine: site.line,
+    kind: "caller",
+    score,
+    reason,
+    snippet: [
+      `${site.caller} calls ${site.callee}(${site.args.join(", ")})`,
+      site.returnHandling ? `return-handling: ${site.returnHandling}` : "",
+      site.snippet,
+    ].filter(Boolean).join("\n"),
+  }
+}
+
+function initializerEvidence(file: CodeGraphFile, initializer: CodeGraphInitializerExample, score: number, reason: string): CodeGraphEvidence {
+  return {
+    path: file.path,
+    startLine: initializer.line,
+    endLine: initializer.endLine,
+    kind: "global",
+    score,
+    reason,
+    snippet: [
+      initializer.typeName ? `initializer type: ${initializer.typeName}` : "",
+      `fields: ${initializer.fields.join(", ")}`,
+      initializer.snippet,
+    ].filter(Boolean).join("\n"),
+  }
+}
+
+function errorLabelEvidence(file: CodeGraphFile, label: CodeGraphErrorLabel, score: number, reason: string): CodeGraphEvidence {
+  return {
+    path: file.path,
+    startLine: label.line,
+    endLine: label.line,
+    kind: "function",
+    score,
+    reason,
+    snippet: [
+      `function: ${label.functionName}`,
+      `label: ${label.name}`,
+      label.cleanupCalls.length ? `cleanup-calls: ${label.cleanupCalls.join(", ")}` : "",
+      label.returnStyle ? `return-style: ${label.returnStyle}` : "",
+      label.snippet,
+    ].filter(Boolean).join("\n"),
+  }
+}
+
 function fileEvidence(file: CodeGraphFile, score: number, reason: string, line = 1): CodeGraphEvidence {
   const topTypes = file.types.slice(0, 6).map((type) => `${type.name}:${type.startLine}`).join(", ")
   const topMacros = file.macros.slice(0, 8).map((macro) => `${macro.name}:${macro.line}`).join(", ")
@@ -576,6 +964,15 @@ function fileEvidence(file: CodeGraphFile, score: number, reason: string, line =
     reason,
     snippet: `file ${file.path}: ${file.functions.length} function(s), ${file.macros.length} macro(s), ${file.types.length} type(s).${ast} types: ${topTypes || "none"}. macros: ${topMacros || "none"}.`,
   }
+}
+
+function structFieldSnippet(typeName: string, fields: Array<{ name: string; type: string; snippet: string }>, typeSnippet: string) {
+  return [
+    `type: ${typeName}`,
+    `fields: ${fields.map((field) => `${field.name}: ${field.type}`).join(", ")}`,
+    ...uniqueStrings(fields.map((field) => field.snippet)).slice(0, 12),
+    typeSnippet,
+  ].filter(Boolean).join("\n")
 }
 
 function packEvidence(evidence: CodeGraphEvidence[], maxBytes: number) {
@@ -667,6 +1064,121 @@ function extractSearchTerms(question: string, symbols: string[]) {
   return uniqueStrings([...identifierTerms, ...words].filter((word) => !COMMON_WORDS.has(word)))
 }
 
+function splitQuestionTokens(input: string) {
+  return uniqueStrings(input.split(/[^A-Za-z0-9_]+/).filter((token) => token.length >= 2))
+}
+
+function typeNamesForBase(file: CodeGraphFile, base: string, functionName: string | undefined) {
+  const functions = functionName
+    ? file.functions.filter((fn) => fn.name.toLowerCase() === functionName.toLowerCase())
+    : file.functions
+  const snippets = functions.length > 0 ? functions.map((fn) => fn.snippet) : [file.functions.map((fn) => fn.snippet).join("\n")]
+  const names = new Set<string>()
+  const escapedBase = escapeRegExp(base)
+  for (const snippet of snippets) {
+    const declaration = new RegExp(`\\b(?:const\\s+|volatile\\s+|static\\s+|struct\\s+|union\\s+)*([A-Za-z_]\\w*)\\s*\\*?\\s*${escapedBase}\\b`, "g")
+    let match: RegExpExecArray | null
+    while ((match = declaration.exec(snippet))) {
+      if (match[1] && !COMMON_WORDS.has(match[1].toLowerCase())) names.add(match[1])
+    }
+  }
+  return [...names]
+}
+
+function typeNameMatches(typeName: string, candidate: string) {
+  const left = normalizeCTypeName(typeName)
+  const right = normalizeCTypeName(candidate)
+  return left === right || left === `${right}_t` || `${left}_t` === right
+}
+
+function normalizeCTypeName(input: string) {
+  return input.replace(/^(?:struct|union)\s+/, "").replace(/\s+/g, "").replace(/\*+$/g, "").toLowerCase()
+}
+
+function functionForQuestion(file: CodeGraphFile, functionName: string | undefined) {
+  if (!functionName) return undefined
+  return file.functions.find((fn) => fn.name.toLowerCase() === functionName.toLowerCase())
+}
+
+function fieldUsageEvidence(file: CodeGraphFile, fields: string[], base: string) {
+  const result: Array<{ line: number; snippet: string }> = []
+  const fieldPattern = new RegExp(`(?:->|\\.)\\s*(?:${fields.map(escapeRegExp).join("|")})\\b`)
+  const basePattern = base ? new RegExp(`\\b${escapeRegExp(base)}\\s*(?:->|\\.)`) : undefined
+  for (const fn of file.functions) {
+    const lines = fn.snippet.split(/\r?\n/)
+    for (let index = 0; index < lines.length; index += 1) {
+      const line = lines[index] ?? ""
+      if (!fieldPattern.test(line)) continue
+      if (basePattern && !basePattern.test(line)) continue
+      result.push({
+        line: fn.startLine + index,
+        snippet: [
+          `function: ${fn.name}`,
+          lines.slice(Math.max(0, index - 2), Math.min(lines.length, index + 3)).map((item) => item.trimEnd()).join("\n").trim(),
+        ].join("\n"),
+      })
+    }
+  }
+  return result.slice(0, 6)
+}
+
+function firstSnippetLine(snippet: string) {
+  return snippet.split(/\r?\n/).map((line) => line.trim()).find(Boolean) ?? ""
+}
+
+function isCallbackField(type: string) {
+  return /\(\s*\*\s*\)|\(\s*\*\s*[A-Za-z_]\w*\s*\)|\b(?:cb|callback|handler|hook|ops|fn|func)_?t\b/i.test(type)
+}
+
+function matchingTypes(maps: GraphMaps, typeName: string): CodeGraphTypeSymbol[] {
+  return maps.files.flatMap((file) => file.types.filter((type) => typeNameMatches(type.name, typeName)))
+}
+
+function registerAccessEvidence(file: CodeGraphFile) {
+  const result: Array<{ line: number; snippet: string }> = []
+  for (const fn of file.functions) {
+    const lines = fn.snippet.split(/\r?\n/)
+    for (let index = 0; index < lines.length; index += 1) {
+      const line = lines[index] ?? ""
+      if (!/\b(?:readl|writel|readw|writew|readb|writeb|ioread(?:8|16|32|64)?|iowrite(?:8|16|32|64)?|FIELD_PREP|FIELD_GET|GENMASK|BIT|mb|wmb|rmb|barrier|cpu_relax)\s*\(/.test(line)) continue
+      result.push({
+        line: fn.startLine + index,
+        snippet: [
+          `function: ${fn.name}`,
+          lines.slice(Math.max(0, index - 2), Math.min(lines.length, index + 3)).map((item) => item.trimEnd()).join("\n").trim(),
+        ].join("\n"),
+      })
+    }
+  }
+  return result.slice(0, 8)
+}
+
+function stateMacroLike(name: string) {
+  return /(?:^|_)(?:STATE|STATUS|MODE|PHASE|STAGE|EVENT|IDLE|INIT|READY|RUNNING|ERROR|FAILED|DONE|COMPLETE|UP|DOWN|ACTIVE|SUSPENDED)(?:_|$)/.test(name)
+}
+
+function stateCaseEvidence(file: CodeGraphFile, tokens: string[]) {
+  const result: Array<{ line: number; snippet: string }> = []
+  for (const fn of file.functions) {
+    const lines = fn.snippet.split(/\r?\n/)
+    for (let index = 0; index < lines.length; index += 1) {
+      const line = lines[index] ?? ""
+      if (!/\b(?:switch|case)\b/.test(line)) continue
+      const window = lines.slice(Math.max(0, index - 1), Math.min(lines.length, index + 4)).join("\n")
+      const lower = window.toLowerCase()
+      if (tokens.length > 0 && !tokens.some((token) => lower.includes(token))) continue
+      result.push({
+        line: fn.startLine + index,
+        snippet: [
+          `function: ${fn.name}`,
+          window.trim(),
+        ].join("\n"),
+      })
+    }
+  }
+  return result.slice(0, 8)
+}
+
 function tokenizeIdentifier(input: string) {
   return uniqueStrings(
     input
@@ -677,6 +1189,10 @@ function tokenizeIdentifier(input: string) {
       .map((term) => term.toLowerCase())
       .filter((term) => term.length >= 2),
   )
+}
+
+function escapeRegExp(input: string) {
+  return input.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
 }
 
 function medianLine(lines: number[]) {
@@ -728,6 +1244,8 @@ function kindRank(kind: CodeGraphSymbol["kind"]) {
   switch (kind) {
     case "function":
       return 5
+    case "field":
+      return 4.5
     case "macro":
       return 4
     case "type":

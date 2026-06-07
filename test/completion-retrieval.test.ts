@@ -77,9 +77,12 @@ describe("completion retrieval planning", () => {
     })
     expect(member).toMatchObject({
       policyLabel: "c-member-access",
-      preferredKinds: ["type", "global", "function"],
+      preferredKinds: ["field", "type", "global", "function"],
     })
     expect(member.queries).toEqual(["req", "sta"])
+    expect(member.evidenceQuestion).toContain("completion-intent: member-access")
+    expect(member.evidenceQuestion).toContain("member-base: req")
+    expect(member.evidenceQuestion).toContain("member-prefix: sta")
     expect(member.evidenceQuestion).toContain("member-access")
     expect(member.evidenceQuestion).toContain("req")
 
@@ -95,6 +98,8 @@ describe("completion retrieval planning", () => {
     })
     expect(callArgs.policyLabel).toBe("c-call-args")
     expect(callArgs.queries).toContain("driver_start")
+    expect(callArgs.evidenceQuestion).toContain("completion-intent: call-args")
+    expect(callArgs.evidenceQuestion).toContain("callee: driver_start")
     expect(callArgs.evidenceQuestion).toContain("call-site")
     expect(callArgs.evidenceQuestion).toContain("return handling")
 
@@ -110,7 +115,9 @@ describe("completion retrieval planning", () => {
     })
     expect(initializer.policyLabel).toBe("c-initializer")
     expect(initializer.queries).toContain("complete")
-    expect(initializer.preferredKinds).toEqual(["type", "function", "global"])
+    expect(initializer.preferredKinds).toEqual(["field", "type", "function", "global"])
+    expect(initializer.evidenceQuestion).toContain("completion-intent: initializer")
+    expect(initializer.evidenceQuestion).toContain("initializer-field: complete")
 
     const condition = completionRetrievalPlan({
       plan: planCompletion({
@@ -123,6 +130,7 @@ describe("completion retrieval planning", () => {
       lineSuffix: ") {",
     })
     expect(condition.policyLabel).toBe("c-condition")
+    expect(condition.evidenceQuestion).toContain("completion-intent: condition")
     expect(condition.evidenceQuestion).toContain("condition")
     expect(condition.evidenceQuestion).toContain("state enum")
 
@@ -141,6 +149,8 @@ describe("completion retrieval planning", () => {
     expect(errorPath.policyLabel).toBe("c-error-path")
     expect(errorPath.queries).toContain("out_")
     expect(errorPath.queries).toContain("goto")
+    expect(errorPath.evidenceQuestion).toContain("completion-intent: error-path")
+    expect(errorPath.evidenceQuestion).toContain("goto-label-prefix: out_")
     expect(errorPath.evidenceQuestion).toContain("cleanup")
 
     const mmio = completionRetrievalPlan({
@@ -156,6 +166,8 @@ describe("completion retrieval planning", () => {
     expect(mmio.policyLabel).toBe("c-mmio-register")
     expect(mmio.queries).toEqual(["FIELD_PREP", "writel"])
     expect(mmio.preferredKinds).toEqual(["macro", "global", "function"])
+    expect(mmio.evidenceQuestion).toContain("completion-intent: mmio-register")
+    expect(mmio.evidenceQuestion).toContain("register-tokens: FIELD_PREP writel")
     expect(mmio.evidenceQuestion).toContain("register")
   })
 

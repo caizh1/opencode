@@ -2,7 +2,7 @@
   "name": "opencode-remote",
   "displayName": "OpenCode Remote",
   "description": "Remote opencode serve client for VS Code",
-  "version": "0.0.144",
+  "version": "0.0.150",
   "icon": "media/opencode-icon.png",
   "publisher": "local",
   "repository": {
@@ -44,6 +44,7 @@
     "onCommand:opencode.remote.codeGraph.benchmark",
     "onCommand:opencode.remote.codeGraph.status",
     "onCommand:opencode.remote.completion.setApiKey",
+    "onCommand:opencode.remote.completion.runDirectAblation",
     "onCommand:opencode.remote.completion.commitInlineSuggestion"
   ],
   "main": "./dist/extension.js",
@@ -86,6 +87,11 @@
       {
         "command": "opencode.remote.completion.setApiKey",
         "title": "Set Inline Completion API Key",
+        "category": "OpenCode Remote"
+      },
+      {
+        "command": "opencode.remote.completion.runDirectAblation",
+        "title": "Run Direct Qwen Completion Ablation",
         "category": "OpenCode Remote"
       },
       {
@@ -709,6 +715,7 @@
     "eval:completion-quality": "bun scripts/completion-quality-eval.ts",
     "eval:completion-c-embedded": "bun scripts/completion-c-embedded-eval.ts",
     "ui:completion-c-embedded": "bun scripts/completion-c-embedded-ui.ts",
+    "benchmark:completion-quality": "bun scripts/completion-quality-benchmark.ts",
     "benchmark:codegraph": "bun scripts/codegraph-benchmark.ts",
     "test:vscode": "bun run package && node ./dist/test/runTest.js",
     "vsix": "bun run package && vsce package --no-dependencies"

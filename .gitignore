@@ -4,6 +4,7 @@ node_modules/
 *.log
 out/
 .vscode-test/
+.completion-quality/
 
 # Local OpenCode configuration
 .opencode/
