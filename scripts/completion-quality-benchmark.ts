@@ -88,6 +88,8 @@ export type CompletionQualityBenchmarkOptions = {
   seed?: number
   report?: string
   timeoutMs?: number
+  debugFullRetrieval?: boolean
+  expectedSymbol?: string
 }
 
 export type CompletionQualityRecord = {
@@ -159,6 +161,22 @@ export type CompletionQualityRecord = {
   ragAvailable?: boolean
   latencyBudgetMs?: number
   maxEvidence?: number
+  evidenceRoles?: string[]
+  generationModeHint?: string
+  helperCallableConfidence?: string
+  callableHelperCandidates?: string[]
+  styleExampleCandidates?: string[]
+  qaStyleTopK?: string[]
+  completionProjectionTopK?: string[]
+  droppedAlignedEvidence?: string[]
+  cursorContextFeatures?: CompletionDebugEvent["cursorContextFeatures"]
+  fullRetrievalCandidateCount?: number
+  projectionCandidateCount?: number
+  submittedEvidenceNames?: string[]
+  expectedSymbolInFullRetrieval?: boolean
+  expectedSymbolInProjection?: boolean
+  expectedSymbolInPrompt?: boolean
+  fullRetrievalProbeDumpPath?: string
 }
 
 export type CompletionQualitySummary = {
@@ -279,6 +297,22 @@ export type CompletionQualityLatestReportRecord = {
   ragAvailable?: boolean
   latencyBudgetMs?: number
   maxEvidence?: number
+  evidenceRoles?: string[]
+  generationModeHint?: string
+  helperCallableConfidence?: string
+  callableHelperCandidates?: string[]
+  styleExampleCandidates?: string[]
+  qaStyleTopK?: string[]
+  completionProjectionTopK?: string[]
+  droppedAlignedEvidence?: string[]
+  cursorContextFeatures?: CompletionDebugEvent["cursorContextFeatures"]
+  fullRetrievalCandidateCount?: number
+  projectionCandidateCount?: number
+  submittedEvidenceNames?: string[]
+  expectedSymbolInFullRetrieval?: boolean
+  expectedSymbolInProjection?: boolean
+  expectedSymbolInPrompt?: boolean
+  fullRetrievalProbeDumpPath?: string
 }
 
 type CompletionQualityRetrievalTrace = {
@@ -632,6 +666,22 @@ async function runDirectQwenAblationFixture(input: {
     ragAvailable: evidenceResult?.trace.ragAvailable,
     latencyBudgetMs: evidenceResult?.trace.latencyBudgetMs,
     maxEvidence: evidenceResult?.trace.maxEvidence,
+    evidenceRoles: evidenceResult?.trace.evidenceRoles,
+    generationModeHint: evidenceResult?.trace.generationModeHint,
+    helperCallableConfidence: evidenceResult?.trace.helperCallableConfidence,
+    callableHelperCandidates: evidenceResult?.trace.callableHelperCandidates,
+    styleExampleCandidates: evidenceResult?.trace.styleExampleCandidates,
+    qaStyleTopK: evidenceResult?.trace.qaStyleTopK,
+    completionProjectionTopK: evidenceResult?.trace.completionProjectionTopK,
+    droppedAlignedEvidence: evidenceResult?.trace.droppedAlignedEvidence,
+    cursorContextFeatures: evidenceResult?.trace.cursorContextFeatures,
+    fullRetrievalCandidateCount: evidenceResult?.trace.fullRetrievalCandidateCount,
+    projectionCandidateCount: evidenceResult?.trace.projectionCandidateCount,
+    submittedEvidenceNames: evidenceResult?.trace.submittedEvidenceNames,
+    expectedSymbolInFullRetrieval: evidenceResult?.trace.expectedSymbolInFullRetrieval,
+    expectedSymbolInProjection: evidenceResult?.trace.expectedSymbolInProjection,
+    expectedSymbolInPrompt: evidenceResult?.trace.expectedSymbolInPrompt,
+    fullRetrievalProbeDumpPath: evidenceResult?.trace.fullRetrievalProbeDumpPath,
     failureReason: pipeline.rejectionReason,
   }
   if (input.variant === "baseline" && baselineEvidence?.evidencePack.text.trim()) {
@@ -836,6 +886,8 @@ function directQwenSettings(config: DirectQwenConfig): RemoteSettings {
       topP: config.topP,
       debounceMs: 0,
       logLevel: "off",
+      debugFullRetrievalProbe: false,
+      debugExpectedSymbol: "",
     },
     codeGraph: {
       ...benchmarkSettings({}).codeGraph,
@@ -942,6 +994,22 @@ function writeDirectAblationDump(input: {
       ragAvailable: record.ragAvailable,
       latencyBudgetMs: record.latencyBudgetMs,
       maxEvidence: record.maxEvidence,
+      evidenceRoles: record.evidenceRoles,
+      generationModeHint: record.generationModeHint,
+      helperCallableConfidence: record.helperCallableConfidence,
+      callableHelperCandidates: record.callableHelperCandidates,
+      styleExampleCandidates: record.styleExampleCandidates,
+      qaStyleTopK: record.qaStyleTopK,
+      completionProjectionTopK: record.completionProjectionTopK,
+      droppedAlignedEvidence: record.droppedAlignedEvidence,
+      cursorContextFeatures: record.cursorContextFeatures,
+      fullRetrievalCandidateCount: record.fullRetrievalCandidateCount,
+      projectionCandidateCount: record.projectionCandidateCount,
+      submittedEvidenceNames: record.submittedEvidenceNames,
+      expectedSymbolInFullRetrieval: record.expectedSymbolInFullRetrieval,
+      expectedSymbolInProjection: record.expectedSymbolInProjection,
+      expectedSymbolInPrompt: record.expectedSymbolInPrompt,
+      fullRetrievalProbeDumpPath: record.fullRetrievalProbeDumpPath,
     })
   }
   const report = {
@@ -1631,8 +1699,8 @@ function fixtureCodeGraphProvider(fixture: CompletionQualityFixture, documentTex
     runAnalysisTool: async () => ({}),
     queryEvidence: async (question: string, options?: CodeGraphEvidenceQueryOptions) => {
       const result = await queryEvidenceAsync(index, question, {
-        maxEvidenceItems: 24,
-        maxEvidenceBytes: 18000,
+        maxEvidenceItems: options?.maxEvidenceItems ?? 24,
+        maxEvidenceBytes: options?.maxEvidenceBytes ?? 18000,
         maxFileSliceBytes: 6000,
         maxGraphEdges: 80,
         maxPaths: 8,
@@ -1938,6 +2006,22 @@ async function runProviderDryRunCompletionQualityFixture(fixture: CompletionQual
     ragAvailable: telemetry?.ragAvailable,
     latencyBudgetMs: telemetry?.latencyBudgetMs,
     maxEvidence: telemetry?.maxEvidence,
+    evidenceRoles: telemetry?.evidenceRoles,
+    generationModeHint: telemetry?.generationModeHint,
+    helperCallableConfidence: telemetry?.helperCallableConfidence,
+    callableHelperCandidates: telemetry?.callableHelperCandidates,
+    styleExampleCandidates: telemetry?.styleExampleCandidates,
+    qaStyleTopK: telemetry?.qaStyleTopK,
+    completionProjectionTopK: telemetry?.completionProjectionTopK,
+    droppedAlignedEvidence: telemetry?.droppedAlignedEvidence,
+    cursorContextFeatures: telemetry?.cursorContextFeatures,
+    fullRetrievalCandidateCount: telemetry?.fullRetrievalCandidateCount,
+    projectionCandidateCount: telemetry?.projectionCandidateCount,
+    submittedEvidenceNames: telemetry?.submittedEvidenceNames,
+    expectedSymbolInFullRetrieval: telemetry?.expectedSymbolInFullRetrieval,
+    expectedSymbolInProjection: telemetry?.expectedSymbolInProjection,
+    expectedSymbolInPrompt: telemetry?.expectedSymbolInPrompt,
+    fullRetrievalProbeDumpPath: telemetry?.fullRetrievalProbeDumpPath,
     failureReason: telemetry?.rejectReason ?? (finalInsert ? undefined : "no-visible-inline-item"),
   }
   return record
@@ -2106,6 +2190,22 @@ function writeLatestDump(input: {
       ragAvailable: record.ragAvailable,
       latencyBudgetMs: record.latencyBudgetMs,
       maxEvidence: record.maxEvidence,
+      evidenceRoles: record.evidenceRoles,
+      generationModeHint: record.generationModeHint,
+      helperCallableConfidence: record.helperCallableConfidence,
+      callableHelperCandidates: record.callableHelperCandidates,
+      styleExampleCandidates: record.styleExampleCandidates,
+      qaStyleTopK: record.qaStyleTopK,
+      completionProjectionTopK: record.completionProjectionTopK,
+      droppedAlignedEvidence: record.droppedAlignedEvidence,
+      cursorContextFeatures: record.cursorContextFeatures,
+      fullRetrievalCandidateCount: record.fullRetrievalCandidateCount,
+      projectionCandidateCount: record.projectionCandidateCount,
+      submittedEvidenceNames: record.submittedEvidenceNames,
+      expectedSymbolInFullRetrieval: record.expectedSymbolInFullRetrieval,
+      expectedSymbolInProjection: record.expectedSymbolInProjection,
+      expectedSymbolInPrompt: record.expectedSymbolInPrompt,
+      fullRetrievalProbeDumpPath: record.fullRetrievalProbeDumpPath,
     })
   }
   const report: CompletionQualityLatestReport = {
@@ -2183,6 +2283,22 @@ function evidenceDump(record: CompletionQualityRecord) {
     ragAvailable: record.ragAvailable,
     latencyBudgetMs: record.latencyBudgetMs,
     maxEvidence: record.maxEvidence,
+    evidenceRoles: record.evidenceRoles,
+    generationModeHint: record.generationModeHint,
+    helperCallableConfidence: record.helperCallableConfidence,
+    callableHelperCandidates: record.callableHelperCandidates,
+    styleExampleCandidates: record.styleExampleCandidates,
+    qaStyleTopK: record.qaStyleTopK,
+    completionProjectionTopK: record.completionProjectionTopK,
+    droppedAlignedEvidence: record.droppedAlignedEvidence,
+    cursorContextFeatures: record.cursorContextFeatures,
+    fullRetrievalCandidateCount: record.fullRetrievalCandidateCount,
+    projectionCandidateCount: record.projectionCandidateCount,
+    submittedEvidenceNames: record.submittedEvidenceNames,
+    expectedSymbolInFullRetrieval: record.expectedSymbolInFullRetrieval,
+    expectedSymbolInProjection: record.expectedSymbolInProjection,
+    expectedSymbolInPrompt: record.expectedSymbolInPrompt,
+    fullRetrievalProbeDumpPath: record.fullRetrievalProbeDumpPath,
     selectedEvidence: record.selectedEvidence ?? [],
     evidenceKinds: record.evidenceKinds,
     selectedEvidenceCount: record.cEmbeddedEvidenceTrace?.finalSelectedEvidenceCount ?? record.selectedEvidence?.length ?? 0,
@@ -2200,7 +2316,7 @@ function evidenceDump(record: CompletionQualityRecord) {
 
 function correctFunctionInCandidates(
   fixture: CompletionQualityFixture,
-  trace: Pick<CompletionDebugEvent, "semanticCandidateTopK" | "selectedSimilarFunctionNames" | "qaRetrievalTopK" | "completionRetrievalTopK" | "sharedTopCandidate" | "qaTopCandidate" | "completionTopCandidate"> | undefined,
+  trace: Pick<CompletionDebugEvent, "semanticCandidateTopK" | "selectedSimilarFunctionNames" | "qaRetrievalTopK" | "completionRetrievalTopK" | "sharedTopCandidate" | "qaTopCandidate" | "completionTopCandidate" | "qaStyleTopK" | "completionProjectionTopK" | "callableHelperCandidates" | "styleExampleCandidates"> | undefined,
 ) {
   const expected = fixture.expectedSimilarFunction?.trim().toLowerCase()
   if (!expected) return undefined
@@ -2209,6 +2325,10 @@ function correctFunctionInCandidates(
     ...(trace?.semanticCandidateTopK ?? []).map((item) => item.name ?? ""),
     ...(trace?.qaRetrievalTopK ?? []),
     ...(trace?.completionRetrievalTopK ?? []),
+    ...(trace?.qaStyleTopK ?? []),
+    ...(trace?.completionProjectionTopK ?? []),
+    ...(trace?.callableHelperCandidates ?? []),
+    ...(trace?.styleExampleCandidates ?? []),
     trace?.sharedTopCandidate ?? "",
     trace?.qaTopCandidate ?? "",
     trace?.completionTopCandidate ?? "",
@@ -2295,6 +2415,8 @@ function benchmarkSettings(options: CompletionQualityBenchmarkOptions): RemoteSe
       topP: 1,
       debounceMs: 0,
       logLevel: "off",
+      debugFullRetrievalProbe: Boolean(options.debugFullRetrieval) || /^(?:1|true|yes|on)$/i.test(process.env.COMPLETION_DEBUG_FULL_RETRIEVAL ?? ""),
+      debugExpectedSymbol: options.expectedSymbol ?? process.env.COMPLETION_DEBUG_EXPECTED_SYMBOL ?? "",
     },
     codeGraph: {
       enabled: false,
@@ -2708,6 +2830,12 @@ function parseArgs(argv: string[]): CompletionQualityBenchmarkOptions {
         break
       case "--timeout-ms":
         options.timeoutMs = Number(next())
+        break
+      case "--debug-full-retrieval":
+        options.debugFullRetrieval = true
+        break
+      case "--expected-symbol":
+        options.expectedSymbol = next()
         break
       case "--mock":
         options.mock = true

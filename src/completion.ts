@@ -1,3 +1,5 @@
+import { mkdirSync, writeFileSync } from "node:fs"
+import { dirname, join } from "node:path"
 import * as vscode from "vscode"
 import type { CodeGraphContextProvider, CodeGraphEvidenceQueryOptions } from "./codegraph-types"
 import {
@@ -10,7 +12,7 @@ import {
 } from "./completion-edit"
 import { completionFormatCommand } from "./completion-format-command"
 import { completionContextDebugSummary, type CompletionContextPack } from "./completion-context"
-import { buildCEmbeddedCompletionEvidence, shouldBuildCEmbeddedCompletionEvidence } from "./completion-c-embedded-evidence"
+import { buildCEmbeddedCompletionEvidence, shouldBuildCEmbeddedCompletionEvidence, type CEmbeddedFullRetrievalDebugDump } from "./completion-c-embedded-evidence"
 import { scoreCEmbeddedCompletionQuality, type CEmbeddedCompletionFixture, type CEmbeddedTriggerKind } from "./completion-c-embedded-quality"
 import { inferCompletionIndent } from "./completion-indent"
 import { CompletionModelClient, completionModel, directCompletionRequestDiagnostic } from "./completion-model-client"
@@ -521,6 +523,13 @@ export class RemoteCompletionProvider implements vscode.InlineCompletionItemProv
         analysisEvidenceText,
         onContextPack,
       })
+      this.writeFullRetrievalDebugDumpIfNeeded({
+        document: input.document,
+        settings: input.settings,
+        details: input.details,
+        telemetry: input.telemetry,
+        prompt,
+      })
       return { prompt, selectedContextText }
     }
 
@@ -534,7 +543,53 @@ export class RemoteCompletionProvider implements vscode.InlineCompletionItemProv
       analysisEvidenceText,
       onContextPack,
     })
+    this.writeFullRetrievalDebugDumpIfNeeded({
+      document: input.document,
+      settings: input.settings,
+      details: input.details,
+      telemetry: input.telemetry,
+      prompt,
+    })
     return { prompt, selectedContextText }
+  }
+
+  private writeFullRetrievalDebugDumpIfNeeded(input: {
+    document: vscode.TextDocument
+    settings: RemoteSettings
+    details: string
+    telemetry: CompletionTelemetryDraft
+    prompt: string
+  }) {
+    const dump = input.telemetry.fullRetrievalDebugDump as CEmbeddedFullRetrievalDebugDump | undefined
+    if (!dump) return
+    const expected = dump.expectedSymbol?.trim()
+    const selectedBlocks = input.telemetry.selectedContextBlocks ?? []
+    const selectedBlocksText = JSON.stringify(selectedBlocks)
+    const expectedSymbolPresence = {
+      ...dump.expectedSymbolPresence,
+      selectedContextBlocks: expected ? selectedBlocksText.includes(expected) : false,
+      finalPrompt: expected ? input.prompt.includes(expected) : false,
+    }
+    const output = {
+      ...dump,
+      selectedContextBlocks: selectedBlocks,
+      finalPrompt: input.prompt,
+      expectedSymbolPresence,
+    }
+    const root = vscode.workspace.getWorkspaceFolder?.(input.document.uri)?.uri?.fsPath ??
+      vscode.workspace.workspaceFolders?.[0]?.uri?.fsPath ??
+      dirname(input.document.uri.fsPath)
+    const dir = join(root, ".completion-quality", "live-retrieval-debug")
+    mkdirSync(dir, { recursive: true })
+    const path = join(dir, `${safeFileName(input.telemetry.requestId)}.json`)
+    writeFileSync(path, `${JSON.stringify(output, null, 2)}\n`)
+    input.telemetry.expectedSymbolInPrompt = expectedSymbolPresence.finalPrompt
+    input.telemetry.fullRetrievalProbeDumpPath = path
+    if (input.telemetry.cEmbeddedEvidenceTrace) {
+      input.telemetry.cEmbeddedEvidenceTrace.expectedSymbolInPrompt = expectedSymbolPresence.finalPrompt
+      input.telemetry.cEmbeddedEvidenceTrace.fullRetrievalProbeDumpPath = path
+    }
+    this.logDebug(input.settings, `fullRetrievalProbeDump=${quoteLogValue(path)} ${input.details}`)
   }
 
   private deterministicCompletionOutcome(input: {
@@ -751,6 +806,9 @@ export class RemoteCompletionProvider implements vscode.InlineCompletionItemProv
           domainHints: input.plan.domainHints,
           prefix: completionRetrievalPrefix(input.document, input.position),
           suffix: completionRetrievalSuffix(input.document, input.position),
+          debugFullRetrievalProbe: input.settings.completion.debugFullRetrievalProbe,
+          debugExpectedSymbol: input.settings.completion.debugExpectedSymbol,
+          requestId: input.telemetry.requestId,
         })
         input.telemetry.retrievalMode = mergeCompletionRetrievalMode(input.telemetry.retrievalMode, result.retrievalMode)
         input.telemetry.evidenceKinds = mergeCompletionEvidenceKinds(input.telemetry.evidenceKinds, result.evidenceKinds)
@@ -774,6 +832,22 @@ export class RemoteCompletionProvider implements vscode.InlineCompletionItemProv
         input.telemetry.ragAvailable = result.trace.ragAvailable
         input.telemetry.latencyBudgetMs = result.trace.latencyBudgetMs
         input.telemetry.maxEvidence = result.trace.maxEvidence
+        input.telemetry.evidenceRoles = result.trace.evidenceRoles
+        input.telemetry.generationModeHint = result.trace.generationModeHint
+        input.telemetry.helperCallableConfidence = result.trace.helperCallableConfidence
+        input.telemetry.callableHelperCandidates = result.trace.callableHelperCandidates
+        input.telemetry.styleExampleCandidates = result.trace.styleExampleCandidates
+        input.telemetry.qaStyleTopK = result.trace.qaStyleTopK
+        input.telemetry.completionProjectionTopK = result.trace.completionProjectionTopK
+        input.telemetry.droppedAlignedEvidence = result.trace.droppedAlignedEvidence
+        input.telemetry.cursorContextFeatures = result.trace.cursorContextFeatures
+        input.telemetry.fullRetrievalCandidateCount = result.trace.fullRetrievalCandidateCount
+        input.telemetry.projectionCandidateCount = result.trace.projectionCandidateCount
+        input.telemetry.submittedEvidenceNames = result.trace.submittedEvidenceNames
+        input.telemetry.expectedSymbolInFullRetrieval = result.trace.expectedSymbolInFullRetrieval
+        input.telemetry.expectedSymbolInProjection = result.trace.expectedSymbolInProjection
+        input.telemetry.expectedSymbolInPrompt = result.trace.expectedSymbolInPrompt
+        input.telemetry.fullRetrievalDebugDump = result.debugDump
         const text = result.text.trim()
         if (text) {
           this.logDebug(input.settings, `c-embedded-evidence selected=${result.selectedEvidenceCount} kinds="${quoteLogValue(result.evidenceKinds.join(","))}" fallback=${result.trace.ragFallbackTriggered ? "hybrid" : "none"} ${input.details}`)
@@ -1095,6 +1169,22 @@ export class RemoteCompletionProvider implements vscode.InlineCompletionItemProv
       ragAvailable: telemetry.ragAvailable,
       latencyBudgetMs: telemetry.latencyBudgetMs,
       maxEvidence: telemetry.maxEvidence,
+      evidenceRoles: telemetry.evidenceRoles,
+      generationModeHint: telemetry.generationModeHint,
+      helperCallableConfidence: telemetry.helperCallableConfidence,
+      callableHelperCandidates: telemetry.callableHelperCandidates,
+      styleExampleCandidates: telemetry.styleExampleCandidates,
+      qaStyleTopK: telemetry.qaStyleTopK,
+      completionProjectionTopK: telemetry.completionProjectionTopK,
+      droppedAlignedEvidence: telemetry.droppedAlignedEvidence,
+      cursorContextFeatures: telemetry.cursorContextFeatures,
+      fullRetrievalCandidateCount: telemetry.fullRetrievalCandidateCount,
+      projectionCandidateCount: telemetry.projectionCandidateCount,
+      submittedEvidenceNames: telemetry.submittedEvidenceNames,
+      expectedSymbolInFullRetrieval: telemetry.expectedSymbolInFullRetrieval,
+      expectedSymbolInProjection: telemetry.expectedSymbolInProjection,
+      expectedSymbolInPrompt: telemetry.expectedSymbolInPrompt,
+      fullRetrievalProbeDumpPath: telemetry.fullRetrievalProbeDumpPath,
       promptKind: telemetry.promptKind,
       symbolCandidates: telemetry.symbolCandidates,
       selectedContextBlocks: telemetry.selectedContextBlocks,
@@ -1642,6 +1732,10 @@ function completionPlannerLogDetails(plan: CompletionPlan, extensionVersion: str
 
 function quoteLogValue(value: string) {
   return value.replace(/\\/g, "\\\\").replace(/"/g, '\\"')
+}
+
+function safeFileName(input: string) {
+  return input.replace(/[^A-Za-z0-9_.-]+/g, "-").slice(0, 120) || "completion-debug"
 }
 
 function fallbackIndentUnitForDocument(document: vscode.TextDocument) {

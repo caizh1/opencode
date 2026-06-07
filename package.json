@@ -2,7 +2,7 @@
   "name": "opencode-remote",
   "displayName": "OpenCode Remote",
   "description": "Remote opencode serve client for VS Code",
-  "version": "0.0.157",
+  "version": "0.0.159",
   "icon": "media/opencode-icon.png",
   "publisher": "local",
   "repository": {
@@ -304,6 +304,16 @@
           ],
           "default": "info",
           "description": "Output logging level for remote OpenCode inline completions."
+        },
+        "opencode.remote.completion.debugFullRetrievalProbe": {
+          "type": "boolean",
+          "default": false,
+          "description": "Debug only: for comment-guided C inline completion, disable retrieval timeout and dump full retrieval/projection candidates under .completion-quality/live-retrieval-debug."
+        },
+        "opencode.remote.completion.debugExpectedSymbol": {
+          "type": "string",
+          "default": "",
+          "description": "Debug only: symbol name to mark in comment-guided full retrieval dumps. This marker is not used for ranking, prompting, or rejection."
         },
         "opencode.remote.codeGraph.enabled": {
           "type": "boolean",

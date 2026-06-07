@@ -129,6 +129,8 @@ export function readRemoteSettings(): RemoteSettings {
       topP: Math.max(0, Math.min(1, config.get<number>("completion.topP", 1))),
       debounceMs: Math.max(0, config.get<number>("completion.debounceMs", 350)),
       logLevel: readCompletionLogLevel(config.get<string>("completion.logLevel", "info")),
+      debugFullRetrievalProbe: readBooleanEnv("COMPLETION_DEBUG_FULL_RETRIEVAL") ?? config.get<boolean>("completion.debugFullRetrievalProbe", false),
+      debugExpectedSymbol: (process.env.COMPLETION_DEBUG_EXPECTED_SYMBOL ?? config.get<string>("completion.debugExpectedSymbol", "")).trim(),
     },
     codeGraph: {
       enabled: config.get<boolean>("codeGraph.enabled", true),
@@ -190,6 +192,12 @@ export function readRemoteSettings(): RemoteSettings {
       rerankTopK: Math.max(0, Math.min(200, config.get<number>("rag.rerankTopK", 16))),
     },
   }
+}
+
+function readBooleanEnv(name: string) {
+  const value = process.env[name]
+  if (value === undefined) return undefined
+  return /^(?:1|true|yes|on)$/i.test(value)
 }
 
 export async function readRemotePassword(context: vscode.ExtensionContext) {

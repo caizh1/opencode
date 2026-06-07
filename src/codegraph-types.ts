@@ -310,6 +310,9 @@ export type CodeGraphEvidenceRetrievalMode = "hybrid" | "graph-only"
 export type CodeGraphEvidenceQueryOptions = {
   retrievalMode?: CodeGraphEvidenceRetrievalMode
   relatedPaths?: string[]
+  maxEvidenceItems?: number
+  maxEvidenceBytes?: number
+  latencyBudgetMs?: number
 }
 
 export type CodeGraphContextProvider = {

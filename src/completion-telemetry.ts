@@ -71,6 +71,22 @@ export interface CompletionDebugEvent {
     ragAvailable?: boolean
     latencyBudgetMs?: number
     maxEvidence?: number
+    evidenceRoles?: string[]
+    generationModeHint?: string
+    helperCallableConfidence?: string
+    callableHelperCandidates?: string[]
+    styleExampleCandidates?: string[]
+    qaStyleTopK?: string[]
+    completionProjectionTopK?: string[]
+    droppedAlignedEvidence?: string[]
+    cursorContextFeatures?: Record<string, unknown>
+    fullRetrievalCandidateCount?: number
+    projectionCandidateCount?: number
+    submittedEvidenceNames?: string[]
+    expectedSymbolInFullRetrieval?: boolean
+    expectedSymbolInProjection?: boolean
+    expectedSymbolInPrompt?: boolean
+    fullRetrievalProbeDumpPath?: string
   }
   normalizedCommentTokens?: string[]
   candidateTokenCoverage?: Array<{
@@ -107,6 +123,22 @@ export interface CompletionDebugEvent {
   ragAvailable?: boolean
   latencyBudgetMs?: number
   maxEvidence?: number
+  evidenceRoles?: string[]
+  generationModeHint?: string
+  helperCallableConfidence?: string
+  callableHelperCandidates?: string[]
+  styleExampleCandidates?: string[]
+  qaStyleTopK?: string[]
+  completionProjectionTopK?: string[]
+  droppedAlignedEvidence?: string[]
+  cursorContextFeatures?: Record<string, unknown>
+  fullRetrievalCandidateCount?: number
+  projectionCandidateCount?: number
+  submittedEvidenceNames?: string[]
+  expectedSymbolInFullRetrieval?: boolean
+  expectedSymbolInProjection?: boolean
+  expectedSymbolInPrompt?: boolean
+  fullRetrievalProbeDumpPath?: string
   contextLevel?: "none" | "light" | "standard" | "rich"
   contextWarnings?: string[]
   promptKind?: "qwen-fim" | "instruction" | "deterministic-symbol" | "none"
@@ -167,6 +199,7 @@ export type CompletionTelemetryDraft = Partial<CompletionDebugEvent> & {
   modelRoute: CompletionTelemetryRoute
   accepted: boolean
   latencyMs: CompletionDebugEvent["latencyMs"]
+  fullRetrievalDebugDump?: unknown
 }
 
 export function createCompletionRequestId() {
@@ -234,6 +267,22 @@ export function sanitizeCompletionDebugEvent(event: CompletionDebugEvent): Compl
       ragAvailable: event.cEmbeddedEvidenceTrace.ragAvailable !== undefined ? Boolean(event.cEmbeddedEvidenceTrace.ragAvailable) : undefined,
       latencyBudgetMs: event.cEmbeddedEvidenceTrace.latencyBudgetMs !== undefined ? finiteNumber(event.cEmbeddedEvidenceTrace.latencyBudgetMs) : undefined,
       maxEvidence: event.cEmbeddedEvidenceTrace.maxEvidence !== undefined ? finiteNumber(event.cEmbeddedEvidenceTrace.maxEvidence) : undefined,
+      evidenceRoles: sanitizeTokenList(event.cEmbeddedEvidenceTrace.evidenceRoles),
+      generationModeHint: event.cEmbeddedEvidenceTrace.generationModeHint ? truncateTelemetryText(event.cEmbeddedEvidenceTrace.generationModeHint, 80) : undefined,
+      helperCallableConfidence: event.cEmbeddedEvidenceTrace.helperCallableConfidence ? truncateTelemetryText(event.cEmbeddedEvidenceTrace.helperCallableConfidence, 40) : undefined,
+      callableHelperCandidates: sanitizeTokenList(event.cEmbeddedEvidenceTrace.callableHelperCandidates),
+      styleExampleCandidates: sanitizeTokenList(event.cEmbeddedEvidenceTrace.styleExampleCandidates),
+      qaStyleTopK: sanitizeTokenList(event.cEmbeddedEvidenceTrace.qaStyleTopK),
+      completionProjectionTopK: sanitizeTokenList(event.cEmbeddedEvidenceTrace.completionProjectionTopK),
+      droppedAlignedEvidence: sanitizeTokenList(event.cEmbeddedEvidenceTrace.droppedAlignedEvidence),
+      cursorContextFeatures: sanitizeCursorContextFeatures(event.cEmbeddedEvidenceTrace.cursorContextFeatures),
+      fullRetrievalCandidateCount: event.cEmbeddedEvidenceTrace.fullRetrievalCandidateCount !== undefined ? finiteNumber(event.cEmbeddedEvidenceTrace.fullRetrievalCandidateCount) : undefined,
+      projectionCandidateCount: event.cEmbeddedEvidenceTrace.projectionCandidateCount !== undefined ? finiteNumber(event.cEmbeddedEvidenceTrace.projectionCandidateCount) : undefined,
+      submittedEvidenceNames: sanitizeTokenList(event.cEmbeddedEvidenceTrace.submittedEvidenceNames),
+      expectedSymbolInFullRetrieval: event.cEmbeddedEvidenceTrace.expectedSymbolInFullRetrieval !== undefined ? Boolean(event.cEmbeddedEvidenceTrace.expectedSymbolInFullRetrieval) : undefined,
+      expectedSymbolInProjection: event.cEmbeddedEvidenceTrace.expectedSymbolInProjection !== undefined ? Boolean(event.cEmbeddedEvidenceTrace.expectedSymbolInProjection) : undefined,
+      expectedSymbolInPrompt: event.cEmbeddedEvidenceTrace.expectedSymbolInPrompt !== undefined ? Boolean(event.cEmbeddedEvidenceTrace.expectedSymbolInPrompt) : undefined,
+      fullRetrievalProbeDumpPath: event.cEmbeddedEvidenceTrace.fullRetrievalProbeDumpPath ? sanitizeDebugPath(event.cEmbeddedEvidenceTrace.fullRetrievalProbeDumpPath) : undefined,
     } : undefined,
     normalizedCommentTokens: sanitizeTokenList(event.normalizedCommentTokens),
     candidateTokenCoverage: sanitizeCandidateTokenCoverage(event.candidateTokenCoverage),
@@ -254,6 +303,22 @@ export function sanitizeCompletionDebugEvent(event: CompletionDebugEvent): Compl
     ragAvailable: event.ragAvailable !== undefined ? Boolean(event.ragAvailable) : undefined,
     latencyBudgetMs: event.latencyBudgetMs !== undefined ? finiteNumber(event.latencyBudgetMs) : undefined,
     maxEvidence: event.maxEvidence !== undefined ? finiteNumber(event.maxEvidence) : undefined,
+    evidenceRoles: sanitizeTokenList(event.evidenceRoles),
+    generationModeHint: event.generationModeHint ? truncateTelemetryText(event.generationModeHint, 80) : undefined,
+    helperCallableConfidence: event.helperCallableConfidence ? truncateTelemetryText(event.helperCallableConfidence, 40) : undefined,
+    callableHelperCandidates: sanitizeTokenList(event.callableHelperCandidates),
+    styleExampleCandidates: sanitizeTokenList(event.styleExampleCandidates),
+    qaStyleTopK: sanitizeTokenList(event.qaStyleTopK),
+    completionProjectionTopK: sanitizeTokenList(event.completionProjectionTopK),
+    droppedAlignedEvidence: sanitizeTokenList(event.droppedAlignedEvidence),
+    cursorContextFeatures: sanitizeCursorContextFeatures(event.cursorContextFeatures),
+    fullRetrievalCandidateCount: event.fullRetrievalCandidateCount !== undefined ? finiteNumber(event.fullRetrievalCandidateCount) : undefined,
+    projectionCandidateCount: event.projectionCandidateCount !== undefined ? finiteNumber(event.projectionCandidateCount) : undefined,
+    submittedEvidenceNames: sanitizeTokenList(event.submittedEvidenceNames),
+    expectedSymbolInFullRetrieval: event.expectedSymbolInFullRetrieval !== undefined ? Boolean(event.expectedSymbolInFullRetrieval) : undefined,
+    expectedSymbolInProjection: event.expectedSymbolInProjection !== undefined ? Boolean(event.expectedSymbolInProjection) : undefined,
+    expectedSymbolInPrompt: event.expectedSymbolInPrompt !== undefined ? Boolean(event.expectedSymbolInPrompt) : undefined,
+    fullRetrievalProbeDumpPath: event.fullRetrievalProbeDumpPath ? sanitizeDebugPath(event.fullRetrievalProbeDumpPath) : undefined,
     symbolCandidates: event.symbolCandidates?.map((candidate) => ({
       name: truncateTelemetryText(candidate.name, 120),
       kind: truncateTelemetryText(candidate.kind, 40),
@@ -288,6 +353,11 @@ function redactPathLikeText(input: string) {
   return input
     .replace(/(?:\/[A-Za-z0-9_. -]+){2,}/g, "[path]")
     .replace(/[A-Za-z]:\\(?:[^\\\r\n]+\\)+[^\\\r\n]*/g, "[path]")
+}
+
+function sanitizeDebugPath(input: string) {
+  const normalized = input.replace(/\r\n/g, "\n").replace(/\n/g, "\\n")
+  return normalized.length <= 260 ? normalized : `${normalized.slice(0, 260)}...`
 }
 
 function sanitizeLatency(input: CompletionDebugEvent["latencyMs"]) {
@@ -328,6 +398,28 @@ function sanitizeSemanticCandidateTopK(input: CompletionDebugEvent["semanticCand
     objectTokenCoverage: item.objectTokenCoverage !== undefined ? finiteNumber(item.objectTokenCoverage) : undefined,
     domainTokenCoverage: item.domainTokenCoverage !== undefined ? finiteNumber(item.domainTokenCoverage) : undefined,
   }))
+}
+
+function sanitizeCursorContextFeatures(input: Record<string, unknown> | undefined) {
+  if (!input) return undefined
+  return {
+    previousStatementCalls: sanitizeUnknownStringList(input.previousStatementCalls),
+    nextStatementCalls: sanitizeUnknownStringList(input.nextStatementCalls),
+    nearbyLogOrMessageText: sanitizeUnknownStringList(input.nearbyLogOrMessageText, 6, 120),
+    currentFunctionName: typeof input.currentFunctionName === "string" ? truncateTelemetryText(input.currentFunctionName, 120) : undefined,
+    statementHoleKind: typeof input.statementHoleKind === "string" ? truncateTelemetryText(input.statementHoleKind, 80) : undefined,
+    flowOrdinalTokens: sanitizeUnknownStringList(input.flowOrdinalTokens),
+    visibleLocals: sanitizeUnknownStringList(input.visibleLocals),
+    visibleIdentifiers: sanitizeUnknownStringList(input.visibleIdentifiers, 16, 80),
+  }
+}
+
+function sanitizeUnknownStringList(input: unknown, maxItems = 8, maxText = 80) {
+  if (!Array.isArray(input)) return undefined
+  return input
+    .filter((item): item is string => typeof item === "string")
+    .map((item) => truncateTelemetryText(item, maxText))
+    .slice(0, maxItems)
 }
 
 function finiteNumber(input: number) {

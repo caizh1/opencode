@@ -108,6 +108,129 @@ describe("repository evidence orchestrator", () => {
     expect(result.trace.ragAvailable).toBe(true)
     expect(result.trace.selectedCandidateNames).toContain("wait_clock_ready")
   })
+
+  test("uses a QA-style comment-guided query without production fixture terms", async () => {
+    let capturedQuestion = ""
+    let capturedOptions: CodeGraphEvidenceQueryOptions | undefined
+    const provider: Pick<CodeGraphContextProvider, "queryEvidence"> = {
+      queryEvidence: async (question: string, options?: CodeGraphEvidenceQueryOptions) => {
+        capturedQuestion = question
+        capturedOptions = options
+        return queryEvidenceResult([
+          functionEvidence("src/driver/clock.c", 12, "wait_clock_ready", "void wait_clock_ready(void)\n{\n    wait_until(clock_ready());\n}"),
+        ])
+      },
+    }
+
+    await retrieveRepositoryEvidenceForIntent({
+      codeGraph: provider,
+      mode: "completion",
+      task: "comment-guided-code",
+      sourceComment: "// wait for clock ready",
+      currentFile: "src/driver/current.c",
+      currentFunction: "init_controller",
+      prefix: "int init_controller(void)\n{\n",
+      suffix: "\n}\n",
+      nearbyIdentifiers: ["clock_ready"],
+      maxEvidence: 3,
+      maxBytes: 4000,
+      latencyBudgetMs: 2500,
+    })
+
+    expect(capturedQuestion).toContain("cursor-task: choose existing local helper/function calls")
+    expect(capturedQuestion).toContain("expected-evidence: function definitions")
+    expect(capturedQuestion).toContain("avoid-evidence: current function body summaries")
+    expect(capturedQuestion).not.toContain("nfdrv_wait_nfc_clk_reset")
+    expect(capturedQuestion).not.toContain("//step2. wait nfc clock rest")
+    expect(capturedOptions?.maxEvidenceItems).toBeGreaterThanOrEqual(24)
+    expect(capturedOptions?.maxEvidenceBytes).toBeGreaterThanOrEqual(18000)
+  })
+
+  test("debug full retrieval disables timeout fallback and expands candidate budget", async () => {
+    const calls: Array<{ mode?: string; maxEvidenceItems?: number; maxEvidenceBytes?: number }> = []
+    const provider: Pick<CodeGraphContextProvider, "queryEvidence"> = {
+      queryEvidence: async (_question: string, options?: CodeGraphEvidenceQueryOptions) => {
+        calls.push({
+          mode: options?.retrievalMode,
+          maxEvidenceItems: options?.maxEvidenceItems,
+          maxEvidenceBytes: options?.maxEvidenceBytes,
+        })
+        await new Promise((resolve) => setTimeout(resolve, 10))
+        return queryEvidenceResult([
+          functionEvidence("src/driver/clock.c", 4, "wait_clock_ready", "void wait_clock_ready(void)\n{\n    wait_until(clock_ready());\n}"),
+        ])
+      },
+    }
+
+    const result = await retrieveRepositoryEvidenceForIntent({
+      codeGraph: provider,
+      mode: "completion",
+      task: "comment-guided-code",
+      sourceComment: "// wait clock ready",
+      currentFile: "src/driver/current.c",
+      currentFunction: "init_controller",
+      maxEvidence: 2,
+      latencyBudgetMs: 1,
+      debugFullRetrievalProbe: true,
+    })
+
+    expect(calls).toEqual([{
+      mode: "hybrid",
+      maxEvidenceItems: 200,
+      maxEvidenceBytes: 200000,
+    }])
+    expect(result.trace.timedOut).toBe(false)
+    expect(result.trace.latencyBudgetMs).toBeUndefined()
+    expect(result.trace.selectedCandidateNames).toContain("wait_clock_ready")
+  })
+
+  test("ranks action and object matches above domain-only matches for comment-guided completion", async () => {
+    const provider = providerWithEvidence([
+      functionEvidence("src/driver/domain.c", 10, "nfc_domain_helper", "void nfc_domain_helper(void)\n{\n    nfc_trace();\n}"),
+      {
+        ...functionEvidence("src/driver/clock.c", 20, "wait_clock_ready", "void wait_clock_ready(void)\n{\n    wait_until(clock_ready());\n}"),
+        score: 120,
+      },
+    ])
+
+    const result = await retrieveRepositoryEvidenceForIntent({
+      codeGraph: provider,
+      mode: "completion",
+      task: "comment-guided-code",
+      sourceComment: "// wait nfc clock ready",
+      currentFile: "src/driver/current.c",
+      currentFunction: "init_controller",
+      prefix: "int init_controller(void)\n{\n",
+      suffix: "\n}\n",
+      nearbyIdentifiers: ["clock_ready"],
+      maxEvidence: 2,
+      latencyBudgetMs: 1000,
+    })
+
+    expect(result.trace.selectedCandidateNames[0]).toBe("wait_clock_ready")
+    expect(result.completionPack.evidence[0]?.name).toBe("wait_clock_ready")
+  })
+
+  test("does not expose C control keywords as repository candidate names", async () => {
+    const provider = providerWithEvidence([
+      functionEvidence("src/driver/current.c", 8, "", "if (clock_ready()) {\n    return 0;\n}"),
+      functionEvidence("src/driver/clock.c", 20, "wait_clock_ready", "void wait_clock_ready(void)\n{\n    wait_until(clock_ready());\n}"),
+    ])
+
+    const result = await retrieveRepositoryEvidenceForIntent({
+      codeGraph: provider,
+      mode: "completion",
+      task: "comment-guided-code",
+      sourceComment: "// wait clock ready",
+      currentFile: "src/driver/current.c",
+      currentFunction: "init_controller",
+      maxEvidence: 2,
+      latencyBudgetMs: 1000,
+    })
+
+    expect(result.trace.topCandidateNames).not.toContain("if")
+    expect(result.trace.selectedCandidateNames).not.toContain("if")
+  })
 })
 
 function providerWithEvidence(evidence: CodeGraphEvidence[], trace?: { steps?: Array<{ label: string; detail: string; elapsedMs: number }> }): Pick<CodeGraphContextProvider, "queryEvidence"> {

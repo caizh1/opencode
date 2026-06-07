@@ -1,6 +1,7 @@
 import type { QueryEvidenceResult, StateMachine } from "./analysis-types"
 import type { CodeGraphContextProvider, CodeGraphEvidence } from "./codegraph-types"
 import { normalizeCommentGuidedTokens, scoreCommentGuidedCandidate, type CommentGuidedTokenCoverage, type CommentGuidedTokenGroups } from "./completion-comment-guided-ranking"
+import { extractCommentGuidedCursorContext, type CommentGuidedCursorContextFeatures } from "./completion-cursor-context"
 import type { CompletionCIntent, CompletionPlan } from "./completion-types"
 import { retrieveRepositoryEvidenceForIntent, type RepositoryEvidenceAlignmentReason, type RepositoryEvidenceItem, type RepositoryEvidenceResult } from "./repository-evidence"
 
@@ -31,6 +32,10 @@ export type CEmbeddedEvidenceKind =
   | "c-similar-block"
   | "c-same-module-flow"
 
+export type CEmbeddedEvidenceRole = "callable-helper" | "style-example" | "local-flow" | "weak-context"
+export type CEmbeddedGenerationModeHint = "prefer-existing-helper" | "synthesize-from-style" | "continue-local-code"
+export type CEmbeddedHelperCallableConfidence = "high" | "medium" | "low" | "none"
+
 export type CEmbeddedEvidenceItem = {
   kind: CEmbeddedEvidenceKind
   name?: string
@@ -43,6 +48,8 @@ export type CEmbeddedEvidenceItem = {
   source: "graph" | "rag"
   text: string
   tokenCoverage?: CommentGuidedTokenCoverage
+  evidenceRole?: CEmbeddedEvidenceRole
+  helperCallableConfidence?: Exclude<CEmbeddedHelperCallableConfidence, "none">
 }
 
 export type CEmbeddedEvidenceTrace = {
@@ -87,6 +94,22 @@ export type CEmbeddedEvidenceTrace = {
   ragAvailable?: boolean
   latencyBudgetMs?: number
   maxEvidence?: number
+  evidenceRoles?: CEmbeddedEvidenceRole[]
+  generationModeHint?: CEmbeddedGenerationModeHint
+  helperCallableConfidence?: CEmbeddedHelperCallableConfidence
+  callableHelperCandidates?: string[]
+  styleExampleCandidates?: string[]
+  qaStyleTopK?: string[]
+  completionProjectionTopK?: string[]
+  droppedAlignedEvidence?: string[]
+  cursorContextFeatures?: CommentGuidedCursorContextFeatures
+  fullRetrievalCandidateCount?: number
+  projectionCandidateCount?: number
+  submittedEvidenceNames?: string[]
+  expectedSymbolInFullRetrieval?: boolean
+  expectedSymbolInProjection?: boolean
+  expectedSymbolInPrompt?: boolean
+  fullRetrievalProbeDumpPath?: string
 }
 
 export type CEmbeddedCompletionEvidenceResult = {
@@ -96,6 +119,52 @@ export type CEmbeddedCompletionEvidenceResult = {
   selectedEvidenceCount: number
   retrievalMode: "none" | "graph-only" | "hybrid"
   trace: CEmbeddedEvidenceTrace
+  debugDump?: CEmbeddedFullRetrievalDebugDump
+}
+
+export type CEmbeddedFullRetrievalDebugDump = {
+  requestId?: string
+  sourceComment: string
+  currentFile: string
+  currentFunction?: string
+  normalizedCommentTokens: string[]
+  cursorContextFeatures: CommentGuidedCursorContextFeatures
+  queryText: string
+  retrievalMode: string
+  retrievalElapsedMs: number
+  retrievalBudgetMs?: number
+  retrievalTimedOut: boolean
+  rerankEnabled?: boolean
+  ragAvailable?: boolean
+  expectedSymbol?: string
+  expectedSymbolPresence: {
+    fullRetrieval: boolean
+    projection: boolean
+    submittedEvidence: boolean
+    selectedContextBlocks?: boolean
+    finalPrompt?: boolean
+  }
+  fullRetrievalTopK: CEmbeddedRetrievalDebugCandidate[]
+  completionProjectionRankedTopK: CEmbeddedRetrievalDebugCandidate[]
+  completionPackSubmitted: CEmbeddedRetrievalDebugCandidate[]
+}
+
+export type CEmbeddedRetrievalDebugCandidate = {
+  rank: number
+  name?: string
+  kind: string
+  source: string
+  path?: string
+  startLine?: number
+  endLine?: number
+  score: number
+  projectionScore?: number
+  reason?: string
+  snippetPreview: string
+  actionTokenCoverage: number
+  objectTokenCoverage: number
+  domainTokenCoverage: number
+  cursorContextScores?: RepositoryEvidenceItem["cursorContextScores"]
 }
 
 export type CEmbeddedCompletionEvidenceInput = {
@@ -107,6 +176,9 @@ export type CEmbeddedCompletionEvidenceInput = {
   maxItems?: number
   prefix?: string
   suffix?: string
+  debugFullRetrievalProbe?: boolean
+  debugExpectedSymbol?: string
+  requestId?: string
 }
 
 const STRONG_COMPLETION_EVIDENCE_INTENTS = new Set<CompletionCIntent>([
@@ -234,32 +306,67 @@ async function buildCommentGuidedRepositoryEvidence(input: CEmbeddedCompletionEv
   const maxItems = input.maxItems ?? maxEvidenceItemsForIntent(input.intent, true)
   const sourceComment = sourceCommentFromEvidenceQuestion(input.question)
   const commentTokens = normalizeCommentGuidedTokens(sourceComment)
+  const currentFile = currentPathFromEvidenceQuestion(input.question) ?? input.relatedPaths[0] ?? ""
+  const currentFunction = currentFunctionFromEvidenceQuestion(input.question)
+  const cursorContext = extractCommentGuidedCursorContext({
+    prefix: input.prefix,
+    suffix: input.suffix,
+    currentFunctionName: currentFunction,
+    sourceComment,
+  })
   const repository = await retrieveRepositoryEvidenceForIntent({
     codeGraph: input.codeGraph,
     mode: "completion",
     task: "comment-guided-code",
     sourceComment,
-    currentFile: currentPathFromEvidenceQuestion(input.question) ?? input.relatedPaths[0] ?? "",
-    currentFunction: currentFunctionFromEvidenceQuestion(input.question),
+    currentFile,
+    currentFunction,
     prefix: input.prefix,
     suffix: input.suffix,
     nearbyIdentifiers: nearbyIdentifiersFromEvidenceQuestion(input.question),
     maxEvidence: maxItems,
     maxBytes: 4_000,
     latencyBudgetMs: input.retrievalBudgetMs,
+    debugFullRetrievalProbe: input.debugFullRetrievalProbe,
+    cursorContext,
   })
   const finalItems = repository.completionPack.evidence.map((item) =>
     evidenceItemFromRepositoryEvidence(item, input.domainHints ?? [], commentTokens))
-  const selected = selectPromptEvidenceItems(input.intent, finalItems, maxItems)
+  const generationModeHint = generationModeHintForCommentGuided(input, finalItems)
+  const roleItems = annotateCommentGuidedEvidenceRoles({
+    items: finalItems,
+    input,
+    commentTokens,
+    generationModeHint,
+  })
+  const selected = selectCommentGuidedPromptEvidence(roleItems, maxItems, generationModeHint)
   const usefulEvidence = minimumUsefulEvidence(input.intent, selected, true)
   const trace = commentGuidedRepositoryTrace({
     repository,
     selected,
+    allItems: roleItems,
     commentTokens,
+    cursorContext,
+    expectedSymbol: input.debugExpectedSymbol,
+    generationModeHint,
     usefulEvidenceMet: usefulEvidence.met,
     retrievalStarted: input.retrievalStarted,
     retrievalBudgetMs: input.retrievalBudgetMs,
   })
+  const debugDump = input.debugFullRetrievalProbe
+    ? commentGuidedFullRetrievalDebugDump({
+        repository,
+        selected,
+        sourceComment,
+        currentFile,
+        currentFunction,
+        commentTokens,
+        cursorContext,
+        expectedSymbol: input.debugExpectedSymbol,
+        requestId: input.requestId,
+        trace,
+      })
+    : undefined
   return {
     text: formatCEmbeddedEvidenceText(input.intent, selected, trace),
     items: selected,
@@ -267,6 +374,7 @@ async function buildCommentGuidedRepositoryEvidence(input: CEmbeddedCompletionEv
     selectedEvidenceCount: selected.length,
     retrievalMode: repositoryCompletionRetrievalMode(repository),
     trace,
+    debugDump,
   }
 }
 
@@ -431,10 +539,236 @@ function repositoryEvidenceKind(evidence: RepositoryEvidenceItem): CEmbeddedEvid
   return "c-similar-block"
 }
 
+function annotateCommentGuidedEvidenceRoles(input: {
+  items: CEmbeddedEvidenceItem[]
+  input: CEmbeddedCompletionEvidenceInput & { intent: CompletionCIntent }
+  commentTokens: CommentGuidedTokenGroups
+  generationModeHint: CEmbeddedGenerationModeHint
+}) {
+  const currentPath = currentPathFromEvidenceQuestion(input.input.question) ?? input.input.relatedPaths[0] ?? ""
+  const currentFunction = currentFunctionFromEvidenceQuestion(input.input.question)
+  return input.items.map((item) => {
+    const confidence = callableHelperConfidence({
+      item,
+      prefix: input.input.prefix ?? "",
+      suffix: input.input.suffix ?? "",
+      currentPath,
+      currentFunction,
+      nearbyIdentifiers: nearbyIdentifiersFromEvidenceQuestion(input.input.question),
+    })
+    const role = evidenceRoleForCommentGuidedItem({
+      item,
+      confidence,
+      generationModeHint: input.generationModeHint,
+      currentPath,
+    })
+    return {
+      ...item,
+      evidenceRole: role,
+      helperCallableConfidence: confidence === "none" ? undefined : confidence,
+    }
+  })
+}
+
+function evidenceRoleForCommentGuidedItem(input: {
+  item: CEmbeddedEvidenceItem
+  confidence: CEmbeddedHelperCallableConfidence
+  generationModeHint: CEmbeddedGenerationModeHint
+  currentPath: string
+}): CEmbeddedEvidenceRole {
+  if (input.generationModeHint !== "continue-local-code" && (input.confidence === "high" || input.confidence === "medium")) {
+    return "callable-helper"
+  }
+  const coverage = input.item.tokenCoverage
+  if (
+    input.item.kind === "c-comment-semantic-match" ||
+    input.item.kind === "c-similar-function" ||
+    input.item.kind === "c-similar-block" ||
+    input.item.kind === "c-helper-usage"
+  ) {
+    if ((coverage?.actionTokenCoverage ?? 0) > 0 || (coverage?.objectTokenCoverage ?? 0) > 0) return "style-example"
+  }
+  if (input.item.kind === "c-same-module-flow" || sameRepositoryDirectory(input.item.path, input.currentPath)) return "local-flow"
+  return "weak-context"
+}
+
+function callableHelperConfidence(input: {
+  item: CEmbeddedEvidenceItem
+  prefix: string
+  suffix: string
+  currentPath: string
+  currentFunction?: string
+  nearbyIdentifiers: string[]
+}): CEmbeddedHelperCallableConfidence {
+  if (!isStatementInsertionPosition(input.prefix, input.suffix)) return "none"
+  if (!isFunctionDefinitionLike(input.item.text)) return "none"
+  if (
+    input.currentFunction &&
+    sameRepositoryPath(input.item.path, input.currentPath) &&
+    input.item.name?.toLowerCase() === input.currentFunction.toLowerCase()
+  ) {
+    return "none"
+  }
+  const action = input.item.tokenCoverage?.actionTokenCoverage ?? 0
+  const object = input.item.tokenCoverage?.objectTokenCoverage ?? 0
+  const domainOnly = action <= 0 && object <= 0 && (input.item.tokenCoverage?.domainTokenCoverage ?? 0) > 0
+  if (domainOnly) return "none"
+  if (!functionParamsCanBeSatisfied(input.item.text, input.prefix, input.nearbyIdentifiers)) return "low"
+  if (action >= 0.5 && object >= 0.5) return "high"
+  if (action > 0 && object > 0) return "medium"
+  return "none"
+}
+
+function generationModeHintForCommentGuided(
+  input: CEmbeddedCompletionEvidenceInput & { intent: CompletionCIntent },
+  items: CEmbeddedEvidenceItem[],
+): CEmbeddedGenerationModeHint {
+  if (input.intent !== "body-statement" || isPartialLocalCodePosition(input.prefix ?? "", input.suffix ?? "")) {
+    return "continue-local-code"
+  }
+  const currentPath = currentPathFromEvidenceQuestion(input.question) ?? input.relatedPaths[0] ?? ""
+  const currentFunction = currentFunctionFromEvidenceQuestion(input.question)
+  const hasCallable = items.some((item) => {
+    const confidence = callableHelperConfidence({
+      item,
+      prefix: input.prefix ?? "",
+      suffix: input.suffix ?? "",
+      currentPath,
+      currentFunction,
+      nearbyIdentifiers: nearbyIdentifiersFromEvidenceQuestion(input.question),
+    })
+    return confidence === "high" || confidence === "medium"
+  })
+  return hasCallable ? "prefer-existing-helper" : "synthesize-from-style"
+}
+
+function selectCommentGuidedPromptEvidence(
+  items: CEmbeddedEvidenceItem[],
+  maxItems: number,
+  generationModeHint: CEmbeddedGenerationModeHint,
+) {
+  const ranked = [...items].sort((left, right) =>
+    commentGuidedRolePriority(left, generationModeHint) - commentGuidedRolePriority(right, generationModeHint) ||
+    commentGuidedCoverageRank(right) - commentGuidedCoverageRank(left) ||
+    right.score - left.score ||
+    left.path.localeCompare(right.path) ||
+    left.startLine - right.startLine)
+  return ranked.slice(0, Math.max(1, maxItems))
+}
+
+function commentGuidedRolePriority(item: CEmbeddedEvidenceItem, generationModeHint: CEmbeddedGenerationModeHint) {
+  const role = item.evidenceRole ?? "weak-context"
+  if (generationModeHint === "continue-local-code") {
+    if (role === "style-example") return 0
+    if (role === "local-flow") return 1
+    if (role === "weak-context") return 2
+    return 3
+  }
+  if (generationModeHint === "prefer-existing-helper") {
+    if (role === "callable-helper") return 0
+    if (role === "style-example") return 1
+    if (role === "local-flow") return 2
+    return 3
+  }
+  if (role === "style-example") return 0
+  if (role === "local-flow") return 1
+  if (role === "callable-helper") return 2
+  return 3
+}
+
+function commentGuidedCoverageRank(item: CEmbeddedEvidenceItem) {
+  const coverage = item.tokenCoverage
+  if (!coverage) return 0
+  return coverage.actionTokenCoverage * 1000 + coverage.objectTokenCoverage * 800 + coverage.domainTokenCoverage * 100
+}
+
+function isStatementInsertionPosition(prefix: string, suffix: string) {
+  const linePrefix = prefix.replace(/\r\n/g, "\n").split("\n").at(-1) ?? ""
+  const lineSuffix = suffix.replace(/\r\n/g, "\n").split("\n")[0] ?? ""
+  if (/\b(?:if|while|for|switch)\s*\([^)]*$/.test(linePrefix)) return false
+  if (/(?:->|\.|=|\+|-|\*|\/|%|&&|\|\||,|\()\s*$/.test(linePrefix)) return false
+  if (/^\s*(?:[)\]}]|==|!=|<=|>=|&&|\|\||,)/.test(lineSuffix)) return false
+  return true
+}
+
+function isPartialLocalCodePosition(prefix: string, suffix: string) {
+  const linePrefix = prefix.replace(/\r\n/g, "\n").split("\n").at(-1) ?? ""
+  const lineSuffix = suffix.replace(/\r\n/g, "\n").split("\n")[0] ?? ""
+  return /\b(?:if|while|for|switch)\s*\([^)]*$/.test(linePrefix) ||
+    /(?:->|\.|=|\+|-|\*|\/|%|&&|\|\||,|\()\s*$/.test(linePrefix) ||
+    /^\s*(?:[)\]}]|==|!=|<=|>=|&&|\|\||,)/.test(lineSuffix)
+}
+
+function isFunctionDefinitionLike(text: string) {
+  return /^\s*(?:static\s+)?(?:inline\s+)?[A-Za-z_][A-Za-z0-9_\s*]*\s+[A-Za-z_][A-Za-z0-9_]*\s*\([^;{}]*\)\s*(?:\{|;)/m.test(text.trim())
+}
+
+function sameRepositoryPath(left: string, right: string) {
+  if (!left || !right) return false
+  const normalizedLeft = normalizePath(left)
+  const normalizedRight = normalizePath(right)
+  return normalizedLeft === normalizedRight ||
+    normalizedLeft.endsWith(`/${normalizedRight}`) ||
+    normalizedRight.endsWith(`/${normalizedLeft}`)
+}
+
+function sameRepositoryDirectory(left: string, right: string) {
+  if (!left || !right) return false
+  const leftParts = normalizePath(left).split("/")
+  const rightParts = normalizePath(right).split("/")
+  leftParts.pop()
+  rightParts.pop()
+  const leftDir = leftParts.join("/")
+  const rightDir = rightParts.join("/")
+  return leftDir === rightDir ||
+    leftDir.endsWith(`/${rightDir}`) ||
+    rightDir.endsWith(`/${leftDir}`)
+}
+
+function functionParamsCanBeSatisfied(text: string, prefix: string, nearbyIdentifiers: string[]) {
+  const params = firstFunctionParams(text)
+  if (params === undefined) return true
+  const normalized = params.trim()
+  if (!normalized || normalized === "void") return true
+  const paramNames = normalized.split(",").map((param) =>
+    /\b([A-Za-z_][A-Za-z0-9_]*)\s*(?:\[[^\]]*\])?\s*$/.exec(param.trim())?.[1] ?? "",
+  ).filter(Boolean)
+  if (paramNames.length === 0) return true
+  const visible = new Set([
+    ...nearbyIdentifiers,
+    ...prefix.split(/[^A-Za-z0-9_]+/),
+  ].map((token) => token.toLowerCase()).filter((token) => token.length >= 2))
+  return paramNames.every((name) => visible.has(name.toLowerCase())) || paramNames.length <= 1
+}
+
+function firstFunctionParams(text: string) {
+  return /^[^{;\n]*\b[A-Za-z_][A-Za-z0-9_]*\s*\(([^)]*)\)/m.exec(text.trim())?.[1]
+}
+
+function aggregateHelperConfidence(items: CEmbeddedEvidenceItem[]): CEmbeddedHelperCallableConfidence {
+  if (items.some((item) => item.helperCallableConfidence === "high")) return "high"
+  if (items.some((item) => item.helperCallableConfidence === "medium")) return "medium"
+  if (items.some((item) => item.helperCallableConfidence === "low")) return "low"
+  return "none"
+}
+
+function droppedAlignedEvidence(fullTopK: string[], selectedTopK: string[]) {
+  const selected = new Set(selectedTopK)
+  return fullTopK.filter((name) => !selected.has(name)).slice(0, 8)
+}
+
+function normalizePath(path: string) {
+  return path.replace(/\\/g, "/").replace(/^file:\/\//, "")
+}
+
 function commentGuidedRepositoryTrace(input: {
   repository: RepositoryEvidenceResult
   selected: CEmbeddedEvidenceItem[]
+  allItems: CEmbeddedEvidenceItem[]
   commentTokens: CommentGuidedTokenGroups
+  cursorContext: CommentGuidedCursorContextFeatures
+  expectedSymbol?: string
+  generationModeHint: CEmbeddedGenerationModeHint
   usefulEvidenceMet: boolean
   retrievalStarted: number
   retrievalBudgetMs: number | undefined
@@ -444,6 +778,7 @@ function commentGuidedRepositoryTrace(input: {
   const qaTopCandidate = qaRetrievalTopK[0]
   const completionTopCandidate = completionRetrievalTopK[0]
   const telemetryCandidates = input.repository.fullTopK.filter((item) => item.name).slice(0, 8)
+  const expected = input.expectedSymbol?.trim()
   return {
     ragFallbackTriggered: input.repository.trace.retrievalMode === "graph-only-fallback",
     ragFallbackReason: input.repository.trace.alignmentReason === "graph-only-fallback" ? "shared repository evidence fell back to graph-only retrieval" : undefined,
@@ -483,7 +818,99 @@ function commentGuidedRepositoryTrace(input: {
     ragAvailable: input.repository.trace.ragAvailable,
     latencyBudgetMs: input.repository.trace.latencyBudgetMs,
     maxEvidence: input.repository.completionPack.evidence.length,
+    evidenceRoles: uniqueStrings(input.selected.map((item) => item.evidenceRole ?? "weak-context")),
+    generationModeHint: input.generationModeHint,
+    helperCallableConfidence: aggregateHelperConfidence(input.selected),
+    callableHelperCandidates: uniqueStrings(input.allItems
+      .filter((item) => item.evidenceRole === "callable-helper" && item.name)
+      .map((item) => item.name ?? "")),
+    styleExampleCandidates: uniqueStrings(input.allItems
+      .filter((item) => item.evidenceRole === "style-example" && item.name)
+      .map((item) => item.name ?? "")),
+    qaStyleTopK: input.repository.trace.topCandidateNames,
+    completionProjectionTopK: input.repository.trace.selectedCandidateNames,
+    droppedAlignedEvidence: droppedAlignedEvidence(input.repository.trace.topCandidateNames, input.repository.trace.selectedCandidateNames),
+    cursorContextFeatures: input.cursorContext,
+    fullRetrievalCandidateCount: input.repository.trace.fullCandidateCount,
+    projectionCandidateCount: input.repository.trace.projectionCandidateCount,
+    submittedEvidenceNames: uniqueStrings(input.selected.map((item) => item.name ?? "").filter(Boolean)),
+    expectedSymbolInFullRetrieval: expected ? candidateNames(input.repository.fullTopK).includes(expected) : undefined,
+    expectedSymbolInProjection: expected ? candidateNames(input.repository.completionProjectionRanked).includes(expected) : undefined,
+    expectedSymbolInPrompt: expected ? input.selected.some((item) => item.name === expected || item.text.includes(expected)) : undefined,
   }
+}
+
+function commentGuidedFullRetrievalDebugDump(input: {
+  repository: RepositoryEvidenceResult
+  selected: CEmbeddedEvidenceItem[]
+  sourceComment: string
+  currentFile: string
+  currentFunction?: string
+  commentTokens: CommentGuidedTokenGroups
+  cursorContext: CommentGuidedCursorContextFeatures
+  expectedSymbol?: string
+  requestId?: string
+  trace: CEmbeddedEvidenceTrace
+}): CEmbeddedFullRetrievalDebugDump {
+  const expected = input.expectedSymbol?.trim()
+  const fullNames = candidateNames(input.repository.fullTopK)
+  const projectionNames = candidateNames(input.repository.completionProjectionRanked)
+  const submittedNames = uniqueStrings(input.selected.map((item) => item.name ?? "").filter(Boolean))
+  return {
+    requestId: input.requestId,
+    sourceComment: input.sourceComment,
+    currentFile: input.currentFile,
+    currentFunction: input.currentFunction,
+    normalizedCommentTokens: input.commentTokens.normalizedTokens,
+    cursorContextFeatures: input.cursorContext,
+    queryText: input.repository.trace.queryText,
+    retrievalMode: input.repository.trace.retrievalMode,
+    retrievalElapsedMs: input.repository.trace.latencyMs,
+    retrievalBudgetMs: input.repository.trace.latencyBudgetMs,
+    retrievalTimedOut: input.repository.trace.timedOut,
+    rerankEnabled: input.repository.trace.rerankEnabled,
+    ragAvailable: input.repository.trace.ragAvailable,
+    expectedSymbol: expected || undefined,
+    expectedSymbolPresence: {
+      fullRetrieval: expected ? fullNames.includes(expected) : false,
+      projection: expected ? projectionNames.includes(expected) : false,
+      submittedEvidence: expected ? submittedNames.includes(expected) : false,
+      finalPrompt: input.trace.expectedSymbolInPrompt,
+    },
+    fullRetrievalTopK: debugCandidates(input.repository.fullTopK, input.commentTokens, 200),
+    completionProjectionRankedTopK: debugCandidates(input.repository.completionProjectionRanked, input.commentTokens, 200),
+    completionPackSubmitted: debugCandidates(input.repository.completionPack.evidence, input.commentTokens, 20),
+  }
+}
+
+function debugCandidates(items: RepositoryEvidenceItem[], commentTokens: CommentGuidedTokenGroups, limit: number): CEmbeddedRetrievalDebugCandidate[] {
+  return items.slice(0, limit).map((item, index) => {
+    const coverage = scoreCommentGuidedCandidate({
+      comment: commentTokens,
+      candidateText: [item.name, item.kind, item.reason, item.parserKind, item.snippet].filter(Boolean).join("\n"),
+    })
+    return {
+      rank: index + 1,
+      name: item.name,
+      kind: item.kind,
+      source: item.source,
+      path: item.path,
+      startLine: item.startLine,
+      endLine: item.endLine,
+      score: Math.round(item.score),
+      projectionScore: item.projectionScore !== undefined ? Math.round(item.projectionScore) : undefined,
+      reason: item.reason,
+      snippetPreview: oneLine(item.snippet, 500),
+      actionTokenCoverage: coverage.actionTokenCoverage,
+      objectTokenCoverage: coverage.objectTokenCoverage,
+      domainTokenCoverage: coverage.domainTokenCoverage,
+      cursorContextScores: item.cursorContextScores,
+    }
+  })
+}
+
+function candidateNames(items: Array<{ name?: string }>) {
+  return uniqueStrings(items.map((item) => item.name ?? "").filter(Boolean))
 }
 
 function repositoryCompletionRetrievalMode(repository: RepositoryEvidenceResult): CEmbeddedCompletionEvidenceResult["retrievalMode"] {
@@ -710,13 +1137,17 @@ function formatCEmbeddedEvidenceText(intent: CompletionCIntent, items: CEmbedded
   if (items.length === 0) return ""
   return [
     `C embedded evidence for intent: ${intent}`,
-    ...items.map(formatPromptEvidenceItem),
-  ].join("\n\n")
+    trace.generationModeHint ? `Generation mode hint: ${trace.generationModeHint}` : "",
+    ...items.map((item) => formatPromptEvidenceItem(item, trace.generationModeHint)),
+  ].filter(Boolean).join("\n\n")
 }
 
-function formatPromptEvidenceItem(item: CEmbeddedEvidenceItem) {
+function formatPromptEvidenceItem(item: CEmbeddedEvidenceItem, generationModeHint?: CEmbeddedGenerationModeHint) {
   return [
     `C evidence: ${item.kind}`,
+    generationModeHint ? `Generation mode hint: ${generationModeHint}` : "",
+    item.evidenceRole ? `Evidence role: ${item.evidenceRole}` : "",
+    item.helperCallableConfidence ? `Helper callable confidence: ${item.helperCallableConfidence}` : "",
     item.name ? `Symbol: ${item.name}` : "",
     `Source: ${item.path}:${item.startLine}${item.endLine !== item.startLine ? `-${item.endLine}` : ""}`,
     `Reason: ${oneLine(item.reason, 180)}`,

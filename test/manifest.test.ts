@@ -97,6 +97,8 @@ describe("extension manifest", () => {
     expect(properties["opencode.remote.completion.maxTokens"]?.default).toBe(128)
     expect(properties["opencode.remote.completion.temperature"]?.default).toBe(0)
     expect(properties["opencode.remote.completion.topP"]?.default).toBe(1)
+    expect(properties["opencode.remote.completion.debugFullRetrievalProbe"]?.default).toBe(false)
+    expect(properties["opencode.remote.completion.debugExpectedSymbol"]?.default).toBe("")
     expect(manifest.contributes?.commands).toContainEqual(expect.objectContaining({
       command: "opencode.remote.completion.setApiKey",
     }))

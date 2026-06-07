@@ -238,6 +238,11 @@ describe("completion quality benchmark fixtures", () => {
       expect(commentGuidedRanking?.alignmentReason).toEqual(expect.stringMatching(/^(aligned|latency-budget|max-evidence|token-budget|rerank-disabled|rag-unavailable|graph-only-fallback|not-in-index|projection-trimmed)$/))
       expect(commentGuidedRanking?.rerankEnabled).toEqual(expect.any(Boolean))
       expect(commentGuidedRanking?.ragAvailable).toEqual(expect.any(Boolean))
+      expect(commentGuidedRanking?.generationModeHint).toBe("prefer-existing-helper")
+      expect(commentGuidedRanking?.evidenceRoles).toEqual(expect.arrayContaining(["callable-helper"]))
+      expect(commentGuidedRanking?.callableHelperCandidates).toEqual(expect.arrayContaining(["nfdrv_wait_nfc_clk_reset"]))
+      expect(commentGuidedRanking?.qaStyleTopK).toEqual(expect.arrayContaining(["nfdrv_wait_nfc_clk_reset"]))
+      expect(commentGuidedRanking?.completionProjectionTopK).toEqual(expect.arrayContaining(["nfdrv_wait_nfc_clk_reset"]))
 
       const commentPrompt = readFileSync(join(promptsDir, "generic-c-comment-guided-nfc-clock-reset-ranking.txt"), "utf8")
       const commentEvidence = JSON.parse(readFileSync(join(evidenceDir, "generic-c-comment-guided-nfc-clock-reset-ranking.json"), "utf8")) as {
@@ -247,6 +252,8 @@ describe("completion quality benchmark fixtures", () => {
       expect(commentPrompt).toContain('kind="current-prefix"')
       expect(commentPrompt).toContain('kind="current-suffix"')
       expect(commentPrompt).toContain("C evidence: c-comment-semantic-match")
+      expect(commentPrompt).toContain("Generation mode hint: prefer-existing-helper")
+      expect(commentPrompt).toContain("Evidence role: callable-helper")
       expect(commentPrompt).toContain("nfdrv_wait_nfc_clk_reset")
       expect(commentEvidence.selectedEvidence?.some((block) =>
         block.kind === "target-symbol" && /nfc_aes_for_no_meta_get|nfc_cdma_desc_zero_init/.test(`${block.title ?? ""}\n${block.text ?? ""}`),
@@ -259,6 +266,87 @@ describe("completion quality benchmark fixtures", () => {
     } finally {
       console.log = originalLog
     }
+  })
+
+  test("mock dry-run full retrieval probe dumps full, projection, and submitted evidence", async () => {
+    const outputDir = mkdtempSync(join(tmpdir(), "completion-quality-full-retrieval-"))
+    const { records } = await runCompletionQualityBenchmark({
+      fixtureRoot,
+      fixture: "generic-c-comment-guided-nfc-clock-reset-ranking",
+      mock: true,
+      dumpPrompts: true,
+      dumpEvidence: true,
+      outputDir,
+      debugFullRetrieval: true,
+      expectedSymbol: "nfdrv_wait_nfc_clk_reset",
+    })
+
+    expect(records).toHaveLength(1)
+    const record = records[0]!
+    expect(record.planKind).toBe("comment-guided-c-code")
+    expect(record.promptKind).toBe("qwen-fim")
+    expect(record.fullRetrievalCandidateCount).toBeGreaterThan(0)
+    expect(record.projectionCandidateCount).toBeGreaterThan(0)
+    expect(record.submittedEvidenceNames?.length).toBeGreaterThan(0)
+    expect(record.expectedSymbolInFullRetrieval).toBe(true)
+    expect(record.expectedSymbolInProjection).toBe(true)
+    expect(record.fullRetrievalProbeDumpPath).toEqual(expect.any(String))
+
+    const dumpPath = record.fullRetrievalProbeDumpPath!
+    expect(existsSync(dumpPath)).toBe(true)
+    const dump = JSON.parse(readFileSync(dumpPath, "utf8")) as {
+      queryText?: string
+      sourceComment?: string
+      cursorContextFeatures?: Record<string, unknown>
+      fullRetrievalTopK?: Array<{ name?: string; cursorContextScores?: Record<string, unknown> }>
+      completionProjectionRankedTopK?: Array<{ name?: string }>
+      completionPackSubmitted?: Array<{ name?: string }>
+      selectedContextBlocks?: Array<{ kind?: string; title?: string }>
+      finalPrompt?: string
+      expectedSymbolPresence?: {
+        fullRetrieval?: boolean
+        projection?: boolean
+        submittedEvidence?: boolean
+        selectedContextBlocks?: boolean
+        finalPrompt?: boolean
+      }
+    }
+
+    expect(dump.queryText).toContain("comment-guided-code")
+    expect(dump.sourceComment).toContain("wait nfc clock")
+    expect(dump.cursorContextFeatures).toEqual(expect.objectContaining({
+      statementHoleKind: "blank-statement",
+      currentFunctionName: "nfi_hal_controller_init",
+    }))
+    expect(dump.fullRetrievalTopK?.length).toBeGreaterThan(0)
+    expect(dump.completionProjectionRankedTopK?.length).toBeGreaterThan(0)
+    expect(dump.completionPackSubmitted?.length).toBeGreaterThan(0)
+    expect(dump.fullRetrievalTopK?.some((candidate) => candidate.name === "nfdrv_wait_nfc_clk_reset")).toBe(true)
+    expect(dump.completionProjectionRankedTopK?.some((candidate) => candidate.name === "nfdrv_wait_nfc_clk_reset")).toBe(true)
+    expect(dump.completionPackSubmitted?.some((candidate) => candidate.name === "nfdrv_wait_nfc_clk_reset")).toBe(true)
+    expect(dump.completionProjectionRankedTopK?.some((candidate) => candidate.cursorContextScores && Object.keys(candidate.cursorContextScores).length > 0)).toBe(true)
+    expect(dump.expectedSymbolPresence).toEqual(expect.objectContaining({
+      fullRetrieval: true,
+      projection: true,
+      submittedEvidence: true,
+    }))
+    expect(dump.selectedContextBlocks?.some((block) => block.kind === "current-prefix")).toBe(true)
+    expect(dump.selectedContextBlocks?.some((block) => block.kind === "current-suffix")).toBe(true)
+    expect(dump.finalPrompt).toContain("<|fim_prefix|>")
+    expect(dump.finalPrompt).toContain("nfdrv_wait_nfc_clk_reset")
+
+    const latestReport = JSON.parse(readFileSync(join(outputDir, "latest-report.json"), "utf8")) as {
+      records: Array<Record<string, unknown>>
+    }
+    expect(latestReport.records[0]).toEqual(expect.objectContaining({
+      cursorContextFeatures: expect.any(Object),
+      fullRetrievalCandidateCount: expect.any(Number),
+      projectionCandidateCount: expect.any(Number),
+      submittedEvidenceNames: expect.any(Array),
+      expectedSymbolInFullRetrieval: true,
+      expectedSymbolInProjection: true,
+      fullRetrievalProbeDumpPath: dumpPath,
+    }))
   })
 
   test("direct qwen ablation writes baseline and p2 evidence outputs without leaking API keys", async () => {

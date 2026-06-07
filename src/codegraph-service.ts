@@ -557,8 +557,8 @@ export class LocalCodeGraphService implements vscode.Disposable {
     const settings = this.getSettings()
     const hybrid = options.retrievalMode === "graph-only" ? undefined : this.hybridOptions()
     const result = await queryEvidenceAsync(activeIndex, question, {
-      maxEvidenceItems: settings.analysis.maxEvidenceItems,
-      maxEvidenceBytes: settings.analysis.maxEvidenceBytes,
+      maxEvidenceItems: options.maxEvidenceItems ?? settings.analysis.maxEvidenceItems,
+      maxEvidenceBytes: options.maxEvidenceBytes ?? settings.analysis.maxEvidenceBytes,
       maxFileSliceBytes: settings.analysis.maxFileSliceBytes,
       maxGraphEdges: settings.analysis.maxGraphEdges,
       maxPaths: settings.analysis.maxPaths,

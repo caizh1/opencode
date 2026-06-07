@@ -159,6 +159,113 @@ describe("generic C embedded completion evidence builder", () => {
     expect(result.text).toContain("C evidence:")
     expect(result.text).toMatch(/c-comment-semantic-match|c-similar-function/)
     expect(result.trace.minimumUsefulEvidenceMet).toBe(true)
+    expect(result.trace.evidenceRoles).toContain("callable-helper")
+    expect(result.trace.generationModeHint).toBe("prefer-existing-helper")
+    expect(result.trace.helperCallableConfidence).toMatch(/high|medium/)
+    expect(result.trace.callableHelperCandidates?.length ?? 0).toBeGreaterThan(0)
+    expect(result.text).toContain("Generation mode hint: prefer-existing-helper")
+    expect(result.text).toContain("Evidence role: callable-helper")
+  })
+
+  test("uses style examples instead of forcing helpers when no callable helper is strong", async () => {
+    const commentPlan: CompletionPlan = {
+      ...plan("body-statement"),
+      kind: "comment-guided-c-code",
+      sourceComment: "// check len max",
+      needsSymbolRetrieval: false,
+      maxTokens: 128,
+    }
+    const result = await buildCEmbeddedCompletionEvidence({
+      codeGraph: styleOnlyProvider(),
+      plan: commentPlan,
+      question: [
+        "inline completion for c file drivers/dev.c",
+        "current-path: drivers/dev.c",
+        "function: dev_probe",
+        "completion-intent: comment-guided-c-code",
+        "source-comment: check len max",
+        "nearby-identifiers: len max ret",
+      ].join("\n"),
+      relatedPaths: ["drivers/dev.c"],
+      prefix: "int dev_probe(void)\n{\n    ",
+      suffix: "\n}\n",
+    })
+
+    expect(result.trace.generationModeHint).toBe("synthesize-from-style")
+    expect(result.trace.evidenceRoles).toContain("style-example")
+    expect(result.trace.callableHelperCandidates ?? []).toEqual([])
+    expect(result.text).toContain("Evidence role: style-example")
+  })
+
+  test("keeps partial local code in continue-local-code mode", async () => {
+    const commentPlan: CompletionPlan = {
+      ...plan("assignment-rhs"),
+      kind: "comment-guided-c-code",
+      sourceComment: "// compute status",
+      needsSymbolRetrieval: false,
+      maxTokens: 128,
+    }
+    const result = await buildCEmbeddedCompletionEvidence({
+      codeGraph: miniProvider(),
+      plan: commentPlan,
+      question: [
+        "inline completion for c file drivers/dev.c",
+        "current-path: drivers/dev.c",
+        "function: dev_probe",
+        "completion-intent: comment-guided-c-code",
+        "source-comment: compute status",
+        "nearby-identifiers: ctx ret status",
+      ].join("\n"),
+      relatedPaths: ["drivers/dev.c"],
+      prefix: "int dev_probe(dev_ctx_t *ctx)\n{\n    ret = ",
+      suffix: ";\n}\n",
+    })
+
+    expect(result.trace.generationModeHint).toBe("continue-local-code")
+    expect(result.text).toContain("Generation mode hint: continue-local-code")
+  })
+
+  test("debug full retrieval reports expected symbol presence without changing selection", async () => {
+    const commentPlan: CompletionPlan = {
+      ...plan("body-statement"),
+      kind: "comment-guided-c-code",
+      sourceComment: "// step2: enable controller flags",
+      needsSymbolRetrieval: false,
+      maxTokens: 128,
+    }
+    const baseInput = {
+      codeGraph: miniProvider(),
+      plan: commentPlan,
+      question: [
+        "inline completion for c file drivers/dev.c",
+        "current-path: drivers/dev.c",
+        "function: dev_probe",
+        "completion-intent: comment-guided-c-code",
+        "source-comment: step2: enable controller flags",
+        "nearby-identifiers: ctx ret",
+      ].join("\n"),
+      relatedPaths: ["drivers/dev.c"],
+      prefix: "int dev_probe(dev_ctx_t *ctx)\n{\n    ",
+      suffix: "\n}\n",
+    }
+    const withoutMarker = await buildCEmbeddedCompletionEvidence({
+      ...baseInput,
+      debugFullRetrievalProbe: true,
+    })
+    const withMarker = await buildCEmbeddedCompletionEvidence({
+      ...baseInput,
+      debugFullRetrievalProbe: true,
+      debugExpectedSymbol: "dev_enable_controller_flags",
+      requestId: "debug-marker-test",
+    })
+
+    expect(withMarker.debugDump?.requestId).toBe("debug-marker-test")
+    expect(withMarker.debugDump?.expectedSymbolPresence.fullRetrieval).toBe(true)
+    expect(withMarker.trace.expectedSymbolInFullRetrieval).toBe(true)
+    expect(withMarker.trace.fullRetrievalCandidateCount).toBeGreaterThan(0)
+    expect(withMarker.trace.projectionCandidateCount).toBeGreaterThan(0)
+    expect(withMarker.trace.cursorContextFeatures?.statementHoleKind).toBe("blank-statement")
+    expect(withMarker.items.map((item) => item.name)).toEqual(withoutMarker.items.map((item) => item.name))
   })
 
   test("uses minimumUsefulEvidence only to trigger hybrid fallback trace", async () => {
@@ -225,6 +332,52 @@ function miniProvider(onQuery?: (mode: string) => void): Pick<CodeGraphContextPr
   }
 }
 
+function styleOnlyProvider(): Pick<CodeGraphContextProvider, "queryEvidence"> {
+  return {
+    queryEvidence: async () => ({
+      retrieval: {
+        mode: "overview",
+        tokens: [],
+        symbols: [],
+        evidence: [{
+          path: "drivers/dev.c",
+          startLine: 42,
+          endLine: 48,
+          kind: "text",
+          score: 260,
+          reason: "similar-block",
+          snippet: "if (len > max_len) {\n  ret = -EINVAL;\n  goto err_unlock;\n}",
+        }],
+        candidateCount: 1,
+        packedBytes: 80,
+        omittedCandidates: 0,
+        truncated: false,
+        elapsedMs: 1,
+      },
+      stateMachines: [],
+      summaries: { functions: [], files: [], modules: [], subsystems: [] },
+      evidencePack: {
+        evidence: [],
+        text: "",
+        packedBytes: 0,
+        omittedEvidence: 0,
+        truncated: false,
+        missingEvidence: [],
+      },
+      trace: {
+        traceId: "style-only",
+        question: "style-only",
+        intent: "overview",
+        steps: [{ label: "graph", detail: "style block", elapsedMs: 1 }],
+        evidence: [],
+        missingEvidence: [],
+      },
+      answerPolicy: { allowed: true, confidence: "medium", reason: "test", requiredCitation: "" },
+      suggestedAnswer: "",
+    }),
+  }
+}
+
 function plan(intent: CompletionCIntent): CompletionPlan {
   return {
     kind: "c-embedded-code",
@@ -279,6 +432,13 @@ static int dev_start(dev_ctx_t *ctx, int flags)
   if (flags & DEV_FLAG_ENABLE)
     ctx->state = DEV_STATE_READY;
   return ctx->status;
+}
+
+static void dev_enable_controller_flags(void)
+{
+  uint32_t reg = readl((void *)DEV_CTRL_REG);
+  reg |= DEV_FLAG_ENABLE;
+  writel(reg, (void *)DEV_CTRL_REG);
 }
 
 int dev_probe(dev_ctx_t *ctx)

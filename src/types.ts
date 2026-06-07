@@ -154,6 +154,8 @@ export type RemoteSettings = {
     topP: number
     debounceMs: number
     logLevel: CompletionLogLevel
+    debugFullRetrievalProbe: boolean
+    debugExpectedSymbol: string
   }
   codeGraph: {
     enabled: boolean
