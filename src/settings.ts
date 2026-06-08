@@ -1,6 +1,6 @@
 import * as vscode from "vscode"
 import { RAG_EMBEDDING_MAX_TOKENS_PER_REQUEST_DEFAULT } from "./rag-token"
-import type { CodeGraphAnalysisMode, CompletionLogLevel, CompletionProfile, CompletionProvider, RagEmbeddingCheckpointMode, RagEmbeddingEncodingFormat, RemoteSettings } from "./types"
+import type { CodeGraphAnalysisMode, CompletionCommentGuidedRetrievalMode, CompletionLogLevel, CompletionProfile, CompletionProvider, RagEmbeddingCheckpointMode, RagEmbeddingEncodingFormat, RemoteSettings } from "./types"
 
 export const PASSWORD_SECRET_KEY = "opencode.remote.password"
 export const COMPLETION_API_KEY_SECRET_KEY = "opencode.remote.completion.apiKey"
@@ -131,6 +131,9 @@ export function readRemoteSettings(): RemoteSettings {
       logLevel: readCompletionLogLevel(config.get<string>("completion.logLevel", "info")),
       debugFullRetrievalProbe: readBooleanEnv("COMPLETION_DEBUG_FULL_RETRIEVAL") ?? config.get<boolean>("completion.debugFullRetrievalProbe", false),
       debugExpectedSymbol: (process.env.COMPLETION_DEBUG_EXPECTED_SYMBOL ?? config.get<string>("completion.debugExpectedSymbol", "")).trim(),
+      commentGuidedRetrievalMode: readCompletionCommentGuidedRetrievalMode(
+        process.env.COMPLETION_COMMENT_GUIDED_RETRIEVAL_MODE ?? config.get<string>("completion.commentGuidedRetrievalMode", "qa-exact"),
+      ),
     },
     codeGraph: {
       enabled: config.get<boolean>("codeGraph.enabled", true),
@@ -452,6 +455,10 @@ export function normalizeServerUrl(input: string) {
 function readCompletionLogLevel(input: string): CompletionLogLevel {
   if (input === "off" || input === "info" || input === "debug") return input
   return "info"
+}
+
+function readCompletionCommentGuidedRetrievalMode(input: string | undefined): CompletionCommentGuidedRetrievalMode {
+  return input === "completion" ? "completion" : "qa-exact"
 }
 
 function readCompletionProvider(input: string): CompletionProvider {

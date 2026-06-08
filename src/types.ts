@@ -2,6 +2,7 @@ export type ConnectionState = "disconnected" | "connecting" | "connected" | "aut
 export type CompletionLogLevel = "off" | "info" | "debug"
 export type CompletionProfile = "generic-chat" | "qwen-coder-fim"
 export type CompletionProvider = "opencode" | "openai-compatible"
+export type CompletionCommentGuidedRetrievalMode = "qa-exact" | "completion"
 export type CodeGraphAnalysisMode = "auto" | "fast" | "ast" | "semantic"
 
 export type RagEndpointKind = "disabled" | "localhost" | "private-lan" | "approved-host" | "blocked" | "error"
@@ -156,6 +157,7 @@ export type RemoteSettings = {
     logLevel: CompletionLogLevel
     debugFullRetrievalProbe: boolean
     debugExpectedSymbol: string
+    commentGuidedRetrievalMode: CompletionCommentGuidedRetrievalMode
   }
   codeGraph: {
     enabled: boolean

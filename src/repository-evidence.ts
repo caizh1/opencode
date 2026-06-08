@@ -1,5 +1,6 @@
+import { createHash } from "node:crypto"
 import type { EvidenceRef, QueryEvidenceResult } from "./analysis-types"
-import type { CodeGraphContextProvider, CodeGraphEvidence } from "./codegraph-types"
+import type { CodeGraphContextProvider, CodeGraphEvidence, CodeGraphPromptContext } from "./codegraph-types"
 import { normalizeCommentGuidedTokens, scoreCommentGuidedCandidate } from "./completion-comment-guided-ranking"
 import type { CommentGuidedCursorContextFeatures } from "./completion-cursor-context"
 
@@ -15,7 +16,8 @@ export type RepositoryEvidenceTask =
   | "mmio-register"
   | "body-statement"
 
-export type RepositoryEvidenceSource = "graph" | "vector" | "rerank" | "summary" | "state-machine" | "hybrid"
+export type RepositoryEvidenceSource = "graph" | "vector" | "rerank" | "summary" | "state-machine" | "hybrid" | "semantic-rag" | "semantic-rerank" | "graph-comment-guided" | "local-flow"
+export type RepositoryEvidenceRetrievalShape = "default" | "qa-exact"
 
 export type RepositoryEvidenceItem = {
   kind: string
@@ -72,6 +74,17 @@ export type RepositoryEvidenceTrace = {
   selectedCandidateNames: string[]
   fullCandidateCount: number
   projectionCandidateCount: number
+  retrievalShape: RepositoryEvidenceRetrievalShape
+  semanticQueryText?: string
+  graphQuestionTextHash?: string
+  semanticTopK?: string[]
+  graphTopK?: string[]
+  mergedTopK?: string[]
+  selectedPromptEvidenceNames?: string[]
+  projectionToPromptDropReason?: string
+  qaExactTopK?: string[]
+  qaExactSubmittedEvidence?: string[]
+  qaExactContextTopK?: string[]
   alignmentReason?: RepositoryEvidenceAlignmentReason
 }
 
@@ -86,7 +99,7 @@ export type RepositoryEvidenceResult = {
 }
 
 export type RepositoryEvidenceForIntentInput = {
-  codeGraph: Pick<CodeGraphContextProvider, "queryEvidence">
+  codeGraph: Pick<CodeGraphContextProvider, "queryEvidence"> & Partial<Pick<CodeGraphContextProvider, "buildContext">>
   mode: RepositoryEvidenceMode
   task: RepositoryEvidenceTask
   question?: string
@@ -101,6 +114,7 @@ export type RepositoryEvidenceForIntentInput = {
   latencyBudgetMs?: number
   debugFullRetrievalProbe?: boolean
   cursorContext?: CommentGuidedCursorContextFeatures
+  retrievalShape?: RepositoryEvidenceRetrievalShape
 }
 
 type TimedEvidenceQuery = {
@@ -111,6 +125,8 @@ type TimedEvidenceQuery = {
 }
 
 export async function retrieveRepositoryEvidenceForIntent(input: RepositoryEvidenceForIntentInput): Promise<RepositoryEvidenceResult> {
+  if (isQaExactRetrieval(input)) return retrieveQaExactRepositoryEvidenceForIntent(input)
+
   const started = Date.now()
   const queryText = repositoryEvidenceQuery(input)
   const queryTokens = repositoryEvidenceQueryTokens(input)
@@ -191,12 +207,111 @@ export async function retrieveRepositoryEvidenceForIntent(input: RepositoryEvide
       selectedCandidateNames,
       fullCandidateCount: fullTopK.length,
       projectionCandidateCount: completionProjectionRanked.length,
+      retrievalShape: "default",
       alignmentReason,
     },
   }
 }
 
+async function retrieveQaExactRepositoryEvidenceForIntent(input: RepositoryEvidenceForIntentInput): Promise<RepositoryEvidenceResult> {
+  const started = Date.now()
+  const semanticQueryText = buildCommentGuidedSemanticQuery(input)
+  const graphQuestionText = buildCommentGuidedGraphQuestion(input)
+  const queryTokens = repositoryEvidenceQueryTokens(input)
+  const queryOptions = repositoryEvidenceQueryOptions(input)
+  const contextPromise = queryQaExactCodeGraphContext(input, semanticQueryText)
+  const semanticPromise = queryEvidenceWithTimeout(input.codeGraph, semanticQueryText, {
+    ...queryOptions,
+    retrievalMode: "hybrid",
+    relatedPaths: [input.currentFile],
+  }, undefined, "semantic-hybrid")
+  const graphPromise = queryEvidenceWithTimeout(input.codeGraph, graphQuestionText, {
+    ...qaExactGraphQueryOptions(input),
+    retrievalMode: "graph-only",
+    relatedPaths: [input.currentFile],
+  }, undefined, "graph-comment-guided")
+  const [contextResult, semanticQuery, graphQuery] = await Promise.all([contextPromise, semanticPromise, graphPromise])
+  const retrievalResult = semanticQuery.result
+  const graphResult = graphQuery.result
+  const latencyMs = Date.now() - started
+  const semanticItems = repositoryEvidenceItems(retrievalResult, contextResult).map(markSemanticEvidenceSource)
+  const graphItems = repositoryEvidenceItems(graphResult, undefined, "graph-comment-guided")
+  const fullTopK = sortRepositoryEvidenceForRetrieval(dedupeEvidence([...semanticItems, ...graphItems]))
+  const contextTopK = candidateNames(repositoryEvidenceItems(undefined, contextResult, undefined, "local-flow")).slice(0, 8)
+  const graphTopK = candidateNames(graphItems).slice(0, 8)
+  const semanticTopK = candidateNames(semanticItems).slice(0, 8)
+  const maxEvidence = Math.max(1, input.maxEvidence)
+  const qaPack = packRepositoryEvidence(fullTopK, maxEvidence, input.maxBytes ?? 24_000)
+  const completionProjectionRanked = completionProjectionItems(fullTopK, input)
+  const completionPack = packRepositoryEvidence(completionProjectionRanked, Math.min(maxEvidence, 3), Math.min(input.maxBytes ?? 4_000, 4_000))
+  const retrievalMode = repositoryRetrievalMode(retrievalResult, false)
+  const rerankEnabled = Boolean(retrievalResult?.trace.steps.some((step) => step.label === "rerank"))
+  const ragAvailable = Boolean(retrievalResult?.trace.steps.some((step) => step.label === "vector" || step.label === "rerank"))
+  const topCandidateNames = candidateNames(fullTopK).slice(0, 8)
+  const selectedCandidateNames = candidateNames(completionPack.evidence).slice(0, 8)
+  const alignmentReason = alignmentReasonFor({
+    fullTopK,
+    completionPack,
+    timedOut: false,
+    retrievalMode,
+    rerankEnabled,
+    ragAvailable,
+  })
+  return {
+    fullTopK,
+    qaPack,
+    completionPack,
+    retrievalResult,
+    alignmentCandidates: fullTopK,
+    completionProjectionRanked,
+    trace: {
+      retrievalMode,
+      rerankEnabled,
+      ragAvailable,
+      latencyMs,
+      latencyBudgetMs: undefined,
+      timedOut: false,
+      queryText: semanticQueryText,
+      queryTokens,
+      topCandidateNames,
+      selectedCandidateNames,
+      fullCandidateCount: fullTopK.length,
+      projectionCandidateCount: completionProjectionRanked.length,
+      retrievalShape: "qa-exact",
+      semanticQueryText,
+      graphQuestionTextHash: hashText(graphQuestionText),
+      semanticTopK,
+      graphTopK,
+      mergedTopK: topCandidateNames,
+      selectedPromptEvidenceNames: selectedCandidateNames,
+      projectionToPromptDropReason: completionPack.truncated ? "max-evidence" : undefined,
+      qaExactTopK: topCandidateNames,
+      qaExactSubmittedEvidence: selectedCandidateNames,
+      qaExactContextTopK: contextTopK,
+      alignmentReason,
+    },
+  }
+}
+
+function markSemanticEvidenceSource(item: RepositoryEvidenceItem): RepositoryEvidenceItem {
+  if (item.source === "rerank") return { ...item, source: "semantic-rerank" }
+  if (item.source === "vector" || item.source === "hybrid") return { ...item, source: "semantic-rag" }
+  return item
+}
+
+async function queryQaExactCodeGraphContext(input: RepositoryEvidenceForIntentInput, queryText: string) {
+  if (!input.codeGraph.buildContext) return undefined
+  return input.codeGraph.buildContext({
+    question: queryText,
+    relatedPaths: input.currentFile ? [input.currentFile] : [],
+    maxBytes: input.debugFullRetrievalProbe ? 200_000 : Math.max(input.maxBytes ?? 0, 60_000),
+    maxDepth: 4,
+    maxFanout: 80,
+  })
+}
+
 function repositoryEvidenceQuery(input: RepositoryEvidenceForIntentInput) {
+  if (isQaExactRetrieval(input)) return qaExactRepositoryEvidenceQuery(input)
   return [
     "Repository evidence request for local code intelligence.",
     input.mode === "completion" && input.task === "comment-guided-code"
@@ -219,6 +334,49 @@ function repositoryEvidenceQuery(input: RepositoryEvidenceForIntentInput) {
     input.suffix ? `suffix-context:\n${headLines(input.suffix, 18)}` : "",
     "goal: retrieve similar functions, code blocks, graph evidence, vector evidence, and rerank trace that ground the requested code.",
   ].filter(Boolean).join("\n")
+}
+
+function qaExactRepositoryEvidenceQuery(input: RepositoryEvidenceForIntentInput) {
+  return buildCommentGuidedSemanticQuery(input)
+}
+
+function buildCommentGuidedSemanticQuery(input: RepositoryEvidenceForIntentInput) {
+  const sourceComment = input.sourceComment?.trim()
+  const cursor = input.cursorContext
+  const nearbyCalls = uniqueStrings([
+    ...(cursor?.previousStatementCalls ?? []),
+    ...(cursor?.nextStatementCalls ?? []),
+  ]).slice(0, 6)
+  const nearbyMessages = (cursor?.nearbyLogOrMessageText ?? []).map((text) => oneLine(text, 90)).slice(0, 4)
+  return [
+    "User question:",
+    [
+      "In this local C/C++ file, what exact code or existing helper/function call should be inserted at the cursor?",
+      sourceComment ? `The source comment immediately before the cursor is: ${sourceComment}` : "",
+      `Current file/function: ${input.currentFile}${input.currentFunction ? ` / ${input.currentFunction}` : ""}`,
+      nearbyCalls.length ? `Nearby calls: ${nearbyCalls.join(", ")}` : "",
+      nearbyMessages.length ? `Nearby step/log text: ${nearbyMessages.join(" | ")}` : "",
+      "Use local code graph and repository evidence to find the most relevant existing helper, similar function, or concise code block.",
+      "Return evidence only; do not answer in prose.",
+    ].filter(Boolean).join("\n"),
+  ].filter(Boolean).join("\n")
+}
+
+function buildCommentGuidedGraphQuestion(input: RepositoryEvidenceForIntentInput) {
+  const sourceComment = input.sourceComment?.trim()
+  return [
+    "Repository graph evidence request for C inline completion.",
+    "completion-intent: comment-guided-c-code",
+    `current-path: ${input.currentFile}`,
+    input.currentFunction ? `function: ${input.currentFunction}` : "",
+    sourceComment ? `source-comment: ${sourceComment}` : "",
+    input.nearbyIdentifiers?.length ? `nearby-identifiers: ${input.nearbyIdentifiers.join(" ")}` : "",
+    "goal: retrieve short similar functions, callable helpers, code blocks, and same-module flow evidence for this source comment.",
+  ].filter(Boolean).join("\n")
+}
+
+function hashText(input: string) {
+  return `sha256:${createHash("sha256").update(input).digest("hex").slice(0, 16)}`
 }
 
 function repositoryEvidenceQueryTokens(input: RepositoryEvidenceForIntentInput) {
@@ -273,11 +431,35 @@ function repositoryEvidenceQueryOptions(input: RepositoryEvidenceForIntentInput)
       latencyBudgetMs: undefined,
     }
   }
+  if (isQaExactRetrieval(input)) {
+    return {
+      latencyBudgetMs: undefined,
+    }
+  }
   return {
     maxEvidenceItems: completionComment ? Math.max(input.maxEvidence * 8, 24) : undefined,
     maxEvidenceBytes: completionComment ? Math.max(input.maxBytes ?? 0, 18_000) : input.maxBytes,
     latencyBudgetMs: input.latencyBudgetMs,
   }
+}
+
+function qaExactGraphQueryOptions(input: RepositoryEvidenceForIntentInput) {
+  if (input.debugFullRetrievalProbe) {
+    return {
+      maxEvidenceItems: 200,
+      maxEvidenceBytes: 200_000,
+      latencyBudgetMs: undefined,
+    }
+  }
+  return {
+    maxEvidenceItems: Math.max(input.maxEvidence * 12, 48),
+    maxEvidenceBytes: Math.max(input.maxBytes ?? 0, 24_000),
+    latencyBudgetMs: undefined,
+  }
+}
+
+function isQaExactRetrieval(input: RepositoryEvidenceForIntentInput) {
+  return input.task === "comment-guided-code" && input.retrievalShape === "qa-exact"
 }
 
 function formatCursorContextFeatures(features: CommentGuidedCursorContextFeatures) {
@@ -294,10 +476,15 @@ function formatCursorContextFeatures(features: CommentGuidedCursorContextFeature
   ].filter(Boolean).join("\n")
 }
 
-function repositoryEvidenceItems(result: QueryEvidenceResult | undefined): RepositoryEvidenceItem[] {
+function repositoryEvidenceItems(
+  result: QueryEvidenceResult | undefined,
+  context?: CodeGraphPromptContext,
+  sourceOverride?: RepositoryEvidenceSource,
+  contextSource: RepositoryEvidenceSource = "local-flow",
+): RepositoryEvidenceItem[] {
   const items: RepositoryEvidenceItem[] = []
   for (const evidence of result?.retrieval?.evidence ?? []) {
-    items.push(repositoryItemFromCodeGraphEvidence(evidence))
+    items.push(repositoryItemFromCodeGraphEvidence(evidence, sourceOverride))
   }
   for (const evidence of result?.stateMachines.flatMap((machine) => machine.evidence) ?? []) {
     items.push(repositoryItemFromEvidenceRef(evidence, "state-machine"))
@@ -305,15 +492,72 @@ function repositoryEvidenceItems(result: QueryEvidenceResult | undefined): Repos
   for (const evidence of result?.evidencePack.evidence ?? []) {
     items.push(repositoryItemFromEvidenceRef(evidence, "summary"))
   }
+  items.push(...repositoryItemsFromCodeGraphContext(context, contextSource))
   return dedupeEvidence(items)
-    .sort((left, right) => right.score - left.score || (left.path ?? "").localeCompare(right.path ?? "") || (left.startLine ?? 0) - (right.startLine ?? 0))
+    .sort(repositoryEvidenceSort)
 }
 
-function repositoryItemFromCodeGraphEvidence(evidence: CodeGraphEvidence): RepositoryEvidenceItem {
+function repositoryItemsFromCodeGraphContext(context: CodeGraphPromptContext | undefined, contextSource: RepositoryEvidenceSource): RepositoryEvidenceItem[] {
+  if (!context?.text) return []
+  const items: RepositoryEvidenceItem[] = []
+  const evidencePattern = /<evidence\b([^>]*)>\s*([\s\S]*?)\s*<\/evidence>/g
+  let match: RegExpExecArray | null
+  while ((match = evidencePattern.exec(context.text)) !== null) {
+    const attrs = parseXmlAttributes(match[1] ?? "")
+    const path = attrs.path
+    const lines = parseLineRange(attrs.lines)
+    const reason = attrs.reason ?? "qa local code graph evidence"
+    const snippet = decodeXmlText(match[2] ?? "").trim()
+    if (!snippet) continue
+    items.push({
+      kind: attrs.kind ?? "text",
+      name: evidenceName(snippet),
+      source: contextSource,
+      path,
+      startLine: lines.startLine,
+      endLine: lines.endLine,
+      snippet,
+      score: Number(attrs.score ?? 0) || 0,
+      reason,
+    })
+  }
+  return items
+}
+
+function parseXmlAttributes(input: string) {
+  const attrs: Record<string, string> = {}
+  const attrPattern = /\b([A-Za-z_:][-A-Za-z0-9_:.]*)="([^"]*)"/g
+  let match: RegExpExecArray | null
+  while ((match = attrPattern.exec(input)) !== null) {
+    attrs[match[1]!] = decodeXmlText(match[2] ?? "")
+  }
+  return attrs
+}
+
+function parseLineRange(input: string | undefined) {
+  const match = /^(\d+)(?:-(\d+))?$/.exec(input ?? "")
+  const startLine = Number(match?.[1] ?? 1)
+  const endLine = Number(match?.[2] ?? match?.[1] ?? startLine)
+  return {
+    startLine: Number.isFinite(startLine) ? startLine : 1,
+    endLine: Number.isFinite(endLine) ? endLine : Number.isFinite(startLine) ? startLine : 1,
+  }
+}
+
+function decodeXmlText(input: string) {
+  return input
+    .replace(/&quot;/g, "\"")
+    .replace(/&apos;/g, "'")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&amp;/g, "&")
+}
+
+function repositoryItemFromCodeGraphEvidence(evidence: CodeGraphEvidence, sourceOverride?: RepositoryEvidenceSource): RepositoryEvidenceItem {
   return {
     kind: evidence.kind,
     name: evidenceName(evidence.snippet),
-    source: evidenceSource(evidence.reason),
+    source: sourceOverride ?? evidenceSource(evidence.reason),
     path: evidence.path,
     startLine: evidence.startLine,
     endLine: evidence.endLine,
@@ -321,6 +565,16 @@ function repositoryItemFromCodeGraphEvidence(evidence: CodeGraphEvidence): Repos
     score: evidence.score,
     reason: evidence.reason,
   }
+}
+
+function sortRepositoryEvidenceForRetrieval(items: RepositoryEvidenceItem[]) {
+  return items.sort(repositoryEvidenceSort)
+}
+
+function repositoryEvidenceSort(left: RepositoryEvidenceItem, right: RepositoryEvidenceItem) {
+  return right.score - left.score ||
+    (left.path ?? "").localeCompare(right.path ?? "") ||
+    (left.startLine ?? 0) - (right.startLine ?? 0)
 }
 
 function repositoryItemFromEvidenceRef(evidence: EvidenceRef, source: RepositoryEvidenceSource): RepositoryEvidenceItem {
@@ -377,7 +631,37 @@ function completionProjectionItems(items: RepositoryEvidenceItem[], input: Repos
     return true
   })
   if (input.task !== "comment-guided-code") return filtered
+  if (isQaExactRetrieval(input)) return qaExactCompletionProjectionItems(filtered, input)
   return rankCommentGuidedProjectionItems(filtered, input)
+}
+
+function qaExactCompletionProjectionItems(items: RepositoryEvidenceItem[], input: RepositoryEvidenceForIntentInput) {
+  const functionDefinitions: RepositoryEvidenceItem[] = []
+  const primaryBlocks: RepositoryEvidenceItem[] = []
+  const fallback: RepositoryEvidenceItem[] = []
+  for (const item of items) {
+    if (isSummaryLikeEvidence(item)) {
+      fallback.push(item)
+      continue
+    }
+    const coverage = scoreCommentGuidedCandidate({
+      comment: normalizeCommentGuidedTokens(input.sourceComment ?? input.question ?? ""),
+      candidateText: [item.name, item.kind, item.reason, item.parserKind, item.snippet].filter(Boolean).join("\n"),
+    })
+    const noCoverage = coverage.actionTokenCoverage <= 0 && coverage.objectTokenCoverage <= 0 && coverage.domainTokenCoverage <= 0
+    const domainOnly = coverage.actionTokenCoverage <= 0 && coverage.objectTokenCoverage <= 0 && coverage.domainTokenCoverage > 0
+    if (noCoverage || domainOnly) {
+      fallback.push(item)
+      continue
+    }
+    if (isFunctionDefinitionEvidence(item)) {
+      functionDefinitions.push(item)
+      continue
+    }
+    primaryBlocks.push(item)
+  }
+  const primary = [...functionDefinitions, ...primaryBlocks]
+  return rankCommentGuidedProjectionItems(primary.length > 0 ? primary : fallback, input)
 }
 
 function rankCommentGuidedProjectionItems(items: RepositoryEvidenceItem[], input: RepositoryEvidenceForIntentInput) {
@@ -407,14 +691,27 @@ function commentGuidedProjectionScore(
     comment,
     candidateText: [item.name, item.kind, item.reason, item.parserKind, item.snippet].filter(Boolean).join("\n"),
   })
+  const nameCoverage = scoreCommentGuidedCandidate({
+    comment,
+    candidateText: item.name ?? "",
+  })
+  const snippetCoverage = scoreCommentGuidedCandidate({
+    comment,
+    candidateText: [item.kind, item.reason, item.parserKind, item.snippet].filter(Boolean).join("\n"),
+  })
   const actionObjectCoverage = coverage.actionTokenCoverage + coverage.objectTokenCoverage
   const domainOnly = actionObjectCoverage <= 0 && coverage.domainTokenCoverage > 0
-  let score = item.score
-  score += coverage.actionTokenCoverage * 520
-  score += coverage.objectTokenCoverage * 420
-  score += coverage.domainTokenCoverage * 45
+  const nameActionObjectCoverage = nameCoverage.actionTokenCoverage + nameCoverage.objectTokenCoverage
+  const snippetActionObjectCoverage = snippetCoverage.actionTokenCoverage + snippetCoverage.objectTokenCoverage
+  let score = Math.min(item.score, 700)
+  score += nameCoverage.actionTokenCoverage * 1150
+  score += nameCoverage.objectTokenCoverage * 1050
+  score += nameCoverage.domainTokenCoverage * 120
+  score += snippetCoverage.actionTokenCoverage * 260
+  score += snippetCoverage.objectTokenCoverage * 180
+  score += snippetCoverage.domainTokenCoverage * 35
   if (isFunctionLikeEvidence(item)) score += 120
-  if (statementPosition && isLikelyCallableHelper(item, input, coverage)) score += 520
+  if (statementPosition && isLikelyCallableHelper(item, input, coverage, nameCoverage)) score += nameActionObjectCoverage > 0 ? 720 : 180
   if (isSameModulePath(item.path, input.currentFile)) score += 80
   const cursorScores = cursorContextScores(item, input, coverage)
   score += cursorScores.currentFunctionFlowScore
@@ -422,6 +719,7 @@ function commentGuidedProjectionScore(
   score += cursorScores.callStatementFitScore
   score += cursorScores.messageTextSimilarityScore
   score -= cursorScores.stateStylePenalty
+  if (nameActionObjectCoverage <= 0 && snippetActionObjectCoverage > 0) score -= 180
   if (domainOnly) score -= 260
   if (isSummaryLikeEvidence(item)) score -= 220
   return { totalScore: score, cursorScores }
@@ -486,9 +784,10 @@ function isLikelyCallableHelper(
   item: RepositoryEvidenceItem,
   input: RepositoryEvidenceForIntentInput,
   coverage: ReturnType<typeof scoreCommentGuidedCandidate>,
+  nameCoverage = coverage,
 ) {
   if (!isFunctionLikeEvidence(item)) return false
-  if (coverage.actionTokenCoverage <= 0 || coverage.objectTokenCoverage <= 0) return false
+  if (nameCoverage.actionTokenCoverage <= 0 || nameCoverage.objectTokenCoverage <= 0) return false
   if (sameRepositoryPath(item.path ?? "", input.currentFile) && item.name?.toLowerCase() === input.currentFunction?.toLowerCase()) return false
   return functionParamsCanBeSatisfied(item.snippet, input)
 }
@@ -496,6 +795,11 @@ function isLikelyCallableHelper(
 function isFunctionLikeEvidence(item: RepositoryEvidenceItem) {
   if (item.kind === "function" || item.parserKind === "function-summary") return true
   return /^\s*(?:static\s+)?(?:inline\s+)?[A-Za-z_][A-Za-z0-9_\s*]*\s+[A-Za-z_][A-Za-z0-9_]*\s*\([^;{}]*\)\s*(?:\{|;)/m.test(item.snippet)
+}
+
+function isFunctionDefinitionEvidence(item: RepositoryEvidenceItem) {
+  if (item.parserKind === "function-summary") return true
+  return /^\s*(?:static\s+)?(?:inline\s+)?[A-Za-z_][A-Za-z0-9_\s*]*\s+[A-Za-z_][A-Za-z0-9_]*\s*\([^;{}]*\)\s*(?:\{|;)/m.test(item.snippet.trim())
 }
 
 function functionParamsCanBeSatisfied(snippet: string, input: RepositoryEvidenceForIntentInput) {
@@ -650,6 +954,12 @@ function headLines(input: string, count: number) {
 
 function tailLines(input: string, count: number) {
   return input.replace(/\r\n/g, "\n").split("\n").slice(-count).join("\n")
+}
+
+function oneLine(input: string, max: number) {
+  const text = input.replace(/\s+/g, " ").trim()
+  if (text.length <= max) return text
+  return `${text.slice(0, max).replace(/\s+$/, "")}...`
 }
 
 function tokenize(input: string) {

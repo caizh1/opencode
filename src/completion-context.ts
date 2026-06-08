@@ -363,7 +363,10 @@ function cEmbeddedEvidenceBlocks(input: PackCompletionContextInput, text: string
       text: input.plan.kind === "comment-guided-c-code"
         ? limitText(section.trim(), 620)
         : limitSnippetText(section.trim(), "c-embedded-evidence"),
-      score: 780 + Math.min(Number.isFinite(meta.score) ? Math.max(meta.score, 0) : 0, 120) + cIntentEvidenceBoost(input.plan, section),
+      score: 780 +
+        Math.min(Number.isFinite(meta.score) ? Math.max(meta.score, 0) : 0, 120) +
+        cEmbeddedEvidencePromptBoost(meta) +
+        cIntentEvidenceBoost(input.plan, section),
     }))
   }
   return blocks
@@ -389,13 +392,45 @@ function parseCEmbeddedEvidenceSection(section: string, currentPath: string) {
   const kind = /^C evidence:\s*(c-[A-Za-z0-9-]+)/m.exec(section)?.[1] ?? "c-evidence"
   const symbol = /^Symbol:\s*(.+)$/m.exec(section)?.[1]?.trim()
   const source = /^Source:\s*(.+):(\d+)(?:-\d+)?$/m.exec(section)
+  const role = /^Evidence role:\s*([A-Za-z0-9-]+)/m.exec(section)?.[1]?.trim()
+  const helperConfidence = /^Helper callable confidence:\s*([A-Za-z0-9-]+)/m.exec(section)?.[1]?.trim()
   const score = Number(/^Score:\s*(\d+)/m.exec(section)?.[1] ?? 0)
   return {
     kind,
     symbol,
     path: source?.[1] ?? currentPath,
+    role,
+    helperConfidence,
     score,
   }
+}
+
+function cEmbeddedEvidencePromptBoost(meta: ReturnType<typeof parseCEmbeddedEvidenceSection>) {
+  let boost = 0
+  switch (meta.role) {
+    case "callable-helper":
+      boost += 70
+      break
+    case "style-example":
+      boost += 20
+      break
+    case "local-flow":
+      boost += 10
+      break
+    default:
+      break
+  }
+  switch (meta.helperConfidence) {
+    case "high":
+      boost += 30
+      break
+    case "medium":
+      boost += 15
+      break
+    default:
+      break
+  }
+  return boost
 }
 
 function splitAnalysisEvidenceText(input: string, maxChars: number) {

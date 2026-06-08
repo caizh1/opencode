@@ -159,12 +159,107 @@ describe("generic C embedded completion evidence builder", () => {
     expect(result.text).toContain("C evidence:")
     expect(result.text).toMatch(/c-comment-semantic-match|c-similar-function/)
     expect(result.trace.minimumUsefulEvidenceMet).toBe(true)
-    expect(result.trace.evidenceRoles).toContain("callable-helper")
-    expect(result.trace.generationModeHint).toBe("prefer-existing-helper")
-    expect(result.trace.helperCallableConfidence).toMatch(/high|medium/)
-    expect(result.trace.callableHelperCandidates?.length ?? 0).toBeGreaterThan(0)
-    expect(result.text).toContain("Generation mode hint: prefer-existing-helper")
-    expect(result.text).toContain("Evidence role: callable-helper")
+    expect(result.trace.retrievalShape).toBe("qa-exact")
+    expect(result.trace.qaExactTopK?.length ?? 0).toBeGreaterThan(0)
+    expect(result.trace.qaExactSubmittedEvidence?.length ?? 0).toBeGreaterThan(0)
+    expect(result.trace.evidenceRoles?.length ?? 0).toBeGreaterThan(0)
+    expect(result.text).toContain("Generation mode hint:")
+    expect(result.text).toContain("Evidence role:")
+  })
+
+  test("defaults comment-guided retrieval to QA-exact shape without inline timeout budget", async () => {
+    const capturedCalls: Array<{ question: string; options?: CodeGraphEvidenceQueryOptions }> = []
+    const provider: Pick<CodeGraphContextProvider, "queryEvidence"> = {
+      queryEvidence: async (question: string, options?: CodeGraphEvidenceQueryOptions) => {
+        capturedCalls.push({ question, options })
+        await new Promise((resolve) => setTimeout(resolve, 5))
+        return {
+          retrieval: {
+            mode: "overview",
+            tokens: [],
+            symbols: ["wait_clock_ready"],
+            evidence: [{
+              path: "drivers/clock.c",
+              startLine: 12,
+              endLine: 15,
+              kind: "function",
+              score: 300,
+              reason: "seed function",
+              snippet: "static void wait_clock_ready(void)\n{\n  wait_until(clock_ready());\n}",
+            }],
+            candidateCount: 1,
+            packedBytes: 80,
+            omittedCandidates: 0,
+            truncated: false,
+            elapsedMs: 1,
+          },
+          stateMachines: [],
+          summaries: { functions: [], files: [], modules: [], subsystems: [] },
+          evidencePack: {
+            evidence: [],
+            text: "",
+            packedBytes: 0,
+            omittedEvidence: 0,
+            truncated: false,
+            missingEvidence: [],
+          },
+          trace: {
+            traceId: "qa-exact-builder",
+            question: "qa-exact-builder",
+            intent: "overview",
+            steps: [{ label: "graph", detail: "graph candidates", elapsedMs: 1 }],
+            evidence: [],
+            missingEvidence: [],
+          },
+          answerPolicy: { allowed: true, confidence: "high", reason: "test", requiredCitation: "" },
+          suggestedAnswer: "",
+        }
+      },
+    }
+    const commentPlan: CompletionPlan = {
+      ...plan("body-statement"),
+      kind: "comment-guided-c-code",
+      sourceComment: "// wait clock ready",
+      needsSymbolRetrieval: false,
+      maxTokens: 128,
+    }
+
+    const result = await buildCEmbeddedCompletionEvidence({
+      codeGraph: provider,
+      plan: commentPlan,
+      question: [
+        "inline completion for c file drivers/dev.c",
+        "current-path: drivers/dev.c",
+        "function: dev_probe",
+        "completion-intent: comment-guided-c-code",
+        "source-comment: wait clock ready",
+      ].join("\n"),
+      relatedPaths: ["drivers/dev.c"],
+      prefix: "int dev_probe(void)\n{\n    ",
+      suffix: "\n}\n",
+    })
+
+    const semanticCall = capturedCalls.find((call) => call.options?.retrievalMode === "hybrid")
+    const graphCall = capturedCalls.find((call) => call.options?.retrievalMode === "graph-only")
+    expect(semanticCall?.question).toContain("User question:")
+    expect(semanticCall?.question).toContain("what exact code or existing helper/function call should be inserted")
+    expect(semanticCall?.question).not.toContain("cursor-task: choose existing local helper/function calls")
+    expect(semanticCall?.question).not.toContain("avoid-evidence: current function body summaries")
+    expect(semanticCall?.question).not.toContain("prefix-context:")
+    expect(semanticCall?.question).not.toContain("suffix-context:")
+    expect(semanticCall?.options?.maxEvidenceItems).toBeUndefined()
+    expect(semanticCall?.options?.maxEvidenceBytes).toBeUndefined()
+    expect(graphCall?.question).toContain("completion-intent: comment-guided-c-code")
+    expect(graphCall?.question).toContain("source-comment: wait clock ready")
+    expect(result.trace.retrievalShape).toBe("qa-exact")
+    expect(result.trace.retrievalBudgetMs).toBeUndefined()
+    expect(result.trace.retrievalTimedOut).toBe(false)
+    expect(result.trace.semanticQueryText).toContain("wait clock ready")
+    expect(result.trace.graphQuestionTextHash).toMatch(/^sha256:/)
+    expect(result.trace.qaExactTopK).toContain("wait_clock_ready")
+    expect(result.trace.qaExactSubmittedEvidence).toContain("wait_clock_ready")
+    expect(result.trace.selectedPromptEvidenceNames).toContain("wait_clock_ready")
+    expect(result.text).toContain("wait_clock_ready")
   })
 
   test("uses style examples instead of forcing helpers when no callable helper is strong", async () => {

@@ -808,6 +808,7 @@ export class RemoteCompletionProvider implements vscode.InlineCompletionItemProv
           suffix: completionRetrievalSuffix(input.document, input.position),
           debugFullRetrievalProbe: input.settings.completion.debugFullRetrievalProbe,
           debugExpectedSymbol: input.settings.completion.debugExpectedSymbol,
+          commentGuidedRetrievalMode: input.settings.completion.commentGuidedRetrievalMode,
           requestId: input.telemetry.requestId,
         })
         input.telemetry.retrievalMode = mergeCompletionRetrievalMode(input.telemetry.retrievalMode, result.retrievalMode)
@@ -843,7 +844,19 @@ export class RemoteCompletionProvider implements vscode.InlineCompletionItemProv
         input.telemetry.cursorContextFeatures = result.trace.cursorContextFeatures
         input.telemetry.fullRetrievalCandidateCount = result.trace.fullRetrievalCandidateCount
         input.telemetry.projectionCandidateCount = result.trace.projectionCandidateCount
+        input.telemetry.retrievalShape = result.trace.retrievalShape
+        input.telemetry.qaExactTopK = result.trace.qaExactTopK
+        input.telemetry.qaExactSubmittedEvidence = result.trace.qaExactSubmittedEvidence
+        input.telemetry.qaExactContextTopK = result.trace.qaExactContextTopK
+        input.telemetry.semanticQueryText = result.trace.semanticQueryText
+        input.telemetry.graphQuestionTextHash = result.trace.graphQuestionTextHash
+        input.telemetry.semanticTopK = result.trace.semanticTopK
+        input.telemetry.graphTopK = result.trace.graphTopK
+        input.telemetry.mergedTopK = result.trace.mergedTopK
+        input.telemetry.selectedPromptEvidenceNames = result.trace.selectedPromptEvidenceNames
+        input.telemetry.projectionToPromptDropReason = result.trace.projectionToPromptDropReason
         input.telemetry.submittedEvidenceNames = result.trace.submittedEvidenceNames
+        input.telemetry.expectedSymbolInQaExactRetrieval = result.trace.expectedSymbolInQaExactRetrieval
         input.telemetry.expectedSymbolInFullRetrieval = result.trace.expectedSymbolInFullRetrieval
         input.telemetry.expectedSymbolInProjection = result.trace.expectedSymbolInProjection
         input.telemetry.expectedSymbolInPrompt = result.trace.expectedSymbolInPrompt
@@ -1180,7 +1193,19 @@ export class RemoteCompletionProvider implements vscode.InlineCompletionItemProv
       cursorContextFeatures: telemetry.cursorContextFeatures,
       fullRetrievalCandidateCount: telemetry.fullRetrievalCandidateCount,
       projectionCandidateCount: telemetry.projectionCandidateCount,
+      retrievalShape: telemetry.retrievalShape,
+      qaExactTopK: telemetry.qaExactTopK,
+      qaExactSubmittedEvidence: telemetry.qaExactSubmittedEvidence,
+      qaExactContextTopK: telemetry.qaExactContextTopK,
+      semanticQueryText: telemetry.semanticQueryText,
+      graphQuestionTextHash: telemetry.graphQuestionTextHash,
+      semanticTopK: telemetry.semanticTopK,
+      graphTopK: telemetry.graphTopK,
+      mergedTopK: telemetry.mergedTopK,
+      selectedPromptEvidenceNames: telemetry.selectedPromptEvidenceNames,
+      projectionToPromptDropReason: telemetry.projectionToPromptDropReason,
       submittedEvidenceNames: telemetry.submittedEvidenceNames,
+      expectedSymbolInQaExactRetrieval: telemetry.expectedSymbolInQaExactRetrieval,
       expectedSymbolInFullRetrieval: telemetry.expectedSymbolInFullRetrieval,
       expectedSymbolInProjection: telemetry.expectedSymbolInProjection,
       expectedSymbolInPrompt: telemetry.expectedSymbolInPrompt,

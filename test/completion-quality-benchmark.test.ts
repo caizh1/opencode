@@ -219,6 +219,7 @@ describe("completion quality benchmark fixtures", () => {
         actualCIntent: "body-statement",
         promptKind: "qwen-fim",
         correctFunctionInCandidates: true,
+        retrievalShape: "qa-exact",
         retrievalTimedOut: false,
       }))
       expect(commentGuidedRanking?.normalizedCommentTokens).toEqual(expect.arrayContaining(["wait", "nfc", "clock"]))
@@ -243,6 +244,8 @@ describe("completion quality benchmark fixtures", () => {
       expect(commentGuidedRanking?.callableHelperCandidates).toEqual(expect.arrayContaining(["nfdrv_wait_nfc_clk_reset"]))
       expect(commentGuidedRanking?.qaStyleTopK).toEqual(expect.arrayContaining(["nfdrv_wait_nfc_clk_reset"]))
       expect(commentGuidedRanking?.completionProjectionTopK).toEqual(expect.arrayContaining(["nfdrv_wait_nfc_clk_reset"]))
+      expect(commentGuidedRanking?.qaExactTopK).toEqual(expect.arrayContaining(["nfdrv_wait_nfc_clk_reset"]))
+      expect(commentGuidedRanking?.qaExactSubmittedEvidence).toEqual(expect.arrayContaining(["nfdrv_wait_nfc_clk_reset"]))
 
       const commentPrompt = readFileSync(join(promptsDir, "generic-c-comment-guided-nfc-clock-reset-ranking.txt"), "utf8")
       const commentEvidence = JSON.parse(readFileSync(join(evidenceDir, "generic-c-comment-guided-nfc-clock-reset-ranking.json"), "utf8")) as {
@@ -289,6 +292,7 @@ describe("completion quality benchmark fixtures", () => {
     expect(record.projectionCandidateCount).toBeGreaterThan(0)
     expect(record.submittedEvidenceNames?.length).toBeGreaterThan(0)
     expect(record.expectedSymbolInFullRetrieval).toBe(true)
+    expect(record.expectedSymbolInQaExactRetrieval).toBe(true)
     expect(record.expectedSymbolInProjection).toBe(true)
     expect(record.fullRetrievalProbeDumpPath).toEqual(expect.any(String))
 
@@ -296,6 +300,9 @@ describe("completion quality benchmark fixtures", () => {
     expect(existsSync(dumpPath)).toBe(true)
     const dump = JSON.parse(readFileSync(dumpPath, "utf8")) as {
       queryText?: string
+      retrievalShape?: string
+      qaExactTopK?: string[]
+      qaExactSubmittedEvidence?: string[]
       sourceComment?: string
       cursorContextFeatures?: Record<string, unknown>
       fullRetrievalTopK?: Array<{ name?: string; cursorContextScores?: Record<string, unknown> }>
@@ -304,6 +311,7 @@ describe("completion quality benchmark fixtures", () => {
       selectedContextBlocks?: Array<{ kind?: string; title?: string }>
       finalPrompt?: string
       expectedSymbolPresence?: {
+        qaExactRetrieval?: boolean
         fullRetrieval?: boolean
         projection?: boolean
         submittedEvidence?: boolean
@@ -312,8 +320,13 @@ describe("completion quality benchmark fixtures", () => {
       }
     }
 
-    expect(dump.queryText).toContain("comment-guided-code")
+    expect(dump.retrievalShape).toBe("qa-exact")
+    expect(dump.queryText).toContain("User question:")
+    expect(dump.queryText).toContain("what exact code or existing helper/function call should be inserted")
+    expect(dump.queryText).not.toContain("avoid-evidence: current function body summaries")
     expect(dump.sourceComment).toContain("wait nfc clock")
+    expect(dump.qaExactTopK).toEqual(expect.arrayContaining(["nfdrv_wait_nfc_clk_reset"]))
+    expect(dump.qaExactSubmittedEvidence).toEqual(expect.arrayContaining(["nfdrv_wait_nfc_clk_reset"]))
     expect(dump.cursorContextFeatures).toEqual(expect.objectContaining({
       statementHoleKind: "blank-statement",
       currentFunctionName: "nfi_hal_controller_init",
@@ -324,8 +337,8 @@ describe("completion quality benchmark fixtures", () => {
     expect(dump.fullRetrievalTopK?.some((candidate) => candidate.name === "nfdrv_wait_nfc_clk_reset")).toBe(true)
     expect(dump.completionProjectionRankedTopK?.some((candidate) => candidate.name === "nfdrv_wait_nfc_clk_reset")).toBe(true)
     expect(dump.completionPackSubmitted?.some((candidate) => candidate.name === "nfdrv_wait_nfc_clk_reset")).toBe(true)
-    expect(dump.completionProjectionRankedTopK?.some((candidate) => candidate.cursorContextScores && Object.keys(candidate.cursorContextScores).length > 0)).toBe(true)
     expect(dump.expectedSymbolPresence).toEqual(expect.objectContaining({
+      qaExactRetrieval: true,
       fullRetrieval: true,
       projection: true,
       submittedEvidence: true,
@@ -343,7 +356,11 @@ describe("completion quality benchmark fixtures", () => {
       fullRetrievalCandidateCount: expect.any(Number),
       projectionCandidateCount: expect.any(Number),
       submittedEvidenceNames: expect.any(Array),
+      retrievalShape: "qa-exact",
+      qaExactTopK: expect.any(Array),
+      qaExactSubmittedEvidence: expect.any(Array),
       expectedSymbolInFullRetrieval: true,
+      expectedSymbolInQaExactRetrieval: true,
       expectedSymbolInProjection: true,
       fullRetrievalProbeDumpPath: dumpPath,
     }))

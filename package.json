@@ -2,7 +2,7 @@
   "name": "opencode-remote",
   "displayName": "OpenCode Remote",
   "description": "Remote opencode serve client for VS Code",
-  "version": "0.0.159",
+  "version": "0.0.163",
   "icon": "media/opencode-icon.png",
   "publisher": "local",
   "repository": {
@@ -314,6 +314,15 @@
           "type": "string",
           "default": "",
           "description": "Debug only: symbol name to mark in comment-guided full retrieval dumps. This marker is not used for ranking, prompting, or rejection."
+        },
+        "opencode.remote.completion.commentGuidedRetrievalMode": {
+          "type": "string",
+          "enum": [
+            "qa-exact",
+            "completion"
+          ],
+          "default": "qa-exact",
+          "description": "Retrieval path for C/C++ comment-guided inline completion. qa-exact reuses the QA-style evidence query before projecting concise FIM context; completion keeps the legacy completion-specific query."
         },
         "opencode.remote.codeGraph.enabled": {
           "type": "boolean",

@@ -82,7 +82,19 @@ export interface CompletionDebugEvent {
     cursorContextFeatures?: Record<string, unknown>
     fullRetrievalCandidateCount?: number
     projectionCandidateCount?: number
+    retrievalShape?: string
+    qaExactTopK?: string[]
+    qaExactSubmittedEvidence?: string[]
+    qaExactContextTopK?: string[]
+    semanticQueryText?: string
+    graphQuestionTextHash?: string
+    semanticTopK?: string[]
+    graphTopK?: string[]
+    mergedTopK?: string[]
+    selectedPromptEvidenceNames?: string[]
+    projectionToPromptDropReason?: string
     submittedEvidenceNames?: string[]
+    expectedSymbolInQaExactRetrieval?: boolean
     expectedSymbolInFullRetrieval?: boolean
     expectedSymbolInProjection?: boolean
     expectedSymbolInPrompt?: boolean
@@ -134,7 +146,19 @@ export interface CompletionDebugEvent {
   cursorContextFeatures?: Record<string, unknown>
   fullRetrievalCandidateCount?: number
   projectionCandidateCount?: number
+  retrievalShape?: string
+  qaExactTopK?: string[]
+  qaExactSubmittedEvidence?: string[]
+  qaExactContextTopK?: string[]
+  semanticQueryText?: string
+  graphQuestionTextHash?: string
+  semanticTopK?: string[]
+  graphTopK?: string[]
+  mergedTopK?: string[]
+  selectedPromptEvidenceNames?: string[]
+  projectionToPromptDropReason?: string
   submittedEvidenceNames?: string[]
+  expectedSymbolInQaExactRetrieval?: boolean
   expectedSymbolInFullRetrieval?: boolean
   expectedSymbolInProjection?: boolean
   expectedSymbolInPrompt?: boolean
@@ -278,7 +302,19 @@ export function sanitizeCompletionDebugEvent(event: CompletionDebugEvent): Compl
       cursorContextFeatures: sanitizeCursorContextFeatures(event.cEmbeddedEvidenceTrace.cursorContextFeatures),
       fullRetrievalCandidateCount: event.cEmbeddedEvidenceTrace.fullRetrievalCandidateCount !== undefined ? finiteNumber(event.cEmbeddedEvidenceTrace.fullRetrievalCandidateCount) : undefined,
       projectionCandidateCount: event.cEmbeddedEvidenceTrace.projectionCandidateCount !== undefined ? finiteNumber(event.cEmbeddedEvidenceTrace.projectionCandidateCount) : undefined,
+      retrievalShape: event.cEmbeddedEvidenceTrace.retrievalShape ? truncateTelemetryText(event.cEmbeddedEvidenceTrace.retrievalShape, 40) : undefined,
+      qaExactTopK: sanitizeTokenList(event.cEmbeddedEvidenceTrace.qaExactTopK),
+      qaExactSubmittedEvidence: sanitizeTokenList(event.cEmbeddedEvidenceTrace.qaExactSubmittedEvidence),
+      qaExactContextTopK: sanitizeTokenList(event.cEmbeddedEvidenceTrace.qaExactContextTopK),
+      semanticQueryText: event.cEmbeddedEvidenceTrace.semanticQueryText ? truncateTelemetryText(event.cEmbeddedEvidenceTrace.semanticQueryText, 600) : undefined,
+      graphQuestionTextHash: event.cEmbeddedEvidenceTrace.graphQuestionTextHash ? truncateTelemetryText(event.cEmbeddedEvidenceTrace.graphQuestionTextHash, 80) : undefined,
+      semanticTopK: sanitizeTokenList(event.cEmbeddedEvidenceTrace.semanticTopK),
+      graphTopK: sanitizeTokenList(event.cEmbeddedEvidenceTrace.graphTopK),
+      mergedTopK: sanitizeTokenList(event.cEmbeddedEvidenceTrace.mergedTopK),
+      selectedPromptEvidenceNames: sanitizeTokenList(event.cEmbeddedEvidenceTrace.selectedPromptEvidenceNames),
+      projectionToPromptDropReason: event.cEmbeddedEvidenceTrace.projectionToPromptDropReason ? truncateTelemetryText(event.cEmbeddedEvidenceTrace.projectionToPromptDropReason, 80) : undefined,
       submittedEvidenceNames: sanitizeTokenList(event.cEmbeddedEvidenceTrace.submittedEvidenceNames),
+      expectedSymbolInQaExactRetrieval: event.cEmbeddedEvidenceTrace.expectedSymbolInQaExactRetrieval !== undefined ? Boolean(event.cEmbeddedEvidenceTrace.expectedSymbolInQaExactRetrieval) : undefined,
       expectedSymbolInFullRetrieval: event.cEmbeddedEvidenceTrace.expectedSymbolInFullRetrieval !== undefined ? Boolean(event.cEmbeddedEvidenceTrace.expectedSymbolInFullRetrieval) : undefined,
       expectedSymbolInProjection: event.cEmbeddedEvidenceTrace.expectedSymbolInProjection !== undefined ? Boolean(event.cEmbeddedEvidenceTrace.expectedSymbolInProjection) : undefined,
       expectedSymbolInPrompt: event.cEmbeddedEvidenceTrace.expectedSymbolInPrompt !== undefined ? Boolean(event.cEmbeddedEvidenceTrace.expectedSymbolInPrompt) : undefined,
@@ -314,7 +350,19 @@ export function sanitizeCompletionDebugEvent(event: CompletionDebugEvent): Compl
     cursorContextFeatures: sanitizeCursorContextFeatures(event.cursorContextFeatures),
     fullRetrievalCandidateCount: event.fullRetrievalCandidateCount !== undefined ? finiteNumber(event.fullRetrievalCandidateCount) : undefined,
     projectionCandidateCount: event.projectionCandidateCount !== undefined ? finiteNumber(event.projectionCandidateCount) : undefined,
+    retrievalShape: event.retrievalShape ? truncateTelemetryText(event.retrievalShape, 40) : undefined,
+    qaExactTopK: sanitizeTokenList(event.qaExactTopK),
+    qaExactSubmittedEvidence: sanitizeTokenList(event.qaExactSubmittedEvidence),
+    qaExactContextTopK: sanitizeTokenList(event.qaExactContextTopK),
+    semanticQueryText: event.semanticQueryText ? truncateTelemetryText(event.semanticQueryText, 600) : undefined,
+    graphQuestionTextHash: event.graphQuestionTextHash ? truncateTelemetryText(event.graphQuestionTextHash, 80) : undefined,
+    semanticTopK: sanitizeTokenList(event.semanticTopK),
+    graphTopK: sanitizeTokenList(event.graphTopK),
+    mergedTopK: sanitizeTokenList(event.mergedTopK),
+    selectedPromptEvidenceNames: sanitizeTokenList(event.selectedPromptEvidenceNames),
+    projectionToPromptDropReason: event.projectionToPromptDropReason ? truncateTelemetryText(event.projectionToPromptDropReason, 80) : undefined,
     submittedEvidenceNames: sanitizeTokenList(event.submittedEvidenceNames),
+    expectedSymbolInQaExactRetrieval: event.expectedSymbolInQaExactRetrieval !== undefined ? Boolean(event.expectedSymbolInQaExactRetrieval) : undefined,
     expectedSymbolInFullRetrieval: event.expectedSymbolInFullRetrieval !== undefined ? Boolean(event.expectedSymbolInFullRetrieval) : undefined,
     expectedSymbolInProjection: event.expectedSymbolInProjection !== undefined ? Boolean(event.expectedSymbolInProjection) : undefined,
     expectedSymbolInPrompt: event.expectedSymbolInPrompt !== undefined ? Boolean(event.expectedSymbolInPrompt) : undefined,

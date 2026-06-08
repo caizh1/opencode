@@ -4,6 +4,7 @@ import { normalizeCommentGuidedTokens, scoreCommentGuidedCandidate, type Comment
 import { extractCommentGuidedCursorContext, type CommentGuidedCursorContextFeatures } from "./completion-cursor-context"
 import type { CompletionCIntent, CompletionPlan } from "./completion-types"
 import { retrieveRepositoryEvidenceForIntent, type RepositoryEvidenceAlignmentReason, type RepositoryEvidenceItem, type RepositoryEvidenceResult } from "./repository-evidence"
+import type { CompletionCommentGuidedRetrievalMode } from "./types"
 
 export type CEmbeddedEvidenceKind =
   | "c-base-type"
@@ -105,7 +106,19 @@ export type CEmbeddedEvidenceTrace = {
   cursorContextFeatures?: CommentGuidedCursorContextFeatures
   fullRetrievalCandidateCount?: number
   projectionCandidateCount?: number
+  retrievalShape?: string
+  qaExactTopK?: string[]
+  qaExactSubmittedEvidence?: string[]
+  qaExactContextTopK?: string[]
+  semanticQueryText?: string
+  graphQuestionTextHash?: string
+  semanticTopK?: string[]
+  graphTopK?: string[]
+  mergedTopK?: string[]
+  selectedPromptEvidenceNames?: string[]
+  projectionToPromptDropReason?: string
   submittedEvidenceNames?: string[]
+  expectedSymbolInQaExactRetrieval?: boolean
   expectedSymbolInFullRetrieval?: boolean
   expectedSymbolInProjection?: boolean
   expectedSymbolInPrompt?: boolean
@@ -134,10 +147,22 @@ export type CEmbeddedFullRetrievalDebugDump = {
   retrievalElapsedMs: number
   retrievalBudgetMs?: number
   retrievalTimedOut: boolean
+  retrievalShape?: string
   rerankEnabled?: boolean
   ragAvailable?: boolean
+  qaExactTopK?: string[]
+  qaExactSubmittedEvidence?: string[]
+  qaExactContextTopK?: string[]
+  semanticQueryText?: string
+  graphQuestionTextHash?: string
+  semanticTopK?: string[]
+  graphTopK?: string[]
+  mergedTopK?: string[]
+  selectedPromptEvidenceNames?: string[]
+  projectionToPromptDropReason?: string
   expectedSymbol?: string
   expectedSymbolPresence: {
+    qaExactRetrieval?: boolean
     fullRetrieval: boolean
     projection: boolean
     submittedEvidence: boolean
@@ -178,6 +203,7 @@ export type CEmbeddedCompletionEvidenceInput = {
   suffix?: string
   debugFullRetrievalProbe?: boolean
   debugExpectedSymbol?: string
+  commentGuidedRetrievalMode?: CompletionCommentGuidedRetrievalMode
   requestId?: string
 }
 
@@ -314,6 +340,8 @@ async function buildCommentGuidedRepositoryEvidence(input: CEmbeddedCompletionEv
     currentFunctionName: currentFunction,
     sourceComment,
   })
+  const commentGuidedRetrievalMode = input.commentGuidedRetrievalMode ?? "qa-exact"
+  const qaExact = commentGuidedRetrievalMode !== "completion"
   const repository = await retrieveRepositoryEvidenceForIntent({
     codeGraph: input.codeGraph,
     mode: "completion",
@@ -329,6 +357,7 @@ async function buildCommentGuidedRepositoryEvidence(input: CEmbeddedCompletionEv
     latencyBudgetMs: input.retrievalBudgetMs,
     debugFullRetrievalProbe: input.debugFullRetrievalProbe,
     cursorContext,
+    retrievalShape: qaExact ? "qa-exact" : "default",
   })
   const finalItems = repository.completionPack.evidence.map((item) =>
     evidenceItemFromRepositoryEvidence(item, input.domainHints ?? [], commentTokens))
@@ -339,7 +368,9 @@ async function buildCommentGuidedRepositoryEvidence(input: CEmbeddedCompletionEv
     commentTokens,
     generationModeHint,
   })
-  const selected = selectCommentGuidedPromptEvidence(roleItems, maxItems, generationModeHint)
+  const selected = qaExact
+    ? selectQaExactPromptEvidence(roleItems, maxItems)
+    : selectCommentGuidedPromptEvidence(roleItems, maxItems, generationModeHint)
   const usefulEvidence = minimumUsefulEvidence(input.intent, selected, true)
   const trace = commentGuidedRepositoryTrace({
     repository,
@@ -376,6 +407,10 @@ async function buildCommentGuidedRepositoryEvidence(input: CEmbeddedCompletionEv
     trace,
     debugDump,
   }
+}
+
+function selectQaExactPromptEvidence(items: CEmbeddedEvidenceItem[], maxItems: number) {
+  return selectCommentGuidedPromptEvidence(items, Math.max(1, Math.min(maxItems, 3)), "prefer-existing-helper")
 }
 
 function selectEvidenceItems(input: {
@@ -497,7 +532,13 @@ function evidenceItemFromGraphEvidence(
 }
 
 function evidenceItemFromRepositoryEvidence(evidence: RepositoryEvidenceItem, domainHints: string[], commentTokens?: CommentGuidedTokenGroups): CEmbeddedEvidenceItem {
-  const source = evidence.source === "vector" || evidence.source === "rerank" || evidence.source === "hybrid" ? "rag" : "graph"
+  const source = evidence.source === "vector" ||
+    evidence.source === "rerank" ||
+    evidence.source === "hybrid" ||
+    evidence.source === "semantic-rag" ||
+    evidence.source === "semantic-rerank"
+    ? "rag"
+    : "graph"
   const text = evidence.snippet.trim()
   const item: CEmbeddedEvidenceItem = {
     kind: repositoryEvidenceKind(evidence),
@@ -550,6 +591,7 @@ function annotateCommentGuidedEvidenceRoles(input: {
   return input.items.map((item) => {
     const confidence = callableHelperConfidence({
       item,
+      commentTokens: input.commentTokens,
       prefix: input.input.prefix ?? "",
       suffix: input.input.suffix ?? "",
       currentPath,
@@ -594,6 +636,7 @@ function evidenceRoleForCommentGuidedItem(input: {
 
 function callableHelperConfidence(input: {
   item: CEmbeddedEvidenceItem
+  commentTokens: CommentGuidedTokenGroups
   prefix: string
   suffix: string
   currentPath: string
@@ -609,9 +652,15 @@ function callableHelperConfidence(input: {
   ) {
     return "none"
   }
-  const action = input.item.tokenCoverage?.actionTokenCoverage ?? 0
-  const object = input.item.tokenCoverage?.objectTokenCoverage ?? 0
-  const domainOnly = action <= 0 && object <= 0 && (input.item.tokenCoverage?.domainTokenCoverage ?? 0) > 0
+  const nameCoverage = scoreCommentGuidedCandidate({
+    comment: input.commentTokens,
+    candidateText: input.item.name ?? "",
+  })
+  const action = nameCoverage.actionTokenCoverage
+  const object = nameCoverage.objectTokenCoverage
+  const fallbackAction = input.item.tokenCoverage?.actionTokenCoverage ?? 0
+  const fallbackObject = input.item.tokenCoverage?.objectTokenCoverage ?? 0
+  const domainOnly = action <= 0 && object <= 0 && fallbackAction <= 0 && fallbackObject <= 0 && (input.item.tokenCoverage?.domainTokenCoverage ?? 0) > 0
   if (domainOnly) return "none"
   if (!functionParamsCanBeSatisfied(input.item.text, input.prefix, input.nearbyIdentifiers)) return "low"
   if (action >= 0.5 && object >= 0.5) return "high"
@@ -631,6 +680,7 @@ function generationModeHintForCommentGuided(
   const hasCallable = items.some((item) => {
     const confidence = callableHelperConfidence({
       item,
+      commentTokens: normalizeCommentGuidedTokens(input.plan.sourceComment ?? input.question ?? ""),
       prefix: input.prefix ?? "",
       suffix: input.suffix ?? "",
       currentPath,
@@ -757,6 +807,21 @@ function droppedAlignedEvidence(fullTopK: string[], selectedTopK: string[]) {
   return fullTopK.filter((name) => !selected.has(name)).slice(0, 8)
 }
 
+function projectionToPromptDropReason(input: {
+  repository: RepositoryEvidenceResult
+  selected: CEmbeddedEvidenceItem[]
+  expectedSymbol?: string
+}) {
+  const expected = input.expectedSymbol?.trim()
+  if (!expected) return undefined
+  const projectionNames = candidateNames(input.repository.completionProjectionRanked)
+  if (!projectionNames.includes(expected)) return "not-in-projection"
+  const selectedNames = uniqueStrings(input.selected.map((item) => item.name ?? "").filter(Boolean))
+  if (selectedNames.includes(expected) || input.selected.some((item) => item.text.includes(expected))) return undefined
+  if (input.repository.completionPack.truncated) return "evidence-budget"
+  return "weaker-role-score"
+}
+
 function normalizePath(path: string) {
   return path.replace(/\\/g, "/").replace(/^file:\/\//, "")
 }
@@ -782,8 +847,8 @@ function commentGuidedRepositoryTrace(input: {
   return {
     ragFallbackTriggered: input.repository.trace.retrievalMode === "graph-only-fallback",
     ragFallbackReason: input.repository.trace.alignmentReason === "graph-only-fallback" ? "shared repository evidence fell back to graph-only retrieval" : undefined,
-    graphEvidenceCount: input.repository.fullTopK.filter((item) => item.source === "graph").length,
-    ragEvidenceCount: input.repository.fullTopK.filter((item) => item.source === "vector" || item.source === "rerank" || item.source === "hybrid").length,
+    graphEvidenceCount: input.repository.fullTopK.filter((item) => item.source === "graph" || item.source === "graph-comment-guided" || item.source === "local-flow").length,
+    ragEvidenceCount: input.repository.fullTopK.filter((item) => item.source === "vector" || item.source === "rerank" || item.source === "hybrid" || item.source === "semantic-rag" || item.source === "semantic-rerank").length,
     finalSelectedEvidenceCount: input.selected.length,
     minimumUsefulEvidenceMet: input.usefulEvidenceMet,
     normalizedCommentTokens: input.commentTokens.normalizedTokens,
@@ -804,8 +869,8 @@ function commentGuidedRepositoryTrace(input: {
     }),
     selectedSimilarFunctionNames: uniqueStrings(input.selected.map((item) => item.name ?? "").filter(Boolean)),
     retrievalElapsedMs: input.repository.trace.latencyMs,
-    retrievalBudgetMs: input.retrievalBudgetMs,
-    retrievalTimedOut: input.repository.trace.timedOut || (input.retrievalBudgetMs !== undefined && input.repository.trace.latencyMs > input.retrievalBudgetMs),
+    retrievalBudgetMs: input.repository.trace.latencyBudgetMs,
+    retrievalTimedOut: input.repository.trace.timedOut,
     timeoutStage: input.repository.trace.timeoutStage,
     qaAlignedEvidence: Boolean(qaTopCandidate && completionRetrievalTopK.includes(qaTopCandidate)),
     qaTopCandidate,
@@ -833,7 +898,19 @@ function commentGuidedRepositoryTrace(input: {
     cursorContextFeatures: input.cursorContext,
     fullRetrievalCandidateCount: input.repository.trace.fullCandidateCount,
     projectionCandidateCount: input.repository.trace.projectionCandidateCount,
+    retrievalShape: input.repository.trace.retrievalShape,
+    qaExactTopK: input.repository.trace.qaExactTopK,
+    qaExactSubmittedEvidence: input.repository.trace.qaExactSubmittedEvidence,
+    qaExactContextTopK: input.repository.trace.qaExactContextTopK,
+    semanticQueryText: input.repository.trace.semanticQueryText,
+    graphQuestionTextHash: input.repository.trace.graphQuestionTextHash,
+    semanticTopK: input.repository.trace.semanticTopK,
+    graphTopK: input.repository.trace.graphTopK,
+    mergedTopK: input.repository.trace.mergedTopK,
+    selectedPromptEvidenceNames: uniqueStrings(input.selected.map((item) => item.name ?? "").filter(Boolean)),
+    projectionToPromptDropReason: projectionToPromptDropReason(input),
     submittedEvidenceNames: uniqueStrings(input.selected.map((item) => item.name ?? "").filter(Boolean)),
+    expectedSymbolInQaExactRetrieval: expected && input.repository.trace.retrievalShape === "qa-exact" ? candidateNames(input.repository.fullTopK).includes(expected) : undefined,
     expectedSymbolInFullRetrieval: expected ? candidateNames(input.repository.fullTopK).includes(expected) : undefined,
     expectedSymbolInProjection: expected ? candidateNames(input.repository.completionProjectionRanked).includes(expected) : undefined,
     expectedSymbolInPrompt: expected ? input.selected.some((item) => item.name === expected || item.text.includes(expected)) : undefined,
@@ -868,10 +945,22 @@ function commentGuidedFullRetrievalDebugDump(input: {
     retrievalElapsedMs: input.repository.trace.latencyMs,
     retrievalBudgetMs: input.repository.trace.latencyBudgetMs,
     retrievalTimedOut: input.repository.trace.timedOut,
+    retrievalShape: input.repository.trace.retrievalShape,
     rerankEnabled: input.repository.trace.rerankEnabled,
     ragAvailable: input.repository.trace.ragAvailable,
+    qaExactTopK: input.repository.trace.qaExactTopK,
+    qaExactSubmittedEvidence: input.repository.trace.qaExactSubmittedEvidence,
+    qaExactContextTopK: input.repository.trace.qaExactContextTopK,
+    semanticQueryText: input.repository.trace.semanticQueryText,
+    graphQuestionTextHash: input.repository.trace.graphQuestionTextHash,
+    semanticTopK: input.repository.trace.semanticTopK,
+    graphTopK: input.repository.trace.graphTopK,
+    mergedTopK: input.repository.trace.mergedTopK,
+    selectedPromptEvidenceNames: submittedNames,
+    projectionToPromptDropReason: input.trace.projectionToPromptDropReason,
     expectedSymbol: expected || undefined,
     expectedSymbolPresence: {
+      qaExactRetrieval: expected && input.repository.trace.retrievalShape === "qa-exact" ? fullNames.includes(expected) : undefined,
       fullRetrieval: expected ? fullNames.includes(expected) : false,
       projection: expected ? projectionNames.includes(expected) : false,
       submittedEvidence: expected ? submittedNames.includes(expected) : false,

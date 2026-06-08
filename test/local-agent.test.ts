@@ -102,6 +102,9 @@ function settings(input: { localOnlyMode: boolean; defaultAgent?: string }): Rem
       topP: 0.8,
       debounceMs: 350,
       logLevel: "info",
+      debugFullRetrievalProbe: false,
+      debugExpectedSymbol: "",
+      commentGuidedRetrievalMode: "qa-exact",
     },
     codeGraph: {
       enabled: false,

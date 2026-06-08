@@ -599,6 +599,9 @@ function settings(): RemoteSettings {
       topP: 1,
       debounceMs: 0,
       logLevel: "off",
+      debugFullRetrievalProbe: false,
+      debugExpectedSymbol: "",
+      commentGuidedRetrievalMode: "qa-exact",
     },
     codeGraph: {
       enabled: false,

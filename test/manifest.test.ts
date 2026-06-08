@@ -99,6 +99,11 @@ describe("extension manifest", () => {
     expect(properties["opencode.remote.completion.topP"]?.default).toBe(1)
     expect(properties["opencode.remote.completion.debugFullRetrievalProbe"]?.default).toBe(false)
     expect(properties["opencode.remote.completion.debugExpectedSymbol"]?.default).toBe("")
+    expect(properties["opencode.remote.completion.commentGuidedRetrievalMode"]).toMatchObject({
+      type: "string",
+      enum: ["qa-exact", "completion"],
+      default: "qa-exact",
+    })
     expect(manifest.contributes?.commands).toContainEqual(expect.objectContaining({
       command: "opencode.remote.completion.setApiKey",
     }))

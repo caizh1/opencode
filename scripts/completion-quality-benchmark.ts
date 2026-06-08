@@ -90,6 +90,7 @@ export type CompletionQualityBenchmarkOptions = {
   timeoutMs?: number
   debugFullRetrieval?: boolean
   expectedSymbol?: string
+  commentGuidedRetrievalMode?: "qa-exact" | "completion"
 }
 
 export type CompletionQualityRecord = {
@@ -172,7 +173,19 @@ export type CompletionQualityRecord = {
   cursorContextFeatures?: CompletionDebugEvent["cursorContextFeatures"]
   fullRetrievalCandidateCount?: number
   projectionCandidateCount?: number
+  retrievalShape?: string
+  qaExactTopK?: string[]
+  qaExactSubmittedEvidence?: string[]
+  qaExactContextTopK?: string[]
+  semanticQueryText?: string
+  graphQuestionTextHash?: string
+  semanticTopK?: string[]
+  graphTopK?: string[]
+  mergedTopK?: string[]
+  selectedPromptEvidenceNames?: string[]
+  projectionToPromptDropReason?: string
   submittedEvidenceNames?: string[]
+  expectedSymbolInQaExactRetrieval?: boolean
   expectedSymbolInFullRetrieval?: boolean
   expectedSymbolInProjection?: boolean
   expectedSymbolInPrompt?: boolean
@@ -308,7 +321,19 @@ export type CompletionQualityLatestReportRecord = {
   cursorContextFeatures?: CompletionDebugEvent["cursorContextFeatures"]
   fullRetrievalCandidateCount?: number
   projectionCandidateCount?: number
+  retrievalShape?: string
+  qaExactTopK?: string[]
+  qaExactSubmittedEvidence?: string[]
+  qaExactContextTopK?: string[]
+  semanticQueryText?: string
+  graphQuestionTextHash?: string
+  semanticTopK?: string[]
+  graphTopK?: string[]
+  mergedTopK?: string[]
+  selectedPromptEvidenceNames?: string[]
+  projectionToPromptDropReason?: string
   submittedEvidenceNames?: string[]
+  expectedSymbolInQaExactRetrieval?: boolean
   expectedSymbolInFullRetrieval?: boolean
   expectedSymbolInProjection?: boolean
   expectedSymbolInPrompt?: boolean
@@ -677,7 +702,19 @@ async function runDirectQwenAblationFixture(input: {
     cursorContextFeatures: evidenceResult?.trace.cursorContextFeatures,
     fullRetrievalCandidateCount: evidenceResult?.trace.fullRetrievalCandidateCount,
     projectionCandidateCount: evidenceResult?.trace.projectionCandidateCount,
+    retrievalShape: evidenceResult?.trace.retrievalShape,
+    qaExactTopK: evidenceResult?.trace.qaExactTopK,
+    qaExactSubmittedEvidence: evidenceResult?.trace.qaExactSubmittedEvidence,
+    qaExactContextTopK: evidenceResult?.trace.qaExactContextTopK,
+    semanticQueryText: evidenceResult?.trace.semanticQueryText,
+    graphQuestionTextHash: evidenceResult?.trace.graphQuestionTextHash,
+    semanticTopK: evidenceResult?.trace.semanticTopK,
+    graphTopK: evidenceResult?.trace.graphTopK,
+    mergedTopK: evidenceResult?.trace.mergedTopK,
+    selectedPromptEvidenceNames: evidenceResult?.trace.selectedPromptEvidenceNames,
+    projectionToPromptDropReason: evidenceResult?.trace.projectionToPromptDropReason,
     submittedEvidenceNames: evidenceResult?.trace.submittedEvidenceNames,
+    expectedSymbolInQaExactRetrieval: evidenceResult?.trace.expectedSymbolInQaExactRetrieval,
     expectedSymbolInFullRetrieval: evidenceResult?.trace.expectedSymbolInFullRetrieval,
     expectedSymbolInProjection: evidenceResult?.trace.expectedSymbolInProjection,
     expectedSymbolInPrompt: evidenceResult?.trace.expectedSymbolInPrompt,
@@ -888,6 +925,7 @@ function directQwenSettings(config: DirectQwenConfig): RemoteSettings {
       logLevel: "off",
       debugFullRetrievalProbe: false,
       debugExpectedSymbol: "",
+      commentGuidedRetrievalMode: "qa-exact",
     },
     codeGraph: {
       ...benchmarkSettings({}).codeGraph,
@@ -1005,7 +1043,19 @@ function writeDirectAblationDump(input: {
       cursorContextFeatures: record.cursorContextFeatures,
       fullRetrievalCandidateCount: record.fullRetrievalCandidateCount,
       projectionCandidateCount: record.projectionCandidateCount,
+      retrievalShape: record.retrievalShape,
+      qaExactTopK: record.qaExactTopK,
+      qaExactSubmittedEvidence: record.qaExactSubmittedEvidence,
+      qaExactContextTopK: record.qaExactContextTopK,
+      semanticQueryText: record.semanticQueryText,
+      graphQuestionTextHash: record.graphQuestionTextHash,
+      semanticTopK: record.semanticTopK,
+      graphTopK: record.graphTopK,
+      mergedTopK: record.mergedTopK,
+      selectedPromptEvidenceNames: record.selectedPromptEvidenceNames,
+      projectionToPromptDropReason: record.projectionToPromptDropReason,
       submittedEvidenceNames: record.submittedEvidenceNames,
+      expectedSymbolInQaExactRetrieval: record.expectedSymbolInQaExactRetrieval,
       expectedSymbolInFullRetrieval: record.expectedSymbolInFullRetrieval,
       expectedSymbolInProjection: record.expectedSymbolInProjection,
       expectedSymbolInPrompt: record.expectedSymbolInPrompt,
@@ -2017,7 +2067,19 @@ async function runProviderDryRunCompletionQualityFixture(fixture: CompletionQual
     cursorContextFeatures: telemetry?.cursorContextFeatures,
     fullRetrievalCandidateCount: telemetry?.fullRetrievalCandidateCount,
     projectionCandidateCount: telemetry?.projectionCandidateCount,
+    retrievalShape: telemetry?.retrievalShape,
+    qaExactTopK: telemetry?.qaExactTopK,
+    qaExactSubmittedEvidence: telemetry?.qaExactSubmittedEvidence,
+    qaExactContextTopK: telemetry?.qaExactContextTopK,
+    semanticQueryText: telemetry?.semanticQueryText,
+    graphQuestionTextHash: telemetry?.graphQuestionTextHash,
+    semanticTopK: telemetry?.semanticTopK,
+    graphTopK: telemetry?.graphTopK,
+    mergedTopK: telemetry?.mergedTopK,
+    selectedPromptEvidenceNames: telemetry?.selectedPromptEvidenceNames,
+    projectionToPromptDropReason: telemetry?.projectionToPromptDropReason,
     submittedEvidenceNames: telemetry?.submittedEvidenceNames,
+    expectedSymbolInQaExactRetrieval: telemetry?.expectedSymbolInQaExactRetrieval,
     expectedSymbolInFullRetrieval: telemetry?.expectedSymbolInFullRetrieval,
     expectedSymbolInProjection: telemetry?.expectedSymbolInProjection,
     expectedSymbolInPrompt: telemetry?.expectedSymbolInPrompt,
@@ -2201,7 +2263,19 @@ function writeLatestDump(input: {
       cursorContextFeatures: record.cursorContextFeatures,
       fullRetrievalCandidateCount: record.fullRetrievalCandidateCount,
       projectionCandidateCount: record.projectionCandidateCount,
+      retrievalShape: record.retrievalShape,
+      qaExactTopK: record.qaExactTopK,
+      qaExactSubmittedEvidence: record.qaExactSubmittedEvidence,
+      qaExactContextTopK: record.qaExactContextTopK,
+      semanticQueryText: record.semanticQueryText,
+      graphQuestionTextHash: record.graphQuestionTextHash,
+      semanticTopK: record.semanticTopK,
+      graphTopK: record.graphTopK,
+      mergedTopK: record.mergedTopK,
+      selectedPromptEvidenceNames: record.selectedPromptEvidenceNames,
+      projectionToPromptDropReason: record.projectionToPromptDropReason,
       submittedEvidenceNames: record.submittedEvidenceNames,
+      expectedSymbolInQaExactRetrieval: record.expectedSymbolInQaExactRetrieval,
       expectedSymbolInFullRetrieval: record.expectedSymbolInFullRetrieval,
       expectedSymbolInProjection: record.expectedSymbolInProjection,
       expectedSymbolInPrompt: record.expectedSymbolInPrompt,
@@ -2294,7 +2368,19 @@ function evidenceDump(record: CompletionQualityRecord) {
     cursorContextFeatures: record.cursorContextFeatures,
     fullRetrievalCandidateCount: record.fullRetrievalCandidateCount,
     projectionCandidateCount: record.projectionCandidateCount,
+    retrievalShape: record.retrievalShape,
+    qaExactTopK: record.qaExactTopK,
+    qaExactSubmittedEvidence: record.qaExactSubmittedEvidence,
+    qaExactContextTopK: record.qaExactContextTopK,
+    semanticQueryText: record.semanticQueryText,
+    graphQuestionTextHash: record.graphQuestionTextHash,
+    semanticTopK: record.semanticTopK,
+    graphTopK: record.graphTopK,
+    mergedTopK: record.mergedTopK,
+    selectedPromptEvidenceNames: record.selectedPromptEvidenceNames,
+    projectionToPromptDropReason: record.projectionToPromptDropReason,
     submittedEvidenceNames: record.submittedEvidenceNames,
+    expectedSymbolInQaExactRetrieval: record.expectedSymbolInQaExactRetrieval,
     expectedSymbolInFullRetrieval: record.expectedSymbolInFullRetrieval,
     expectedSymbolInProjection: record.expectedSymbolInProjection,
     expectedSymbolInPrompt: record.expectedSymbolInPrompt,
@@ -2417,6 +2503,7 @@ function benchmarkSettings(options: CompletionQualityBenchmarkOptions): RemoteSe
       logLevel: "off",
       debugFullRetrievalProbe: Boolean(options.debugFullRetrieval) || /^(?:1|true|yes|on)$/i.test(process.env.COMPLETION_DEBUG_FULL_RETRIEVAL ?? ""),
       debugExpectedSymbol: options.expectedSymbol ?? process.env.COMPLETION_DEBUG_EXPECTED_SYMBOL ?? "",
+      commentGuidedRetrievalMode: options.commentGuidedRetrievalMode ?? readCommentGuidedRetrievalMode(process.env.COMPLETION_COMMENT_GUIDED_RETRIEVAL_MODE),
     },
     codeGraph: {
       enabled: false,
@@ -2477,6 +2564,10 @@ function benchmarkSettings(options: CompletionQualityBenchmarkOptions): RemoteSe
       rerankTopK: 8,
     },
   }
+}
+
+function readCommentGuidedRetrievalMode(input: string | undefined): "qa-exact" | "completion" {
+  return input === "completion" ? "completion" : "qa-exact"
 }
 
 function fakeTextDocument(fixture: CompletionQualityFixture) {
@@ -2836,6 +2927,9 @@ function parseArgs(argv: string[]): CompletionQualityBenchmarkOptions {
         break
       case "--expected-symbol":
         options.expectedSymbol = next()
+        break
+      case "--comment-guided-retrieval-mode":
+        options.commentGuidedRetrievalMode = readCommentGuidedRetrievalMode(next())
         break
       case "--mock":
         options.mock = true
