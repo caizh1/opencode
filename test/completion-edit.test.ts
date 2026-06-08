@@ -23,6 +23,90 @@ describe("language-aware completion edits", () => {
     })
   })
 
+  test("InlineEditBuilder completes a typed prefix when FIM returns only the symbol suffix", () => {
+    const edit = inlineEdit({
+      insertMode: "replace-current-word",
+      text: "drv_wait_nfc_clk_reset();",
+      languageId: "c",
+      linePrefix: "    nf",
+      character: "    nf".length,
+      currentWord: "nf",
+      symbolHints: ["nfdrv_wait_nfc_clk_reset"],
+    })
+
+    expect(edit).toMatchObject({
+      insertText: "nfdrv_wait_nfc_clk_reset();",
+      replaceRange: {
+        startLine: 0,
+        startCharacter: 4,
+        endLine: 0,
+        endCharacter: "    nf".length,
+      },
+      filterText: "nfdrv_wait_nfc_clk_reset();",
+      typedPrefix: {
+        reason: "symbol-hint-suffix-match",
+        currentWord: "nf",
+        matchedSymbol: "nfdrv_wait_nfc_clk_reset",
+      },
+    })
+    expect(validateInlineCompletionEdit({
+      edit: edit!,
+      editInput: editInput({
+        languageId: "c",
+        linePrefix: "    nf",
+        character: "    nf".length,
+        currentWord: "nf",
+      }),
+      plan: inlinePlan("replace-current-word"),
+    })).toEqual({ valid: true })
+  })
+
+  test("InlineEditBuilder typed-prefix suffix completion is generic and hint-backed", () => {
+    expect(inlineEdit({
+      insertMode: "replace-current-word",
+      text: "c_do_work(x);",
+      languageId: "c",
+      linePrefix: "    ab",
+      character: "    ab".length,
+      currentWord: "ab",
+      symbolHints: ["abc_do_work"],
+    })).toMatchObject({
+      insertText: "abc_do_work(x);",
+      filterText: "abc_do_work(x);",
+      typedPrefix: {
+        matchedSymbol: "abc_do_work",
+      },
+    })
+  })
+
+  test("InlineEditBuilder does not splice typed prefixes without a matching symbol hint", () => {
+    expect(inlineEditResult({
+      insertMode: "replace-current-word",
+      text: "delay_us(10);",
+      languageId: "c",
+      linePrefix: "    nf",
+      character: "    nf".length,
+      currentWord: "nf",
+      symbolHints: ["nfdrv_wait_nfc_clk_reset"],
+    })).toEqual({
+      reason: "no-insert-text",
+    })
+  })
+
+  test("InlineEditBuilder ignores symbol hints that do not extend the current word", () => {
+    expect(inlineEditResult({
+      insertMode: "replace-current-word",
+      text: "drv_wait_nfc_clk_reset();",
+      languageId: "c",
+      linePrefix: "    nf",
+      character: "    nf".length,
+      currentWord: "nf",
+      symbolHints: ["drv_wait_nfc_clk_reset"],
+    })).toEqual({
+      reason: "no-insert-text",
+    })
+  })
+
   test("InlineEditBuilder insert-at-cursor uses a zero-width cursor range", () => {
     const prefix = "const value = "
     expect(inlineEdit({
@@ -978,6 +1062,7 @@ function inlineEdit(input: {
   character: number
   lineSuffix?: string
   currentWord?: string
+  symbolHints?: string[]
 }) {
   return inlineEditResult(input).edit
 }
@@ -991,6 +1076,7 @@ function inlineEditResult(input: {
   character: number
   lineSuffix?: string
   currentWord?: string
+  symbolHints?: string[]
 }) {
   const currentWord = input.currentWord
   const startCharacter = currentWord ? input.character - currentWord.length : input.character
@@ -1010,6 +1096,7 @@ function inlineEditResult(input: {
           endCharacter: input.character,
         }
       : undefined,
+    symbolHints: input.symbolHints,
     plan: {
       kind: input.planKind,
       insertMode: input.insertMode,

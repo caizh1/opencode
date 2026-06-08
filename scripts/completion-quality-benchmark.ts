@@ -183,6 +183,19 @@ export type CompletionQualityRecord = {
   graphTopK?: string[]
   mergedTopK?: string[]
   selectedPromptEvidenceNames?: string[]
+  rawSemanticTopK?: string[]
+  rawGraphTopK?: string[]
+  mergedRetrievalTopK?: string[]
+  projectionTopK?: string[]
+  projectedEvidenceNames?: string[]
+  actualPromptEvidenceNames?: string[]
+  droppedProjectedEvidenceNames?: string[]
+  rawTop1Aligned?: boolean
+  retrievalRecallAligned?: boolean
+  projectionSelectedStrongHelper?: boolean
+  promptContainsProjectedHelper?: boolean
+  probeAffectsPrompt?: boolean
+  probeCompleted?: boolean
   projectionToPromptDropReason?: string
   submittedEvidenceNames?: string[]
   expectedSymbolInQaExactRetrieval?: boolean
@@ -331,6 +344,19 @@ export type CompletionQualityLatestReportRecord = {
   graphTopK?: string[]
   mergedTopK?: string[]
   selectedPromptEvidenceNames?: string[]
+  rawSemanticTopK?: string[]
+  rawGraphTopK?: string[]
+  mergedRetrievalTopK?: string[]
+  projectionTopK?: string[]
+  projectedEvidenceNames?: string[]
+  actualPromptEvidenceNames?: string[]
+  droppedProjectedEvidenceNames?: string[]
+  rawTop1Aligned?: boolean
+  retrievalRecallAligned?: boolean
+  projectionSelectedStrongHelper?: boolean
+  promptContainsProjectedHelper?: boolean
+  probeAffectsPrompt?: boolean
+  probeCompleted?: boolean
   projectionToPromptDropReason?: string
   submittedEvidenceNames?: string[]
   expectedSymbolInQaExactRetrieval?: boolean
@@ -712,6 +738,19 @@ async function runDirectQwenAblationFixture(input: {
     graphTopK: evidenceResult?.trace.graphTopK,
     mergedTopK: evidenceResult?.trace.mergedTopK,
     selectedPromptEvidenceNames: evidenceResult?.trace.selectedPromptEvidenceNames,
+    rawSemanticTopK: evidenceResult?.trace.rawSemanticTopK,
+    rawGraphTopK: evidenceResult?.trace.rawGraphTopK,
+    mergedRetrievalTopK: evidenceResult?.trace.mergedRetrievalTopK,
+    projectionTopK: evidenceResult?.trace.projectionTopK,
+    projectedEvidenceNames: evidenceResult?.trace.projectedEvidenceNames,
+    actualPromptEvidenceNames: evidenceResult?.trace.actualPromptEvidenceNames,
+    droppedProjectedEvidenceNames: evidenceResult?.trace.droppedProjectedEvidenceNames,
+    rawTop1Aligned: evidenceResult?.trace.rawTop1Aligned,
+    retrievalRecallAligned: evidenceResult?.trace.retrievalRecallAligned,
+    projectionSelectedStrongHelper: evidenceResult?.trace.projectionSelectedStrongHelper,
+    promptContainsProjectedHelper: evidenceResult?.trace.promptContainsProjectedHelper,
+    probeAffectsPrompt: evidenceResult?.trace.probeAffectsPrompt,
+    probeCompleted: evidenceResult?.trace.probeCompleted,
     projectionToPromptDropReason: evidenceResult?.trace.projectionToPromptDropReason,
     submittedEvidenceNames: evidenceResult?.trace.submittedEvidenceNames,
     expectedSymbolInQaExactRetrieval: evidenceResult?.trace.expectedSymbolInQaExactRetrieval,
@@ -1053,6 +1092,19 @@ function writeDirectAblationDump(input: {
       graphTopK: record.graphTopK,
       mergedTopK: record.mergedTopK,
       selectedPromptEvidenceNames: record.selectedPromptEvidenceNames,
+      rawSemanticTopK: record.rawSemanticTopK,
+      rawGraphTopK: record.rawGraphTopK,
+      mergedRetrievalTopK: record.mergedRetrievalTopK,
+      projectionTopK: record.projectionTopK,
+      projectedEvidenceNames: record.projectedEvidenceNames,
+      actualPromptEvidenceNames: record.actualPromptEvidenceNames,
+      droppedProjectedEvidenceNames: record.droppedProjectedEvidenceNames,
+      rawTop1Aligned: record.rawTop1Aligned,
+      retrievalRecallAligned: record.retrievalRecallAligned,
+      projectionSelectedStrongHelper: record.projectionSelectedStrongHelper,
+      promptContainsProjectedHelper: record.promptContainsProjectedHelper,
+      probeAffectsPrompt: record.probeAffectsPrompt,
+      probeCompleted: record.probeCompleted,
       projectionToPromptDropReason: record.projectionToPromptDropReason,
       submittedEvidenceNames: record.submittedEvidenceNames,
       expectedSymbolInQaExactRetrieval: record.expectedSymbolInQaExactRetrieval,
@@ -2077,6 +2129,19 @@ async function runProviderDryRunCompletionQualityFixture(fixture: CompletionQual
     graphTopK: telemetry?.graphTopK,
     mergedTopK: telemetry?.mergedTopK,
     selectedPromptEvidenceNames: telemetry?.selectedPromptEvidenceNames,
+    rawSemanticTopK: telemetry?.rawSemanticTopK,
+    rawGraphTopK: telemetry?.rawGraphTopK,
+    mergedRetrievalTopK: telemetry?.mergedRetrievalTopK,
+    projectionTopK: telemetry?.projectionTopK,
+    projectedEvidenceNames: telemetry?.projectedEvidenceNames,
+    actualPromptEvidenceNames: telemetry?.actualPromptEvidenceNames,
+    droppedProjectedEvidenceNames: telemetry?.droppedProjectedEvidenceNames,
+    rawTop1Aligned: telemetry?.rawTop1Aligned,
+    retrievalRecallAligned: telemetry?.retrievalRecallAligned,
+    projectionSelectedStrongHelper: telemetry?.projectionSelectedStrongHelper,
+    promptContainsProjectedHelper: telemetry?.promptContainsProjectedHelper,
+    probeAffectsPrompt: telemetry?.probeAffectsPrompt,
+    probeCompleted: telemetry?.probeCompleted,
     projectionToPromptDropReason: telemetry?.projectionToPromptDropReason,
     submittedEvidenceNames: telemetry?.submittedEvidenceNames,
     expectedSymbolInQaExactRetrieval: telemetry?.expectedSymbolInQaExactRetrieval,
@@ -2273,6 +2338,19 @@ function writeLatestDump(input: {
       graphTopK: record.graphTopK,
       mergedTopK: record.mergedTopK,
       selectedPromptEvidenceNames: record.selectedPromptEvidenceNames,
+      rawSemanticTopK: record.rawSemanticTopK,
+      rawGraphTopK: record.rawGraphTopK,
+      mergedRetrievalTopK: record.mergedRetrievalTopK,
+      projectionTopK: record.projectionTopK,
+      projectedEvidenceNames: record.projectedEvidenceNames,
+      actualPromptEvidenceNames: record.actualPromptEvidenceNames,
+      droppedProjectedEvidenceNames: record.droppedProjectedEvidenceNames,
+      rawTop1Aligned: record.rawTop1Aligned,
+      retrievalRecallAligned: record.retrievalRecallAligned,
+      projectionSelectedStrongHelper: record.projectionSelectedStrongHelper,
+      promptContainsProjectedHelper: record.promptContainsProjectedHelper,
+      probeAffectsPrompt: record.probeAffectsPrompt,
+      probeCompleted: record.probeCompleted,
       projectionToPromptDropReason: record.projectionToPromptDropReason,
       submittedEvidenceNames: record.submittedEvidenceNames,
       expectedSymbolInQaExactRetrieval: record.expectedSymbolInQaExactRetrieval,
@@ -2378,6 +2456,19 @@ function evidenceDump(record: CompletionQualityRecord) {
     graphTopK: record.graphTopK,
     mergedTopK: record.mergedTopK,
     selectedPromptEvidenceNames: record.selectedPromptEvidenceNames,
+    rawSemanticTopK: record.rawSemanticTopK,
+    rawGraphTopK: record.rawGraphTopK,
+    mergedRetrievalTopK: record.mergedRetrievalTopK,
+    projectionTopK: record.projectionTopK,
+    projectedEvidenceNames: record.projectedEvidenceNames,
+    actualPromptEvidenceNames: record.actualPromptEvidenceNames,
+    droppedProjectedEvidenceNames: record.droppedProjectedEvidenceNames,
+    rawTop1Aligned: record.rawTop1Aligned,
+    retrievalRecallAligned: record.retrievalRecallAligned,
+    projectionSelectedStrongHelper: record.projectionSelectedStrongHelper,
+    promptContainsProjectedHelper: record.promptContainsProjectedHelper,
+    probeAffectsPrompt: record.probeAffectsPrompt,
+    probeCompleted: record.probeCompleted,
     projectionToPromptDropReason: record.projectionToPromptDropReason,
     submittedEvidenceNames: record.submittedEvidenceNames,
     expectedSymbolInQaExactRetrieval: record.expectedSymbolInQaExactRetrieval,

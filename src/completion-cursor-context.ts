@@ -1,4 +1,5 @@
 export type CommentGuidedStatementHoleKind =
+  | "empty-function-body"
   | "blank-statement"
   | "call-statement"
   | "assignment-rhs"
@@ -9,12 +10,17 @@ export type CommentGuidedStatementHoleKind =
 export type CommentGuidedCursorContextFeatures = {
   previousStatementCalls: string[]
   nextStatementCalls: string[]
+  scopedPreviousStatementCalls?: string[]
+  scopedNextStatementCalls?: string[]
   nearbyLogOrMessageText: string[]
   currentFunctionName?: string
   statementHoleKind: CommentGuidedStatementHoleKind
   flowOrdinalTokens: string[]
   visibleLocals: string[]
   visibleIdentifiers: string[]
+  cursorContextScope?: "current-function" | "file-window-fallback"
+  currentFunctionBodyIsEmpty?: boolean
+  cursorContextFallbackReason?: string
 }
 
 const CONTROL_CALL_NAMES = new Set([
@@ -70,20 +76,35 @@ export function extractCommentGuidedCursorContext(input: {
   suffix?: string
   currentFunctionName?: string
   sourceComment?: string
+  cursorContextScope?: "current-function" | "file-window-fallback"
+  currentFunctionBodyIsEmpty?: boolean
+  cursorContextFallbackReason?: string
 }): CommentGuidedCursorContextFeatures {
   const prefix = input.prefix ?? ""
   const suffix = input.suffix ?? ""
   const currentFunctionName = input.currentFunctionName ?? functionNameFromPrefix(prefix)
   const nearbyText = `${tailLines(prefix, 24)}\n${headLines(suffix, 18)}`
+  const previousStatementCalls = input.currentFunctionBodyIsEmpty
+    ? []
+    : callNames(tailLines(prefix, 20)).filter((name) => name !== currentFunctionName).slice(-8)
+  const nextStatementCalls = input.currentFunctionBodyIsEmpty
+    ? []
+    : callNames(headLines(suffix, 16)).filter((name) => name !== currentFunctionName).slice(0, 8)
+  const nearbyLogOrMessageText = input.currentFunctionBodyIsEmpty ? [] : stringLiterals(nearbyText).slice(0, 8)
   return {
-    previousStatementCalls: callNames(tailLines(prefix, 20)).slice(-8),
-    nextStatementCalls: callNames(headLines(suffix, 16)).slice(0, 8),
-    nearbyLogOrMessageText: stringLiterals(nearbyText).slice(0, 8),
+    previousStatementCalls,
+    nextStatementCalls,
+    scopedPreviousStatementCalls: previousStatementCalls,
+    scopedNextStatementCalls: nextStatementCalls,
+    nearbyLogOrMessageText,
     currentFunctionName,
-    statementHoleKind: statementHoleKind(prefix, suffix),
+    statementHoleKind: input.currentFunctionBodyIsEmpty ? "empty-function-body" : statementHoleKind(prefix, suffix),
     flowOrdinalTokens: flowOrdinalTokens(`${input.sourceComment ?? ""}\n${nearbyText}`),
     visibleLocals: visibleLocalNames(prefix).slice(-24),
     visibleIdentifiers: visibleIdentifiers(prefix).slice(-64),
+    cursorContextScope: input.cursorContextScope,
+    currentFunctionBodyIsEmpty: input.currentFunctionBodyIsEmpty,
+    cursorContextFallbackReason: input.cursorContextFallbackReason,
   }
 }
 

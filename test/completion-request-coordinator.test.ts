@@ -198,6 +198,66 @@ describe("completion request coordinator", () => {
     expect(logs).toContain("cache-hit-compatible line=1 character=6")
   })
 
+  test("moves compatible zero-width cached suffix edits to the current cursor", async () => {
+    const coordinator = new CompletionRequestCoordinator({
+      delay: () => Promise.resolve(),
+    })
+    const first = coordinator.request({
+      key: "line:blank",
+      details: "line=1 character=4",
+      debounceMs: 0,
+      cacheMetadata: cacheMetadata({
+        linePrefix: "    ",
+        character: 4,
+        firstSuffixLine: "return 0;",
+      }),
+      runRemote: async () => ({
+        status: "ok",
+        edit: {
+          insertText: "abc_do_work();",
+          replaceRange: {
+            startLine: 0,
+            startCharacter: 4,
+            endLine: 0,
+            endCharacter: 4,
+          },
+          filterText: "abc_do_work();",
+        },
+        source: "remote",
+      }),
+    })
+    await first.pending
+
+    const second = coordinator.request({
+      key: "line:typed",
+      details: "line=1 character=6",
+      debounceMs: 0,
+      cacheMetadata: cacheMetadata({
+        linePrefix: "    ab",
+        character: 6,
+        firstSuffixLine: "return 0;",
+      }),
+      runRemote: async () => {
+        throw new Error("compatible cache should avoid a remote request")
+      },
+    })
+
+    expect(second.immediate).toEqual({
+      status: "ok",
+      edit: {
+        insertText: "c_do_work();",
+        replaceRange: {
+          startLine: 0,
+          startCharacter: 6,
+          endLine: 0,
+          endCharacter: 6,
+        },
+        filterText: "c_do_work();",
+      },
+      source: "cache",
+    })
+  })
+
   test("does not reuse compatible cache when the suffix line changes", async () => {
     let requests = 0
     const coordinator = new CompletionRequestCoordinator({

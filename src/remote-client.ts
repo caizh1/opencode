@@ -140,6 +140,14 @@ export class RemoteOpenCodeClient {
     })
   }
 
+  async abortSession(sessionID: string, signal?: AbortSignal) {
+    const accepted = await this.request<boolean | undefined>(`/session/${encodeURIComponent(sessionID)}/abort`, {
+      method: "POST",
+      signal,
+    })
+    return accepted !== false
+  }
+
   async subscribeEvents(
     onEvent: (event: unknown) => void,
     signal: AbortSignal,

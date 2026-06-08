@@ -131,6 +131,407 @@ describe("generic C embedded completion evidence builder", () => {
     expect(result.text).toContain("Domain boost:")
   })
 
+  test("uses shared repository local-flow projection for ordinary C body statements", async () => {
+    const capturedCalls: Array<{ question: string; options?: CodeGraphEvidenceQueryOptions }> = []
+    const provider: Pick<CodeGraphContextProvider, "queryEvidence"> = {
+      queryEvidence: async (question: string, options?: CodeGraphEvidenceQueryOptions) => {
+        capturedCalls.push({ question, options })
+        return {
+          retrieval: {
+            mode: "overview",
+            tokens: [],
+            symbols: ["dev_active_dump", "dev_init_phy"],
+            evidence: [
+              {
+                path: "drivers/debug.c",
+                startLine: 10,
+                endLine: 12,
+                kind: "function",
+                score: 9500,
+                reason: "global helper candidate",
+                snippet: "static void dev_active_dump(void)\n{\n  dump_debug_state();\n}",
+              },
+              {
+                path: "drivers/dev.c",
+                startLine: 40,
+                endLine: 44,
+                kind: "function",
+                score: 260,
+                reason: "same-module init helper",
+                snippet: "static void dev_init_phy(dev_ctx_t *ctx)\n{\n  dev_wait_ready(ctx);\n}",
+              },
+            ],
+            candidateCount: 2,
+            packedBytes: 180,
+            omittedCandidates: 0,
+            truncated: false,
+            elapsedMs: 1,
+          },
+          stateMachines: [],
+          summaries: { functions: [], files: [], modules: [], subsystems: [] },
+          evidencePack: {
+            evidence: [],
+            text: "",
+            packedBytes: 0,
+            omittedEvidence: 0,
+            truncated: false,
+            missingEvidence: [],
+          },
+          trace: {
+            traceId: "body-statement-shared",
+            question: "body-statement-shared",
+            intent: "overview",
+            steps: [{ label: "graph", detail: "graph candidates", elapsedMs: 1 }],
+            evidence: [],
+            missingEvidence: [],
+          },
+          answerPolicy: { allowed: true, confidence: "high", reason: "test", requiredCitation: "" },
+          suggestedAnswer: "",
+        }
+      },
+    }
+
+    const result = await buildCEmbeddedCompletionEvidence({
+      codeGraph: provider,
+      plan: plan("body-statement"),
+      question: [
+        "inline completion for c file drivers/dev.c",
+        "current-path: drivers/dev.c",
+        "function: dev_init",
+        "completion-intent: body-statement",
+        "nearby-identifiers: ctx ret",
+      ].join("\n"),
+      relatedPaths: ["drivers/dev.c"],
+      prefix: "int dev_init(dev_ctx_t *ctx)\n{\n  dev_power_on(ctx);\n  ",
+      suffix: "\n  dev_enable(ctx);\n}\n",
+    })
+
+    expect(capturedCalls[0]?.question).toContain("cursor-task: rank evidence for a blank or ordinary C/C++ statement hole")
+    expect(capturedCalls[0]?.question).toContain("expected-evidence: current-function flow")
+    expect(capturedCalls[0]?.question).toContain("avoid-evidence: broad debug, dump, print")
+    expect(capturedCalls[0]?.options?.retrievalMode).toBe("hybrid")
+    expect(result.trace.retrievalShape).toBe("default")
+    expect(result.trace.projectedEvidenceNames?.[0]).toBe("dev_init_phy")
+    expect(result.trace.actualPromptEvidenceNames).toContain("dev_init_phy")
+    expect(result.trace.evidenceRoles).toContain("local-flow")
+    expect(result.text).toContain("dev_init_phy")
+    expect(result.text).not.toContain("dev_active_dump")
+  })
+
+  test("scopes ordinary body-statement cursor context to an empty current function", async () => {
+    const capturedCalls: Array<{ question: string; options?: CodeGraphEvidenceQueryOptions }> = []
+    const provider: Pick<CodeGraphContextProvider, "queryEvidence"> = {
+      queryEvidence: async (question: string, options?: CodeGraphEvidenceQueryOptions) => {
+        capturedCalls.push({ question, options })
+        return {
+          retrieval: {
+            mode: "overview",
+            tokens: [],
+            symbols: ["MSG", "dev_empty_init_apply"],
+            evidence: [
+              {
+                path: "drivers/dev.c",
+                startLine: 4,
+                endLine: 4,
+                kind: "function",
+                score: 9000,
+                reason: "logging helper",
+                snippet: "void MSG(int cls, int level, const char *fmt);",
+              },
+              {
+                path: "drivers/dev.c",
+                startLine: 30,
+                endLine: 35,
+                kind: "function",
+                score: 260,
+                reason: "same-module empty init style",
+                snippet: "static void dev_empty_init_apply(struct controller *ctrl)\n{\n  controller_setup(ctrl);\n}",
+              },
+            ],
+            candidateCount: 2,
+            packedBytes: 180,
+            omittedCandidates: 0,
+            truncated: false,
+            elapsedMs: 1,
+          },
+          stateMachines: [],
+          summaries: { functions: [], files: [], modules: [], subsystems: [] },
+          evidencePack: {
+            evidence: [],
+            text: "",
+            packedBytes: 0,
+            omittedEvidence: 0,
+            truncated: false,
+            missingEvidence: [],
+          },
+          trace: {
+            traceId: "empty-body-scoped",
+            question: "empty-body-scoped",
+            intent: "overview",
+            steps: [{ label: "graph", detail: "graph candidates", elapsedMs: 1 }],
+            evidence: [],
+            missingEvidence: [],
+          },
+          answerPolicy: { allowed: true, confidence: "high", reason: "test", requiredCitation: "" },
+          suggestedAnswer: "",
+        }
+      },
+    }
+
+    const result = await buildCEmbeddedCompletionEvidence({
+      codeGraph: provider,
+      plan: plan("body-statement"),
+      question: [
+        "inline completion for c file drivers/dev.c",
+        "current-path: drivers/dev.c",
+        "function: dev_empty_init",
+        "completion-intent: body-statement",
+      ].join("\n"),
+      relatedPaths: ["drivers/dev.c"],
+      prefix: [
+        "static void adjacent_init(void)",
+        "{",
+        "  MSG(DEV_C, 0, \"adjacent init\\n\");",
+        "  controller_power_on();",
+        "}",
+        "",
+        "static void dev_empty_init(struct controller *ctrl)",
+        "{",
+        "  ",
+      ].join("\n"),
+      suffix: [
+        "",
+        "}",
+        "",
+        "static void adjacent_after(void)",
+        "{",
+        "  controller_enable();",
+        "}",
+      ].join("\n"),
+      cursorPrefix: [
+        "static void dev_empty_init(struct controller *ctrl)",
+        "{",
+        "  ",
+      ].join("\n"),
+      cursorSuffix: [
+        "",
+        "}",
+      ].join("\n"),
+      cursorContextScope: "current-function",
+      currentFunctionBodyIsEmpty: true,
+    })
+
+    expect(capturedCalls[0]?.question).not.toContain("adjacent_init")
+    expect(capturedCalls[0]?.question).not.toContain("controller_power_on")
+    expect(capturedCalls[0]?.question).not.toContain("controller_enable")
+    expect(result.trace.cursorContextScope).toBe("current-function")
+    expect(result.trace.currentFunctionBodyIsEmpty).toBe(true)
+    expect(result.trace.scopedPreviousStatementCalls).toEqual([])
+    expect(result.trace.scopedNextStatementCalls).toEqual([])
+    expect(result.trace.actualPromptEvidenceNames).toContain("dev_empty_init_apply")
+    expect(result.text).toContain("dev_empty_init_apply")
+    expect(result.text).not.toContain("Symbol: MSG")
+  })
+
+  test("uses shared repository projection for broad C symbol prefixes", async () => {
+    const capturedCalls: Array<{ question: string; options?: CodeGraphEvidenceQueryOptions }> = []
+    const provider: Pick<CodeGraphContextProvider, "queryEvidence"> = {
+      queryEvidence: async (question: string, options?: CodeGraphEvidenceQueryOptions) => {
+        capturedCalls.push({ question, options })
+        return {
+          retrieval: {
+            mode: "overview",
+            tokens: [],
+            symbols: ["dev_active_dump", "dev_enable_controller_flags"],
+            evidence: [
+              {
+                path: "drivers/debug.c",
+                startLine: 10,
+                endLine: 12,
+                kind: "function",
+                score: 9500,
+                reason: "global prefix candidate",
+                snippet: "static void dev_active_dump(void)\n{\n  dump_debug_state();\n}",
+              },
+              {
+                path: "drivers/dev.c",
+                startLine: 24,
+                endLine: 28,
+                kind: "function",
+                score: 260,
+                reason: "same-module helper",
+                snippet: "static void dev_enable_controller_flags(dev_ctx_t *ctx)\n{\n  ctx->status |= DEV_FLAG_ENABLE;\n}",
+              },
+            ],
+            candidateCount: 2,
+            packedBytes: 160,
+            omittedCandidates: 0,
+            truncated: false,
+            elapsedMs: 1,
+          },
+          stateMachines: [],
+          summaries: { functions: [], files: [], modules: [], subsystems: [] },
+          evidencePack: {
+            evidence: [],
+            text: "",
+            packedBytes: 0,
+            omittedEvidence: 0,
+            truncated: false,
+            missingEvidence: [],
+          },
+          trace: {
+            traceId: "symbol-prefix-shared",
+            question: "symbol-prefix-shared",
+            intent: "overview",
+            steps: [{ label: "graph", detail: "graph candidates", elapsedMs: 1 }],
+            evidence: [],
+            missingEvidence: [],
+          },
+          answerPolicy: { allowed: true, confidence: "high", reason: "test", requiredCitation: "" },
+          suggestedAnswer: "",
+        }
+      },
+    }
+
+    const result = await buildCEmbeddedCompletionEvidence({
+      codeGraph: provider,
+      plan: {
+        ...plan("symbol-prefix"),
+        targetSymbol: "de",
+        replaceCurrentWord: true,
+        insertMode: "replace-current-word",
+      },
+      question: [
+        "inline completion for c file drivers/dev.c",
+        "current-path: drivers/dev.c",
+        "function: dev_probe",
+        "completion-intent: symbol-prefix",
+        "current-word: de",
+        "nearby-identifiers: ctx ret",
+      ].join("\n"),
+      relatedPaths: ["drivers/dev.c"],
+      prefix: "int dev_probe(dev_ctx_t *ctx)\n{\n  dev_lock(ctx);\n  de",
+      suffix: "\n  dev_unlock(ctx);\n}\n",
+    })
+
+    const semanticCall = capturedCalls.find((call) => call.options?.retrievalMode === "hybrid")
+    const graphCall = capturedCalls.find((call) => call.options?.retrievalMode === "graph-only")
+    expect(semanticCall?.question).toContain("User question:")
+    expect(semanticCall?.question).toContain("already typed identifier prefix: de")
+    expect(semanticCall?.question).toContain("not as the whole retrieval query")
+    expect(semanticCall?.question).not.toContain("typed-prefix-hint: de")
+    expect(semanticCall?.question).not.toContain("avoid-evidence: broad debug, dump, print")
+    expect(graphCall?.question).toContain("completion-intent: symbol-prefix")
+    expect(result.trace.symbolPrefixRetrievalShape).toBe("qa-semantic")
+    expect(result.trace.symbolPrefixSemanticQueryText).toContain("already typed identifier prefix: de")
+    expect(result.trace.symbolPrefixProjectedEvidenceNames?.[0]).toBe("dev_enable_controller_flags")
+    expect(result.trace.symbolPrefixCompatibilityScores?.find((item) => item.name === "dev_active_dump")?.broadUtility).toBe(true)
+    expect(result.evidenceKinds).toContain("c-helper-usage")
+    expect(result.trace.evidenceRoles).toContain("prefix-compatible-helper")
+    expect(result.text).toContain("dev_enable_controller_flags")
+    expect(result.text).not.toContain("dev_active_dump")
+  })
+
+  test("keeps typed-prefix compatible init helpers in prompt evidence when unrelated macros have higher raw score", async () => {
+    const provider: Pick<CodeGraphContextProvider, "queryEvidence"> = {
+      queryEvidence: async () => ({
+        retrieval: {
+          mode: "overview",
+          tokens: [],
+          symbols: ["REG_ACCESS", "TEMP_TO_ABS", "ct_controller_init_common"],
+          evidence: [
+            {
+              path: "drivers/common/registers.h",
+              startLine: 4,
+              endLine: 5,
+              kind: "macro",
+              score: 2400,
+              reason: "raw high score macro",
+              snippet: "name: REG_ACCESS\n#define REG_ACCESS(addr) (*(volatile uint32_t *)(addr))",
+            },
+            {
+              path: "drivers/common/temperature.h",
+              startLine: 8,
+              endLine: 9,
+              kind: "macro",
+              score: 2300,
+              reason: "raw high score constant helper",
+              snippet: "name: TEMP_TO_ABS\n#define TEMP_TO_ABS(celsius) ((celsius) + 273)",
+            },
+            {
+              path: "drivers/ctrl/init.c",
+              startLine: 20,
+              endLine: 24,
+              kind: "function",
+              score: 180,
+              reason: "lower raw score same-module init helper",
+              snippet: "void ct_controller_init_common(void)\n{\n  ct_clock_enable();\n  ct_reset_release();\n}",
+            },
+          ],
+          candidateCount: 3,
+          packedBytes: 260,
+          omittedCandidates: 0,
+          truncated: false,
+          elapsedMs: 1,
+        },
+        stateMachines: [],
+        summaries: { functions: [], files: [], modules: [], subsystems: [] },
+        evidencePack: {
+          evidence: [],
+          text: "",
+          packedBytes: 0,
+          omittedEvidence: 0,
+          truncated: false,
+          missingEvidence: [],
+        },
+        trace: {
+          traceId: "symbol-prefix-projection",
+          question: "symbol-prefix-projection",
+          intent: "overview",
+          steps: [{ label: "graph", detail: "graph candidates", elapsedMs: 1 }],
+          evidence: [],
+          missingEvidence: [],
+        },
+        answerPolicy: { allowed: true, confidence: "high", reason: "test", requiredCitation: "" },
+        suggestedAnswer: "",
+      }),
+    }
+
+    const result = await buildCEmbeddedCompletionEvidence({
+      codeGraph: provider,
+      plan: {
+        ...plan("symbol-prefix"),
+        targetSymbol: "ct",
+        replaceCurrentWord: true,
+        insertMode: "replace-current-word",
+      },
+      question: [
+        "inline completion for c file drivers/ctrl/controller.c",
+        "current-path: drivers/ctrl/controller.c",
+        "function: ct_controller_init",
+        "completion-intent: symbol-prefix",
+        "current-word: ct",
+        "nearby-identifiers: ctx",
+      ].join("\n"),
+      relatedPaths: ["drivers/ctrl/controller.c"],
+      prefix: "int ct_controller_init(void)\n{\n  ct",
+      suffix: "\n}\n",
+    })
+
+    expect(result.trace.symbolPrefixProjectedEvidenceNames?.[0]).toBe("ct_controller_init_common")
+    expect(result.trace.actualPromptEvidenceNames).toContain("ct_controller_init_common")
+    expect(result.trace.actualPromptEvidenceNames).not.toContain("REG_ACCESS")
+    expect(result.trace.actualPromptEvidenceNames).not.toContain("TEMP_TO_ABS")
+    expect(result.trace.typedPrefixCompatibleCandidates).toEqual(expect.arrayContaining(["ct_controller_init_common"]))
+    expect(result.trace.typedPrefixCompatiblePromptNames).toContain("ct_controller_init_common")
+    expect(result.trace.symbolPrefixRetrievalShape).toBe("qa-semantic")
+    expect(result.trace.symbolPrefixSemanticTopK).toContain("ct_controller_init_common")
+    expect(result.trace.symbolPrefixCurrentFunctionTokens).toEqual(expect.arrayContaining(["controller", "init"]))
+    expect(result.trace.symbolPrefixNonPrefixDroppedNames).toEqual(expect.arrayContaining(["REG_ACCESS", "TEMP_TO_ABS"]))
+    expect(result.text).toContain("ct_controller_init_common")
+    expect(result.text).not.toContain("REG_ACCESS")
+  })
+
   test("builds comment-guided semantic and similar function evidence", async () => {
     const commentPlan: CompletionPlan = {
       ...plan("body-statement"),
@@ -167,7 +568,7 @@ describe("generic C embedded completion evidence builder", () => {
     expect(result.text).toContain("Evidence role:")
   })
 
-  test("defaults comment-guided retrieval to QA-exact shape without inline timeout budget", async () => {
+  test("defaults comment-guided retrieval to QA-exact shape with capped completion budget", async () => {
     const capturedCalls: Array<{ question: string; options?: CodeGraphEvidenceQueryOptions }> = []
     const provider: Pick<CodeGraphContextProvider, "queryEvidence"> = {
       queryEvidence: async (question: string, options?: CodeGraphEvidenceQueryOptions) => {
@@ -247,18 +648,22 @@ describe("generic C embedded completion evidence builder", () => {
     expect(semanticCall?.question).not.toContain("avoid-evidence: current function body summaries")
     expect(semanticCall?.question).not.toContain("prefix-context:")
     expect(semanticCall?.question).not.toContain("suffix-context:")
-    expect(semanticCall?.options?.maxEvidenceItems).toBeUndefined()
-    expect(semanticCall?.options?.maxEvidenceBytes).toBeUndefined()
+    expect(semanticCall?.options?.maxEvidenceItems).toBeGreaterThanOrEqual(32)
+    expect(semanticCall?.options?.maxEvidenceBytes).toBeGreaterThanOrEqual(24000)
+    expect(semanticCall?.options?.latencyBudgetMs).toBe(2500)
     expect(graphCall?.question).toContain("completion-intent: comment-guided-c-code")
     expect(graphCall?.question).toContain("source-comment: wait clock ready")
     expect(result.trace.retrievalShape).toBe("qa-exact")
-    expect(result.trace.retrievalBudgetMs).toBeUndefined()
+    expect(result.trace.retrievalBudgetMs).toBe(2500)
     expect(result.trace.retrievalTimedOut).toBe(false)
     expect(result.trace.semanticQueryText).toContain("wait clock ready")
     expect(result.trace.graphQuestionTextHash).toMatch(/^sha256:/)
     expect(result.trace.qaExactTopK).toContain("wait_clock_ready")
     expect(result.trace.qaExactSubmittedEvidence).toContain("wait_clock_ready")
     expect(result.trace.selectedPromptEvidenceNames).toContain("wait_clock_ready")
+    expect(result.trace.projectedEvidenceNames).toContain("wait_clock_ready")
+    expect(result.trace.actualPromptEvidenceNames).toContain("wait_clock_ready")
+    expect(result.trace.probeAffectsPrompt).toBe(false)
     expect(result.text).toContain("wait_clock_ready")
   })
 

@@ -132,6 +132,20 @@ describe("chat history flow", () => {
     expect(chatStreamSource).toContain('case "session.status"')
   })
 
+  test("cancels active async sends through remote abort and suppresses late stream events", () => {
+    expect(chatViewSource).toContain("SESSION_ABORT_TIMEOUT_MS")
+    expect(chatViewSource).toContain("await this.cancelActiveSend()")
+    expect(chatViewSource).toContain("client.abortSession(sessionID, signal)")
+    expect(chatViewSource).toContain("this.beginActiveSend(client, sessionID)")
+    expect(chatViewSource).toContain("this.startSendStatusWatchdog(client, sessionID, generation)")
+    expect(chatViewSource).toContain("this.stopSendStatusWatchdog()")
+    expect(chatViewSource).toContain("this.stopMessagePollingFallback()")
+    expect(chatViewSource).toContain("suppressStreamingEventsForSession")
+    expect(chatViewSource).toContain("shouldSuppressStreamingEvent")
+    expect(chatViewSource).toContain("openCodeEventSessionID")
+    expect(chatViewSource).toContain("sendCancellable:")
+  })
+
   test("recovers the composer from remote retry session statuses", () => {
     expect(chatViewSource).toContain("SEND_STATUS_POLL_INTERVAL_MS")
     expect(chatViewSource).toContain("client.getSessionStatuses(signal)")

@@ -19,14 +19,22 @@ export type CompletionModelRoute =
     }
   | {
       kind: "model"
-      reason: "ordinary-code" | "instruction-task" | "symbol-assist"
+      reason: "ordinary-code" | "instruction-task" | "symbol-assist" | "comment-guided-c-code"
       promptKind: CompletionPromptKind
       modelProfile: CompletionProfile
       textProfile: CompletionProfile
       maxTokens: number
       temperature: number
       topP?: number
+      deterministicSymbolSuppressed?: boolean
+      deterministicSymbolSuppressReason?: CEmbeddedSymbolPrefixSuppressReason
+      symbolPrefixCandidateTopK?: string[]
+      symbolPrefixRoute?: "fim"
     }
+
+export type CEmbeddedSymbolPrefixSuppressReason =
+  | "short-prefix"
+  | "ambiguous-prefix"
 
 export type RouteCompletionModelInput = {
   plan: CompletionPlan
@@ -91,12 +99,12 @@ function commentSymbolInstructionPlan(plan: CompletionPlan, targetSymbol: string
 
 export function routeCompletionModel(input: RouteCompletionModelInput): CompletionModelRoute {
   const plan = resolveCompletionPlanAfterSymbolRetrieval(input.plan, input.retrievedSnippets ?? [])
-  const deterministicSymbol = deterministicSymbolText(plan, input.retrievedSnippets ?? [])
-  if (deterministicSymbol) {
+  const deterministicSymbol = deterministicSymbolDecision(plan, input.retrievedSnippets ?? [])
+  if (deterministicSymbol.text) {
     return {
       kind: "deterministic-symbol",
       reason: "high-confidence-symbol",
-      text: deterministicSymbol,
+      text: deterministicSymbol.text,
       maxTokens: 0,
       textProfile: "generic-chat",
     }
@@ -130,7 +138,7 @@ export function routeCompletionModel(input: RouteCompletionModelInput): Completi
     case "comment-guided-c-code":
       return {
         kind: "model",
-        reason: "ordinary-code",
+        reason: "comment-guided-c-code",
         promptKind: "qwen-fim",
         modelProfile: input.settings.completion.profile,
         textProfile: input.settings.completion.profile,
@@ -157,6 +165,12 @@ export function routeCompletionModel(input: RouteCompletionModelInput): Completi
             : clampTokens(input.settings.completion.maxTokens || 192, 128, 256),
         temperature: Math.min(input.settings.completion.temperature, 0.2),
         topP: input.settings.completion.topP,
+        ...(deterministicSymbol.suppressed ? {
+          deterministicSymbolSuppressed: true,
+          deterministicSymbolSuppressReason: deterministicSymbol.suppressed.reason,
+          symbolPrefixCandidateTopK: deterministicSymbol.suppressed.candidateTopK,
+          symbolPrefixRoute: "fim" as const,
+        } : {}),
       }
     case "disabled":
       return instructionRoute(input, 0)
@@ -187,6 +201,7 @@ export function routeLogValue(route: CompletionModelRoute, settings?: RemoteSett
     `promptKind=${route.promptKind}`,
     `maxTokens=${route.maxTokens}`,
     `temperature=${route.temperature}`,
+    route.deterministicSymbolSuppressed ? `deterministicSymbolSuppressed=${route.deterministicSymbolSuppressReason}` : "",
   ].filter(Boolean).join(" ")
 }
 
@@ -204,22 +219,59 @@ function instructionRoute(input: RouteCompletionModelInput, maxTokens: number): 
 }
 
 function deterministicSymbolText(plan: CompletionPlan, snippets: RetrievedCompletionSnippet[]) {
-  if (plan.kind !== "symbol-completion" && plan.kind !== "comment-symbol-reference" && !isCEmbeddedSymbolPrefixPlan(plan)) return ""
-  const target = plan.targetSymbol?.toLowerCase()
-  if (!target) return ""
+  return deterministicSymbolDecision(plan, snippets).text
+}
 
-  const selected = snippets.find((snippet) => {
+function deterministicSymbolDecision(plan: CompletionPlan, snippets: RetrievedCompletionSnippet[]): {
+  text: string
+  suppressed?: {
+    reason: CEmbeddedSymbolPrefixSuppressReason
+    candidateTopK: string[]
+  }
+} {
+  if (plan.kind !== "symbol-completion" && plan.kind !== "comment-symbol-reference" && !isCEmbeddedSymbolPrefixPlan(plan)) return { text: "" }
+  const target = plan.targetSymbol?.toLowerCase()
+  if (!target) return { text: "" }
+
+  const candidates = snippets.filter((snippet) => {
     const name = snippet.name?.toLowerCase()
     if (!name || name.length <= target.length) return false
     if (!name.startsWith(target)) return false
     return (snippet.score ?? 0) >= 1000
   })
-
-  if (!selected?.name) return ""
   if (isCEmbeddedSymbolPrefixPlan(plan)) {
-    return selected.name.slice(plan.targetSymbol?.length ?? 0)
+    const suppressed = cEmbeddedSymbolPrefixSuppression(plan, candidates)
+    if (suppressed) return { text: "", suppressed }
   }
-  return selected.name
+
+  const selected = candidates[0]
+  if (!selected?.name) return { text: "" }
+  if (isCEmbeddedSymbolPrefixPlan(plan)) {
+    return { text: selected.name.slice(plan.targetSymbol?.length ?? 0) }
+  }
+  return { text: selected.name }
+}
+
+function cEmbeddedSymbolPrefixSuppression(
+  plan: CompletionPlan,
+  candidates: RetrievedCompletionSnippet[],
+): { reason: CEmbeddedSymbolPrefixSuppressReason; candidateTopK: string[] } | undefined {
+  const target = plan.targetSymbol ?? ""
+  const candidateTopK = candidates.map((candidate) => candidate.name ?? "").filter(Boolean).slice(0, 8)
+  if (target.length < 3) {
+    return { reason: "short-prefix", candidateTopK }
+  }
+  const topScore = Math.max(...candidates.map((candidate) => snippetScore(candidate)))
+  const closeCandidates = candidates.filter((candidate) => snippetScore(candidate) >= topScore - 250)
+  if (closeCandidates.length >= 2) {
+    return { reason: "ambiguous-prefix", candidateTopK }
+  }
+  return
+}
+
+function snippetScore(snippet: RetrievedCompletionSnippet) {
+  const score = snippet.score ?? 0
+  return Number.isFinite(score) ? score : 0
 }
 
 function isCEmbeddedSymbolPrefixPlan(plan: CompletionPlan) {

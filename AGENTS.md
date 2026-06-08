@@ -39,6 +39,7 @@
 
 - 设计、修复或评估 AI inline completion 规则时，不得用具体函数名、变量名、注释句子、业务字符串或单个示例文本做生产逻辑硬匹配。函数名、注释、自然语言意图和项目符号写法都是开放集合，必须用可泛化的结构性规则处理。
 - 允许在测试 fixture、回归用例和文档说明中使用具体示例；但生产逻辑不得以这些示例字符串作为特殊分支、白名单、黑名单或正则锚点。
+- 严禁在生产逻辑中 hardcode 单个现场问题或回归样例里的具体字符串，包括但不限于用户已输入的 typed prefix、函数名、变量名、路径、完整注释文本、业务域词、日志片段或单个 benchmark fixture。此类字符串只允许出现在测试 fixture、回归断言、文档说明、benchmark/report 输出中。生产逻辑必须通过通用结构信号实现，例如 `currentWord` 与模型输出的 prefix/suffix 关系、真实 codegraph/RAG/evidence symbol hints、C identifier 语法、cursor prefix/suffix、token coverage、semantic similarity、graph proximity、edit contract 校验等。
 - 补全规则应优先基于通用信号：语言语法、identifier/token 结构、当前位置上下文、代码图符号解析、前缀/缩写匹配、同文件/同目录距离、已有测试形态、prefix/suffix 安全检查，以及模型输出的结构化后处理。
 - 对注释意图补全，不要硬匹配某句自然语言。应先识别注释中的通用代码符号或符号前缀，并通过项目符号解析确认其真实性；自然语言意图本身交给 instruction prompt 和上下文理解。
 - 对已知回归用例，只能验证“泛化规则能覆盖该例子”，不能把回归样例里的函数名、注释文本或路径写成专门逻辑。

@@ -4,6 +4,7 @@ import {
   type CompletionEdit,
   type CompletionEditInput,
   type CompletionSelectedCompletionInfo,
+  type CompletionTypedPrefixAdaptation,
 } from "./completion-edit"
 import { completionPostprocessDebug, postprocessCompletion, trimCompletionForCIntent, type CompletionPostprocessDebug } from "./completion-postprocess"
 import { fallbackCompletionText } from "./completion-test-fallback"
@@ -35,6 +36,7 @@ export type CompletionCandidatePipelineResult = {
   reasons: string[]
   rejectionReason?: string
   postprocessDebug: CompletionPostprocessDebug
+  typedPrefixAdaptation?: CompletionTypedPrefixAdaptation
   latencyMs: {
     postprocess: number
     edit: number
@@ -200,6 +202,7 @@ export function runCompletionCandidatePipeline(input: CompletionCandidatePipelin
     editText,
     edit: validation.edit,
     decision: "accepted",
+    typedPrefixAdaptation: validation.edit.typedPrefix,
     reasons: [
       ...(postprocessResult.reason ? [`postprocess:${postprocessResult.reason}`] : []),
       ...(fallbackText && editText === fallbackText && fallbackText !== postprocessText ? ["fallback:used"] : []),

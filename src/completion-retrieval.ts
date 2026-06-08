@@ -38,7 +38,7 @@ export function completionRetrievalPlan(input: CompletionRetrievalQueryInput): C
     return commentGuidedCCodePlan(input)
   }
 
-  if (input.plan.targetSymbol) {
+  if (input.plan.targetSymbol && !isCEmbeddedSymbolPrefixPlan(input.plan)) {
     return retrievalPlan({
       queries: [input.plan.targetSymbol],
       evidenceQuestion: `Find the target symbol ${input.plan.targetSymbol} and nearby usage for inline completion.`,
@@ -61,11 +61,15 @@ export function completionRetrievalPlan(input: CompletionRetrievalQueryInput): C
       return memberAccessPlan(input)
     case "symbol-prefix":
       return retrievalPlan({
-        queries: [input.currentWord, lastIdentifier(input.linePrefix)],
+        queries: [input.currentWord, lastIdentifier(input.linePrefix), recentStatementIdentifier(input.linePrefix), ...nearbyCommentTokens(input.linePrefix).slice(0, 2)],
         evidenceQuestion: evidenceQuestion("symbol-prefix", [
           ["current-word", input.currentWord],
           ["last-identifier", lastIdentifier(input.linePrefix)],
-        ], "Find matching symbols, declarations, macros, and nearby usage."),
+          ["recent-identifier", recentStatementIdentifier(input.linePrefix)],
+          ["nearby-comment-tokens", nearbyCommentTokens(input.linePrefix).join(" ")],
+          ["line-prefix-shape", lineShape(input.linePrefix)],
+          ["line-suffix-shape", lineShape(input.lineSuffix)],
+        ], "Find matching symbols, declarations, macros, current-function flow, nearby helper calls, and same-module usage. Treat very short current-word prefixes as weak hints; prioritize cursor-local context."),
         policyLabel: "c-symbol-prefix",
         preferredKinds: ["function", "type", "macro", "global"],
       })
@@ -152,6 +156,10 @@ export function completionRetrievalPlan(input: CompletionRetrievalQueryInput): C
         preferredKinds: ["function", "type", "macro", "global"],
       })
   }
+}
+
+function isCEmbeddedSymbolPrefixPlan(plan: CompletionPlan) {
+  return plan.kind === "c-embedded-code" && plan.cIntent === "symbol-prefix"
 }
 
 function commentGuidedCCodePlan(input: CompletionRetrievalQueryInput): CompletionRetrievalPlan {

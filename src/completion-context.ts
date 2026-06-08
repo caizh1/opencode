@@ -202,6 +202,9 @@ function contextBlocks(input: PackCompletionContextInput): PackedContextBlock[] 
 }
 
 function targetSymbolBlocks(plan: CompletionPlan, snippets: RetrievedCompletionSnippet[]) {
+  if (plan.kind === "c-embedded-code" && plan.cIntent === "symbol-prefix") {
+    return []
+  }
   if (plan.kind === "comment-guided-c-code") {
     const target = plan.targetSymbol?.toLowerCase()
     if (!target) return []

@@ -33,6 +33,8 @@ OpenCode Remote 不让远端 OpenCode 直接读取本地文件。扩展在 VS Co
 - `Local workspace context:` 当前文件、选区、`@` 文件、附加文件、诊断和可选 git diff。
 - `Local code graph context:` 可选本地 C/C++ 图检索结果，例如命中符号、调用者、被调用者、include 关系和少量证据片段。
 
+详细的 QA prompt、上下文选择、光标语义和 evidence 注入流程见 [`docs/chat-qa-flow.md`](docs/chat-qa-flow.md)。
+
 如果问题明显是在询问本地文件，但扩展没有捕获到可用文件内容，local-only guard 会阻止发送或给出警告，避免远端服务去读自己的服务器文件系统。
 
 ## 本地 Code Graph
@@ -151,6 +153,8 @@ opencode serve
 - 点击 `Attach` 手动附加本地文件到后续上下文。
 - 点击 `Refresh` 刷新当前文件和上下文状态。
 - 使用 `New Remote OpenCode Session` 创建新的插件聊天 session。
+
+如果问题指向某个具体代码位置，建议选中目标区域，或在问题中写明函数名、行号和附近代码；普通 QA 不会把当前光标行列作为独立语义发送给模型。
 
 会话历史会过滤掉非本插件创建的远端 session。这样即使远端 OpenCode 还保存着其他工具、后台任务或 inline completion 产生的历史记录，VS Code 侧聊天列表也只显示 `VS Code chat` 类型的插件聊天。
 

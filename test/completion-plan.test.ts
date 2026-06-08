@@ -527,6 +527,37 @@ describe("completion planner", () => {
     expect(plan.targetSymbol).toBeUndefined()
   })
 
+  test("routes comment-guided C typed prefixes through current-word replacement", () => {
+    const lines = [
+      "static int controller_init(void)",
+      "{",
+      "    // wait for controller clock reset",
+      "    nf",
+      "    return 0;",
+      "}",
+    ]
+    const plan = planCompletion({
+      languageId: "c",
+      previousNonEmptyLine: lines[2],
+      nextNonEmptyLine: lines[4],
+      linePrefix: lines[3],
+      lineSuffix: "",
+      currentWord: "nf",
+      lines,
+      line: 3,
+      triggerKind: "automatic",
+    })
+
+    expect(plan).toMatchObject({
+      kind: "comment-guided-c-code",
+      insertMode: "replace-current-word",
+      replaceCurrentWord: true,
+      sourceComment: "// wait for controller clock reset",
+      useFim: true,
+      useInstruction: false,
+    })
+  })
+
   test("does not let implementation comments fall back to previous-comment continuation", () => {
     const lines = [
       "/* header intentionally omits an opening brace in the fixture */",

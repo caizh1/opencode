@@ -13,7 +13,7 @@ import {
 } from "./chat-export"
 import { createChatViewHtml } from "./chat-html"
 import { CHAT_SESSION_TITLE, isPluginChatMessage, isPluginChatSession } from "./chat-session"
-import { applyOpenCodeEventToMessages, normalizeOpenCodeEvent } from "./chat-stream"
+import { applyOpenCodeEventToMessages, normalizeOpenCodeEvent, openCodeEventSessionID } from "./chat-stream"
 import type { CodeGraphContextProvider } from "./codegraph-types"
 import type { CodeIntelligenceSnapshot } from "./analysis-types"
 import { CompletionModelClient, completionModel } from "./completion-model-client"
@@ -46,6 +46,7 @@ import type {
   OpenCodeMessage,
   OpenCodeModelInfo,
   OpenCodePart,
+  OpenCodeEvent,
   OpenCodeSession,
   OpenCodeSessionStatus,
   PromptModel,
@@ -63,6 +64,7 @@ const AGENT_REFRESH_TIMEOUT_MS = 8000
 const SESSION_REFRESH_TIMEOUT_MS = 8000
 const MESSAGE_REFRESH_TIMEOUT_MS = 5000
 const SESSION_STATUS_TIMEOUT_MS = 5000
+const SESSION_ABORT_TIMEOUT_MS = 5000
 const EVENT_READY_TIMEOUT_MS = 8000
 const SEND_STATUS_POLL_INTERVAL_MS = 5000
 const MESSAGE_POLL_INTERVAL_MS = 1000
@@ -232,6 +234,7 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
   private activeSendGeneration = 0
   private sendStatusTimer?: ReturnType<typeof setTimeout>
   private messagePollTimer?: ReturnType<typeof setTimeout>
+  private suppressedStreamingSessionID?: string
   private readonly eventTypeCounts = new Map<string, number>()
 
   constructor(private readonly deps: RemoteChatViewProviderDeps) {}
@@ -413,11 +416,17 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
     this.eventStreamFailed = false
   }
 
-  private startSendStatusWatchdog(client: RemoteOpenCodeClient, sessionID: string) {
-    this.stopSendStatusWatchdog()
+  private beginActiveSend(client: RemoteOpenCodeClient, sessionID: string) {
     const generation = ++this.activeSendGeneration
     this.activeSend = { client, sessionID, generation }
-    this.scheduleSendStatusWatchdog(client, sessionID, generation)
+    return generation
+  }
+
+  private startSendStatusWatchdog(client: RemoteOpenCodeClient, sessionID: string, generation?: number) {
+    this.stopSendStatusWatchdog()
+    const activeGeneration = generation ?? ++this.activeSendGeneration
+    this.activeSend = { client, sessionID, generation: activeGeneration }
+    this.scheduleSendStatusWatchdog(client, sessionID, activeGeneration)
   }
 
   private scheduleSendStatusWatchdog(client: RemoteOpenCodeClient, sessionID: string, generation: number) {
@@ -470,13 +479,54 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
     this.sending = false
   }
 
-  private cancelActiveSend() {
-    if (!this.sending && !this.activeSendController) return
-    this.deps.output.appendLine("[send] canceled from webview")
-    this.activeSendController?.abort()
+  private async cancelActiveSend() {
+    const activeSend = this.activeSend
+    const sessionID = activeSend?.sessionID
+    const client = activeSend?.client
+    const controller = this.activeSendController
+    if (!this.sending && !controller && !activeSend) return
+    this.deps.output.appendLine(`[send] canceled from webview${sessionID ? ` for ${sessionID}` : ""}`)
+    controller?.abort()
+    this.suppressStreamingEventsForSession(sessionID)
     this.clearActiveSendState()
     this.messages = [...this.messages, localMessage("error", "Request canceled.")]
     this.postState()
+    if (!client || !sessionID) return
+
+    try {
+      const accepted = await withRequestTimeout("session abort", SESSION_ABORT_TIMEOUT_MS, (signal) =>
+        client.abortSession(sessionID, signal),
+      )
+      this.deps.output.appendLine(`[send] remote abort ${sessionID}: ${accepted ? "accepted" : "not accepted"}`)
+      if (!accepted) {
+        this.messages = [
+          ...this.messages,
+          localMessage("error", "Stop requested, but the remote OpenCode server did not accept the abort request."),
+        ]
+        this.postState()
+      }
+    } catch (error) {
+      const message = formatErrorMessage(error)
+      this.deps.output.appendLine(`[send] remote abort ${sessionID} failed: ${message}`)
+      this.messages = [
+        ...this.messages,
+        localMessage("error", `Stop requested, but the remote OpenCode abort request failed: ${message}`),
+      ]
+      this.postState()
+    }
+  }
+
+  private suppressStreamingEventsForSession(sessionID: string | undefined) {
+    if (!sessionID) return
+    this.suppressedStreamingSessionID = sessionID
+  }
+
+  private clearStreamingEventSuppression(sessionID?: string) {
+    if (!sessionID || this.suppressedStreamingSessionID === sessionID) this.suppressedStreamingSessionID = undefined
+  }
+
+  private shouldSuppressStreamingEvent(event: OpenCodeEvent, sessionID: string | undefined) {
+    return Boolean(sessionID && this.suppressedStreamingSessionID === sessionID && isStreamingMessageEvent(event.type))
   }
 
   private isActiveSend(client: RemoteOpenCodeClient, sessionID: string, generation: number) {
@@ -580,6 +630,12 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
     this.logRemoteEventType(event.type)
     if (event.type === "server.connected") return
 
+    const eventSessionID = openCodeEventSessionID(event)
+    if (this.shouldSuppressStreamingEvent(event, eventSessionID)) {
+      this.deps.output.appendLine(`[event] suppressed canceled stream event ${event.type} for ${eventSessionID}`)
+      return
+    }
+
     const result = applyOpenCodeEventToMessages(this.remoteMessages, event, this.sessionID)
     if (result.refreshSessions) {
       void this.refreshSessionList(client)
@@ -600,6 +656,13 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
     const sessionID = this.sessionID
     if (sessionID && result.retry) {
       void this.failActiveSendWithRetry(client, sessionID, result.retry)
+      return
+    }
+    if (sessionID && this.suppressedStreamingSessionID === sessionID && (result.idle || result.completed)) {
+      this.clearStreamingEventSuppression(sessionID)
+      void this.refreshSessionList(client)
+        .then(() => this.postState())
+        .catch((error) => this.logEventError("session refresh after canceled stream failed", error))
       return
     }
     if (sessionID && (result.idle || result.completed)) {
@@ -690,6 +753,7 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
     if (!client) return
 
     this.clearActiveSendState()
+    this.clearStreamingEventSuppression()
     this.loadingMessages = true
     this.postState()
     try {
@@ -735,7 +799,7 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
           await this.newSession()
           break
         case "cancelSend":
-          this.cancelActiveSend()
+          await this.cancelActiveSend()
           break
         case "addFile":
           await this.addFile()
@@ -1066,6 +1130,7 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
     if (!client || !sessionID) return
 
     this.clearActiveSendState()
+    this.clearStreamingEventSuppression()
     this.sessionID = sessionID
     this.loadingMessages = true
     this.postState()
@@ -1166,6 +1231,7 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
     const client = this.connectedClient("Connect to a remote OpenCode server before sending.")
     if (!client) return
 
+    this.clearStreamingEventSuppression()
     const controller = new AbortController()
     this.activeSendController = controller
     const optimistic = localMessage("user", trimmed || "Please review the referenced files.")
@@ -1260,7 +1326,12 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
     } finally {
       this.codeGraphWaitDetail = ""
       if (this.activeSendController === controller) this.activeSendController = undefined
-      if (!sentStreaming && !controller.signal.aborted) this.sending = false
+      if (!sentStreaming && !controller.signal.aborted) {
+        this.sending = false
+        this.activeSend = undefined
+        this.stopSendStatusWatchdog()
+        this.stopMessagePollingFallback()
+      }
       this.postState()
     }
   }
@@ -1301,6 +1372,7 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
     signal?: AbortSignal,
   ) {
     const sessionID = await this.getOrCreateSession(client, signal)
+    const generation = this.beginActiveSend(client, sessionID)
     const canStream = await this.ensureEventSubscription(client)
     await client.sendMessageAsync({
       sessionID,
@@ -1310,11 +1382,11 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
       signal,
     })
 
-    if (this.sending && this.sessionID === sessionID) {
-      this.startSendStatusWatchdog(client, sessionID)
+    if (this.isActiveSend(client, sessionID, generation)) {
+      this.startSendStatusWatchdog(client, sessionID, generation)
       if (!canStream || this.eventStreamFailed || !this.eventStreamReady) {
         this.deps.output.appendLine("[event] live stream unavailable; using async message polling fallback")
-        this.startMessagePollingFallback(client, sessionID)
+        this.startMessagePollingFallback(client, sessionID, generation)
       }
     }
 
@@ -1374,6 +1446,7 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
 
   private clearMissingSession(sessionID: string | undefined) {
     if (sessionID && this.sessionID && this.sessionID !== sessionID) return
+    this.clearStreamingEventSuppression(sessionID)
     this.sessionID = undefined
     this.remoteMessages = []
     this.pendingLocalUserMessageIDs.clear()
@@ -1382,6 +1455,7 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   private async loadSessionMessages(client: RemoteOpenCodeClient, sessionID: string) {
+    this.clearStreamingEventSuppression(sessionID)
     const started = Date.now()
     const messages = await withRequestTimeout("session messages", MESSAGE_REFRESH_TIMEOUT_MS, (signal) =>
       client.getMessages(sessionID, SESSION_MESSAGE_LIMIT, signal),
@@ -1715,6 +1789,7 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
         currentSessionID: this.sessionID,
         messages: this.messages,
         sending: this.sending,
+        sendCancellable: this.sending && Boolean(this.activeSendController || this.activeSend),
         loadingMessages: this.loadingMessages,
       },
     })
@@ -1873,6 +1948,10 @@ async function withRequestTimeout<T>(
 
 function formatErrorMessage(error: unknown) {
   return error instanceof Error ? error.message : String(error)
+}
+
+function isStreamingMessageEvent(type: string) {
+  return type === "message.updated" || type === "message.part.updated" || type === "message.part.delta"
 }
 
 function connectionFailureState(error: unknown): ConnectionState {

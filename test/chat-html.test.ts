@@ -144,6 +144,40 @@ describe("chat webview html", () => {
     expect(html).not.toContain('el("send").textContent = state.sending ? "..." : "Send"')
   })
 
+  test("keeps user messages visually distinct from assistant answers", () => {
+    const source = readFileSync(join(import.meta.dir, "..", "src", "chat-html.ts"), "utf8")
+
+    expect(source).toContain("--chat-user-font-size: var(--chat-content-font-size);")
+    expect(source).toContain("--oc-user-message-bg")
+    expect(source).toContain("--oc-user-message-border")
+    expect(source).toContain(".timelineItem.user {")
+    expect(source).toContain("justify-self: end;")
+    expect(source).toContain("background: var(--oc-user-message-bg);")
+    expect(source).toContain("border: 1px solid var(--oc-user-message-border);")
+    expect(source).toContain(".timelineItem.user .messageRole")
+    expect(source).toContain("background: var(--oc-user-message-border);")
+    expect(source).not.toContain(".messageCard,\n    .timelineItem.user .messageCard {\n      border: 0;")
+  })
+
+  test("uses role-aware copy labels for messages", () => {
+    const source = readFileSync(join(import.meta.dir, "..", "src", "chat-html.ts"), "utf8")
+
+    expect(source).toContain('const copyTitle = item.role === "user" ? "Copy question text" : "Copy answer text";')
+    expect(source).toContain('const copyFeedback = item.role === "user" ? "Copied question." : "Copied answer.";')
+    expect(source).toContain('messageActionButton("Copy", copyTitle, "copyAnswer"')
+  })
+
+  test("does not force-scroll while streaming when the user has left the bottom", () => {
+    const html = createChatViewHtml("vscode-resource:", "Scroll123")
+
+    expect(html).toContain("const stick = userNearBottom;")
+    expect(html).toContain("const previousScrollTop = root.scrollTop;")
+    expect(html).toContain("const maxScrollTop = Math.max(0, root.scrollHeight - root.clientHeight);")
+    expect(html).toContain("root.scrollTop = Math.min(previousScrollTop, maxScrollTop);")
+    expect(html).toContain("userNearBottom = true;")
+    expect(html).not.toContain("userNearBottom || Boolean(state.sending)")
+  })
+
   test("surfaces RAG indexing pause and resume controls when code graph is ready", () => {
     const html = createChatViewHtml("vscode-resource:", "RagPause123")
 

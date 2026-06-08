@@ -56,7 +56,7 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
     :root {
       color-scheme: light dark;
       --chat-content-font-size: max(12px, var(--vscode-font-size, 13px));
-      --chat-user-font-size: max(11px, calc(var(--vscode-font-size, 13px) - 1px));
+      --chat-user-font-size: var(--chat-content-font-size);
       --chat-code-font-size: max(11px, calc(var(--vscode-font-size, 13px) - 1px));
       --oc-accent: var(--vscode-focusBorder);
     }
@@ -1609,6 +1609,9 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       --oc-soft-bg: color-mix(in srgb, var(--vscode-foreground) 4%, transparent);
       --oc-warning-soft: color-mix(in srgb, var(--vscode-editorWarning-foreground) 12%, transparent);
       --oc-error-soft: color-mix(in srgb, var(--vscode-errorForeground) 12%, transparent);
+      --oc-user-message-accent: var(--vscode-focusBorder, var(--vscode-button-background));
+      --oc-user-message-bg: color-mix(in srgb, var(--oc-user-message-accent) 12%, var(--vscode-editor-background));
+      --oc-user-message-border: color-mix(in srgb, var(--oc-user-message-accent) 58%, var(--oc-border));
       --composer-icon-button-size: 24px;
       --composer-send-button-size: 34px;
     }
@@ -2114,6 +2117,16 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
     .timelineItem {
       grid-template-columns: 22px minmax(0, 1fr);
       gap: 6px;
+      padding: 1px 0;
+    }
+    .timelineItem.user {
+      grid-template-columns: minmax(0, 1fr) 22px;
+      gap: 8px;
+      margin: 4px 0 8px;
+    }
+    .timelineItem.assistant + .timelineItem.user,
+    .timelineItem.tool + .timelineItem.user {
+      margin-top: 14px;
     }
     .avatar {
       width: 18px;
@@ -2125,18 +2138,39 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       font-size: 8px;
       box-shadow: none;
     }
-    .timelineItem.user .avatar,
+    .timelineItem.user .avatar {
+      grid-column: 2;
+      width: 22px;
+      height: 22px;
+      justify-self: end;
+      color: var(--vscode-badge-foreground);
+      background: var(--oc-user-message-border);
+      border-color: var(--oc-user-message-border);
+      font-size: 7px;
+      font-weight: 700;
+    }
     .timelineItem.error .avatar {
       color: var(--oc-muted);
       background: transparent;
       border-color: var(--oc-border);
     }
-    .messageCard,
-    .timelineItem.user .messageCard {
+    .messageCard {
+      min-width: 0;
       border: 0;
       border-radius: 0;
       background: transparent;
       overflow: visible;
+    }
+    .timelineItem.user .messageCard {
+      grid-column: 1;
+      grid-row: 1;
+      justify-self: end;
+      width: min(100%, 560px);
+      border: 1px solid var(--oc-user-message-border);
+      border-radius: var(--oc-radius-lg);
+      background: var(--oc-user-message-bg);
+      box-shadow: inset -2px 0 0 var(--oc-user-message-border);
+      overflow: hidden;
     }
     .timelineItem.error .messageCard {
       border-left: 2px solid var(--vscode-errorForeground);
@@ -2149,14 +2183,37 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       background: transparent;
       font-size: 10px;
     }
+    .messageRole {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .timelineItem.user .messageMeta {
+      padding: 6px 9px 3px;
+      color: var(--vscode-foreground);
+    }
+    .timelineItem.user .messageRole {
+      display: inline-flex;
+      align-items: center;
+      min-height: 18px;
+      padding: 0 6px;
+      border-radius: 999px;
+      color: var(--vscode-badge-foreground);
+      background: var(--oc-user-message-border);
+      font-size: 10px;
+      font-weight: 650;
+      line-height: 1;
+    }
     .messageBody {
       padding: 0;
       line-height: 1.55;
     }
     .timelineItem.user .messageBody {
-      padding: 0;
+      padding: 4px 10px 9px;
       color: var(--vscode-foreground);
       font-size: var(--chat-user-font-size);
+      line-height: 1.48;
     }
     .messageActions,
     .tableActions {
@@ -3366,6 +3423,7 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
         setNotice(state.localOnlyWarning || "Required VS Code local agent is unavailable.");
         return;
       }
+      userNearBottom = true;
       vscode.postMessage({
         type: "sendMessage",
         text,
@@ -4387,7 +4445,8 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
 
     function renderMessages() {
       const root = el("messages");
-      const stick = userNearBottom || Boolean(state.sending);
+      const stick = userNearBottom;
+      const previousScrollTop = root.scrollTop;
       root.innerHTML = "";
       const messages = state.messages || [];
       if (state.loadingMessages && messages.length === 0) {
@@ -4401,9 +4460,15 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
         for (let index = 0; index < messages.length; index += 1) root.appendChild(messageNode(messages[index], index));
       }
       if (state.sending && !hasAssistantContentAfterLastUser(messages)) root.appendChild(thinkingNode());
-      if (stick) requestAnimationFrame(() => {
-        root.scrollTop = root.scrollHeight;
-        userNearBottom = true;
+      requestAnimationFrame(() => {
+        if (stick) {
+          root.scrollTop = root.scrollHeight;
+          userNearBottom = true;
+          return;
+        }
+        const maxScrollTop = Math.max(0, root.scrollHeight - root.clientHeight);
+        root.scrollTop = Math.min(previousScrollTop, maxScrollTop);
+        userNearBottom = isNearBottom(root);
       });
     }
 
@@ -4487,6 +4552,7 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       const meta = document.createElement("div");
       meta.className = "messageMeta";
       const role = document.createElement("span");
+      role.className = "messageRole";
       role.textContent = roleLabel(item.role);
       const time = document.createElement("span");
       time.className = "messageTime";
@@ -4548,8 +4614,11 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       const actions = document.createElement("span");
       actions.className = "messageActions";
       if (item.text) {
-        actions.appendChild(messageActionButton("Copy", "Copy answer text", "copyAnswer", (button) => copyTextWithFeedback(markdownToPlainText(item.text), button, "Copied answer.")));
-        actions.appendChild(messageActionButton("MD", "Copy answer as Markdown", "copyMarkdown", (button) => copyTextWithFeedback(item.text, button, "Copied Markdown.")));
+        const copyTitle = item.role === "user" ? "Copy question text" : "Copy answer text";
+        const copyFeedback = item.role === "user" ? "Copied question." : "Copied answer.";
+        const markdownTitle = item.role === "user" ? "Copy question as Markdown" : "Copy answer as Markdown";
+        actions.appendChild(messageActionButton("Copy", copyTitle, "copyAnswer", (button) => copyTextWithFeedback(markdownToPlainText(item.text), button, copyFeedback)));
+        actions.appendChild(messageActionButton("MD", markdownTitle, "copyMarkdown", (button) => copyTextWithFeedback(item.text, button, "Copied Markdown.")));
       }
       if (options.hasStructureTargets) {
         actions.appendChild(messageActionButton("Jump", "Jump to next code or table block", "jumpStructure", () => scrollToNextMessageStructure(messageKey)));

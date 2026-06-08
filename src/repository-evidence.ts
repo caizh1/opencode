@@ -8,6 +8,7 @@ export type RepositoryEvidenceMode = "qa" | "completion"
 
 export type RepositoryEvidenceTask =
   | "comment-guided-code"
+  | "symbol-prefix"
   | "member-access"
   | "call-args"
   | "initializer"
@@ -17,7 +18,7 @@ export type RepositoryEvidenceTask =
   | "body-statement"
 
 export type RepositoryEvidenceSource = "graph" | "vector" | "rerank" | "summary" | "state-machine" | "hybrid" | "semantic-rag" | "semantic-rerank" | "graph-comment-guided" | "local-flow"
-export type RepositoryEvidenceRetrievalShape = "default" | "qa-exact"
+export type RepositoryEvidenceRetrievalShape = "default" | "qa-exact" | "qa-semantic"
 
 export type RepositoryEvidenceItem = {
   kind: string
@@ -81,10 +82,43 @@ export type RepositoryEvidenceTrace = {
   graphTopK?: string[]
   mergedTopK?: string[]
   selectedPromptEvidenceNames?: string[]
+  rawSemanticTopK?: string[]
+  rawGraphTopK?: string[]
+  mergedRetrievalTopK?: string[]
+  projectionTopK?: string[]
+  projectedEvidenceNames?: string[]
+  actualPromptEvidenceNames?: string[]
+  droppedProjectedEvidenceNames?: string[]
+  rawTop1Aligned?: boolean
+  retrievalRecallAligned?: boolean
+  projectionSelectedStrongHelper?: boolean
+  promptContainsProjectedHelper?: boolean
+  probeAffectsPrompt?: boolean
+  probeCompleted?: boolean
   projectionToPromptDropReason?: string
   qaExactTopK?: string[]
   qaExactSubmittedEvidence?: string[]
   qaExactContextTopK?: string[]
+  typedPrefixCompatibleCandidates?: string[]
+  typedPrefixCompatiblePromptNames?: string[]
+  symbolPrefixSemanticQueryText?: string
+  symbolPrefixSemanticTopK?: string[]
+  symbolPrefixGraphTopK?: string[]
+  symbolPrefixMergedTopK?: string[]
+  symbolPrefixRerankTopK?: string[]
+  symbolPrefixSemanticSelectedNames?: string[]
+  symbolPrefixPrefixCompatibleNames?: string[]
+  symbolPrefixSemanticVsPrefixDiverged?: boolean
+  symbolPrefixSelectionReason?: string
+  symbolPrefixCurrentFunctionTokens?: string[]
+  symbolPrefixNonPrefixDroppedNames?: string[]
+  symbolPrefixProjectionReasons?: Array<{
+    name?: string
+    reason: string
+    prefixCompatible: boolean
+    currentFunctionTokenScore: number
+    projectionScore: number
+  }>
   alignmentReason?: RepositoryEvidenceAlignmentReason
 }
 
@@ -104,6 +138,7 @@ export type RepositoryEvidenceForIntentInput = {
   task: RepositoryEvidenceTask
   question?: string
   sourceComment?: string
+  currentWord?: string
   currentFile: string
   currentFunction?: string
   prefix?: string
@@ -125,12 +160,12 @@ type TimedEvidenceQuery = {
 }
 
 export async function retrieveRepositoryEvidenceForIntent(input: RepositoryEvidenceForIntentInput): Promise<RepositoryEvidenceResult> {
-  if (isQaExactRetrieval(input)) return retrieveQaExactRepositoryEvidenceForIntent(input)
+  if (isSemanticRetrieval(input)) return retrieveSemanticRepositoryEvidenceForIntent(input)
 
   const started = Date.now()
   const queryText = repositoryEvidenceQuery(input)
   const queryTokens = repositoryEvidenceQueryTokens(input)
-  const budget = input.debugFullRetrievalProbe ? undefined : input.latencyBudgetMs
+  const budget = input.latencyBudgetMs
   const queryOptions = repositoryEvidenceQueryOptions(input)
   let query = await queryEvidenceWithTimeout(input.codeGraph, queryText, {
     ...queryOptions,
@@ -171,11 +206,13 @@ export async function retrieveRepositoryEvidenceForIntent(input: RepositoryEvide
   const maxEvidence = Math.max(1, input.maxEvidence)
   const qaPack = packRepositoryEvidence(fullTopK, maxEvidence, input.maxBytes ?? 24_000)
   const completionProjectionRanked = completionProjectionItems(fullTopK, input)
-  const completionPack = packRepositoryEvidence(completionProjectionRanked, Math.min(maxEvidence, 3), Math.min(input.maxBytes ?? 4_000, 4_000))
+  const completionPack = packCompletionRepositoryEvidence(completionProjectionRanked, input, maxEvidence, input.maxBytes ?? 4_000)
+  const symbolPrefixTrace = symbolPrefixTraceFields(input, completionProjectionRanked, completionPack)
   const retrievalMode = repositoryRetrievalMode(retrievalResult, fallbackUsed)
   const rerankEnabled = Boolean(retrievalResult?.trace.steps.some((step) => step.label === "rerank"))
   const ragAvailable = Boolean(retrievalResult?.trace.steps.some((step) => step.label === "vector" || step.label === "rerank"))
   const topCandidateNames = candidateNames(fullTopK).slice(0, 8)
+  const projectionTopK = candidateNames(completionProjectionRanked).slice(0, 8)
   const selectedCandidateNames = candidateNames(completionPack.evidence).slice(0, 8)
   const alignmentReason = alignmentReasonFor({
     fullTopK,
@@ -208,55 +245,74 @@ export async function retrieveRepositoryEvidenceForIntent(input: RepositoryEvide
       fullCandidateCount: fullTopK.length,
       projectionCandidateCount: completionProjectionRanked.length,
       retrievalShape: "default",
+      projectionTopK,
+      projectedEvidenceNames: selectedCandidateNames,
+      actualPromptEvidenceNames: selectedCandidateNames,
+      selectedPromptEvidenceNames: selectedCandidateNames,
+      ...symbolPrefixTrace,
       alignmentReason,
     },
   }
 }
 
-async function retrieveQaExactRepositoryEvidenceForIntent(input: RepositoryEvidenceForIntentInput): Promise<RepositoryEvidenceResult> {
+async function retrieveSemanticRepositoryEvidenceForIntent(input: RepositoryEvidenceForIntentInput): Promise<RepositoryEvidenceResult> {
   const started = Date.now()
-  const semanticQueryText = buildCommentGuidedSemanticQuery(input)
-  const graphQuestionText = buildCommentGuidedGraphQuestion(input)
+  const retrievalShape = input.retrievalShape ?? "qa-exact"
+  const semanticQueryText = buildSemanticRepositoryQuery(input)
+  const graphQuestionText = buildSemanticGraphQuestion(input)
   const queryTokens = repositoryEvidenceQueryTokens(input)
-  const queryOptions = repositoryEvidenceQueryOptions(input)
-  const contextPromise = queryQaExactCodeGraphContext(input, semanticQueryText)
-  const semanticPromise = queryEvidenceWithTimeout(input.codeGraph, semanticQueryText, {
-    ...queryOptions,
+  const queryEvidence = requestScopedEvidenceQuery(input.codeGraph)
+  const budget = input.latencyBudgetMs
+  const semanticPromise = queryEvidence(semanticQueryText, {
+    ...semanticRepositoryQueryOptions(input),
     retrievalMode: "hybrid",
     relatedPaths: [input.currentFile],
-  }, undefined, "semantic-hybrid")
-  const graphPromise = queryEvidenceWithTimeout(input.codeGraph, graphQuestionText, {
-    ...qaExactGraphQueryOptions(input),
+  }, budget, "semantic-hybrid")
+  const graphPromise = queryEvidence(graphQuestionText, {
+    ...semanticGraphQueryOptions(input),
     retrievalMode: "graph-only",
     relatedPaths: [input.currentFile],
-  }, undefined, "graph-comment-guided")
-  const [contextResult, semanticQuery, graphQuery] = await Promise.all([contextPromise, semanticPromise, graphPromise])
+  }, budget, semanticGraphStage(input))
+  const [semanticQuery, graphQuery] = await Promise.all([semanticPromise, graphPromise])
   const retrievalResult = semanticQuery.result
   const graphResult = graphQuery.result
   const latencyMs = Date.now() - started
-  const semanticItems = repositoryEvidenceItems(retrievalResult, contextResult).map(markSemanticEvidenceSource)
+  const timedOut = semanticQuery.timedOut || graphQuery.timedOut || (budget !== undefined && latencyMs > budget)
+  const semanticItems = repositoryEvidenceItems(retrievalResult).map(markSemanticEvidenceSource)
   const graphItems = repositoryEvidenceItems(graphResult, undefined, "graph-comment-guided")
   const fullTopK = sortRepositoryEvidenceForRetrieval(dedupeEvidence([...semanticItems, ...graphItems]))
-  const contextTopK = candidateNames(repositoryEvidenceItems(undefined, contextResult, undefined, "local-flow")).slice(0, 8)
   const graphTopK = candidateNames(graphItems).slice(0, 8)
   const semanticTopK = candidateNames(semanticItems).slice(0, 8)
   const maxEvidence = Math.max(1, input.maxEvidence)
   const qaPack = packRepositoryEvidence(fullTopK, maxEvidence, input.maxBytes ?? 24_000)
   const completionProjectionRanked = completionProjectionItems(fullTopK, input)
-  const completionPack = packRepositoryEvidence(completionProjectionRanked, Math.min(maxEvidence, 3), Math.min(input.maxBytes ?? 4_000, 4_000))
-  const retrievalMode = repositoryRetrievalMode(retrievalResult, false)
+  const completionPack = packCompletionRepositoryEvidence(completionProjectionRanked, input, maxEvidence, input.maxBytes ?? 4_000)
+  const symbolPrefixTrace = symbolPrefixTraceFields(input, completionProjectionRanked, completionPack, {
+    semanticItems,
+    graphItems,
+    fullTopK,
+    semanticQueryText,
+    rerankEnabled: Boolean(retrievalResult?.trace.steps.some((step) => step.label === "rerank")),
+  })
+  const retrievalMode = retrievalResult
+    ? repositoryRetrievalMode(retrievalResult, false)
+    : repositoryRetrievalMode(graphResult, Boolean(graphResult))
   const rerankEnabled = Boolean(retrievalResult?.trace.steps.some((step) => step.label === "rerank"))
   const ragAvailable = Boolean(retrievalResult?.trace.steps.some((step) => step.label === "vector" || step.label === "rerank"))
   const topCandidateNames = candidateNames(fullTopK).slice(0, 8)
-  const selectedCandidateNames = candidateNames(completionPack.evidence).slice(0, 8)
+  const projectionTopK = candidateNames(completionProjectionRanked).slice(0, 8)
+  const projectedEvidenceNames = candidateNames(completionPack.evidence).slice(0, 8)
+  const selectedCandidateNames = projectedEvidenceNames
   const alignmentReason = alignmentReasonFor({
     fullTopK,
     completionPack,
-    timedOut: false,
+    timedOut,
     retrievalMode,
     rerankEnabled,
     ragAvailable,
   })
+  const rawTopCandidate = topCandidateNames[0]
+  const projectedTopCandidate = projectedEvidenceNames[0]
   return {
     fullTopK,
     qaPack,
@@ -269,25 +325,40 @@ async function retrieveQaExactRepositoryEvidenceForIntent(input: RepositoryEvide
       rerankEnabled,
       ragAvailable,
       latencyMs,
-      latencyBudgetMs: undefined,
-      timedOut: false,
+      latencyBudgetMs: budget,
+      timedOut,
+      timeoutStage: timedOut ? semanticQuery.timeoutStage ?? graphQuery.timeoutStage ?? "elapsed-over-budget" : undefined,
       queryText: semanticQueryText,
       queryTokens,
       topCandidateNames,
       selectedCandidateNames,
       fullCandidateCount: fullTopK.length,
       projectionCandidateCount: completionProjectionRanked.length,
-      retrievalShape: "qa-exact",
+      retrievalShape,
       semanticQueryText,
       graphQuestionTextHash: hashText(graphQuestionText),
       semanticTopK,
       graphTopK,
       mergedTopK: topCandidateNames,
-      selectedPromptEvidenceNames: selectedCandidateNames,
+      selectedPromptEvidenceNames: projectedEvidenceNames,
+      rawSemanticTopK: semanticTopK,
+      rawGraphTopK: graphTopK,
+      mergedRetrievalTopK: topCandidateNames,
+      projectionTopK,
+      projectedEvidenceNames,
+      actualPromptEvidenceNames: projectedEvidenceNames,
+      droppedProjectedEvidenceNames: [],
+      rawTop1Aligned: Boolean(rawTopCandidate && rawTopCandidate === projectedTopCandidate),
+      retrievalRecallAligned: Boolean(projectedTopCandidate && topCandidateNames.includes(projectedTopCandidate)),
+      projectionSelectedStrongHelper: Boolean(projectedTopCandidate),
+      promptContainsProjectedHelper: Boolean(projectedTopCandidate && projectedEvidenceNames.includes(projectedTopCandidate)),
+      probeAffectsPrompt: false,
+      probeCompleted: Boolean(input.debugFullRetrievalProbe),
       projectionToPromptDropReason: completionPack.truncated ? "max-evidence" : undefined,
-      qaExactTopK: topCandidateNames,
-      qaExactSubmittedEvidence: selectedCandidateNames,
-      qaExactContextTopK: contextTopK,
+      qaExactTopK: retrievalShape === "qa-exact" ? topCandidateNames : undefined,
+      qaExactSubmittedEvidence: retrievalShape === "qa-exact" ? projectedEvidenceNames : undefined,
+      qaExactContextTopK: [],
+      ...symbolPrefixTrace,
       alignmentReason,
     },
   }
@@ -296,18 +367,8 @@ async function retrieveQaExactRepositoryEvidenceForIntent(input: RepositoryEvide
 function markSemanticEvidenceSource(item: RepositoryEvidenceItem): RepositoryEvidenceItem {
   if (item.source === "rerank") return { ...item, source: "semantic-rerank" }
   if (item.source === "vector" || item.source === "hybrid") return { ...item, source: "semantic-rag" }
+  if (item.source === "graph") return { ...item, source: "semantic-rag" }
   return item
-}
-
-async function queryQaExactCodeGraphContext(input: RepositoryEvidenceForIntentInput, queryText: string) {
-  if (!input.codeGraph.buildContext) return undefined
-  return input.codeGraph.buildContext({
-    question: queryText,
-    relatedPaths: input.currentFile ? [input.currentFile] : [],
-    maxBytes: input.debugFullRetrievalProbe ? 200_000 : Math.max(input.maxBytes ?? 0, 60_000),
-    maxDepth: 4,
-    maxFanout: 80,
-  })
 }
 
 function repositoryEvidenceQuery(input: RepositoryEvidenceForIntentInput) {
@@ -323,10 +384,29 @@ function repositoryEvidenceQuery(input: RepositoryEvidenceForIntentInput) {
     input.mode === "completion" && input.task === "comment-guided-code"
       ? "avoid-evidence: current function body summaries, file/module summaries, and broad domain-only matches unless no stronger code evidence exists."
       : "",
+    input.mode === "completion" && input.task === "symbol-prefix"
+      ? "cursor-task: rank evidence for a C/C++ typed symbol prefix inside the current function. Use the prefix as a weak compatibility hint, not as the whole retrieval intent."
+      : "",
+    input.mode === "completion" && input.task === "symbol-prefix"
+      ? "expected-evidence: current-function flow, nearby helper definitions, same-module call examples, visible locals, and concise prefix-compatible symbols."
+      : "",
+    input.mode === "completion" && input.task === "symbol-prefix"
+      ? "avoid-evidence: broad debug, dump, print, trace, or global prefix-only matches unless they are locally relevant to the current cursor flow."
+      : "",
+    input.mode === "completion" && input.task === "body-statement"
+      ? "cursor-task: rank evidence for a blank or ordinary C/C++ statement hole inside the current function."
+      : "",
+    input.mode === "completion" && input.task === "body-statement"
+      ? "expected-evidence: current-function flow, nearby call sequence, same-module helper definitions, local style examples, visible locals, and concise control-flow snippets."
+      : "",
+    input.mode === "completion" && input.task === "body-statement"
+      ? "avoid-evidence: broad debug, dump, print, trace, log, type-only, or domain-only matches unless they explain the local cursor flow."
+      : "",
     input.question ? `question: ${input.question}` : "",
     `task: ${input.task}`,
     `current-file: ${input.currentFile}`,
     input.currentFunction ? `current-function: ${input.currentFunction}` : "",
+    input.currentWord ? `typed-prefix-hint: ${input.currentWord}` : "",
     input.sourceComment ? `source-comment: ${input.sourceComment}` : "",
     input.nearbyIdentifiers?.length ? `nearby-identifiers: ${input.nearbyIdentifiers.join(" ")}` : "",
     input.cursorContext ? formatCursorContextFeatures(input.cursorContext) : "",
@@ -338,6 +418,16 @@ function repositoryEvidenceQuery(input: RepositoryEvidenceForIntentInput) {
 
 function qaExactRepositoryEvidenceQuery(input: RepositoryEvidenceForIntentInput) {
   return buildCommentGuidedSemanticQuery(input)
+}
+
+function buildSemanticRepositoryQuery(input: RepositoryEvidenceForIntentInput) {
+  if (isQaSemanticSymbolPrefixRetrieval(input)) return buildSymbolPrefixSemanticQuery(input)
+  return buildCommentGuidedSemanticQuery(input)
+}
+
+function buildSemanticGraphQuestion(input: RepositoryEvidenceForIntentInput) {
+  if (isQaSemanticSymbolPrefixRetrieval(input)) return buildSymbolPrefixGraphQuestion(input)
+  return buildCommentGuidedGraphQuestion(input)
 }
 
 function buildCommentGuidedSemanticQuery(input: RepositoryEvidenceForIntentInput) {
@@ -362,6 +452,36 @@ function buildCommentGuidedSemanticQuery(input: RepositoryEvidenceForIntentInput
   ].filter(Boolean).join("\n")
 }
 
+function buildSymbolPrefixSemanticQuery(input: RepositoryEvidenceForIntentInput) {
+  const cursor = input.cursorContext
+  const nearbyCalls = uniqueStrings([
+    ...(cursor?.previousStatementCalls ?? []),
+    ...(cursor?.nextStatementCalls ?? []),
+  ]).slice(0, 6)
+  const nearbyMessages = (cursor?.nearbyLogOrMessageText ?? []).map((text) => oneLine(text, 90)).slice(0, 4)
+  const visibleLocals = (cursor?.visibleLocals ?? []).slice(0, 12)
+  const visibleIdentifiers = uniqueStrings([
+    ...(input.nearbyIdentifiers ?? []),
+    ...(cursor?.visibleIdentifiers ?? []),
+  ]).slice(0, 18)
+  return [
+    "User question:",
+    [
+      "In this local C/C++ file, which existing helper, similar function, base implementation, or concise code block best fits the cursor?",
+      `Current file/function: ${input.currentFile}${input.currentFunction ? ` / ${input.currentFunction}` : ""}`,
+      cursor?.statementHoleKind ? `Cursor code hole: ${cursor.statementHoleKind}` : "",
+      input.currentWord ? `The user has already typed identifier prefix: ${input.currentWord}` : "",
+      input.currentWord ? "Use the typed prefix as an insertion constraint and compatibility hint, not as the whole retrieval query." : "",
+      visibleLocals.length ? `Visible locals/parameters: ${visibleLocals.join(", ")}` : "",
+      visibleIdentifiers.length ? `Nearby identifiers: ${visibleIdentifiers.join(", ")}` : "",
+      nearbyCalls.length ? `Nearby calls inside the current function: ${nearbyCalls.join(", ")}` : "",
+      nearbyMessages.length ? `Nearby comment/log text: ${nearbyMessages.join(" | ")}` : "",
+      "Find repository evidence for the most relevant implementation pattern at this cursor: existing helper, similar function, similar block, or base/sibling implementation.",
+      "Return evidence only; do not answer in prose.",
+    ].filter(Boolean).join("\n"),
+  ].filter(Boolean).join("\n")
+}
+
 function buildCommentGuidedGraphQuestion(input: RepositoryEvidenceForIntentInput) {
   const sourceComment = input.sourceComment?.trim()
   return [
@@ -375,6 +495,19 @@ function buildCommentGuidedGraphQuestion(input: RepositoryEvidenceForIntentInput
   ].filter(Boolean).join("\n")
 }
 
+function buildSymbolPrefixGraphQuestion(input: RepositoryEvidenceForIntentInput) {
+  return [
+    "Repository graph evidence request for C inline symbol prefix completion.",
+    "completion-intent: symbol-prefix",
+    `current-path: ${input.currentFile}`,
+    input.currentFunction ? `function: ${input.currentFunction}` : "",
+    input.currentWord ? `typed-prefix: ${input.currentWord}` : "",
+    input.nearbyIdentifiers?.length ? `nearby-identifiers: ${input.nearbyIdentifiers.join(" ")}` : "",
+    input.cursorContext ? formatCursorContextFeatures(input.cursorContext) : "",
+    "goal: retrieve current-function flow, same-module helpers, similar functions, base or sibling implementations, and concise typed-prefix compatible symbols.",
+  ].filter(Boolean).join("\n")
+}
+
 function hashText(input: string) {
   return `sha256:${createHash("sha256").update(input).digest("hex").slice(0, 16)}`
 }
@@ -383,9 +516,13 @@ function repositoryEvidenceQueryTokens(input: RepositoryEvidenceForIntentInput) 
   return uniqueStrings([
     ...tokenize(input.sourceComment ?? ""),
     ...tokenize(input.question ?? ""),
+    ...tokenize(input.currentWord ?? ""),
     ...tokenize(input.currentFile),
     ...tokenize(input.currentFunction ?? ""),
     ...(input.nearbyIdentifiers ?? []).flatMap(tokenize),
+    ...(input.cursorContext?.previousStatementCalls ?? []).flatMap(tokenize),
+    ...(input.cursorContext?.nextStatementCalls ?? []).flatMap(tokenize),
+    ...(input.cursorContext?.nearbyLogOrMessageText ?? []).flatMap(tokenize),
   ]).slice(0, 32)
 }
 
@@ -422,44 +559,100 @@ async function queryEvidenceWithTimeout(
   }
 }
 
+function requestScopedEvidenceQuery(codeGraph: Pick<CodeGraphContextProvider, "queryEvidence">) {
+  const pending = new Map<string, Promise<TimedEvidenceQuery>>()
+  return (
+    question: string,
+    options: Parameters<CodeGraphContextProvider["queryEvidence"]>[1],
+    budgetMs: number | undefined,
+    stage: string,
+  ) => {
+    const key = evidenceQueryKey(question, options, budgetMs, stage)
+    const cached = pending.get(key)
+    if (cached) return cached
+    const query = queryEvidenceWithTimeout(codeGraph, question, options, budgetMs, stage)
+    pending.set(key, query)
+    return query
+  }
+}
+
+function evidenceQueryKey(
+  question: string,
+  options: Parameters<CodeGraphContextProvider["queryEvidence"]>[1],
+  budgetMs: number | undefined,
+  stage: string,
+) {
+  return JSON.stringify({
+    question,
+    stage,
+    budgetMs,
+    retrievalMode: options?.retrievalMode,
+    relatedPaths: options?.relatedPaths ?? [],
+    maxEvidenceItems: options?.maxEvidenceItems,
+    maxEvidenceBytes: options?.maxEvidenceBytes,
+    latencyBudgetMs: options?.latencyBudgetMs,
+  })
+}
+
 function repositoryEvidenceQueryOptions(input: RepositoryEvidenceForIntentInput) {
   const completionComment = input.mode === "completion" && input.task === "comment-guided-code"
-  if (completionComment && input.debugFullRetrievalProbe) {
+  const completionSymbolPrefix = input.mode === "completion" && input.task === "symbol-prefix"
+  const completionBodyStatement = input.mode === "completion" && input.task === "body-statement"
+  if (isSemanticRetrieval(input)) {
     return {
-      maxEvidenceItems: 200,
-      maxEvidenceBytes: 200_000,
-      latencyBudgetMs: undefined,
-    }
-  }
-  if (isQaExactRetrieval(input)) {
-    return {
-      latencyBudgetMs: undefined,
+      latencyBudgetMs: input.latencyBudgetMs,
     }
   }
   return {
-    maxEvidenceItems: completionComment ? Math.max(input.maxEvidence * 8, 24) : undefined,
-    maxEvidenceBytes: completionComment ? Math.max(input.maxBytes ?? 0, 18_000) : input.maxBytes,
+    maxEvidenceItems: completionComment
+      ? Math.max(input.maxEvidence * 8, 24)
+      : completionSymbolPrefix
+        ? Math.max(input.maxEvidence * 10, 32)
+        : completionBodyStatement
+          ? Math.max(input.maxEvidence * 8, 24)
+        : undefined,
+    maxEvidenceBytes: completionComment || completionSymbolPrefix || completionBodyStatement ? Math.max(input.maxBytes ?? 0, 18_000) : input.maxBytes,
     latencyBudgetMs: input.latencyBudgetMs,
   }
 }
 
-function qaExactGraphQueryOptions(input: RepositoryEvidenceForIntentInput) {
-  if (input.debugFullRetrievalProbe) {
+function semanticRepositoryQueryOptions(input: RepositoryEvidenceForIntentInput) {
+  const completionComment = input.mode === "completion" && input.task === "comment-guided-code"
+  const completionSymbolPrefix = input.mode === "completion" && input.task === "symbol-prefix"
+  if (!completionComment && !completionSymbolPrefix) {
     return {
-      maxEvidenceItems: 200,
-      maxEvidenceBytes: 200_000,
-      latencyBudgetMs: undefined,
+      latencyBudgetMs: input.latencyBudgetMs,
     }
   }
   return {
+    maxEvidenceItems: Math.max(input.maxEvidence * 10, 32),
+    maxEvidenceBytes: Math.max(input.maxBytes ?? 0, 24_000),
+    latencyBudgetMs: input.latencyBudgetMs,
+  }
+}
+
+function semanticGraphQueryOptions(input: RepositoryEvidenceForIntentInput) {
+  return {
     maxEvidenceItems: Math.max(input.maxEvidence * 12, 48),
     maxEvidenceBytes: Math.max(input.maxBytes ?? 0, 24_000),
-    latencyBudgetMs: undefined,
+    latencyBudgetMs: input.latencyBudgetMs,
   }
+}
+
+function semanticGraphStage(input: RepositoryEvidenceForIntentInput) {
+  return isQaSemanticSymbolPrefixRetrieval(input) ? "graph-symbol-prefix" : "graph-comment-guided"
 }
 
 function isQaExactRetrieval(input: RepositoryEvidenceForIntentInput) {
   return input.task === "comment-guided-code" && input.retrievalShape === "qa-exact"
+}
+
+function isQaSemanticSymbolPrefixRetrieval(input: RepositoryEvidenceForIntentInput) {
+  return input.mode === "completion" && input.task === "symbol-prefix" && input.retrievalShape === "qa-semantic"
+}
+
+function isSemanticRetrieval(input: RepositoryEvidenceForIntentInput) {
+  return isQaExactRetrieval(input) || isQaSemanticSymbolPrefixRetrieval(input)
 }
 
 function formatCursorContextFeatures(features: CommentGuidedCursorContextFeatures) {
@@ -614,6 +807,77 @@ function packRepositoryEvidence(items: RepositoryEvidenceItem[], maxItems: numbe
   }
 }
 
+function packCompletionRepositoryEvidence(
+  items: RepositoryEvidenceItem[],
+  input: RepositoryEvidenceForIntentInput,
+  maxEvidence: number,
+  maxBytes: number,
+) {
+  const maxItems = Math.min(Math.max(1, maxEvidence), 3)
+  const maxPackedBytes = Math.min(maxBytes, 4_000)
+  if (input.mode === "completion" && input.task === "symbol-prefix") {
+    if (isQaSemanticSymbolPrefixRetrieval(input)) {
+      return packQaSemanticSymbolPrefixEvidence(items, input, maxItems, maxPackedBytes)
+    }
+    const context = symbolPrefixProjectionContext(items, input)
+    const compatible = items.filter((item) =>
+      symbolPrefixCompatibleName(context.prefix, item.name) &&
+      isCodeLikeEvidence(item) &&
+      !isBroadUtilityEvidence(item) &&
+      !isSummaryLikeEvidence(item))
+    if (compatible.length > 0) {
+      return packRepositoryEvidence(compatible, maxItems, maxPackedBytes)
+    }
+  }
+  return packRepositoryEvidence(items, maxItems, maxPackedBytes)
+}
+
+function packQaSemanticSymbolPrefixEvidence(
+  items: RepositoryEvidenceItem[],
+  input: RepositoryEvidenceForIntentInput,
+  maxItems: number,
+  maxBytes: number,
+) {
+  const context = symbolPrefixProjectionContext(items, input)
+  const semanticCodeEvidence = items.filter((item) =>
+    isSemanticRepositoryEvidence(item) &&
+    isCodeLikeEvidence(item) &&
+    !isSummaryLikeEvidence(item) &&
+    !isBroadUtilityEvidence(item))
+  const semanticFunctionEvidence = semanticCodeEvidence.filter(isFunctionLikeEvidence)
+  const semanticEvidence = semanticFunctionEvidence.length > 0 ? semanticFunctionEvidence : semanticCodeEvidence
+  const prefixCompatible = items.filter((item) =>
+    symbolPrefixCompatibleName(context.prefix, item.name) &&
+    isCodeLikeEvidence(item) &&
+    !isSummaryLikeEvidence(item) &&
+    !isBroadUtilityEvidence(item))
+  const localFlowCodeEvidence = items.filter((item) =>
+    isCodeLikeEvidence(item) &&
+    !isSummaryLikeEvidence(item) &&
+    !isBroadUtilityEvidence(item) &&
+    !semanticEvidence.includes(item) &&
+    !prefixCompatible.includes(item))
+  const primaryCount = semanticEvidence.length + prefixCompatible.length
+  const localFlowFunctions = localFlowCodeEvidence.filter(isFunctionLikeEvidence)
+  const localFlow = primaryCount > 0
+    ? localFlowFunctions
+    : localFlowFunctions.length > 0 ? localFlowFunctions : localFlowCodeEvidence
+  const primaryEvidence = dedupeEvidence([
+    ...semanticEvidence,
+    ...prefixCompatible,
+  ])
+  const ordered = primaryEvidence.length > 0
+    ? primaryEvidence
+    : dedupeEvidence([
+      ...localFlow,
+      ...items,
+    ])
+  const primaryLimit = primaryEvidence.length > 0
+    ? Math.min(maxItems, Math.max(1, primaryEvidence.length))
+    : maxItems
+  return packRepositoryEvidence(ordered, primaryLimit, maxBytes)
+}
+
 function completionProjectionItems(items: RepositoryEvidenceItem[], input: RepositoryEvidenceForIntentInput) {
   if (input.mode !== "completion") return items
   const currentFile = normalizePath(input.currentFile)
@@ -621,7 +885,7 @@ function completionProjectionItems(items: RepositoryEvidenceItem[], input: Repos
   const filtered = items.filter((item) => {
     if (!isCodeLikeEvidence(item)) return false
     if (
-      input.task === "comment-guided-code" &&
+      (input.task === "comment-guided-code" || input.task === "body-statement") &&
       currentFunction &&
       sameRepositoryPath(item.path ?? "", currentFile) &&
       item.name?.toLowerCase() === currentFunction
@@ -630,9 +894,280 @@ function completionProjectionItems(items: RepositoryEvidenceItem[], input: Repos
     }
     return true
   })
+  if (input.task === "symbol-prefix") return rankSymbolPrefixProjectionItems(filtered, input)
+  if (input.task === "body-statement") return rankBodyStatementProjectionItems(filtered, input)
   if (input.task !== "comment-guided-code") return filtered
   if (isQaExactRetrieval(input)) return qaExactCompletionProjectionItems(filtered, input)
   return rankCommentGuidedProjectionItems(filtered, input)
+}
+
+function rankSymbolPrefixProjectionItems(items: RepositoryEvidenceItem[], input: RepositoryEvidenceForIntentInput) {
+  const context = symbolPrefixProjectionContext(items, input)
+  return items.map((item) => {
+    const scored = symbolPrefixProjectionScore(item, input, context)
+    return {
+      ...item,
+      projectionScore: scored.totalScore,
+      cursorContextScores: scored.cursorScores,
+    }
+  }).sort((left, right) =>
+    (right.projectionScore ?? right.score) - (left.projectionScore ?? left.score) ||
+    right.score - left.score ||
+    (left.path ?? "").localeCompare(right.path ?? "") ||
+    (left.startLine ?? 0) - (right.startLine ?? 0))
+}
+
+function rankBodyStatementProjectionItems(items: RepositoryEvidenceItem[], input: RepositoryEvidenceForIntentInput) {
+  return items.map((item) => {
+    const scored = bodyStatementProjectionScore(item, input)
+    return {
+      ...item,
+      projectionScore: scored.totalScore,
+      cursorContextScores: scored.cursorScores,
+    }
+  }).sort((left, right) =>
+    (right.projectionScore ?? right.score) - (left.projectionScore ?? left.score) ||
+    right.score - left.score ||
+    (left.path ?? "").localeCompare(right.path ?? "") ||
+    (left.startLine ?? 0) - (right.startLine ?? 0))
+}
+
+type SymbolPrefixProjectionContext = {
+  prefix: string
+  currentFunctionTokens: string[]
+  hasCompatibleCodeCandidate: boolean
+}
+
+function symbolPrefixProjectionContext(items: RepositoryEvidenceItem[], input: RepositoryEvidenceForIntentInput): SymbolPrefixProjectionContext {
+  const prefix = (input.currentWord ?? "").toLowerCase()
+  const currentFunctionTokens = currentFunctionSemanticTokens(input)
+  const hasCompatibleCodeCandidate = Boolean(prefix && items.some((item) =>
+    symbolPrefixCompatibleName(prefix, item.name) &&
+    isCodeLikeEvidence(item) &&
+    !isSummaryLikeEvidence(item) &&
+    !isBroadUtilityEvidence(item)))
+  return {
+    prefix,
+    currentFunctionTokens,
+    hasCompatibleCodeCandidate,
+  }
+}
+
+function symbolPrefixProjectionScore(
+  item: RepositoryEvidenceItem,
+  input: RepositoryEvidenceForIntentInput,
+  context: SymbolPrefixProjectionContext,
+) {
+  const emptyCoverage = {
+    actionTokenCoverage: 0,
+    objectTokenCoverage: 0,
+    domainTokenCoverage: 0,
+    matchedActionTokens: [],
+    matchedObjectTokens: [],
+    matchedDomainTokens: [],
+    semanticScore: 0,
+    graphProximityScore: 0,
+    sameModuleScore: 0,
+    codeShapeScore: 0,
+    totalScore: 0,
+  }
+  const prefixCompatible = symbolPrefixCompatibleName(context.prefix, item.name)
+  const cursorScores = cursorContextScores(item, input, emptyCoverage)
+  const statementPosition = isStatementInsertionPosition(input.prefix ?? "", input.suffix ?? "")
+  const functionLike = isFunctionLikeEvidence(item)
+  const summary = isSummaryLikeEvidence(item)
+  const broadUtility = isBroadUtilityEvidence(item)
+  const currentFunctionTokenScore = symbolPrefixCurrentFunctionTokenScore(item, context)
+  const sameModuleScore = isSameModulePath(item.path, input.currentFile) ? 260 : 0
+  const callFitScore = statementPosition && functionLike && functionParamsCanBeSatisfied(item.snippet, input) ? 260 : 0
+  const qaSemantic = isQaSemanticSymbolPrefixRetrieval(input)
+  const semanticScore = isSemanticRepositoryEvidence(item) ? qaSemantic ? 720 : 80 : 0
+  const typedPrefixCompatibilityScore = prefixCompatible
+    ? qaSemantic
+      ? context.prefix.length <= 2 ? 260 : 380
+      : context.prefix.length <= 2 ? 780 : 940
+    : context.hasCompatibleCodeCandidate
+      ? qaSemantic ? -120 : -900
+      : 0
+  const rawScoreCapped = Math.min(item.score, prefixCompatible ? qaSemantic ? 500 : 620 : qaSemantic ? 520 : 360)
+  let score = rawScoreCapped
+  if (functionLike) score += 220
+  score += semanticScore
+  score += typedPrefixCompatibilityScore
+  score += currentFunctionTokenScore
+  score += sameModuleScore
+  score += cursorScores.currentFunctionFlowScore * 3
+  score += cursorScores.neighborCallProximityScore * 2
+  score += cursorScores.messageTextSimilarityScore
+  score += callFitScore
+  if (summary) score -= 320
+  if (!prefixCompatible && context.hasCompatibleCodeCandidate && !functionLike) score -= qaSemantic ? 180 : 520
+  if (broadUtility) {
+    const localFlowScore = cursorScores.currentFunctionFlowScore + cursorScores.neighborCallProximityScore + cursorScores.messageTextSimilarityScore
+    score -= localFlowScore > 80 && prefixCompatible ? 260 : 620
+  }
+  return { totalScore: score, cursorScores }
+}
+
+function currentFunctionSemanticTokens(input: RepositoryEvidenceForIntentInput) {
+  return uniqueStrings([
+    ...(input.currentFunction ? tokenize(input.currentFunction) : []),
+    ...normalizePath(input.currentFile).split("/").flatMap(tokenize),
+    ...(input.cursorContext?.visibleLocals ?? []).flatMap(tokenize),
+    ...(input.cursorContext?.visibleIdentifiers ?? []).flatMap(tokenize),
+  ].filter((token) => token.length > 2))
+}
+
+function symbolPrefixCurrentFunctionTokenScore(item: RepositoryEvidenceItem, context: SymbolPrefixProjectionContext) {
+  if (context.currentFunctionTokens.length === 0) return 0
+  const nameTokens = new Set(tokenize(item.name ?? ""))
+  const locationTokens = new Set(tokenize(`${item.path ?? ""}\n${item.reason ?? ""}`))
+  let score = 0
+  const seen = new Set<string>()
+  for (const token of context.currentFunctionTokens) {
+    if (seen.has(token)) continue
+    if (nameTokens.has(token)) {
+      score += 170
+      seen.add(token)
+    } else if (locationTokens.has(token)) {
+      score += 50
+      seen.add(token)
+    }
+  }
+  return Math.min(score, 760)
+}
+
+function symbolPrefixCompatibleName(prefix: string, name: string | undefined) {
+  return Boolean(prefix && name?.toLowerCase().startsWith(prefix))
+}
+
+function isSemanticRepositoryEvidence(item: RepositoryEvidenceItem) {
+  return item.source === "semantic-rag" ||
+    item.source === "semantic-rerank" ||
+    item.source === "rerank" ||
+    item.source === "vector" ||
+    item.source === "hybrid"
+}
+
+function symbolPrefixTraceFields(
+  input: RepositoryEvidenceForIntentInput,
+  ranked: RepositoryEvidenceItem[],
+  pack: RepositoryEvidencePack,
+  semanticContext?: {
+    semanticItems: RepositoryEvidenceItem[]
+    graphItems: RepositoryEvidenceItem[]
+    fullTopK: RepositoryEvidenceItem[]
+    semanticQueryText: string
+    rerankEnabled: boolean
+  },
+): Pick<RepositoryEvidenceTrace,
+  "typedPrefixCompatibleCandidates" |
+  "typedPrefixCompatiblePromptNames" |
+  "symbolPrefixSemanticQueryText" |
+  "symbolPrefixSemanticTopK" |
+  "symbolPrefixGraphTopK" |
+  "symbolPrefixMergedTopK" |
+  "symbolPrefixRerankTopK" |
+  "symbolPrefixSemanticSelectedNames" |
+  "symbolPrefixPrefixCompatibleNames" |
+  "symbolPrefixSemanticVsPrefixDiverged" |
+  "symbolPrefixSelectionReason" |
+  "symbolPrefixCurrentFunctionTokens" |
+  "symbolPrefixNonPrefixDroppedNames" |
+  "symbolPrefixProjectionReasons"
+> {
+  if (input.mode !== "completion" || input.task !== "symbol-prefix") return {}
+  const context = symbolPrefixProjectionContext(ranked, input)
+  const selectedNames = new Set(candidateNames(pack.evidence))
+  const compatibleCandidates = candidateNames(ranked.filter((item) => symbolPrefixCompatibleName(context.prefix, item.name))).slice(0, 8)
+  const compatiblePromptNames = candidateNames(pack.evidence.filter((item) => symbolPrefixCompatibleName(context.prefix, item.name))).slice(0, 8)
+  const semanticTopK = candidateNames(semanticContext?.semanticItems ?? []).slice(0, 8)
+  const graphTopK = candidateNames(semanticContext?.graphItems ?? []).slice(0, 8)
+  const mergedTopK = candidateNames(semanticContext?.fullTopK ?? ranked).slice(0, 8)
+  const semanticSelectedNames = candidateNames(pack.evidence.filter(isSemanticRepositoryEvidence)).slice(0, 8)
+  const prefixCompatibleTop = compatibleCandidates[0]
+  const semanticTop = semanticTopK[0]
+  const nonPrefixDroppedNames = candidateNames(ranked.filter((item) =>
+    item.name &&
+    !symbolPrefixCompatibleName(context.prefix, item.name) &&
+    !selectedNames.has(item.name))).slice(0, 8)
+  return {
+    typedPrefixCompatibleCandidates: compatibleCandidates,
+    typedPrefixCompatiblePromptNames: compatiblePromptNames,
+    symbolPrefixSemanticQueryText: semanticContext?.semanticQueryText,
+    symbolPrefixSemanticTopK: semanticTopK.length ? semanticTopK : undefined,
+    symbolPrefixGraphTopK: graphTopK.length ? graphTopK : undefined,
+    symbolPrefixMergedTopK: mergedTopK.length ? mergedTopK : undefined,
+    symbolPrefixRerankTopK: semanticContext?.rerankEnabled ? semanticTopK : undefined,
+    symbolPrefixSemanticSelectedNames: semanticSelectedNames.length ? semanticSelectedNames : undefined,
+    symbolPrefixPrefixCompatibleNames: compatibleCandidates.length ? compatibleCandidates : undefined,
+    symbolPrefixSemanticVsPrefixDiverged: Boolean(semanticTop && prefixCompatibleTop && semanticTop !== prefixCompatibleTop),
+    symbolPrefixSelectionReason: semanticContext
+      ? semanticSelectedNames.length
+        ? "qa-semantic selected semantic evidence before prefix-compatible fallback"
+        : compatiblePromptNames.length
+          ? "qa-semantic used prefix-compatible fallback after semantic projection"
+          : "qa-semantic used local-flow fallback"
+      : undefined,
+    symbolPrefixCurrentFunctionTokens: context.currentFunctionTokens.slice(0, 12),
+    symbolPrefixNonPrefixDroppedNames: nonPrefixDroppedNames,
+    symbolPrefixProjectionReasons: ranked.slice(0, 8).map((item) => ({
+      name: item.name,
+      reason: symbolPrefixProjectionReason(item, context),
+      prefixCompatible: symbolPrefixCompatibleName(context.prefix, item.name),
+      currentFunctionTokenScore: symbolPrefixCurrentFunctionTokenScore(item, context),
+      projectionScore: Math.round(item.projectionScore ?? item.score),
+    })),
+  }
+}
+
+function symbolPrefixProjectionReason(item: RepositoryEvidenceItem, context: SymbolPrefixProjectionContext) {
+  const parts: string[] = []
+  if (isSemanticRepositoryEvidence(item)) parts.push("semantic-evidence")
+  if (symbolPrefixCompatibleName(context.prefix, item.name)) parts.push("typed-prefix-compatible")
+  else if (context.hasCompatibleCodeCandidate) parts.push("non-prefix-demoted")
+  if (symbolPrefixCurrentFunctionTokenScore(item, context) > 0) parts.push("current-function-token-overlap")
+  if (isBroadUtilityEvidence(item)) parts.push("broad-utility-demoted")
+  if (isSummaryLikeEvidence(item)) parts.push("summary-demoted")
+  return parts.join(",") || "fallback"
+}
+
+function bodyStatementProjectionScore(item: RepositoryEvidenceItem, input: RepositoryEvidenceForIntentInput) {
+  const emptyCoverage = {
+    actionTokenCoverage: 0,
+    objectTokenCoverage: 0,
+    domainTokenCoverage: 0,
+    matchedActionTokens: [],
+    matchedObjectTokens: [],
+    matchedDomainTokens: [],
+    semanticScore: 0,
+    graphProximityScore: 0,
+    sameModuleScore: 0,
+    codeShapeScore: 0,
+    totalScore: 0,
+  }
+  const cursorScores = cursorContextScores(item, input, emptyCoverage)
+  const statementPosition = isStatementInsertionPosition(input.prefix ?? "", input.suffix ?? "")
+  const emptyFunctionBody = isEmptyFunctionBodyCursor(input)
+  const sameCurrentFile = sameRepositoryPath(item.path ?? "", input.currentFile)
+  let score = Math.min(item.score, 700)
+  if (isFunctionLikeEvidence(item)) score += 150
+  if (isSameModulePath(item.path, input.currentFile)) score += 170
+  if (sameCurrentFile) score += emptyFunctionBody ? -420 : 60
+  if (item.source === "semantic-rag" || item.source === "semantic-rerank" || item.source === "rerank") score += 80
+  score += cursorScores.currentFunctionFlowScore * 2.4
+  score += cursorScores.neighborCallProximityScore * 2.6
+  score += cursorScores.messageTextSimilarityScore * 1.5
+  if (statementPosition && isFunctionLikeEvidence(item) && functionParamsCanBeSatisfied(item.snippet, input)) score += 160
+  if (isSummaryLikeEvidence(item)) score -= 260
+  if (isBroadUtilityEvidence(item)) score -= 420
+  score -= cursorScores.stateStylePenalty
+  return { totalScore: score, cursorScores }
+}
+
+function isEmptyFunctionBodyCursor(input: RepositoryEvidenceForIntentInput) {
+  return input.cursorContext?.currentFunctionBodyIsEmpty === true ||
+    input.cursorContext?.statementHoleKind === "empty-function-body"
 }
 
 function qaExactCompletionProjectionItems(items: RepositoryEvidenceItem[], input: RepositoryEvidenceForIntentInput) {
@@ -846,6 +1381,13 @@ function isSummaryLikeEvidence(item: RepositoryEvidenceItem) {
     item.kind === "text" ||
     item.parserKind?.includes("summary") ||
     /^file\s+\S+:\s+\d+\s+function\(s\),/i.test(item.snippet.trim())
+}
+
+function isBroadUtilityEvidence(item: RepositoryEvidenceItem) {
+  const name = item.name ?? evidenceName(item.snippet) ?? ""
+  const text = `${name}\n${item.reason ?? ""}`.toLowerCase()
+  const tokens = text.split(/[^a-z0-9]+|_/).filter(Boolean)
+  return tokens.some((token) => /^(?:dump|debug|dbg|print|printf|trace|log)/.test(token))
 }
 
 function isCodeLikeEvidence(item: RepositoryEvidenceItem) {

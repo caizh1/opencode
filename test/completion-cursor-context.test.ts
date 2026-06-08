@@ -41,4 +41,31 @@ describe("comment-guided cursor context extractor", () => {
     expect(statementHoleKind("    req->")).toBe("member-access")
     expect(statementHoleKind("    helper(")).toBe("call-statement")
   })
+
+  test("keeps empty current-function cursor context scoped away from adjacent functions", () => {
+    const features = extractCommentGuidedCursorContext({
+      prefix: [
+        "static void empty_init(struct controller *ctrl)",
+        "{",
+        "    ",
+      ].join("\n"),
+      suffix: [
+        "",
+        "}",
+      ].join("\n"),
+      currentFunctionName: "empty_init",
+      cursorContextScope: "current-function",
+      currentFunctionBodyIsEmpty: true,
+    })
+
+    expect(features.statementHoleKind).toBe("empty-function-body")
+    expect(features.cursorContextScope).toBe("current-function")
+    expect(features.currentFunctionBodyIsEmpty).toBe(true)
+    expect(features.previousStatementCalls).toEqual([])
+    expect(features.nextStatementCalls).toEqual([])
+    expect(features.scopedPreviousStatementCalls).toEqual([])
+    expect(features.scopedNextStatementCalls).toEqual([])
+    expect(features.nearbyLogOrMessageText).toEqual([])
+    expect(features.visibleLocals).toContain("ctrl")
+  })
 })

@@ -90,7 +90,7 @@ describe("completion model router", () => {
 
     expect(route).toMatchObject({
       kind: "model",
-      reason: "ordinary-code",
+      reason: "comment-guided-c-code",
       promptKind: "qwen-fim",
       modelProfile: "generic-chat",
       textProfile: "generic-chat",
@@ -98,6 +98,7 @@ describe("completion model router", () => {
       temperature: 0.2,
     })
     const log = routeLogValue(route, settings({ provider: "openai-compatible", profile: "generic-chat" }))
+    expect(log).toContain("reason=comment-guided-c-code")
     expect(log).toContain("configuredProfile=generic-chat")
     expect(log).toContain("effectiveProfile=generic-chat")
     expect(log).toContain("promptKind=qwen-fim")
@@ -162,6 +163,63 @@ describe("completion model router", () => {
       kind: "deterministic-symbol",
       reason: "high-confidence-symbol",
       text: "ite_with_cb_dfx",
+      maxTokens: 0,
+      textProfile: "generic-chat",
+    })
+  })
+
+  test("routes broad C embedded symbol prefixes through FIM instead of deterministic symbol completion", () => {
+    const route = routeCompletionModel({
+      plan: planCompletion({
+        languageId: "c",
+        linePrefix: "  nf",
+        lineSuffix: "",
+        currentWord: "nf",
+      }),
+      settings: settings(),
+      retrievedSnippets: [
+        snippet("nfi_hal_active_desc_dump", 9500),
+        snippet("nfi_hal_cdma_desc_dump", 9500),
+        snippet("nfi_hal_controller_init", 9300),
+      ],
+    })
+
+    expect(route).toMatchObject({
+      kind: "model",
+      reason: "ordinary-code",
+      promptKind: "qwen-fim",
+      modelProfile: "qwen-coder-fim",
+      textProfile: "qwen-coder-fim",
+      deterministicSymbolSuppressed: true,
+      deterministicSymbolSuppressReason: "short-prefix",
+      symbolPrefixRoute: "fim",
+      symbolPrefixCandidateTopK: [
+        "nfi_hal_active_desc_dump",
+        "nfi_hal_cdma_desc_dump",
+        "nfi_hal_controller_init",
+      ],
+    })
+  })
+
+  test("keeps deterministic C embedded symbol completion when a long prefix has a clearly leading candidate", () => {
+    const route = routeCompletionModel({
+      plan: planCompletion({
+        languageId: "c",
+        linePrefix: "  driver_contr",
+        lineSuffix: "",
+        currentWord: "driver_contr",
+      }),
+      settings: settings(),
+      retrievedSnippets: [
+        snippet("driver_controller_init", 9500),
+        snippet("driver_contract_dump", 1200),
+      ],
+    })
+
+    expect(route).toEqual({
+      kind: "deterministic-symbol",
+      reason: "high-confidence-symbol",
+      text: "oller_init",
       maxTokens: 0,
       textProfile: "generic-chat",
     })

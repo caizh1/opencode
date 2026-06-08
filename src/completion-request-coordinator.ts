@@ -277,6 +277,16 @@ function adaptCompatibleCachedEdit(
   const typed = current.linePrefix.slice(cached.linePrefix.length)
   if (!typed) return edit
 
+  if (!edit.replaceRange || isZeroWidthRangeAtPosition(edit.replaceRange, cached.position)) {
+    if (!edit.insertText.startsWith(typed)) return
+    return {
+      ...edit,
+      insertText: edit.insertText.slice(typed.length),
+      replaceRange: zeroWidthRangeAtPosition(current.position),
+      ...(edit.filterText?.startsWith(typed) ? { filterText: edit.filterText.slice(typed.length) } : {}),
+    }
+  }
+
   if (edit.replaceRange &&
     edit.replaceRange.startLine === cached.position.line &&
     edit.replaceRange.endLine === cached.position.line &&
@@ -287,15 +297,6 @@ function adaptCompatibleCachedEdit(
         ...edit.replaceRange,
         endCharacter: current.position.character,
       },
-    }
-  }
-
-  if (!edit.replaceRange || isZeroWidthRangeAtPosition(edit.replaceRange, cached.position)) {
-    if (!edit.insertText.startsWith(typed)) return
-    return {
-      ...edit,
-      insertText: edit.insertText.slice(typed.length),
-      ...(edit.filterText?.startsWith(typed) ? { filterText: edit.filterText.slice(typed.length) } : {}),
     }
   }
 
@@ -324,6 +325,15 @@ function isZeroWidthRangeAtPosition(
     range.endLine === position.line &&
     range.startCharacter === position.character &&
     range.endCharacter === position.character
+}
+
+function zeroWidthRangeAtPosition(position: CompletionRequestCacheMetadata["position"]) {
+  return {
+    startLine: position.line,
+    startCharacter: position.character,
+    endLine: position.line,
+    endCharacter: position.character,
+  }
 }
 
 class CompletionRequestAbortError extends Error {}

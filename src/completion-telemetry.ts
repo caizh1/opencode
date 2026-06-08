@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto"
 import type { CompletionInsertMode, CompletionPlanKind } from "./completion-types"
 
-export const COMPLETION_PLANNER_REVISION = "p2.2.1-comment-guided-failsafe"
+export const COMPLETION_PLANNER_REVISION = "p2.12-current-function-scoped-context"
 
 export type CompletionTelemetryRoute = "fim" | "instruction" | "deterministic-symbol" | "none"
 
@@ -80,6 +80,11 @@ export interface CompletionDebugEvent {
     completionProjectionTopK?: string[]
     droppedAlignedEvidence?: string[]
     cursorContextFeatures?: Record<string, unknown>
+    cursorContextScope?: string
+    currentFunctionBodyIsEmpty?: boolean
+    scopedPreviousStatementCalls?: string[]
+    scopedNextStatementCalls?: string[]
+    cursorContextFallbackReason?: string
     fullRetrievalCandidateCount?: number
     projectionCandidateCount?: number
     retrievalShape?: string
@@ -92,6 +97,19 @@ export interface CompletionDebugEvent {
     graphTopK?: string[]
     mergedTopK?: string[]
     selectedPromptEvidenceNames?: string[]
+    rawSemanticTopK?: string[]
+    rawGraphTopK?: string[]
+    mergedRetrievalTopK?: string[]
+    projectionTopK?: string[]
+    projectedEvidenceNames?: string[]
+    actualPromptEvidenceNames?: string[]
+    droppedProjectedEvidenceNames?: string[]
+    rawTop1Aligned?: boolean
+    retrievalRecallAligned?: boolean
+    projectionSelectedStrongHelper?: boolean
+    promptContainsProjectedHelper?: boolean
+    probeAffectsPrompt?: boolean
+    probeCompleted?: boolean
     projectionToPromptDropReason?: string
     submittedEvidenceNames?: string[]
     expectedSymbolInQaExactRetrieval?: boolean
@@ -99,6 +117,37 @@ export interface CompletionDebugEvent {
     expectedSymbolInProjection?: boolean
     expectedSymbolInPrompt?: boolean
     fullRetrievalProbeDumpPath?: string
+    symbolPrefixRetrievalShape?: string
+    symbolPrefixLocalTopK?: string[]
+    symbolPrefixProjectedEvidenceNames?: string[]
+    symbolPrefixDroppedTargetSymbols?: string[]
+    typedPrefixCompatibleCandidates?: string[]
+    typedPrefixCompatiblePromptNames?: string[]
+    symbolPrefixSemanticQueryText?: string
+    symbolPrefixSemanticTopK?: string[]
+    symbolPrefixGraphTopK?: string[]
+    symbolPrefixMergedTopK?: string[]
+    symbolPrefixRerankTopK?: string[]
+    symbolPrefixSemanticSelectedNames?: string[]
+    symbolPrefixPrefixCompatibleNames?: string[]
+    symbolPrefixSemanticVsPrefixDiverged?: boolean
+    symbolPrefixSelectionReason?: string
+    symbolPrefixCurrentFunctionTokens?: string[]
+    symbolPrefixNonPrefixDroppedNames?: string[]
+    symbolPrefixProjectionReasons?: Array<{
+      name?: string
+      reason: string
+      prefixCompatible: boolean
+      currentFunctionTokenScore: number
+      projectionScore: number
+    }>
+    symbolPrefixCompatibilityScores?: Array<{
+      name?: string
+      prefixCompatible: boolean
+      localFlowScore: number
+      projectionScore: number
+      broadUtility: boolean
+    }>
   }
   normalizedCommentTokens?: string[]
   candidateTokenCoverage?: Array<{
@@ -144,6 +193,11 @@ export interface CompletionDebugEvent {
   completionProjectionTopK?: string[]
   droppedAlignedEvidence?: string[]
   cursorContextFeatures?: Record<string, unknown>
+  cursorContextScope?: string
+  currentFunctionBodyIsEmpty?: boolean
+  scopedPreviousStatementCalls?: string[]
+  scopedNextStatementCalls?: string[]
+  cursorContextFallbackReason?: string
   fullRetrievalCandidateCount?: number
   projectionCandidateCount?: number
   retrievalShape?: string
@@ -156,6 +210,19 @@ export interface CompletionDebugEvent {
   graphTopK?: string[]
   mergedTopK?: string[]
   selectedPromptEvidenceNames?: string[]
+  rawSemanticTopK?: string[]
+  rawGraphTopK?: string[]
+  mergedRetrievalTopK?: string[]
+  projectionTopK?: string[]
+  projectedEvidenceNames?: string[]
+  actualPromptEvidenceNames?: string[]
+  droppedProjectedEvidenceNames?: string[]
+  rawTop1Aligned?: boolean
+  retrievalRecallAligned?: boolean
+  projectionSelectedStrongHelper?: boolean
+  promptContainsProjectedHelper?: boolean
+  probeAffectsPrompt?: boolean
+  probeCompleted?: boolean
   projectionToPromptDropReason?: string
   submittedEvidenceNames?: string[]
   expectedSymbolInQaExactRetrieval?: boolean
@@ -163,6 +230,48 @@ export interface CompletionDebugEvent {
   expectedSymbolInProjection?: boolean
   expectedSymbolInPrompt?: boolean
   fullRetrievalProbeDumpPath?: string
+  typedPrefixAdapted?: boolean
+  typedPrefixAdaptReason?: string
+  typedPrefixCurrentWord?: string
+  typedPrefixMatchedSymbol?: string
+  typedPrefixOriginalFirstLine?: string
+  typedPrefixFinalFirstLine?: string
+  deterministicSymbolSuppressed?: boolean
+  deterministicSymbolSuppressReason?: string
+  symbolPrefixCandidateTopK?: string[]
+  symbolPrefixContextTokens?: number
+  symbolPrefixRoute?: "fim" | "deterministic-symbol"
+  symbolPrefixRetrievalShape?: string
+  symbolPrefixLocalTopK?: string[]
+  symbolPrefixProjectedEvidenceNames?: string[]
+  symbolPrefixDroppedTargetSymbols?: string[]
+  typedPrefixCompatibleCandidates?: string[]
+  typedPrefixCompatiblePromptNames?: string[]
+  symbolPrefixSemanticQueryText?: string
+  symbolPrefixSemanticTopK?: string[]
+  symbolPrefixGraphTopK?: string[]
+  symbolPrefixMergedTopK?: string[]
+  symbolPrefixRerankTopK?: string[]
+  symbolPrefixSemanticSelectedNames?: string[]
+  symbolPrefixPrefixCompatibleNames?: string[]
+  symbolPrefixSemanticVsPrefixDiverged?: boolean
+  symbolPrefixSelectionReason?: string
+  symbolPrefixCurrentFunctionTokens?: string[]
+  symbolPrefixNonPrefixDroppedNames?: string[]
+  symbolPrefixProjectionReasons?: Array<{
+    name?: string
+    reason: string
+    prefixCompatible: boolean
+    currentFunctionTokenScore: number
+    projectionScore: number
+  }>
+  symbolPrefixCompatibilityScores?: Array<{
+    name?: string
+    prefixCompatible: boolean
+    localFlowScore: number
+    projectionScore: number
+    broadUtility: boolean
+  }>
   contextLevel?: "none" | "light" | "standard" | "rich"
   contextWarnings?: string[]
   promptKind?: "qwen-fim" | "instruction" | "deterministic-symbol" | "none"
@@ -300,6 +409,11 @@ export function sanitizeCompletionDebugEvent(event: CompletionDebugEvent): Compl
       completionProjectionTopK: sanitizeTokenList(event.cEmbeddedEvidenceTrace.completionProjectionTopK),
       droppedAlignedEvidence: sanitizeTokenList(event.cEmbeddedEvidenceTrace.droppedAlignedEvidence),
       cursorContextFeatures: sanitizeCursorContextFeatures(event.cEmbeddedEvidenceTrace.cursorContextFeatures),
+      cursorContextScope: event.cEmbeddedEvidenceTrace.cursorContextScope ? truncateTelemetryText(event.cEmbeddedEvidenceTrace.cursorContextScope, 80) : undefined,
+      currentFunctionBodyIsEmpty: event.cEmbeddedEvidenceTrace.currentFunctionBodyIsEmpty !== undefined ? Boolean(event.cEmbeddedEvidenceTrace.currentFunctionBodyIsEmpty) : undefined,
+      scopedPreviousStatementCalls: sanitizeTokenList(event.cEmbeddedEvidenceTrace.scopedPreviousStatementCalls),
+      scopedNextStatementCalls: sanitizeTokenList(event.cEmbeddedEvidenceTrace.scopedNextStatementCalls),
+      cursorContextFallbackReason: event.cEmbeddedEvidenceTrace.cursorContextFallbackReason ? truncateTelemetryText(event.cEmbeddedEvidenceTrace.cursorContextFallbackReason, 120) : undefined,
       fullRetrievalCandidateCount: event.cEmbeddedEvidenceTrace.fullRetrievalCandidateCount !== undefined ? finiteNumber(event.cEmbeddedEvidenceTrace.fullRetrievalCandidateCount) : undefined,
       projectionCandidateCount: event.cEmbeddedEvidenceTrace.projectionCandidateCount !== undefined ? finiteNumber(event.cEmbeddedEvidenceTrace.projectionCandidateCount) : undefined,
       retrievalShape: event.cEmbeddedEvidenceTrace.retrievalShape ? truncateTelemetryText(event.cEmbeddedEvidenceTrace.retrievalShape, 40) : undefined,
@@ -312,6 +426,19 @@ export function sanitizeCompletionDebugEvent(event: CompletionDebugEvent): Compl
       graphTopK: sanitizeTokenList(event.cEmbeddedEvidenceTrace.graphTopK),
       mergedTopK: sanitizeTokenList(event.cEmbeddedEvidenceTrace.mergedTopK),
       selectedPromptEvidenceNames: sanitizeTokenList(event.cEmbeddedEvidenceTrace.selectedPromptEvidenceNames),
+      rawSemanticTopK: sanitizeTokenList(event.cEmbeddedEvidenceTrace.rawSemanticTopK),
+      rawGraphTopK: sanitizeTokenList(event.cEmbeddedEvidenceTrace.rawGraphTopK),
+      mergedRetrievalTopK: sanitizeTokenList(event.cEmbeddedEvidenceTrace.mergedRetrievalTopK),
+      projectionTopK: sanitizeTokenList(event.cEmbeddedEvidenceTrace.projectionTopK),
+      projectedEvidenceNames: sanitizeTokenList(event.cEmbeddedEvidenceTrace.projectedEvidenceNames),
+      actualPromptEvidenceNames: sanitizeTokenList(event.cEmbeddedEvidenceTrace.actualPromptEvidenceNames),
+      droppedProjectedEvidenceNames: sanitizeTokenList(event.cEmbeddedEvidenceTrace.droppedProjectedEvidenceNames),
+      rawTop1Aligned: event.cEmbeddedEvidenceTrace.rawTop1Aligned !== undefined ? Boolean(event.cEmbeddedEvidenceTrace.rawTop1Aligned) : undefined,
+      retrievalRecallAligned: event.cEmbeddedEvidenceTrace.retrievalRecallAligned !== undefined ? Boolean(event.cEmbeddedEvidenceTrace.retrievalRecallAligned) : undefined,
+      projectionSelectedStrongHelper: event.cEmbeddedEvidenceTrace.projectionSelectedStrongHelper !== undefined ? Boolean(event.cEmbeddedEvidenceTrace.projectionSelectedStrongHelper) : undefined,
+      promptContainsProjectedHelper: event.cEmbeddedEvidenceTrace.promptContainsProjectedHelper !== undefined ? Boolean(event.cEmbeddedEvidenceTrace.promptContainsProjectedHelper) : undefined,
+      probeAffectsPrompt: event.cEmbeddedEvidenceTrace.probeAffectsPrompt !== undefined ? Boolean(event.cEmbeddedEvidenceTrace.probeAffectsPrompt) : undefined,
+      probeCompleted: event.cEmbeddedEvidenceTrace.probeCompleted !== undefined ? Boolean(event.cEmbeddedEvidenceTrace.probeCompleted) : undefined,
       projectionToPromptDropReason: event.cEmbeddedEvidenceTrace.projectionToPromptDropReason ? truncateTelemetryText(event.cEmbeddedEvidenceTrace.projectionToPromptDropReason, 80) : undefined,
       submittedEvidenceNames: sanitizeTokenList(event.cEmbeddedEvidenceTrace.submittedEvidenceNames),
       expectedSymbolInQaExactRetrieval: event.cEmbeddedEvidenceTrace.expectedSymbolInQaExactRetrieval !== undefined ? Boolean(event.cEmbeddedEvidenceTrace.expectedSymbolInQaExactRetrieval) : undefined,
@@ -319,6 +446,25 @@ export function sanitizeCompletionDebugEvent(event: CompletionDebugEvent): Compl
       expectedSymbolInProjection: event.cEmbeddedEvidenceTrace.expectedSymbolInProjection !== undefined ? Boolean(event.cEmbeddedEvidenceTrace.expectedSymbolInProjection) : undefined,
       expectedSymbolInPrompt: event.cEmbeddedEvidenceTrace.expectedSymbolInPrompt !== undefined ? Boolean(event.cEmbeddedEvidenceTrace.expectedSymbolInPrompt) : undefined,
       fullRetrievalProbeDumpPath: event.cEmbeddedEvidenceTrace.fullRetrievalProbeDumpPath ? sanitizeDebugPath(event.cEmbeddedEvidenceTrace.fullRetrievalProbeDumpPath) : undefined,
+      symbolPrefixRetrievalShape: event.cEmbeddedEvidenceTrace.symbolPrefixRetrievalShape ? truncateTelemetryText(event.cEmbeddedEvidenceTrace.symbolPrefixRetrievalShape, 80) : undefined,
+      symbolPrefixLocalTopK: sanitizeTokenList(event.cEmbeddedEvidenceTrace.symbolPrefixLocalTopK),
+      symbolPrefixProjectedEvidenceNames: sanitizeTokenList(event.cEmbeddedEvidenceTrace.symbolPrefixProjectedEvidenceNames),
+      symbolPrefixDroppedTargetSymbols: sanitizeTokenList(event.cEmbeddedEvidenceTrace.symbolPrefixDroppedTargetSymbols),
+      typedPrefixCompatibleCandidates: sanitizeTokenList(event.cEmbeddedEvidenceTrace.typedPrefixCompatibleCandidates),
+      typedPrefixCompatiblePromptNames: sanitizeTokenList(event.cEmbeddedEvidenceTrace.typedPrefixCompatiblePromptNames),
+      symbolPrefixSemanticQueryText: event.cEmbeddedEvidenceTrace.symbolPrefixSemanticQueryText ? truncateTelemetryText(event.cEmbeddedEvidenceTrace.symbolPrefixSemanticQueryText, 600) : undefined,
+      symbolPrefixSemanticTopK: sanitizeTokenList(event.cEmbeddedEvidenceTrace.symbolPrefixSemanticTopK),
+      symbolPrefixGraphTopK: sanitizeTokenList(event.cEmbeddedEvidenceTrace.symbolPrefixGraphTopK),
+      symbolPrefixMergedTopK: sanitizeTokenList(event.cEmbeddedEvidenceTrace.symbolPrefixMergedTopK),
+      symbolPrefixRerankTopK: sanitizeTokenList(event.cEmbeddedEvidenceTrace.symbolPrefixRerankTopK),
+      symbolPrefixSemanticSelectedNames: sanitizeTokenList(event.cEmbeddedEvidenceTrace.symbolPrefixSemanticSelectedNames),
+      symbolPrefixPrefixCompatibleNames: sanitizeTokenList(event.cEmbeddedEvidenceTrace.symbolPrefixPrefixCompatibleNames),
+      symbolPrefixSemanticVsPrefixDiverged: event.cEmbeddedEvidenceTrace.symbolPrefixSemanticVsPrefixDiverged !== undefined ? Boolean(event.cEmbeddedEvidenceTrace.symbolPrefixSemanticVsPrefixDiverged) : undefined,
+      symbolPrefixSelectionReason: event.cEmbeddedEvidenceTrace.symbolPrefixSelectionReason ? truncateTelemetryText(event.cEmbeddedEvidenceTrace.symbolPrefixSelectionReason, 160) : undefined,
+      symbolPrefixCurrentFunctionTokens: sanitizeTokenList(event.cEmbeddedEvidenceTrace.symbolPrefixCurrentFunctionTokens),
+      symbolPrefixNonPrefixDroppedNames: sanitizeTokenList(event.cEmbeddedEvidenceTrace.symbolPrefixNonPrefixDroppedNames),
+      symbolPrefixProjectionReasons: sanitizeSymbolPrefixProjectionReasons(event.cEmbeddedEvidenceTrace.symbolPrefixProjectionReasons),
+      symbolPrefixCompatibilityScores: sanitizeSymbolPrefixCompatibilityScores(event.cEmbeddedEvidenceTrace.symbolPrefixCompatibilityScores),
     } : undefined,
     normalizedCommentTokens: sanitizeTokenList(event.normalizedCommentTokens),
     candidateTokenCoverage: sanitizeCandidateTokenCoverage(event.candidateTokenCoverage),
@@ -348,6 +494,11 @@ export function sanitizeCompletionDebugEvent(event: CompletionDebugEvent): Compl
     completionProjectionTopK: sanitizeTokenList(event.completionProjectionTopK),
     droppedAlignedEvidence: sanitizeTokenList(event.droppedAlignedEvidence),
     cursorContextFeatures: sanitizeCursorContextFeatures(event.cursorContextFeatures),
+    cursorContextScope: event.cursorContextScope ? truncateTelemetryText(event.cursorContextScope, 80) : undefined,
+    currentFunctionBodyIsEmpty: event.currentFunctionBodyIsEmpty !== undefined ? Boolean(event.currentFunctionBodyIsEmpty) : undefined,
+    scopedPreviousStatementCalls: sanitizeTokenList(event.scopedPreviousStatementCalls),
+    scopedNextStatementCalls: sanitizeTokenList(event.scopedNextStatementCalls),
+    cursorContextFallbackReason: event.cursorContextFallbackReason ? truncateTelemetryText(event.cursorContextFallbackReason, 120) : undefined,
     fullRetrievalCandidateCount: event.fullRetrievalCandidateCount !== undefined ? finiteNumber(event.fullRetrievalCandidateCount) : undefined,
     projectionCandidateCount: event.projectionCandidateCount !== undefined ? finiteNumber(event.projectionCandidateCount) : undefined,
     retrievalShape: event.retrievalShape ? truncateTelemetryText(event.retrievalShape, 40) : undefined,
@@ -360,6 +511,19 @@ export function sanitizeCompletionDebugEvent(event: CompletionDebugEvent): Compl
     graphTopK: sanitizeTokenList(event.graphTopK),
     mergedTopK: sanitizeTokenList(event.mergedTopK),
     selectedPromptEvidenceNames: sanitizeTokenList(event.selectedPromptEvidenceNames),
+    rawSemanticTopK: sanitizeTokenList(event.rawSemanticTopK),
+    rawGraphTopK: sanitizeTokenList(event.rawGraphTopK),
+    mergedRetrievalTopK: sanitizeTokenList(event.mergedRetrievalTopK),
+    projectionTopK: sanitizeTokenList(event.projectionTopK),
+    projectedEvidenceNames: sanitizeTokenList(event.projectedEvidenceNames),
+    actualPromptEvidenceNames: sanitizeTokenList(event.actualPromptEvidenceNames),
+    droppedProjectedEvidenceNames: sanitizeTokenList(event.droppedProjectedEvidenceNames),
+    rawTop1Aligned: event.rawTop1Aligned !== undefined ? Boolean(event.rawTop1Aligned) : undefined,
+    retrievalRecallAligned: event.retrievalRecallAligned !== undefined ? Boolean(event.retrievalRecallAligned) : undefined,
+    projectionSelectedStrongHelper: event.projectionSelectedStrongHelper !== undefined ? Boolean(event.projectionSelectedStrongHelper) : undefined,
+    promptContainsProjectedHelper: event.promptContainsProjectedHelper !== undefined ? Boolean(event.promptContainsProjectedHelper) : undefined,
+    probeAffectsPrompt: event.probeAffectsPrompt !== undefined ? Boolean(event.probeAffectsPrompt) : undefined,
+    probeCompleted: event.probeCompleted !== undefined ? Boolean(event.probeCompleted) : undefined,
     projectionToPromptDropReason: event.projectionToPromptDropReason ? truncateTelemetryText(event.projectionToPromptDropReason, 80) : undefined,
     submittedEvidenceNames: sanitizeTokenList(event.submittedEvidenceNames),
     expectedSymbolInQaExactRetrieval: event.expectedSymbolInQaExactRetrieval !== undefined ? Boolean(event.expectedSymbolInQaExactRetrieval) : undefined,
@@ -367,6 +531,36 @@ export function sanitizeCompletionDebugEvent(event: CompletionDebugEvent): Compl
     expectedSymbolInProjection: event.expectedSymbolInProjection !== undefined ? Boolean(event.expectedSymbolInProjection) : undefined,
     expectedSymbolInPrompt: event.expectedSymbolInPrompt !== undefined ? Boolean(event.expectedSymbolInPrompt) : undefined,
     fullRetrievalProbeDumpPath: event.fullRetrievalProbeDumpPath ? sanitizeDebugPath(event.fullRetrievalProbeDumpPath) : undefined,
+    typedPrefixAdapted: event.typedPrefixAdapted !== undefined ? Boolean(event.typedPrefixAdapted) : undefined,
+    typedPrefixAdaptReason: event.typedPrefixAdaptReason ? truncateTelemetryText(event.typedPrefixAdaptReason, 80) : undefined,
+    typedPrefixCurrentWord: event.typedPrefixCurrentWord ? truncateTelemetryText(event.typedPrefixCurrentWord, 80) : undefined,
+    typedPrefixMatchedSymbol: event.typedPrefixMatchedSymbol ? truncateTelemetryText(event.typedPrefixMatchedSymbol, 120) : undefined,
+    typedPrefixOriginalFirstLine: event.typedPrefixOriginalFirstLine ? truncateTelemetryText(event.typedPrefixOriginalFirstLine, 160) : undefined,
+    typedPrefixFinalFirstLine: event.typedPrefixFinalFirstLine ? truncateTelemetryText(event.typedPrefixFinalFirstLine, 160) : undefined,
+    deterministicSymbolSuppressed: event.deterministicSymbolSuppressed !== undefined ? Boolean(event.deterministicSymbolSuppressed) : undefined,
+    deterministicSymbolSuppressReason: event.deterministicSymbolSuppressReason ? truncateTelemetryText(event.deterministicSymbolSuppressReason, 80) : undefined,
+    symbolPrefixCandidateTopK: sanitizeTokenList(event.symbolPrefixCandidateTopK),
+    symbolPrefixContextTokens: event.symbolPrefixContextTokens !== undefined ? finiteNumber(event.symbolPrefixContextTokens) : undefined,
+    symbolPrefixRoute: event.symbolPrefixRoute,
+    symbolPrefixRetrievalShape: event.symbolPrefixRetrievalShape ? truncateTelemetryText(event.symbolPrefixRetrievalShape, 80) : undefined,
+    symbolPrefixLocalTopK: sanitizeTokenList(event.symbolPrefixLocalTopK),
+    symbolPrefixProjectedEvidenceNames: sanitizeTokenList(event.symbolPrefixProjectedEvidenceNames),
+    symbolPrefixDroppedTargetSymbols: sanitizeTokenList(event.symbolPrefixDroppedTargetSymbols),
+    typedPrefixCompatibleCandidates: sanitizeTokenList(event.typedPrefixCompatibleCandidates),
+    typedPrefixCompatiblePromptNames: sanitizeTokenList(event.typedPrefixCompatiblePromptNames),
+    symbolPrefixSemanticQueryText: event.symbolPrefixSemanticQueryText ? truncateTelemetryText(event.symbolPrefixSemanticQueryText, 600) : undefined,
+    symbolPrefixSemanticTopK: sanitizeTokenList(event.symbolPrefixSemanticTopK),
+    symbolPrefixGraphTopK: sanitizeTokenList(event.symbolPrefixGraphTopK),
+    symbolPrefixMergedTopK: sanitizeTokenList(event.symbolPrefixMergedTopK),
+    symbolPrefixRerankTopK: sanitizeTokenList(event.symbolPrefixRerankTopK),
+    symbolPrefixSemanticSelectedNames: sanitizeTokenList(event.symbolPrefixSemanticSelectedNames),
+    symbolPrefixPrefixCompatibleNames: sanitizeTokenList(event.symbolPrefixPrefixCompatibleNames),
+    symbolPrefixSemanticVsPrefixDiverged: event.symbolPrefixSemanticVsPrefixDiverged !== undefined ? Boolean(event.symbolPrefixSemanticVsPrefixDiverged) : undefined,
+    symbolPrefixSelectionReason: event.symbolPrefixSelectionReason ? truncateTelemetryText(event.symbolPrefixSelectionReason, 160) : undefined,
+    symbolPrefixCurrentFunctionTokens: sanitizeTokenList(event.symbolPrefixCurrentFunctionTokens),
+    symbolPrefixNonPrefixDroppedNames: sanitizeTokenList(event.symbolPrefixNonPrefixDroppedNames),
+    symbolPrefixProjectionReasons: sanitizeSymbolPrefixProjectionReasons(event.symbolPrefixProjectionReasons),
+    symbolPrefixCompatibilityScores: sanitizeSymbolPrefixCompatibilityScores(event.symbolPrefixCompatibilityScores),
     symbolCandidates: event.symbolCandidates?.map((candidate) => ({
       name: truncateTelemetryText(candidate.name, 120),
       kind: truncateTelemetryText(candidate.kind, 40),
@@ -448,17 +642,42 @@ function sanitizeSemanticCandidateTopK(input: CompletionDebugEvent["semanticCand
   }))
 }
 
+function sanitizeSymbolPrefixCompatibilityScores(input: CompletionDebugEvent["symbolPrefixCompatibilityScores"]) {
+  return input?.slice(0, 8).map((item) => ({
+    name: item.name ? truncateTelemetryText(item.name, 120) : undefined,
+    prefixCompatible: Boolean(item.prefixCompatible),
+    localFlowScore: finiteNumber(item.localFlowScore),
+    projectionScore: finiteNumber(item.projectionScore),
+    broadUtility: Boolean(item.broadUtility),
+  }))
+}
+
+function sanitizeSymbolPrefixProjectionReasons(input: CompletionDebugEvent["symbolPrefixProjectionReasons"]) {
+  return input?.slice(0, 8).map((item) => ({
+    name: item.name ? truncateTelemetryText(item.name, 120) : undefined,
+    reason: truncateTelemetryText(item.reason, 160),
+    prefixCompatible: Boolean(item.prefixCompatible),
+    currentFunctionTokenScore: finiteNumber(item.currentFunctionTokenScore),
+    projectionScore: finiteNumber(item.projectionScore),
+  }))
+}
+
 function sanitizeCursorContextFeatures(input: Record<string, unknown> | undefined) {
   if (!input) return undefined
   return {
     previousStatementCalls: sanitizeUnknownStringList(input.previousStatementCalls),
     nextStatementCalls: sanitizeUnknownStringList(input.nextStatementCalls),
+    scopedPreviousStatementCalls: sanitizeUnknownStringList(input.scopedPreviousStatementCalls),
+    scopedNextStatementCalls: sanitizeUnknownStringList(input.scopedNextStatementCalls),
     nearbyLogOrMessageText: sanitizeUnknownStringList(input.nearbyLogOrMessageText, 6, 120),
     currentFunctionName: typeof input.currentFunctionName === "string" ? truncateTelemetryText(input.currentFunctionName, 120) : undefined,
     statementHoleKind: typeof input.statementHoleKind === "string" ? truncateTelemetryText(input.statementHoleKind, 80) : undefined,
     flowOrdinalTokens: sanitizeUnknownStringList(input.flowOrdinalTokens),
     visibleLocals: sanitizeUnknownStringList(input.visibleLocals),
     visibleIdentifiers: sanitizeUnknownStringList(input.visibleIdentifiers, 16, 80),
+    cursorContextScope: typeof input.cursorContextScope === "string" ? truncateTelemetryText(input.cursorContextScope, 80) : undefined,
+    currentFunctionBodyIsEmpty: input.currentFunctionBodyIsEmpty !== undefined ? Boolean(input.currentFunctionBodyIsEmpty) : undefined,
+    cursorContextFallbackReason: typeof input.cursorContextFallbackReason === "string" ? truncateTelemetryText(input.cursorContextFallbackReason, 120) : undefined,
   }
 }
 

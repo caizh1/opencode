@@ -302,6 +302,82 @@ describe("completion context packer", () => {
     expect(pack.tokenEstimate).toBeLessThanOrEqual(900)
   })
 
+  test("C embedded broad symbol prefixes keep local context and evidence ahead of target snippets", () => {
+    const plan: CompletionPlan = {
+      ...cEmbeddedIntentPlan("symbol-prefix"),
+      targetSymbol: "dr",
+      insertMode: "replace-current-word",
+      replaceCurrentWord: true,
+    }
+    const pack = packCompletionContext({
+      plan,
+      languageId: "c",
+      currentPath: "src/drivers/controller.c",
+      prefix: [
+        "static int controller_init(struct controller *ctrl)",
+        "{",
+        "    controller_power_on(ctrl);",
+        "    dr",
+      ].join("\n"),
+      suffix: [
+        "",
+        "    controller_enable(ctrl);",
+        "    return 0;",
+        "}",
+      ].join("\n"),
+      retrievedSnippets: [
+        {
+          kind: "function",
+          path: "src/drivers/debug.c",
+          line: 10,
+          name: "driver_active_dump",
+          text: "void driver_active_dump(void);",
+          score: 9500,
+        },
+        {
+          kind: "function",
+          path: "src/drivers/debug.c",
+          line: 20,
+          name: "driver_descriptor_dump",
+          text: "void driver_descriptor_dump(void);",
+          score: 9500,
+        },
+        {
+          kind: "function",
+          path: "src/drivers/init.c",
+          line: 40,
+          name: "driver_controller_init",
+          text: "int driver_controller_init(struct controller *ctrl);",
+          score: 9300,
+        },
+      ],
+      analysisEvidenceText: [
+        "C embedded evidence for intent: symbol-prefix",
+        "",
+        "C evidence: c-helper-usage",
+        "Symbol: driver_init_helper",
+        "Source: src/drivers/init.c:42",
+        "Reason: completion same-function local flow helper",
+        "Score: 260",
+        "Retrieval source: graph",
+        "Domain boost: no",
+        "Code:",
+        "driver_init_helper(ctrl);",
+      ].join("\n"),
+      tokenBudget: 900,
+    })
+
+    const selectedKinds = pack.selected.map((block) => block.kind)
+    expect(selectedKinds).toContain("current-prefix")
+    expect(selectedKinds).toContain("current-suffix")
+    expect(selectedKinds).toContain("c-embedded-evidence")
+    expect(pack.selected.filter((block) => block.kind === "target-symbol")).toEqual([])
+    const evidence = pack.selected.find((block) => block.kind === "c-embedded-evidence")
+    expect(evidence?.score ?? 0).toBeGreaterThan(0)
+    expect(formatRepoContext(pack)).toContain("driver_init_helper")
+    expect(formatRepoContext(pack)).toContain("controller_power_on")
+  })
+
   test("comment-guided C code keeps prefix and suffix ahead of source comment and evidence", () => {
     const plan: CompletionPlan = {
       kind: "comment-guided-c-code",

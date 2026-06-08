@@ -289,6 +289,7 @@ export class RemoteCompletionProvider implements vscode.InlineCompletionItemProv
       })
       input.telemetry.modelRoute = completionTelemetryRoute(route)
       input.telemetry.promptKind = completionTelemetryPromptKind(route)
+      updateCompletionTelemetryRoute(input.telemetry, route)
       this.logDebug(input.settings, `${routeLogValue(route, input.settings)} ${input.details}`)
       if (route.kind === "none") {
         return this.noCompletionCandidateOutcome({
@@ -388,6 +389,7 @@ export class RemoteCompletionProvider implements vscode.InlineCompletionItemProv
       })
       input.telemetry.modelRoute = completionTelemetryRoute(route)
       input.telemetry.promptKind = completionTelemetryPromptKind(route)
+      updateCompletionTelemetryRoute(input.telemetry, route)
       this.logDebug(input.settings, `${routeLogValue(route, input.settings)} ${input.details}`)
       if (route.kind === "none") {
         return this.noCompletionCandidateOutcome({
@@ -499,8 +501,27 @@ export class RemoteCompletionProvider implements vscode.InlineCompletionItemProv
       input.telemetry.evidencePromptBlocks = promptEvidence.blocks || undefined
       input.telemetry.evidencePromptTokens = promptEvidence.tokens || undefined
       input.telemetry.evidencePromptKinds = promptEvidence.kinds.length > 0 ? promptEvidence.kinds : undefined
+      const actualPromptEvidenceNames = completionTelemetryActualPromptEvidenceNames(pack)
+      if (actualPromptEvidenceNames.length > 0) {
+        input.telemetry.actualPromptEvidenceNames = actualPromptEvidenceNames
+        input.telemetry.selectedPromptEvidenceNames = actualPromptEvidenceNames
+        const projected = input.telemetry.projectedEvidenceNames ?? input.telemetry.submittedEvidenceNames ?? []
+        input.telemetry.droppedProjectedEvidenceNames = projected.filter((name) => !actualPromptEvidenceNames.includes(name)).slice(0, 8)
+        const projectedTop = projected[0]
+        input.telemetry.promptContainsProjectedHelper = Boolean(projectedTop && actualPromptEvidenceNames.includes(projectedTop))
+        if (input.telemetry.cEmbeddedEvidenceTrace) {
+          input.telemetry.cEmbeddedEvidenceTrace.actualPromptEvidenceNames = actualPromptEvidenceNames
+          input.telemetry.cEmbeddedEvidenceTrace.selectedPromptEvidenceNames = actualPromptEvidenceNames
+          input.telemetry.cEmbeddedEvidenceTrace.droppedProjectedEvidenceNames = input.telemetry.droppedProjectedEvidenceNames
+          input.telemetry.cEmbeddedEvidenceTrace.promptContainsProjectedHelper = input.telemetry.promptContainsProjectedHelper
+        }
+      }
       input.telemetry.contextLevel = completionTelemetryContextLevel(pack)
       input.telemetry.contextWarnings = completionTelemetryContextWarnings(pack)
+      if (input.plan.kind === "c-embedded-code" && input.plan.cIntent === "symbol-prefix") {
+        input.telemetry.symbolPrefixContextTokens = pack.tokenEstimate
+        input.telemetry.symbolPrefixDroppedTargetSymbols = completionTelemetryDroppedSymbolPrefixTargets(input.telemetry, pack)
+      }
       this.logDebug(input.settings, `${completionContextDebugSummary(pack)} ${input.details}`)
     }
     const analysisEvidenceText = await this.retrieveCompletionAnalysisEvidence({
@@ -806,6 +827,7 @@ export class RemoteCompletionProvider implements vscode.InlineCompletionItemProv
           domainHints: input.plan.domainHints,
           prefix: completionRetrievalPrefix(input.document, input.position),
           suffix: completionRetrievalSuffix(input.document, input.position),
+          ...completionScopedCursorContextWindow(input.document, input.position),
           debugFullRetrievalProbe: input.settings.completion.debugFullRetrievalProbe,
           debugExpectedSymbol: input.settings.completion.debugExpectedSymbol,
           commentGuidedRetrievalMode: input.settings.completion.commentGuidedRetrievalMode,
@@ -842,6 +864,11 @@ export class RemoteCompletionProvider implements vscode.InlineCompletionItemProv
         input.telemetry.completionProjectionTopK = result.trace.completionProjectionTopK
         input.telemetry.droppedAlignedEvidence = result.trace.droppedAlignedEvidence
         input.telemetry.cursorContextFeatures = result.trace.cursorContextFeatures
+        input.telemetry.cursorContextScope = result.trace.cursorContextScope
+        input.telemetry.currentFunctionBodyIsEmpty = result.trace.currentFunctionBodyIsEmpty
+        input.telemetry.scopedPreviousStatementCalls = result.trace.scopedPreviousStatementCalls
+        input.telemetry.scopedNextStatementCalls = result.trace.scopedNextStatementCalls
+        input.telemetry.cursorContextFallbackReason = result.trace.cursorContextFallbackReason
         input.telemetry.fullRetrievalCandidateCount = result.trace.fullRetrievalCandidateCount
         input.telemetry.projectionCandidateCount = result.trace.projectionCandidateCount
         input.telemetry.retrievalShape = result.trace.retrievalShape
@@ -854,12 +881,44 @@ export class RemoteCompletionProvider implements vscode.InlineCompletionItemProv
         input.telemetry.graphTopK = result.trace.graphTopK
         input.telemetry.mergedTopK = result.trace.mergedTopK
         input.telemetry.selectedPromptEvidenceNames = result.trace.selectedPromptEvidenceNames
+        input.telemetry.rawSemanticTopK = result.trace.rawSemanticTopK
+        input.telemetry.rawGraphTopK = result.trace.rawGraphTopK
+        input.telemetry.mergedRetrievalTopK = result.trace.mergedRetrievalTopK
+        input.telemetry.projectionTopK = result.trace.projectionTopK
+        input.telemetry.projectedEvidenceNames = result.trace.projectedEvidenceNames
+        input.telemetry.actualPromptEvidenceNames = result.trace.actualPromptEvidenceNames
+        input.telemetry.droppedProjectedEvidenceNames = result.trace.droppedProjectedEvidenceNames
+        input.telemetry.rawTop1Aligned = result.trace.rawTop1Aligned
+        input.telemetry.retrievalRecallAligned = result.trace.retrievalRecallAligned
+        input.telemetry.projectionSelectedStrongHelper = result.trace.projectionSelectedStrongHelper
+        input.telemetry.promptContainsProjectedHelper = result.trace.promptContainsProjectedHelper
+        input.telemetry.probeAffectsPrompt = result.trace.probeAffectsPrompt
+        input.telemetry.probeCompleted = result.trace.probeCompleted
         input.telemetry.projectionToPromptDropReason = result.trace.projectionToPromptDropReason
         input.telemetry.submittedEvidenceNames = result.trace.submittedEvidenceNames
         input.telemetry.expectedSymbolInQaExactRetrieval = result.trace.expectedSymbolInQaExactRetrieval
         input.telemetry.expectedSymbolInFullRetrieval = result.trace.expectedSymbolInFullRetrieval
         input.telemetry.expectedSymbolInProjection = result.trace.expectedSymbolInProjection
         input.telemetry.expectedSymbolInPrompt = result.trace.expectedSymbolInPrompt
+        input.telemetry.symbolPrefixRetrievalShape = result.trace.symbolPrefixRetrievalShape
+        input.telemetry.symbolPrefixLocalTopK = result.trace.symbolPrefixLocalTopK
+        input.telemetry.symbolPrefixProjectedEvidenceNames = result.trace.symbolPrefixProjectedEvidenceNames
+        input.telemetry.symbolPrefixDroppedTargetSymbols = result.trace.symbolPrefixDroppedTargetSymbols
+        input.telemetry.typedPrefixCompatibleCandidates = result.trace.typedPrefixCompatibleCandidates
+        input.telemetry.typedPrefixCompatiblePromptNames = result.trace.typedPrefixCompatiblePromptNames
+        input.telemetry.symbolPrefixSemanticQueryText = result.trace.symbolPrefixSemanticQueryText
+        input.telemetry.symbolPrefixSemanticTopK = result.trace.symbolPrefixSemanticTopK
+        input.telemetry.symbolPrefixGraphTopK = result.trace.symbolPrefixGraphTopK
+        input.telemetry.symbolPrefixMergedTopK = result.trace.symbolPrefixMergedTopK
+        input.telemetry.symbolPrefixRerankTopK = result.trace.symbolPrefixRerankTopK
+        input.telemetry.symbolPrefixSemanticSelectedNames = result.trace.symbolPrefixSemanticSelectedNames
+        input.telemetry.symbolPrefixPrefixCompatibleNames = result.trace.symbolPrefixPrefixCompatibleNames
+        input.telemetry.symbolPrefixSemanticVsPrefixDiverged = result.trace.symbolPrefixSemanticVsPrefixDiverged
+        input.telemetry.symbolPrefixSelectionReason = result.trace.symbolPrefixSelectionReason
+        input.telemetry.symbolPrefixCurrentFunctionTokens = result.trace.symbolPrefixCurrentFunctionTokens
+        input.telemetry.symbolPrefixNonPrefixDroppedNames = result.trace.symbolPrefixNonPrefixDroppedNames
+        input.telemetry.symbolPrefixProjectionReasons = result.trace.symbolPrefixProjectionReasons
+        input.telemetry.symbolPrefixCompatibilityScores = result.trace.symbolPrefixCompatibilityScores
         input.telemetry.fullRetrievalDebugDump = result.debugDump
         const text = result.text.trim()
         if (text) {
@@ -897,15 +956,17 @@ export class RemoteCompletionProvider implements vscode.InlineCompletionItemProv
     telemetry: CompletionTelemetryDraft
     selectedCompletionInfo?: SelectedCompletionInfo
   }): CompletionRequestOutcome {
+    const editInput = completionEditInputWithSymbolHints(input.editInput, input.retrievedSnippets, input.telemetry)
     const pipeline = runCompletionCandidatePipeline({
       response: input.response,
       textProfile: input.textProfile,
-      editInput: input.editInput,
+      editInput,
       plan: input.plan,
       retrievedSnippets: input.retrievedSnippets,
       selectedCompletionInfo: selectedCompletionInfoValue(input.selectedCompletionInfo),
       documentSuffix: documentSuffixFromPosition(input.document, input.editInput.position),
     })
+    updateTypedPrefixTelemetry(input.telemetry, pipeline)
     input.telemetry.rawOutputLength = pipeline.rawText.length
     input.telemetry.latencyMs.postprocess = pipeline.latencyMs.postprocess
     input.telemetry.normalizedOutputLength = pipeline.postprocessText.length
@@ -1026,15 +1087,17 @@ export class RemoteCompletionProvider implements vscode.InlineCompletionItemProv
     })
     if (!fallbackText) return
 
+    const editInput = completionEditInputWithSymbolHints(input.editInput, input.retrievedSnippets, input.telemetry)
     const pipeline = runCompletionCandidatePipeline({
       rawText: fallbackText,
       textProfile: input.textProfile,
-      editInput: input.editInput,
+      editInput,
       plan: input.plan,
       retrievedSnippets: input.retrievedSnippets,
       selectedCompletionInfo: selectedCompletionInfoValue(input.selectedCompletionInfo),
       documentSuffix: documentSuffixFromPosition(input.document, input.editInput.position),
     })
+    updateTypedPrefixTelemetry(input.telemetry, pipeline)
     input.telemetry.rawOutputLength = pipeline.rawText.length
     input.telemetry.latencyMs.postprocess = pipeline.latencyMs.postprocess
     input.telemetry.normalizedOutputLength = pipeline.postprocessText.length
@@ -1191,6 +1254,11 @@ export class RemoteCompletionProvider implements vscode.InlineCompletionItemProv
       completionProjectionTopK: telemetry.completionProjectionTopK,
       droppedAlignedEvidence: telemetry.droppedAlignedEvidence,
       cursorContextFeatures: telemetry.cursorContextFeatures,
+      cursorContextScope: telemetry.cursorContextScope,
+      currentFunctionBodyIsEmpty: telemetry.currentFunctionBodyIsEmpty,
+      scopedPreviousStatementCalls: telemetry.scopedPreviousStatementCalls,
+      scopedNextStatementCalls: telemetry.scopedNextStatementCalls,
+      cursorContextFallbackReason: telemetry.cursorContextFallbackReason,
       fullRetrievalCandidateCount: telemetry.fullRetrievalCandidateCount,
       projectionCandidateCount: telemetry.projectionCandidateCount,
       retrievalShape: telemetry.retrievalShape,
@@ -1203,6 +1271,19 @@ export class RemoteCompletionProvider implements vscode.InlineCompletionItemProv
       graphTopK: telemetry.graphTopK,
       mergedTopK: telemetry.mergedTopK,
       selectedPromptEvidenceNames: telemetry.selectedPromptEvidenceNames,
+      rawSemanticTopK: telemetry.rawSemanticTopK,
+      rawGraphTopK: telemetry.rawGraphTopK,
+      mergedRetrievalTopK: telemetry.mergedRetrievalTopK,
+      projectionTopK: telemetry.projectionTopK,
+      projectedEvidenceNames: telemetry.projectedEvidenceNames,
+      actualPromptEvidenceNames: telemetry.actualPromptEvidenceNames,
+      droppedProjectedEvidenceNames: telemetry.droppedProjectedEvidenceNames,
+      rawTop1Aligned: telemetry.rawTop1Aligned,
+      retrievalRecallAligned: telemetry.retrievalRecallAligned,
+      projectionSelectedStrongHelper: telemetry.projectionSelectedStrongHelper,
+      promptContainsProjectedHelper: telemetry.promptContainsProjectedHelper,
+      probeAffectsPrompt: telemetry.probeAffectsPrompt,
+      probeCompleted: telemetry.probeCompleted,
       projectionToPromptDropReason: telemetry.projectionToPromptDropReason,
       submittedEvidenceNames: telemetry.submittedEvidenceNames,
       expectedSymbolInQaExactRetrieval: telemetry.expectedSymbolInQaExactRetrieval,
@@ -1210,6 +1291,36 @@ export class RemoteCompletionProvider implements vscode.InlineCompletionItemProv
       expectedSymbolInProjection: telemetry.expectedSymbolInProjection,
       expectedSymbolInPrompt: telemetry.expectedSymbolInPrompt,
       fullRetrievalProbeDumpPath: telemetry.fullRetrievalProbeDumpPath,
+      typedPrefixAdapted: telemetry.typedPrefixAdapted,
+      typedPrefixAdaptReason: telemetry.typedPrefixAdaptReason,
+      typedPrefixCurrentWord: telemetry.typedPrefixCurrentWord,
+      typedPrefixMatchedSymbol: telemetry.typedPrefixMatchedSymbol,
+      typedPrefixOriginalFirstLine: telemetry.typedPrefixOriginalFirstLine,
+      typedPrefixFinalFirstLine: telemetry.typedPrefixFinalFirstLine,
+      deterministicSymbolSuppressed: telemetry.deterministicSymbolSuppressed,
+      deterministicSymbolSuppressReason: telemetry.deterministicSymbolSuppressReason,
+      symbolPrefixCandidateTopK: telemetry.symbolPrefixCandidateTopK,
+      symbolPrefixContextTokens: telemetry.symbolPrefixContextTokens,
+      symbolPrefixRoute: telemetry.symbolPrefixRoute,
+      symbolPrefixRetrievalShape: telemetry.symbolPrefixRetrievalShape,
+      symbolPrefixLocalTopK: telemetry.symbolPrefixLocalTopK,
+      symbolPrefixProjectedEvidenceNames: telemetry.symbolPrefixProjectedEvidenceNames,
+      symbolPrefixDroppedTargetSymbols: telemetry.symbolPrefixDroppedTargetSymbols,
+      typedPrefixCompatibleCandidates: telemetry.typedPrefixCompatibleCandidates,
+      typedPrefixCompatiblePromptNames: telemetry.typedPrefixCompatiblePromptNames,
+      symbolPrefixSemanticQueryText: telemetry.symbolPrefixSemanticQueryText,
+      symbolPrefixSemanticTopK: telemetry.symbolPrefixSemanticTopK,
+      symbolPrefixGraphTopK: telemetry.symbolPrefixGraphTopK,
+      symbolPrefixMergedTopK: telemetry.symbolPrefixMergedTopK,
+      symbolPrefixRerankTopK: telemetry.symbolPrefixRerankTopK,
+      symbolPrefixSemanticSelectedNames: telemetry.symbolPrefixSemanticSelectedNames,
+      symbolPrefixPrefixCompatibleNames: telemetry.symbolPrefixPrefixCompatibleNames,
+      symbolPrefixSemanticVsPrefixDiverged: telemetry.symbolPrefixSemanticVsPrefixDiverged,
+      symbolPrefixSelectionReason: telemetry.symbolPrefixSelectionReason,
+      symbolPrefixCurrentFunctionTokens: telemetry.symbolPrefixCurrentFunctionTokens,
+      symbolPrefixNonPrefixDroppedNames: telemetry.symbolPrefixNonPrefixDroppedNames,
+      symbolPrefixProjectionReasons: telemetry.symbolPrefixProjectionReasons,
+      symbolPrefixCompatibilityScores: telemetry.symbolPrefixCompatibilityScores,
       promptKind: telemetry.promptKind,
       symbolCandidates: telemetry.symbolCandidates,
       selectedContextBlocks: telemetry.selectedContextBlocks,
@@ -1664,6 +1775,184 @@ function completionRetrievalSuffix(document: vscode.TextDocument, position: vsco
   return document.getText(new vscode.Range(position.line, position.character, after, document.lineAt(after).text.length))
 }
 
+function completionScopedCursorContextWindow(document: vscode.TextDocument, position: vscode.Position) {
+  if (!isCEmbeddedLanguage(document.languageId)) {
+    return {
+      cursorPrefix: completionRetrievalPrefix(document, position),
+      cursorSuffix: completionRetrievalSuffix(document, position),
+      cursorContextScope: "file-window-fallback" as const,
+      currentFunctionBodyIsEmpty: false,
+      cursorContextFallbackReason: "non-c-language",
+    }
+  }
+  const text = document.getText()
+  const cursorOffset = completionDocumentOffsetAt(document, position, text)
+  const scope = findCFunctionScopeAtOffset(text, cursorOffset)
+  if (!scope) {
+    return {
+      cursorPrefix: completionRetrievalPrefix(document, position),
+      cursorSuffix: completionRetrievalSuffix(document, position),
+      cursorContextScope: "file-window-fallback" as const,
+      currentFunctionBodyIsEmpty: false,
+      cursorContextFallbackReason: "function-boundary-not-found",
+    }
+  }
+  const bodyPrefix = text.slice(scope.openBrace + 1, cursorOffset)
+  const bodySuffix = text.slice(cursorOffset, scope.closeBrace)
+  return {
+    cursorPrefix: text.slice(scope.headerStart, cursorOffset),
+    cursorSuffix: text.slice(cursorOffset, scope.closeBrace + 1),
+    cursorContextScope: "current-function" as const,
+    currentFunctionBodyIsEmpty: cFunctionBodyIsEmpty(bodyPrefix, bodySuffix),
+    cursorContextFallbackReason: undefined,
+  }
+}
+
+function findCFunctionScopeAtOffset(text: string, cursorOffset: number) {
+  const stack = cBraceStackBeforeOffset(text, cursorOffset)
+  for (let index = stack.length - 1; index >= 0; index -= 1) {
+    const openBrace = stack[index]!
+    const header = cFunctionHeaderBeforeBrace(text, openBrace)
+    if (!header) continue
+    const closeBrace = findMatchingCBrace(text, openBrace)
+    if (closeBrace < cursorOffset) continue
+    return {
+      headerStart: header.headerStart,
+      openBrace,
+      closeBrace,
+    }
+  }
+  return undefined
+}
+
+function completionDocumentOffsetAt(document: vscode.TextDocument, position: vscode.Position, text: string) {
+  const offsetAt = (document as { offsetAt?: (position: vscode.Position) => number }).offsetAt
+  if (typeof offsetAt === "function") return offsetAt.call(document, position)
+  const lines = text.split(/\r?\n/)
+  let offset = 0
+  for (let line = 0; line < Math.min(position.line, lines.length); line += 1) {
+    offset += (lines[line]?.length ?? 0) + 1
+  }
+  return offset + position.character
+}
+
+function cFunctionHeaderBeforeBrace(text: string, openBrace: number) {
+  const previousSeparators = [
+    text.lastIndexOf(";", openBrace - 1),
+    text.lastIndexOf("}", openBrace - 1),
+    text.lastIndexOf("{", openBrace - 1),
+  ]
+  const segmentStart = Math.max(0, Math.max(...previousSeparators) + 1)
+  const segment = text.slice(segmentStart, openBrace)
+  const trimmedStart = segment.search(/\S/)
+  if (trimmedStart < 0) return undefined
+  const headerText = segment.slice(trimmedStart)
+  const match = /\b([A-Za-z_][A-Za-z0-9_]*)\s*\([^;{}]*\)\s*$/.exec(headerText)
+  const name = match?.[1]
+  if (!name || C_CONTROL_HEAD_NAMES.has(name)) return undefined
+  return {
+    headerStart: segmentStart + trimmedStart,
+    name,
+  }
+}
+
+function cBraceStackBeforeOffset(text: string, offset: number) {
+  const stack: number[] = []
+  scanCText(text, offset, (char, index) => {
+    if (char === "{") stack.push(index)
+    if (char === "}") stack.pop()
+  })
+  return stack
+}
+
+function findMatchingCBrace(text: string, openBrace: number) {
+  let depth = 0
+  let closeBrace = text.length
+  scanCText(text, text.length, (char, index) => {
+    if (index < openBrace) return
+    if (char === "{") depth += 1
+    if (char === "}") {
+      depth -= 1
+      if (depth === 0) {
+        closeBrace = index
+        return false
+      }
+    }
+    return undefined
+  })
+  return closeBrace
+}
+
+function scanCText(text: string, limit: number, visit: (char: string, index: number) => false | void) {
+  let state: "code" | "line-comment" | "block-comment" | "string" | "char" = "code"
+  for (let index = 0; index < Math.min(limit, text.length); index += 1) {
+    const char = text[index]!
+    const next = text[index + 1]
+    if (state === "line-comment") {
+      if (char === "\n") state = "code"
+      continue
+    }
+    if (state === "block-comment") {
+      if (char === "*" && next === "/") {
+        index += 1
+        state = "code"
+      }
+      continue
+    }
+    if (state === "string") {
+      if (char === "\\") {
+        index += 1
+      } else if (char === "\"") {
+        state = "code"
+      }
+      continue
+    }
+    if (state === "char") {
+      if (char === "\\") {
+        index += 1
+      } else if (char === "'") {
+        state = "code"
+      }
+      continue
+    }
+    if (char === "/" && next === "/") {
+      index += 1
+      state = "line-comment"
+      continue
+    }
+    if (char === "/" && next === "*") {
+      index += 1
+      state = "block-comment"
+      continue
+    }
+    if (char === "\"") {
+      state = "string"
+      continue
+    }
+    if (char === "'") {
+      state = "char"
+      continue
+    }
+    if (visit(char, index) === false) return
+  }
+}
+
+function cFunctionBodyIsEmpty(prefix: string, suffix: string) {
+  return stripCCommentsAndStrings(`${prefix}\n${suffix}`)
+    .replace(/^\s*#.*$/gm, "")
+    .trim().length === 0
+}
+
+function stripCCommentsAndStrings(text: string) {
+  let output = ""
+  scanCText(text, text.length, (char) => {
+    output += char
+  })
+  return output
+}
+
+const C_CONTROL_HEAD_NAMES = new Set(["if", "for", "while", "switch", "return", "sizeof"])
+
 function nearbyCompletionCommentTokens(document: vscode.TextDocument, position: vscode.Position) {
   if (!isCEmbeddedLanguage(document.languageId)) return []
   const tokens: string[] = []
@@ -1719,6 +2008,80 @@ function updateCompletionTelemetryPlan(telemetry: CompletionTelemetryDraft, plan
   telemetry.sourceCommentHash = plan.sourceComment ? filePathHash(plan.sourceComment) : undefined
   telemetry.sourceCommentPreview = plan.sourceComment
   telemetry.commentGuidedSkipReason = plan.commentGuidedSkipReason
+}
+
+function updateCompletionTelemetryRoute(telemetry: CompletionTelemetryDraft, route: CompletionModelRoute) {
+  if (route.kind === "deterministic-symbol") {
+    telemetry.symbolPrefixRoute = telemetry.cIntent === "symbol-prefix" ? "deterministic-symbol" : undefined
+    return
+  }
+  if (route.kind !== "model") return
+  telemetry.deterministicSymbolSuppressed = route.deterministicSymbolSuppressed
+  telemetry.deterministicSymbolSuppressReason = route.deterministicSymbolSuppressReason
+  telemetry.symbolPrefixCandidateTopK = route.symbolPrefixCandidateTopK
+  telemetry.symbolPrefixRoute = route.symbolPrefixRoute
+}
+
+function completionEditInputWithSymbolHints(
+  editInput: Omit<CompletionEditInput, "text">,
+  snippets: RetrievedCompletionSnippet[],
+  telemetry: CompletionTelemetryDraft,
+): Omit<CompletionEditInput, "text"> {
+  const symbolHints = completionEditSymbolHints(snippets, telemetry)
+  return symbolHints.length > 0 ? { ...editInput, symbolHints } : editInput
+}
+
+function completionEditSymbolHints(snippets: RetrievedCompletionSnippet[], telemetry: CompletionTelemetryDraft) {
+  return uniqueNonEmpty([
+    ...snippets.map((snippet) => snippet.name ?? ""),
+    ...completionTelemetryNameList(telemetry.selectedSimilarFunctionNames),
+    ...completionTelemetryNameList(telemetry.qaRetrievalTopK),
+    ...completionTelemetryNameList(telemetry.completionRetrievalTopK),
+    ...completionTelemetryNameList(telemetry.qaStyleTopK),
+    ...completionTelemetryNameList(telemetry.completionProjectionTopK),
+    ...completionTelemetryNameList(telemetry.qaExactTopK),
+    ...completionTelemetryNameList(telemetry.qaExactSubmittedEvidence),
+    ...completionTelemetryNameList(telemetry.qaExactContextTopK),
+    ...completionTelemetryNameList(telemetry.semanticTopK),
+    ...completionTelemetryNameList(telemetry.graphTopK),
+    ...completionTelemetryNameList(telemetry.mergedTopK),
+    ...completionTelemetryNameList(telemetry.rawSemanticTopK),
+    ...completionTelemetryNameList(telemetry.rawGraphTopK),
+    ...completionTelemetryNameList(telemetry.mergedRetrievalTopK),
+    ...completionTelemetryNameList(telemetry.projectionTopK),
+    ...completionTelemetryNameList(telemetry.projectedEvidenceNames),
+    ...completionTelemetryNameList(telemetry.actualPromptEvidenceNames),
+    ...completionTelemetryNameList(telemetry.selectedPromptEvidenceNames),
+    ...completionTelemetryNameList(telemetry.submittedEvidenceNames),
+    ...completionTelemetryNameList(telemetry.callableHelperCandidates),
+    ...completionTelemetryNameList(telemetry.styleExampleCandidates),
+    ...completionTelemetryNameList(telemetry.droppedAlignedEvidence),
+    ...completionTelemetryNameList(telemetry.droppedProjectedEvidenceNames),
+    ...completionTelemetryNameList(telemetry.qaTopCandidate ? [telemetry.qaTopCandidate] : []),
+    ...completionTelemetryNameList(telemetry.completionTopCandidate ? [telemetry.completionTopCandidate] : []),
+    ...completionTelemetryNameList(telemetry.sharedTopCandidate ? [telemetry.sharedTopCandidate] : []),
+    ...(telemetry.symbolCandidates ?? []).map((candidate) => candidate.name),
+    ...(telemetry.selectedContextBlocks ?? []).flatMap((block) => completionIdentifierNames(block.title)),
+  ]).filter((name) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(name)).slice(0, 80)
+}
+
+function completionTelemetryNameList(values: string[] | undefined) {
+  return (values ?? []).flatMap(completionIdentifierNames)
+}
+
+function completionIdentifierNames(text: string) {
+  return text.match(/\b[A-Za-z_][A-Za-z0-9_]*\b/g) ?? []
+}
+
+function updateTypedPrefixTelemetry(telemetry: CompletionTelemetryDraft, pipeline: CompletionCandidatePipelineResult) {
+  const typedPrefix = pipeline.typedPrefixAdaptation
+  telemetry.typedPrefixAdapted = Boolean(typedPrefix)
+  if (!typedPrefix) return
+  telemetry.typedPrefixAdaptReason = typedPrefix.reason
+  telemetry.typedPrefixCurrentWord = typedPrefix.currentWord
+  telemetry.typedPrefixMatchedSymbol = typedPrefix.matchedSymbol
+  telemetry.typedPrefixOriginalFirstLine = typedPrefix.originalFirstLine
+  telemetry.typedPrefixFinalFirstLine = typedPrefix.finalFirstLine
 }
 
 function completionTelemetryPromptKind(route: CompletionModelRoute): NonNullable<CompletionDebugEvent["promptKind"]> {
@@ -1884,6 +2247,26 @@ function completionTelemetryPromptEvidence(pack: CompletionContextPack) {
     tokens: blocks.reduce((sum, block) => sum + block.tokenEstimate, 0),
     kinds: uniqueNonEmpty(blocks.map((block) => block.kind === "c-embedded-evidence" ? block.title.split(":")[0]?.trim() : block.kind)),
   }
+}
+
+function completionTelemetryActualPromptEvidenceNames(pack: CompletionContextPack) {
+  return uniqueNonEmpty(pack.selected
+    .filter((block) => block.kind === "c-embedded-evidence")
+    .map((block) =>
+      /^Symbol:\s*(.+)$/m.exec(block.text)?.[1]?.trim() ??
+        /^c-[A-Za-z0-9-]+:\s*(.+)$/.exec(block.title)?.[1]?.trim() ??
+        ""))
+    .slice(0, 8)
+}
+
+function completionTelemetryDroppedSymbolPrefixTargets(telemetry: CompletionTelemetryDraft, pack: CompletionContextPack) {
+  const raw = telemetry.symbolPrefixCandidateTopK ?? []
+  if (raw.length === 0) return telemetry.symbolPrefixDroppedTargetSymbols
+  const selectedTargetText = pack.selected
+    .filter((block) => block.kind === "target-symbol")
+    .map((block) => `${block.title}\n${block.text}`)
+    .join("\n")
+  return raw.filter((name) => !selectedTargetText.includes(name)).slice(0, 8)
 }
 
 function completionTelemetryContextWarnings(pack: CompletionContextPack) {

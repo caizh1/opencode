@@ -229,17 +229,18 @@ function analyzeCommentGuidedCCodePlan(input: CompletionPlanInput, trimmed: stri
   const cIntent = classifyCCompletionIntent(input) ?? (looksLikeCaseBodyContext(input) ? "case-body" : "body-statement")
   const manual = isManualTrigger(input.triggerKind)
   const targetSymbol = strongCommentCodeSymbol(sourceComment)
+  const typedIdentifierOnly = isTypedIdentifierOnlyContinuation(trimmed, currentWord) && !input.lineSuffix.trim()
   return {
     sourceComment,
     implementationLike: true,
     blocksPreviousContinuation,
     plan: {
       kind: "comment-guided-c-code",
-      insertMode: trimmed || input.lineSuffix.trim() ? "replace-whole-line" : "insert-at-cursor",
+      insertMode: typedIdentifierOnly ? "replace-current-word" : trimmed || input.lineSuffix.trim() ? "replace-whole-line" : "insert-at-cursor",
       sourceComment,
       ...(targetSymbol ? { targetSymbol } : {}),
       cIntent,
-      replaceCurrentWord: Boolean(trimmed || input.lineSuffix.trim()),
+      replaceCurrentWord: typedIdentifierOnly || Boolean(trimmed || input.lineSuffix.trim()),
       needsSymbolRetrieval: Boolean(targetSymbol),
       needsIntentRetrieval: true,
       needsTestRetrieval: false,
@@ -464,6 +465,11 @@ function looksLikeContinuationLine(trimmed: string, currentWord: string) {
   if (!trimmed) return true
   if (currentWord && trimmed === currentWord) return true
   return /^[A-Za-z_][A-Za-z0-9_]*(?:\s+[A-Za-z_][A-Za-z0-9_]*){0,2}$/.test(trimmed)
+}
+
+function isTypedIdentifierOnlyContinuation(trimmed: string, currentWord: string) {
+  if (!currentWord || trimmed !== currentWord) return false
+  return /^[A-Za-z_][A-Za-z0-9_]*$/.test(currentWord)
 }
 
 function commentTargetSymbol(comment: string) {

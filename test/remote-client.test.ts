@@ -259,6 +259,28 @@ describe("RemoteOpenCodeClient", () => {
     ])
   })
 
+  test("aborts async session runs", async () => {
+    const requests: string[] = []
+    const baseUrl = await listen((request, response) => {
+      requests.push(`${request.method} ${request.url}`)
+      if (request.url === "/session/abc/abort") {
+        response.writeHead(204).end()
+        return
+      }
+      if (request.url === "/session/def/abort") {
+        json(response, 200, false)
+        return
+      }
+      response.writeHead(404).end()
+    })
+    const client = new RemoteOpenCodeClient(settings(baseUrl))
+
+    await expect(client.abortSession("abc")).resolves.toBe(true)
+    await expect(client.abortSession("def")).resolves.toBe(false)
+
+    expect(requests).toEqual(["POST /session/abc/abort", "POST /session/def/abort"])
+  })
+
   test("subscribes to SSE events across chunk boundaries", async () => {
     const baseUrl = await listen((request, response) => {
       if (request.url === "/event") {

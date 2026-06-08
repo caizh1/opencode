@@ -241,6 +241,33 @@ describe("completion retrieval planning", () => {
     expect(plan.queries).not.toContain("step2")
   })
 
+  test("uses intent-driven retrieval for C embedded symbol prefixes even when targetSymbol exists", () => {
+    const completionPlan = planCompletion({
+      languageId: "c",
+      linePrefix: "    nf",
+      lineSuffix: "",
+      currentWord: "nf",
+      triggerKind: "automatic",
+    })
+    const plan = completionRetrievalPlan({
+      plan: completionPlan,
+      languageId: "c",
+      linePrefix: "    nf",
+      lineSuffix: "",
+      currentWord: "nf",
+    })
+
+    expect(completionPlan).toMatchObject({
+      kind: "c-embedded-code",
+      cIntent: "symbol-prefix",
+      targetSymbol: "nf",
+    })
+    expect(plan.policyLabel).toBe("c-symbol-prefix")
+    expect(plan.evidenceQuestion).toContain("completion-intent: symbol-prefix")
+    expect(plan.evidenceQuestion).toContain("current-word: nf")
+    expect(plan.evidenceQuestion).not.toContain("Find the target symbol nf")
+  })
+
   test("enables ordinary C/C++ retrieval for intent-bearing plans only", () => {
     const cPlan = planCompletion({
       languageId: "c",

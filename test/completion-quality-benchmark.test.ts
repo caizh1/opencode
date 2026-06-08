@@ -262,6 +262,24 @@ describe("completion quality benchmark fixtures", () => {
         block.kind === "target-symbol" && /nfc_aes_for_no_meta_get|nfc_cdma_desc_zero_init/.test(`${block.title ?? ""}\n${block.text ?? ""}`),
       )).toBe(false)
 
+      const emptyFunctionScoped = report.records.find((record) => record.fixtureName === "generic-c-empty-function-scoped-body-statement")
+      expect(emptyFunctionScoped).toEqual(expect.objectContaining({
+        actualPlanKind: "c-embedded-code",
+        actualCIntent: "body-statement",
+        promptKind: "qwen-fim",
+      }))
+      expect(emptyFunctionScoped?.cursorContextFeatures).toEqual(expect.objectContaining({
+        cursorContextScope: "current-function",
+        currentFunctionBodyIsEmpty: true,
+        previousStatementCalls: [],
+        nextStatementCalls: [],
+        nearbyLogOrMessageText: [],
+      }))
+      expect(emptyFunctionScoped?.cursorContextFeatures?.scopedPreviousStatementCalls).toEqual([])
+      expect(emptyFunctionScoped?.cursorContextFeatures?.scopedNextStatementCalls).toEqual([])
+      expect(emptyFunctionScoped?.actualPromptEvidenceNames).toEqual(expect.arrayContaining(["controller_reference_init", "controller_setup"]))
+      expect(emptyFunctionScoped?.actualPromptEvidenceNames).not.toEqual(expect.arrayContaining(["adjacent_before", "adjacent_after"]))
+
       const joinedLogs = logs.join("\n")
       for (const domain of expectedDomains) {
         expect(joinedLogs).toContain(`(${domain})`)

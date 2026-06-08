@@ -23,6 +23,7 @@ export type CompletionEditInput = {
   indent: CompletionIndentContext
   currentWord?: string
   currentWordRange?: CompletionRange
+  symbolHints?: string[]
   preferCurrentWordReplacement?: boolean
 }
 
@@ -40,6 +41,15 @@ export type CompletionEdit = {
   filterText?: string
   formatRange?: CompletionRange
   normalized?: "prefix-overlap"
+  typedPrefix?: CompletionTypedPrefixAdaptation
+}
+
+export type CompletionTypedPrefixAdaptation = {
+  reason: "symbol-hint-suffix-match"
+  currentWord: string
+  matchedSymbol: string
+  originalFirstLine: string
+  finalFirstLine: string
 }
 
 export type CompletionEditRejectReason =
@@ -340,6 +350,8 @@ function linePrefixOverlapResult(input: CompletionEditInput): CompletionEditResu
 function currentWordReplacement(input: CompletionEditInput): CompletionEdit | undefined {
   if (!input.currentWord || !input.currentWordRange) return
   if (!startsWithCurrentWord(input.text, input.currentWord)) {
+    const suffixReplacement = typedPrefixSuffixReplacement(input, input.text)
+    if (suffixReplacement) return suffixReplacement
     const fallback = controlFlowFallback(input)
     if (fallback) return fallback
     return
@@ -369,6 +381,12 @@ function currentWordLinePrefixReplacement(input: CompletionEditInput): Completio
   if (!beforeWord || !input.text.startsWith(beforeWord)) return
 
   const replacementText = input.text.slice(beforeWord.length)
+  if (!startsWithCurrentWord(replacementText, input.currentWord)) {
+    return typedPrefixSuffixReplacement({
+      ...input,
+      text: replacementText,
+    }, replacementText)
+  }
   if (!startsWithCurrentWord(replacementText, input.currentWord)) return
 
   const currentIndent = lineIndent(input.linePrefix)
@@ -385,6 +403,48 @@ function currentWordLinePrefixReplacement(input: CompletionEditInput): Completio
     replaceRange: input.currentWordRange,
     filterText: insertText,
     formatRange: formatRangeAfterInsert(input.position.line, input.currentWordRange.startCharacter, insertText),
+  }
+}
+
+function typedPrefixSuffixReplacement(input: CompletionEditInput, text: string): CompletionEdit | undefined {
+  const currentWord = input.currentWord
+  const currentWordRange = input.currentWordRange
+  if (!currentWord || !currentWordRange) return
+  if (!isIdentifier(currentWord)) return
+  if (input.lineSuffix.trim()) return
+
+  const first = firstLeadingIdentifier(text)
+  if (!first) return
+
+  const matchedSymbol = typedPrefixMatchedSymbol({
+    currentWord,
+    suffixIdentifier: first.identifier,
+    symbolHints: input.symbolHints ?? [],
+  })
+  if (!matchedSymbol) return
+
+  const replacementText = `${text.slice(0, first.start)}${matchedSymbol}${text.slice(first.end)}`
+  const currentIndent = lineIndent(input.linePrefix)
+  const insertText = formatCompletionReplacementText(
+    replacementText,
+    currentIndent,
+    input.indent.indentUnit,
+    input.languageId,
+  )
+  if (!insertText) return
+
+  return {
+    insertText,
+    replaceRange: currentWordRange,
+    filterText: insertText,
+    formatRange: formatRangeAfterInsert(input.position.line, currentWordRange.startCharacter, insertText),
+    typedPrefix: {
+      reason: "symbol-hint-suffix-match",
+      currentWord,
+      matchedSymbol,
+      originalFirstLine: firstCompletionLine(text),
+      finalFirstLine: firstCompletionLine(insertText),
+    },
   }
 }
 
@@ -509,9 +569,13 @@ function adaptForCurrentWordReplacement(input: InlineCompletionEditValidationInp
   const currentWordRange = input.editInput.currentWordRange
   if (!currentWord || !currentWordRange) return
   if (input.edit.replaceRange && sameCompletionRange(input.edit.replaceRange, currentWordRange)) {
-    return startsWithCurrentWord(input.edit.insertText, currentWord)
-      ? withFilterText(input.edit, input.edit.filterText ?? input.edit.insertText)
-      : undefined
+    if (startsWithCurrentWord(input.edit.insertText, currentWord)) {
+      return withFilterText(input.edit, input.edit.filterText ?? input.edit.insertText)
+    }
+    return typedPrefixSuffixReplacement({
+      ...input.editInput,
+      text: input.edit.insertText,
+    }, input.edit.insertText)
   }
   if (!input.edit.replaceRange || !containsCompletionRange(input.edit.replaceRange, currentWordRange)) return
 
@@ -522,6 +586,13 @@ function adaptForCurrentWordReplacement(input: InlineCompletionEditValidationInp
   })
   if (nested && startsWithCurrentWord(nested.insertText, currentWord)) {
     return nested
+  }
+  if (nested) {
+    const typedPrefix = typedPrefixSuffixReplacement({
+      ...input.editInput,
+      text: nested.insertText,
+    }, nested.insertText)
+    if (typedPrefix) return typedPrefix
   }
 
   if (startsWithCurrentWord(input.edit.insertText, currentWord)) {
@@ -728,6 +799,38 @@ function isBraceLanguage(languageId: string) {
 function startsWithCurrentWord(text: string, currentWord: string) {
   if (!currentWord) return false
   return text.trimStart().startsWith(currentWord)
+}
+
+function typedPrefixMatchedSymbol(input: {
+  currentWord: string
+  suffixIdentifier: string
+  symbolHints: string[]
+}) {
+  const hints = uniqueNonEmpty(input.symbolHints)
+  for (const hint of hints) {
+    if (!isIdentifier(hint)) continue
+    if (!hint.startsWith(input.currentWord)) continue
+    if (hint.length <= input.currentWord.length) continue
+    const suffix = hint.slice(input.currentWord.length)
+    if (suffix === input.suffixIdentifier) return hint
+  }
+  return ""
+}
+
+function firstLeadingIdentifier(text: string) {
+  const match = /^(\s*)([A-Za-z_][A-Za-z0-9_]*)/.exec(text)
+  if (!match) return
+  const leading = match[1] ?? ""
+  const identifier = match[2] ?? ""
+  return {
+    identifier,
+    start: leading.length,
+    end: leading.length + identifier.length,
+  }
+}
+
+function isIdentifier(input: string) {
+  return /^[A-Za-z_][A-Za-z0-9_]*$/.test(input)
 }
 
 function linePrefixOverlapText(text: string, linePrefix: string) {
