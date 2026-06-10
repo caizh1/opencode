@@ -9,13 +9,14 @@ import {
 import { completionPostprocessDebug, postprocessCompletion, trimCompletionForCIntent, type CompletionPostprocessDebug } from "./completion-postprocess"
 import { fallbackCompletionText } from "./completion-test-fallback"
 import { completionInsertText } from "./completion-text"
+import type { CompletionModelMessage } from "./completion-model-client"
 import type { CompletionPlan, RetrievedCompletionSnippet } from "./completion-types"
-import type { CompletionProfile, OpenCodeMessage } from "./types"
+import type { CompletionProfile } from "./types"
 
 export type CompletionCandidateDecision = "accepted" | "rejected"
 
 export type CompletionCandidatePipelineInput = {
-  response?: OpenCodeMessage
+  response?: CompletionModelMessage
   rawText?: string
   textProfile: CompletionProfile
   editInput: Omit<CompletionEditInput, "text">

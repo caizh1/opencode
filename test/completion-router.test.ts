@@ -476,10 +476,10 @@ function snippet(name: string, score: number): RetrievedCompletionSnippet {
 function settings(input: Partial<RemoteSettings["completion"]> = {}): RemoteSettings {
   return {
     serverUrl: "http://localhost:4096",
-    username: "opencode",
+    username: "chipmate",
     defaultModel: "",
     defaultAgent: "",
-    localOnlyAgent: "vscode-local",
+    localOnlyAgent: "chipmate-local",
     context: {
       maxFileBytes: 16000,
       maxFiles: 8,

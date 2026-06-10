@@ -1,15 +1,11 @@
 {
-  "name": "opencode-remote",
-  "displayName": "OpenCode Remote",
-  "description": "Remote opencode serve client for VS Code",
-  "version": "0.0.175",
-  "icon": "media/opencode-icon.png",
+  "name": "chipmate",
+  "displayName": "ChipMate",
+  "description": "Local VS Code coding agent runtime with OpenAI-compatible models, skills, and workspace tools.",
+  "version": "0.1.8",
   "publisher": "local",
-  "repository": {
-    "type": "git",
-    "url": "https://github.com/anomalyco/opencode"
-  },
   "license": "MIT",
+  "icon": "media/chipmate-icon.png",
   "engines": {
     "vscode": "^1.94.0"
   },
@@ -22,234 +18,231 @@
   ],
   "activationEvents": [
     "onStartupFinished",
-    "onView:opencodeRemote.sidebar",
-    "onCommand:opencode.openTerminal",
-    "onCommand:opencode.openNewTerminal",
-    "onCommand:opencode.addFilepathToTerminal",
-    "onCommand:opencode.remote.connect",
-    "onCommand:opencode.remote.disconnect",
-    "onCommand:opencode.remote.testConnection",
-    "onCommand:opencode.remote.openChat",
-    "onCommand:opencode.remote.newSession",
-    "onCommand:opencode.remote.askSelection",
-    "onCommand:opencode.remote.askCurrentFile",
-    "onCommand:opencode.remote.addFileToContext",
-    "onCommand:opencode.remote.clearContext",
-    "onCommand:opencode.remote.openOutput",
-    "onCommand:opencode.remote.codeGraph.index",
-    "onCommand:opencode.remote.codeGraph.rebuild",
-    "onCommand:opencode.remote.codeGraph.pause",
-    "onCommand:opencode.remote.codeGraph.resume",
-    "onCommand:opencode.remote.codeGraph.cancel",
-    "onCommand:opencode.remote.codeGraph.benchmark",
-    "onCommand:opencode.remote.codeGraph.status",
-    "onCommand:opencode.remote.completion.setApiKey",
-    "onCommand:opencode.remote.completion.runDirectAblation",
-    "onCommand:opencode.remote.completion.commitInlineSuggestion"
+    "onView:chipmate.sidebar",
+    "onCommand:chipmate.openChat",
+    "onCommand:chipmate.newSession",
+    "onCommand:chipmate.askSelection",
+    "onCommand:chipmate.askCurrentFile",
+    "onCommand:chipmate.addFileToContext",
+    "onCommand:chipmate.clearContext",
+    "onCommand:chipmate.openOutput",
+    "onCommand:chipmate.completion.setApiKey",
+    "onCommand:chipmate.completion.runDirectAblation",
+    "onCommand:chipmate.completion.commitInlineSuggestion",
+    "onCommand:chipmate.rag.setApiKey",
+    "onCommand:chipmate.codeGraph.index",
+    "onCommand:chipmate.codeGraph.rebuild",
+    "onCommand:chipmate.codeGraph.pause",
+    "onCommand:chipmate.codeGraph.resume",
+    "onCommand:chipmate.codeGraph.cancel",
+    "onCommand:chipmate.codeGraph.benchmark",
+    "onCommand:chipmate.codeGraph.status"
   ],
   "main": "./dist/extension.js",
   "contributes": {
     "commands": [
       {
-        "command": "opencode.openTerminal",
-        "title": "Open opencode",
-        "category": "OpenCode"
+        "command": "chipmate.openChat",
+        "title": "Open ChipMate Chat",
+        "category": "ChipMate"
       },
       {
-        "command": "opencode.openNewTerminal",
-        "title": "Open opencode in new tab",
-        "category": "OpenCode"
-      },
-      {
-        "command": "opencode.addFilepathToTerminal",
-        "title": "Add Filepath to Terminal",
-        "category": "OpenCode"
-      },
-      {
-        "command": "opencode.remote.connect",
-        "title": "Connect to Remote OpenCode",
-        "category": "OpenCode Remote"
-      },
-      {
-        "command": "opencode.remote.disconnect",
-        "title": "Disconnect Remote OpenCode",
-        "category": "OpenCode Remote"
-      },
-      {
-        "command": "opencode.remote.testConnection",
-        "title": "Test Remote OpenCode Connection",
-        "category": "OpenCode Remote",
-        "icon": {
-          "light": "media/icons/light/sync.svg",
-          "dark": "media/icons/dark/sync.svg"
-        }
-      },
-      {
-        "command": "opencode.remote.completion.setApiKey",
-        "title": "Set Inline Completion API Key",
-        "category": "OpenCode Remote"
-      },
-      {
-        "command": "opencode.remote.completion.runDirectAblation",
-        "title": "Run Direct Qwen Completion Ablation",
-        "category": "OpenCode Remote"
-      },
-      {
-        "command": "opencode.remote.completion.commitInlineSuggestion",
-        "title": "Commit Inline Suggestion",
-        "category": "OpenCode Remote"
-      },
-      {
-        "command": "opencode.remote.openChat",
-        "title": "Open Remote OpenCode Chat",
-        "category": "OpenCode Remote"
-      },
-      {
-        "command": "opencode.remote.newSession",
-        "title": "New Remote OpenCode Session",
-        "category": "OpenCode Remote",
+        "command": "chipmate.newSession",
+        "title": "New ChipMate Session",
+        "category": "ChipMate",
         "icon": {
           "light": "media/icons/light/new-session.svg",
           "dark": "media/icons/dark/new-session.svg"
         }
       },
       {
-        "command": "opencode.remote.askSelection",
-        "title": "Ask OpenCode About Selection",
-        "category": "OpenCode Remote"
+        "command": "chipmate.askSelection",
+        "title": "Ask ChipMate About Selection",
+        "category": "ChipMate"
       },
       {
-        "command": "opencode.remote.askCurrentFile",
-        "title": "Ask OpenCode About Current File",
-        "category": "OpenCode Remote"
+        "command": "chipmate.askCurrentFile",
+        "title": "Ask ChipMate About Current File",
+        "category": "ChipMate"
       },
       {
-        "command": "opencode.remote.addFileToContext",
-        "title": "Add File to OpenCode Context",
-        "category": "OpenCode Remote"
+        "command": "chipmate.addFileToContext",
+        "title": "Add File to ChipMate Context",
+        "category": "ChipMate"
       },
       {
-        "command": "opencode.remote.clearContext",
-        "title": "Clear OpenCode Context",
-        "category": "OpenCode Remote"
+        "command": "chipmate.clearContext",
+        "title": "Clear ChipMate Context",
+        "category": "ChipMate"
       },
       {
-        "command": "opencode.remote.openOutput",
-        "title": "Open OpenCode Remote Output",
-        "category": "OpenCode Remote"
+        "command": "chipmate.openOutput",
+        "title": "Open ChipMate Output",
+        "category": "ChipMate"
       },
       {
-        "command": "opencode.remote.codeGraph.index",
+        "command": "chipmate.completion.setApiKey",
+        "title": "Set ChipMate API Key",
+        "category": "ChipMate"
+      },
+      {
+        "command": "chipmate.completion.runDirectAblation",
+        "title": "Run Direct Qwen Completion Ablation",
+        "category": "ChipMate"
+      },
+      {
+        "command": "chipmate.completion.commitInlineSuggestion",
+        "title": "Commit Inline Suggestion",
+        "category": "ChipMate"
+      },
+      {
+        "command": "chipmate.rag.setApiKey",
+        "title": "Set ChipMate RAG API Key",
+        "category": "ChipMate"
+      },
+      {
+        "command": "chipmate.codeGraph.index",
         "title": "Index Local Code Graph",
-        "category": "OpenCode Remote"
+        "category": "ChipMate"
       },
       {
-        "command": "opencode.remote.codeGraph.rebuild",
+        "command": "chipmate.codeGraph.rebuild",
         "title": "Rebuild Local Code Graph",
-        "category": "OpenCode Remote"
+        "category": "ChipMate"
       },
       {
-        "command": "opencode.remote.codeGraph.pause",
+        "command": "chipmate.codeGraph.pause",
         "title": "Pause Local Code Graph Indexing",
-        "category": "OpenCode Remote"
+        "category": "ChipMate"
       },
       {
-        "command": "opencode.remote.codeGraph.resume",
+        "command": "chipmate.codeGraph.resume",
         "title": "Resume Local Code Graph Indexing",
-        "category": "OpenCode Remote"
+        "category": "ChipMate"
       },
       {
-        "command": "opencode.remote.codeGraph.cancel",
+        "command": "chipmate.codeGraph.cancel",
         "title": "Cancel Local Code Graph Indexing",
-        "category": "OpenCode Remote"
+        "category": "ChipMate"
       },
       {
-        "command": "opencode.remote.codeGraph.benchmark",
+        "command": "chipmate.codeGraph.benchmark",
         "title": "Run Local Code Graph Benchmark",
-        "category": "OpenCode Remote"
+        "category": "ChipMate"
       },
       {
-        "command": "opencode.remote.codeGraph.status",
+        "command": "chipmate.codeGraph.status",
         "title": "Show Local Code Graph Status",
-        "category": "OpenCode Remote"
+        "category": "ChipMate"
       }
     ],
     "configuration": {
-      "title": "OpenCode Remote",
+      "title": "ChipMate",
       "properties": {
-        "opencode.remote.serverUrl": {
-          "type": "string",
-          "default": "http://localhost:4096",
-          "description": "Remote opencode serve base URL."
-        },
-        "opencode.remote.username": {
-          "type": "string",
-          "default": "opencode",
-          "description": "HTTP Basic Auth username for remote opencode serve."
-        },
-        "opencode.remote.defaultModel": {
+        "chipmate.chat.apiBaseUrl": {
           "type": "string",
           "default": "",
-          "description": "Optional default model in provider/model format."
+          "description": "OpenAI-compatible base URL for ChipMate chat, for example http://localhost:8000/v1."
         },
-        "opencode.remote.defaultAgent": {
+        "chipmate.chat.model": {
           "type": "string",
           "default": "",
-          "description": "Optional default agent name for chat requests when local-only mode is disabled."
+          "description": "OpenAI-compatible chat model used by the ChipMate agent runtime."
         },
-        "opencode.remote.localOnlyAgent": {
+        "chipmate.chat.maxTokens": {
+          "type": "number",
+          "default": 4096,
+          "minimum": 1,
+          "maximum": 32768,
+          "description": "Maximum generated tokens for ChipMate chat responses."
+        },
+        "chipmate.chat.temperature": {
+          "type": "number",
+          "default": 0.2,
+          "minimum": 0,
+          "maximum": 2,
+          "description": "Temperature for ChipMate chat responses."
+        },
+        "chipmate.chat.topP": {
+          "type": "number",
+          "default": 1,
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Top-p nucleus sampling value for ChipMate chat responses."
+        },
+        "chipmate.chat.streaming": {
+          "type": "boolean",
+          "default": true,
+          "description": "Stream ChipMate chat responses when the provider supports OpenAI-compatible streaming."
+        },
+        "chipmate.defaultModel": {
           "type": "string",
-          "default": "vscode-local",
-          "description": "Required VS Code local agent name for chat and inline completion. Configure this agent on the remote OpenCode server with server filesystem tools denied."
+          "default": "",
+          "description": "Optional fallback model used when a more specific ChipMate model setting is empty."
         },
-        "opencode.remote.context.maxFileBytes": {
+        "chipmate.skills.catalogUrl": {
+          "type": "string",
+          "default": "",
+          "description": "Offline HTTP catalog URL for downloadable ChipMate skills and MCP packages."
+        },
+        "chipmate.permissions.profile": {
+          "type": "string",
+          "enum": [
+            "readOnly",
+            "askApproval",
+            "trustedWorkspace",
+            "fullAccess"
+          ],
+          "default": "askApproval",
+          "description": "Permission profile for ChipMate workspace writes, shell commands, skill scripts, and MCP tools."
+        },
+        "chipmate.context.maxFileBytes": {
           "type": "number",
           "default": 16000,
           "minimum": 1000,
           "description": "Maximum text bytes to include per local file context."
         },
-        "opencode.remote.context.maxFiles": {
+        "chipmate.context.maxFiles": {
           "type": "number",
           "default": 8,
           "minimum": 1,
           "maximum": 50,
           "description": "Maximum number of local files to include in one request."
         },
-        "opencode.remote.context.includeDiagnostics": {
+        "chipmate.context.includeDiagnostics": {
           "type": "boolean",
           "default": true,
           "description": "Include VS Code diagnostics in chat context by default."
         },
-        "opencode.remote.context.includeGitDiff": {
+        "chipmate.context.includeGitDiff": {
           "type": "boolean",
           "default": false,
           "description": "Include git diff in chat context by default."
         },
-        "opencode.remote.context.localOnlyMode": {
+        "chipmate.context.localOnlyMode": {
           "type": "boolean",
           "default": true,
           "description": "Prefer VS Code supplied local context and warn/block file questions when no local file content was captured."
         },
-        "opencode.remote.context.strictLocalOnlyAgent": {
+        "chipmate.context.strictLocalOnlyAgent": {
           "type": "boolean",
           "default": true,
-          "description": "Legacy compatibility setting. Local-only mode now always sends opencode.remote.localOnlyAgent and fails closed if that agent is unavailable."
+          "description": "Retained local-context safety setting for existing QA flow behavior."
         },
-        "opencode.remote.completion.enabled": {
+        "chipmate.completion.enabled": {
           "type": "boolean",
           "default": false,
-          "description": "Enable remote OpenCode inline completions."
+          "description": "Enable ChipMate inline completions."
         },
-        "opencode.remote.completion.provider": {
+        "chipmate.completion.provider": {
           "type": "string",
           "enum": [
-            "opencode",
             "openai-compatible"
           ],
           "default": "openai-compatible",
-          "description": "Provider for inline completions. OpenAI-compatible is the default direct completion model path. OpenCode is a legacy compatibility path that uses the remote opencode serve session."
+          "description": "Provider for inline completions. ChipMate currently supports OpenAI-compatible direct models."
         },
-        "opencode.remote.completion.profile": {
+        "chipmate.completion.profile": {
           "type": "string",
           "enum": [
             "generic-chat",
@@ -258,44 +251,44 @@
           "default": "generic-chat",
           "description": "Direct model completion profile. Generic Chat uses /chat/completions; Qwen Coder FIM uses raw /completions with Qwen fill-in-the-middle tokens."
         },
-        "opencode.remote.completion.apiBaseUrl": {
+        "chipmate.completion.apiBaseUrl": {
           "type": "string",
           "default": "",
-          "description": "OpenAI-compatible base URL for direct inline completions, for example http://localhost:8000/v1."
+          "description": "OpenAI-compatible base URL for direct inline completions. Falls back to chipmate.chat.apiBaseUrl when empty."
         },
-        "opencode.remote.completion.model": {
+        "chipmate.completion.model": {
           "type": "string",
           "default": "",
-          "description": "Optional direct inline completion model. Falls back to opencode.remote.defaultModel when empty."
+          "description": "Optional direct inline completion model. Falls back to chipmate.chat.model or chipmate.defaultModel when empty."
         },
-        "opencode.remote.completion.maxTokens": {
+        "chipmate.completion.maxTokens": {
           "type": "number",
           "default": 128,
           "minimum": 1,
           "maximum": 4096,
           "description": "Maximum generated tokens for direct inline completions."
         },
-        "opencode.remote.completion.temperature": {
+        "chipmate.completion.temperature": {
           "type": "number",
           "default": 0,
           "minimum": 0,
           "maximum": 2,
           "description": "Temperature for direct inline completions."
         },
-        "opencode.remote.completion.topP": {
+        "chipmate.completion.topP": {
           "type": "number",
           "default": 1,
           "minimum": 0,
           "maximum": 1,
           "description": "Top-p nucleus sampling value for direct inline completions."
         },
-        "opencode.remote.completion.debounceMs": {
+        "chipmate.completion.debounceMs": {
           "type": "number",
           "default": 350,
           "minimum": 0,
           "description": "Debounce time before requesting inline completions."
         },
-        "opencode.remote.completion.logLevel": {
+        "chipmate.completion.logLevel": {
           "type": "string",
           "enum": [
             "off",
@@ -303,38 +296,38 @@
             "debug"
           ],
           "default": "info",
-          "description": "Output logging level for remote OpenCode inline completions."
+          "description": "Output logging level for ChipMate inline completions."
         },
-        "opencode.remote.completion.debugFullRetrievalProbe": {
+        "chipmate.completion.debugFullRetrievalProbe": {
           "type": "boolean",
           "default": false,
           "description": "Debug only: for comment-guided C inline completion, disable retrieval timeout and dump full retrieval/projection candidates under .completion-quality/live-retrieval-debug."
         },
-        "opencode.remote.completion.debugExpectedSymbol": {
+        "chipmate.completion.debugExpectedSymbol": {
           "type": "string",
           "default": "",
           "description": "Debug only: symbol name to mark in comment-guided full retrieval dumps. This marker is not used for ranking, prompting, or rejection."
         },
-        "opencode.remote.completion.commentGuidedRetrievalMode": {
+        "chipmate.completion.commentGuidedRetrievalMode": {
           "type": "string",
           "enum": [
             "qa-exact",
             "completion"
           ],
           "default": "qa-exact",
-          "description": "Retrieval path for C/C++ comment-guided inline completion. qa-exact reuses the QA-style evidence query before projecting concise FIM context; completion keeps the legacy completion-specific query."
+          "description": "Retrieval path for C/C++ comment-guided inline completion. qa-exact reuses the QA-style evidence query before projecting concise FIM context; completion keeps the completion-specific query."
         },
-        "opencode.remote.codeGraph.enabled": {
+        "chipmate.codeGraph.enabled": {
           "type": "boolean",
           "default": true,
-          "description": "Automatically enable local C/C++ code graph indexing. The index stays local and only query-relevant context is sent to remote OpenCode."
+          "description": "Automatically enable local C/C++ code graph indexing."
         },
-        "opencode.remote.codeGraph.promptOnWorkspaceOpen": {
+        "chipmate.codeGraph.promptOnWorkspaceOpen": {
           "type": "boolean",
           "default": true,
-          "description": "Legacy prompt setting retained for existing profiles; code graph now auto-indexes when enabled."
+          "description": "Prompt or auto-index when a workspace opens, depending on current code graph state."
         },
-        "opencode.remote.codeGraph.analysisMode": {
+        "chipmate.codeGraph.analysisMode": {
           "type": "string",
           "enum": [
             "auto",
@@ -343,101 +336,101 @@
             "semantic"
           ],
           "default": "auto",
-          "description": "Local code graph analysis mode. Auto uses the bundled Tree-sitter WASM analyzer when available; semantic is reserved for compile database backed analysis."
+          "description": "Local code graph analysis mode."
         },
-        "opencode.remote.codeGraph.maxFiles": {
+        "chipmate.codeGraph.maxFiles": {
           "type": "number",
           "default": 50000,
           "minimum": 100,
-          "maximum": 1e6,
+          "maximum": 1000000,
           "description": "Maximum number of C/C++ files to index in the local code graph."
         },
-        "opencode.remote.codeGraph.maxContextBytes": {
+        "chipmate.codeGraph.maxContextBytes": {
           "type": "number",
           "default": 24000,
           "minimum": 2000,
-          "maximum": 1e5,
-          "description": "Maximum bytes of local code graph context to include in one remote prompt."
+          "maximum": 100000,
+          "description": "Maximum bytes of local code graph context to include in one prompt."
         },
-        "opencode.remote.codeGraph.maxEvidenceBytes": {
+        "chipmate.codeGraph.maxEvidenceBytes": {
           "type": "number",
           "default": 60000,
           "minimum": 4000,
           "maximum": 200000,
-          "description": "Maximum bytes of retrieved local code evidence to include in one remote prompt."
+          "description": "Maximum bytes of retrieved local code evidence to include in one prompt."
         },
-        "opencode.remote.codeGraph.maxGraphDepth": {
+        "chipmate.codeGraph.maxGraphDepth": {
           "type": "number",
           "default": 2,
           "minimum": 1,
           "maximum": 5,
           "description": "Maximum caller/callee graph depth for local code graph retrieval."
         },
-        "opencode.remote.codeGraph.maxFanout": {
+        "chipmate.codeGraph.maxFanout": {
           "type": "number",
           "default": 40,
           "minimum": 5,
           "maximum": 200,
           "description": "Maximum relation fanout per graph expansion step for local code graph retrieval."
         },
-        "opencode.remote.codeGraph.maxDeepFiles": {
+        "chipmate.codeGraph.maxDeepFiles": {
           "type": "number",
           "default": 24,
           "minimum": 1,
           "maximum": 200,
-          "description": "Maximum candidate files to inspect in a future deep local code graph analysis pass."
+          "description": "Maximum candidate files to inspect in a deep local code graph analysis pass."
         },
-        "opencode.remote.codeGraph.maxStateTransitions": {
+        "chipmate.codeGraph.maxStateTransitions": {
           "type": "number",
           "default": 120,
           "minimum": 10,
           "maximum": 1000,
-          "description": "Maximum state transitions to include in a future local state-machine evidence pass."
+          "description": "Maximum state transitions to include in a local state-machine evidence pass."
         },
-        "opencode.remote.codeGraph.watcherRescanThreshold": {
+        "chipmate.codeGraph.watcherRescanThreshold": {
           "type": "number",
           "default": 750,
           "minimum": 25,
-          "maximum": 1e4,
+          "maximum": 10000,
           "description": "Number of queued file watcher events that switches incremental indexing to one scheduled full rescan."
         },
-        "opencode.remote.codeGraph.workerConcurrency": {
+        "chipmate.codeGraph.workerConcurrency": {
           "type": "number",
           "default": 4,
           "minimum": 1,
           "maximum": 16,
           "description": "Target concurrency for local analysis worker batches and benchmark planning."
         },
-        "opencode.remote.codeGraph.queryCacheSize": {
+        "chipmate.codeGraph.queryCacheSize": {
           "type": "number",
           "default": 80,
           "minimum": 0,
           "maximum": 500,
           "description": "Maximum number of hot local code graph query contexts to keep in memory."
         },
-        "opencode.remote.codeGraph.memoryLimitMb": {
+        "chipmate.codeGraph.memoryLimitMb": {
           "type": "number",
           "default": 4096,
           "minimum": 128,
           "maximum": 32768,
-          "description": "Soft heap limit for local code graph indexing. When exceeded, the service reports degraded mode and trims hot caches."
+          "description": "Soft heap limit for local code graph indexing."
         },
-        "opencode.remote.codeGraph.compileCommandsPath": {
+        "chipmate.codeGraph.compileCommandsPath": {
           "type": "string",
           "default": "",
-          "description": "Optional path to compile_commands.json for future semantic C/C++ code graph analysis. Relative paths are resolved from the workspace root."
+          "description": "Optional path to compile_commands.json for semantic C/C++ code graph analysis."
         },
-        "opencode.remote.codeGraph.clangdPath": {
+        "chipmate.codeGraph.clangdPath": {
           "type": "string",
           "default": "",
-          "description": "Optional path to clangd on the workspace host for future semantic C/C++ code graph analysis."
+          "description": "Optional path to clangd on the workspace host for semantic C/C++ code graph analysis."
         },
-        "opencode.remote.codeGraph.scipClangPath": {
+        "chipmate.codeGraph.scipClangPath": {
           "type": "string",
           "default": "",
-          "description": "Optional path to scip-clang on the workspace host for future semantic C/C++ code graph analysis."
+          "description": "Optional path to scip-clang on the workspace host for semantic C/C++ code graph analysis."
         },
-        "opencode.remote.codeGraph.excludeGlobs": {
+        "chipmate.codeGraph.excludeGlobs": {
           "type": "array",
           "default": [],
           "items": {
@@ -445,57 +438,57 @@
           },
           "description": "Additional VS Code glob patterns to exclude from local code graph indexing."
         },
-        "opencode.remote.analysis.bridge.enabled": {
+        "chipmate.analysis.bridge.enabled": {
           "type": "boolean",
-          "default": true,
-          "description": "Start a localhost-only Analysis Tool Bridge and generate a .opencode custom tool that lets OpenCode query the local index."
+          "default": false,
+          "description": "Reserved for future local analysis tool bridge support. ChipMate agent tools do not require this bridge."
         },
-        "opencode.remote.analysis.maxEvidenceItems": {
+        "chipmate.analysis.maxEvidenceItems": {
           "type": "number",
           "default": 40,
           "minimum": 1,
           "maximum": 200,
           "description": "Maximum evidence item count returned by local analysis tools."
         },
-        "opencode.remote.analysis.maxEvidenceBytes": {
+        "chipmate.analysis.maxEvidenceBytes": {
           "type": "number",
           "default": 60000,
           "minimum": 4000,
           "maximum": 200000,
           "description": "Maximum evidence bytes returned by local analysis tools and evidence packs."
         },
-        "opencode.remote.analysis.maxFileSliceBytes": {
+        "chipmate.analysis.maxFileSliceBytes": {
           "type": "number",
           "default": 16000,
           "minimum": 1000,
-          "maximum": 1e5,
+          "maximum": 100000,
           "description": "Maximum bytes returned from one local file slice analysis call."
         },
-        "opencode.remote.analysis.maxGraphEdges": {
+        "chipmate.analysis.maxGraphEdges": {
           "type": "number",
           "default": 120,
           "minimum": 10,
           "maximum": 1000,
           "description": "Maximum graph edges returned by local callers, callees, call-chain, and state-machine analysis."
         },
-        "opencode.remote.analysis.maxPaths": {
+        "chipmate.analysis.maxPaths": {
           "type": "number",
           "default": 10,
           "minimum": 1,
           "maximum": 50,
           "description": "Maximum state-machine or call-chain paths returned by local analysis tools."
         },
-        "opencode.remote.rag.embedding.endpoint": {
+        "chipmate.rag.embedding.endpoint": {
           "type": "string",
           "default": "",
-          "description": "Full localhost or intranet embedding endpoint. OpenAI-compatible /v1/embeddings responses are expected. RAG vector retrieval is enabled automatically when this endpoint is configured and reachable."
+          "description": "Full localhost or intranet embedding endpoint. OpenAI-compatible /v1/embeddings responses are expected."
         },
-        "opencode.remote.rag.embedding.model": {
+        "chipmate.rag.embedding.model": {
           "type": "string",
           "default": "",
           "description": "Embedding model name sent to the local or intranet embedding endpoint."
         },
-        "opencode.remote.rag.embedding.batchSize": {
+        "chipmate.rag.embedding.batchSize": {
           "type": "number",
           "default": 128,
           "enum": [
@@ -510,30 +503,30 @@
           ],
           "minimum": 1,
           "maximum": 512,
-          "description": "Number of RAG chunks embedded per HTTP request. The request timeout is configured automatically from this value."
+          "description": "Number of RAG chunks embedded per HTTP request."
         },
-        "opencode.remote.rag.embedding.maxTokensPerRequest": {
+        "chipmate.rag.embedding.maxTokensPerRequest": {
           "type": "number",
           "default": 65536,
           "minimum": 1,
           "maximum": 1000000,
-          "description": "Estimated maximum embedding tokens sent in one RAG embedding HTTP request. This is a lightweight safety cap for large chunks."
+          "description": "Estimated maximum embedding tokens sent in one RAG embedding HTTP request."
         },
-        "opencode.remote.rag.embedding.concurrentRequests": {
+        "chipmate.rag.embedding.concurrentRequests": {
           "type": "number",
           "default": 3,
           "minimum": 1,
           "maximum": 8,
-          "description": "Initial maximum concurrent embedding requests during RAG indexing. The indexer can temporarily lower this under provider pressure and raise it by one after stable success."
+          "description": "Initial maximum concurrent embedding requests during RAG indexing."
         },
-        "opencode.remote.rag.embedding.maxInFlightTokens": {
+        "chipmate.rag.embedding.maxInFlightTokens": {
           "type": "number",
           "default": 360000,
           "minimum": 32768,
           "maximum": 1000000,
           "description": "Approximate maximum embedding input tokens across in-flight RAG embedding requests."
         },
-        "opencode.remote.rag.embedding.encodingFormat": {
+        "chipmate.rag.embedding.encodingFormat": {
           "type": "string",
           "default": "auto",
           "enum": [
@@ -541,9 +534,9 @@
             "base64",
             "auto"
           ],
-          "description": "Embedding response encoding format. Float is most compatible; base64 and auto are used only when the endpoint supports them."
+          "description": "Embedding response encoding format."
         },
-        "opencode.remote.rag.embedding.checkpointMode": {
+        "chipmate.rag.embedding.checkpointMode": {
           "type": "string",
           "default": "interval",
           "enum": [
@@ -553,94 +546,94 @@
           ],
           "description": "How often RAG embedding indexing writes recoverable partial checkpoints before the final index save."
         },
-        "opencode.remote.rag.embedding.checkpointChunkInterval": {
+        "chipmate.rag.embedding.checkpointChunkInterval": {
           "type": "number",
           "default": 8192,
           "minimum": 0,
           "maximum": 1000000,
-          "description": "Number of newly embedded chunks between partial RAG checkpoint saves when checkpoint mode is interval. Set to 0 to disable chunk-based checkpoints."
+          "description": "Number of newly embedded chunks between partial RAG checkpoint saves."
         },
-        "opencode.remote.rag.embedding.checkpointIntervalMs": {
+        "chipmate.rag.embedding.checkpointIntervalMs": {
           "type": "number",
           "default": 120000,
           "minimum": 0,
           "maximum": 3600000,
-          "description": "Milliseconds between partial RAG checkpoint saves when checkpoint mode is interval. Set to 0 to disable time-based checkpoints."
+          "description": "Milliseconds between partial RAG checkpoint saves."
         },
-        "opencode.remote.rag.embedding.timeoutMs": {
+        "chipmate.rag.embedding.timeoutMs": {
           "type": "number",
           "default": 30000,
           "minimum": 250,
           "maximum": 120000,
-          "description": "Timeout for one embedding HTTP request. This value is managed automatically from opencode.remote.rag.embedding.batchSize.",
-          "deprecationMessage": "RAG embedding timeout is managed automatically from batch size: 32/64/128/256 use 30000ms, 512 uses 90000ms."
+          "description": "Timeout for one embedding HTTP request.",
+          "deprecationMessage": "RAG embedding timeout is managed automatically from batch size."
         },
-        "opencode.remote.rag.embedding.requestDelayMs": {
+        "chipmate.rag.embedding.requestDelayMs": {
           "type": "number",
           "default": 0,
           "minimum": 0,
           "maximum": 60000,
-          "description": "Optional delay before starting the next RAG embedding HTTP request. Usually 0 when adaptive concurrency is enabled."
+          "description": "Optional delay before starting the next RAG embedding HTTP request."
         },
-        "opencode.remote.rag.embedding.maxRequestsPerRun": {
+        "chipmate.rag.embedding.maxRequestsPerRun": {
           "type": "number",
           "default": 100,
           "minimum": 0,
           "maximum": 100000,
           "description": "Maximum embedding HTTP requests used by one RAG index run. Set to 0 for unlimited requests."
         },
-        "opencode.remote.rag.embedding.maxRetries": {
+        "chipmate.rag.embedding.maxRetries": {
           "type": "number",
           "default": 3,
           "minimum": 0,
           "maximum": 10,
           "description": "Maximum retry attempts for one RAG embedding batch when the provider returns 429 or 503."
         },
-        "opencode.remote.rag.embedding.retryBackoffMs": {
+        "chipmate.rag.embedding.retryBackoffMs": {
           "type": "number",
           "default": 2000,
           "minimum": 0,
           "maximum": 120000,
           "description": "Base exponential backoff delay used when a rate-limited embedding response has no Retry-After header."
         },
-        "opencode.remote.rag.embedding.resumeAutomatically": {
+        "chipmate.rag.embedding.resumeAutomatically": {
           "type": "boolean",
           "default": true,
           "description": "Automatically resume paused RAG embedding index runs in the background until pending chunks are complete."
         },
-        "opencode.remote.rag.embedding.resumeDelayMs": {
+        "chipmate.rag.embedding.resumeDelayMs": {
           "type": "number",
           "default": 60000,
           "minimum": 0,
           "maximum": 3600000,
           "description": "Delay before automatically resuming a paused RAG embedding index run after the per-run request budget is reached."
         },
-        "opencode.remote.rag.rerank.endpoint": {
+        "chipmate.rag.rerank.endpoint": {
           "type": "string",
           "default": "",
-          "description": "Full localhost or intranet rerank endpoint accepting query, documents, and top_n. Rerank is enabled automatically when this endpoint is configured and allowed."
+          "description": "Full localhost or intranet rerank endpoint accepting query, documents, and top_n."
         },
-        "opencode.remote.rag.rerank.model": {
+        "chipmate.rag.rerank.model": {
           "type": "string",
           "default": "",
           "description": "Rerank model name sent to the local or intranet rerank endpoint."
         },
-        "opencode.remote.rag.allowedHosts": {
+        "chipmate.rag.allowedHosts": {
           "type": "array",
           "default": [],
           "items": {
             "type": "string"
           },
-          "description": "Additional intranet hostnames allowed for embedding and rerank endpoints. Localhost and private IPs are allowed automatically."
+          "description": "Additional intranet hostnames allowed for embedding and rerank endpoints."
         },
-        "opencode.remote.rag.vectorTopK": {
+        "chipmate.rag.vectorTopK": {
           "type": "number",
           "default": 24,
           "minimum": 0,
           "maximum": 200,
           "description": "Maximum vector candidates added to each hybrid RAG query."
         },
-        "opencode.remote.rag.rerankTopK": {
+        "chipmate.rag.rerankTopK": {
           "type": "number",
           "default": 16,
           "minimum": 0,
@@ -652,17 +645,17 @@
     "viewsContainers": {
       "activitybar": [
         {
-          "id": "opencodeRemote",
-          "title": "OpenCode",
-          "icon": "media/opencode.svg"
+          "id": "chipmate",
+          "title": "ChipMate",
+          "icon": "media/chipmate.svg"
         }
       ]
     },
     "views": {
-      "opencodeRemote": [
+      "chipmate": [
         {
-          "id": "opencodeRemote.sidebar",
-          "name": "Chat",
+          "id": "chipmate.sidebar",
+          "name": "ChipMate",
           "type": "webview"
         }
       ]
@@ -670,56 +663,35 @@
     "menus": {
       "editor/context": [
         {
-          "command": "opencode.remote.askSelection",
+          "command": "chipmate.askSelection",
           "when": "editorHasSelection",
-          "group": "opencode@1"
+          "group": "chipmate@1"
         },
         {
-          "command": "opencode.remote.askCurrentFile",
-          "group": "opencode@2"
+          "command": "chipmate.askCurrentFile",
+          "group": "chipmate@2"
         },
         {
-          "command": "opencode.remote.addFileToContext",
-          "group": "opencode@3"
+          "command": "chipmate.addFileToContext",
+          "group": "chipmate@3"
         }
       ],
       "view/title": [
         {
-          "command": "opencode.remote.newSession",
-          "when": "view == opencodeRemote.sidebar",
+          "command": "chipmate.newSession",
+          "when": "view == chipmate.sidebar",
           "group": "navigation@1"
-        },
-        {
-          "command": "opencode.remote.testConnection",
-          "when": "view == opencodeRemote.sidebar",
-          "group": "navigation@2"
         }
       ]
     },
     "keybindings": [
       {
-        "command": "opencode.openTerminal",
-        "title": "Run opencode",
+        "command": "chipmate.openChat",
+        "title": "Open ChipMate",
         "key": "cmd+escape",
         "mac": "cmd+escape",
         "win": "ctrl+escape",
         "linux": "ctrl+escape"
-      },
-      {
-        "command": "opencode.openNewTerminal",
-        "title": "Run opencode",
-        "key": "cmd+shift+escape",
-        "mac": "cmd+shift+escape",
-        "win": "ctrl+shift+escape",
-        "linux": "ctrl+shift+escape"
-      },
-      {
-        "command": "opencode.addFilepathToTerminal",
-        "title": "opencode: Insert At-Mentioned",
-        "key": "cmd+alt+k",
-        "mac": "cmd+alt+k",
-        "win": "ctrl+alt+K",
-        "linux": "ctrl+alt+K"
       }
     ]
   },
@@ -736,6 +708,7 @@
     "ui:completion-c-embedded": "bun scripts/completion-c-embedded-ui.ts",
     "benchmark:completion-quality": "bun scripts/completion-quality-benchmark.ts",
     "benchmark:codegraph": "bun scripts/codegraph-benchmark.ts",
+    "catalog:serve": "bun scripts/chipmate-catalog-server.ts",
     "test:vscode": "bun run package && node ./dist/test/runTest.js",
     "vsix": "bun run package && vsce package --no-dependencies"
   },
@@ -748,6 +721,7 @@
     "@vscode/test-electron": "^2.5.2",
     "@vscode/vsce": "^3.2.2",
     "eslint": "^9.25.1",
+    "jszip": "^3.10.1",
     "lucide": "^1.17.0",
     "typescript": "^5.8.3"
   }

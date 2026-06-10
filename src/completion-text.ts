@@ -1,5 +1,6 @@
 import { splitThinkingFromParts } from "./thinking"
-import type { CompletionProfile, OpenCodeMessage } from "./types"
+import type { CompletionModelMessage } from "./completion-model-client"
+import type { CompletionProfile } from "./types"
 
 const PROMPT_LEAK_PATTERNS = [
   /\blet me re-?read\b/i,
@@ -12,7 +13,7 @@ const PROMPT_LEAK_PATTERNS = [
 
 const QWEN_SPECIAL_TOKEN_PATTERN = /<\|(?:fim_prefix|fim_middle|fim_suffix|fim_pad|repo_name|file_sep|endoftext|im_start|im_end)\|>/g
 
-export function completionInsertText(message: OpenCodeMessage | undefined, profile: CompletionProfile = "generic-chat"): string {
+export function completionInsertText(message: CompletionModelMessage | undefined, profile: CompletionProfile = "generic-chat"): string {
   if (!message) return ""
 
   const split = splitThinkingFromParts(message.parts)

@@ -63,30 +63,30 @@ beforeEach(() => {
 
 describe("connection settings", () => {
   test("does not update the saved password when password is omitted", async () => {
-    const input = { serverUrl: "http://localhost:4096/", username: "opencode" }
+    const input = { serverUrl: "http://localhost:8000/v1/", username: "chipmate" }
 
     expect(connectionInputHasPassword(input)).toBe(false)
     await saveConnectionSettings(secretContext(), input)
 
     expect(configUpdates).toEqual([
-      { key: "serverUrl", value: "http://localhost:4096" },
-      { key: "username", value: "opencode" },
+      { key: "chat.apiBaseUrl", value: "http://localhost:8000/v1" },
+      { key: "chat.model", value: "" },
     ])
     expect(secretStores).toEqual([])
     expect(secretDeletes).toEqual([])
   })
 
   test("stores new passwords and treats explicit blanks as clearing the password", async () => {
-    await saveConnectionSettings(secretContext(), { serverUrl: "http://localhost:4096", username: "opencode", password: " secret " })
+    await saveConnectionSettings(secretContext(), { serverUrl: "http://localhost:8000/v1", username: "chipmate", password: " secret " })
 
-    expect(connectionInputHasPassword({ serverUrl: "http://localhost:4096", username: "opencode", password: undefined })).toBe(true)
+    expect(connectionInputHasPassword({ serverUrl: "http://localhost:8000/v1", username: "chipmate", password: undefined })).toBe(true)
     expect(secretStores).toEqual([{ key: PASSWORD_SECRET_KEY, value: "secret" }])
     expect(secretDeletes).toEqual([])
 
     secretStores = []
     configUpdates = []
 
-    await saveConnectionSettings(secretContext(), { serverUrl: "http://localhost:4096", username: "opencode", password: "" })
+    await saveConnectionSettings(secretContext(), { serverUrl: "http://localhost:8000/v1", username: "chipmate", password: "" })
 
     expect(secretStores).toEqual([])
     expect(secretDeletes).toEqual([PASSWORD_SECRET_KEY])
@@ -262,13 +262,13 @@ describe("RAG settings validation", () => {
 
   test("skips optional embedding optimization saves when the active manifest has not registered them", async () => {
     configUpdates = []
-    updateFailures.set("rag.embedding.maxTokensPerRequest", new Error("opencode.remote.rag.embedding.maxTokensPerRequest is not a registered configuration"))
-    updateFailures.set("rag.embedding.concurrentRequests", new Error("opencode.remote.rag.embedding.concurrentRequests is not a registered configuration"))
-    updateFailures.set("rag.embedding.maxInFlightTokens", new Error("opencode.remote.rag.embedding.maxInFlightTokens is not a registered configuration"))
-    updateFailures.set("rag.embedding.encodingFormat", new Error("opencode.remote.rag.embedding.encodingFormat is not a registered configuration"))
-    updateFailures.set("rag.embedding.checkpointMode", new Error("opencode.remote.rag.embedding.checkpointMode is not a registered configuration"))
-    updateFailures.set("rag.embedding.checkpointChunkInterval", new Error("opencode.remote.rag.embedding.checkpointChunkInterval is not a registered configuration"))
-    updateFailures.set("rag.embedding.checkpointIntervalMs", new Error("opencode.remote.rag.embedding.checkpointIntervalMs is not a registered configuration"))
+    updateFailures.set("rag.embedding.maxTokensPerRequest", new Error("chipmate.rag.embedding.maxTokensPerRequest is not a registered configuration"))
+    updateFailures.set("rag.embedding.concurrentRequests", new Error("chipmate.rag.embedding.concurrentRequests is not a registered configuration"))
+    updateFailures.set("rag.embedding.maxInFlightTokens", new Error("chipmate.rag.embedding.maxInFlightTokens is not a registered configuration"))
+    updateFailures.set("rag.embedding.encodingFormat", new Error("chipmate.rag.embedding.encodingFormat is not a registered configuration"))
+    updateFailures.set("rag.embedding.checkpointMode", new Error("chipmate.rag.embedding.checkpointMode is not a registered configuration"))
+    updateFailures.set("rag.embedding.checkpointChunkInterval", new Error("chipmate.rag.embedding.checkpointChunkInterval is not a registered configuration"))
+    updateFailures.set("rag.embedding.checkpointIntervalMs", new Error("chipmate.rag.embedding.checkpointIntervalMs is not a registered configuration"))
 
     await saveRagSettings(ragInput({
       embeddingMaxTokensPerRequest: 32768,

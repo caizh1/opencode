@@ -9,7 +9,7 @@ import { hydrateCodeGraphIndex } from "../src/codegraph-index"
 import { searchCodeGraphSymbols } from "../src/codegraph-query"
 import { type CEmbeddedCompletionEvidenceResult, buildCEmbeddedCompletionEvidence, shouldBuildCEmbeddedCompletionEvidence } from "../src/completion-c-embedded-evidence"
 import { runCompletionCandidatePipeline } from "../src/completion-candidate-pipeline"
-import { CompletionModelClient, type CompletionTransport } from "../src/completion-model-client"
+import { CompletionModelClient, type CompletionModelMessage, type CompletionTransport } from "../src/completion-model-client"
 import { planCompletion } from "../src/completion-plan"
 import { completionRetrievalPlan, shouldRetrieveCompletionSnippetsForPlan, type CompletionRetrievalPreferredKind } from "../src/completion-retrieval"
 import { resolveCompletionPlanAfterSymbolRetrieval, routeCompletionModel } from "../src/completion-router"
@@ -20,7 +20,7 @@ import type { CodeGraphContextProvider, CodeGraphEvidenceQueryOptions, CodeGraph
 import type { CompletionContextPack } from "../src/completion-context"
 import type { CompletionEditInput } from "../src/completion-edit"
 import type { CompletionPlan, CompletionRetrievalPolicy, RetrievedCompletionSnippet } from "../src/completion-types"
-import type { OpenCodeMessage, RemoteSettings } from "../src/types"
+import type { RemoteSettings } from "../src/types"
 
 export const COMPLETION_QUALITY_SCENARIOS = [
   "member-access",
@@ -436,12 +436,12 @@ export async function runCompletionQualityBenchmark(options: CompletionQualityBe
     .slice(0, options.limit && options.limit > 0 ? options.limit : undefined)
   const repeat = Math.max(1, options.repeat ?? 1)
   const settings = benchmarkSettings(options)
-  const apiKey = options.apiKey ?? (options.apiKeyEnv ? process.env[options.apiKeyEnv] : undefined) ?? process.env.OPENCODE_COMPLETION_API_KEY ?? process.env.OPENAI_API_KEY
+  const apiKey = options.apiKey ?? (options.apiKeyEnv ? process.env[options.apiKeyEnv] : undefined) ?? process.env.COMPLETION_API_KEY ?? process.env.OPENAI_API_KEY
   const output = prepareBenchmarkOutput(options)
 
   if (!options.mock) {
-    if (!settings.completion.apiBaseUrl) throw new Error("Missing completion API base URL. Set OPENCODE_COMPLETION_API_BASE_URL or pass --api-base-url.")
-    if (!settings.completion.model) throw new Error("Missing completion model. Set OPENCODE_COMPLETION_MODEL or pass --model.")
+    if (!settings.completion.apiBaseUrl) throw new Error("Missing completion API base URL. Set COMPLETION_API_BASE_URL or pass --api-base-url.")
+    if (!settings.completion.model) throw new Error("Missing completion model. Set COMPLETION_MODEL or pass --model.")
   }
 
   const records: CompletionQualityRecord[] = []
@@ -881,20 +881,19 @@ function directQwenConfig(options: CompletionQualityBenchmarkOptions): DirectQwe
   const apiBaseUrl = firstConfigValue([
     ["cli:apiBaseUrl", options.apiBaseUrl],
     ["env:COMPLETION_API_BASE_URL", process.env.COMPLETION_API_BASE_URL],
-    ["vscode:opencode.remote.completion.apiBaseUrl", stringSetting(vscodeSettings, "opencode.remote.completion.apiBaseUrl")],
-    ["deprecated-env:OPENCODE_COMPLETION_API_BASE_URL", deprecatedEnv("OPENCODE_COMPLETION_API_BASE_URL", deprecatedEnvUsed)],
+    ["vscode:chipmate.completion.apiBaseUrl", stringSetting(vscodeSettings, "chipmate.completion.apiBaseUrl")],
+    ["vscode:chipmate.chat.apiBaseUrl", stringSetting(vscodeSettings, "chipmate.chat.apiBaseUrl")],
   ])
   const model = firstConfigValue([
     ["cli:model", options.model],
     ["env:COMPLETION_MODEL", process.env.COMPLETION_MODEL],
-    ["vscode:opencode.remote.completion.model", stringSetting(vscodeSettings, "opencode.remote.completion.model")],
-    ["deprecated-env:OPENCODE_COMPLETION_MODEL", deprecatedEnv("OPENCODE_COMPLETION_MODEL", deprecatedEnvUsed)],
+    ["vscode:chipmate.completion.model", stringSetting(vscodeSettings, "chipmate.completion.model")],
+    ["vscode:chipmate.chat.model", stringSetting(vscodeSettings, "chipmate.chat.model")],
   ])
   const apiKey = firstConfigValue([
     ["cli:apiKey", options.apiKey],
     ["env:apiKeyEnv", options.apiKeyEnv ? process.env[options.apiKeyEnv] : undefined],
     ["env:COMPLETION_API_KEY", process.env.COMPLETION_API_KEY],
-    ["deprecated-env:OPENCODE_COMPLETION_API_KEY", deprecatedEnv("OPENCODE_COMPLETION_API_KEY", deprecatedEnvUsed)],
     ["env:OPENAI_API_KEY", process.env.OPENAI_API_KEY],
   ])
   const transport = readCompletionTransport(options.transport ?? process.env.COMPLETION_TRANSPORT)
@@ -902,11 +901,11 @@ function directQwenConfig(options: CompletionQualityBenchmarkOptions): DirectQwe
   const maxTokens = readNumberConfig([
     options.maxTokens,
     process.env.COMPLETION_MAX_TOKENS,
-    numberSetting(vscodeSettings, "opencode.remote.completion.maxTokens"),
+    numberSetting(vscodeSettings, "chipmate.completion.maxTokens"),
   ], 128, 1, 4096)
   const topP = readNumberConfig([
     process.env.COMPLETION_TOP_P,
-    numberSetting(vscodeSettings, "opencode.remote.completion.topP"),
+    numberSetting(vscodeSettings, "chipmate.completion.topP"),
   ], 1, 0, 1)
   return {
     apiBaseUrl,
@@ -931,8 +930,8 @@ function directQwenConfig(options: CompletionQualityBenchmarkOptions): DirectQwe
 
 function validateDirectQwenConfig(config: DirectQwenConfig) {
   const missing: string[] = []
-  if (!config.apiBaseUrl) missing.push("COMPLETION_API_BASE_URL or VS Code opencode.remote.completion.apiBaseUrl")
-  if (!config.model) missing.push("COMPLETION_MODEL or VS Code opencode.remote.completion.model")
+  if (!config.apiBaseUrl) missing.push("COMPLETION_API_BASE_URL or VS Code chipmate.completion.apiBaseUrl")
+  if (!config.model) missing.push("COMPLETION_MODEL or VS Code chipmate.completion.model")
   if (missing.length) {
     throw new Error(`Missing direct Qwen completion configuration: ${missing.join(", ")}. Configure VS Code direct completion settings or pass the COMPLETION_* environment variables.`)
   }
@@ -1760,16 +1759,6 @@ async function runDirectCompletionQualityFixture(input: {
   return record
 }
 
-function fakeRemoteClient(promptCapture: { prompt: string; rawOutput: string }) {
-  return {
-    createSession: async () => ({ id: "completion-quality-dry-run-session" }),
-    sendMessage: async (input: { text: string }): Promise<OpenCodeMessage> => {
-      promptCapture.prompt = input.text
-      return modelMessage(promptCapture.rawOutput)
-    },
-  }
-}
-
 function fixtureCodeGraphProvider(fixture: CompletionQualityFixture, documentText: string) {
   const trace: CompletionQualityRetrievalTrace = {
     symbolQueries: [],
@@ -1949,13 +1938,6 @@ function triggerKindValue(kind: string | undefined) {
   return kind === "automatic" ? 1 : 0
 }
 
-function modelMessage(text: string): OpenCodeMessage {
-  return {
-    info: { id: "completion-quality-dry-run", role: "assistant", providerID: "fixture", modelID: "mock" },
-    parts: [{ type: "text", text }],
-  }
-}
-
 function mockOutputForFixture(fixture: CompletionQualityFixture) {
   return fixture.mockOutput ??
     fixture.cursorContext.mockOutput ??
@@ -2010,8 +1992,8 @@ async function runProviderDryRunCompletionQualityFixture(fixture: CompletionQual
     defaultModel: baseSettings.defaultModel || "openai/qwen-coder-fim",
     completion: {
       ...baseSettings.completion,
-      provider: "opencode",
-      apiBaseUrl: "",
+      provider: "openai-compatible",
+      apiBaseUrl: baseSettings.completion.apiBaseUrl || "http://completion-quality.local/v1",
       model: baseSettings.completion.model || "qwen-coder-fim",
       logLevel: "debug",
       debounceMs: 0,
@@ -2023,18 +2005,43 @@ async function runProviderDryRunCompletionQualityFixture(fixture: CompletionQual
   }
   const { RemoteCompletionProvider } = await import("../src/completion")
   const provider = new RemoteCompletionProvider({
-    getClient: () => fakeRemoteClient(promptCapture),
     getSettings: () => settings,
     codeGraph,
     output,
   })
   const triggerKind = triggerKindValue(fixture.cursorContext.triggerKind)
-  const items = await provider.provideInlineCompletionItems(
-    document.vscodeDocument as never,
-    position as never,
-    { triggerKind } as never,
-    cancellationToken() as never,
-  )
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async (_url: string | URL | Request, init?: RequestInit) => {
+    const body = parseRequestJson(init?.body)
+    promptCapture.prompt = typeof body.prompt === "string"
+      ? body.prompt
+      : completionPromptFromChatBody(body)
+    return new Response(JSON.stringify({
+      id: "completion-quality-dry-run",
+      model: "mock",
+      choices: [{
+        text: promptCapture.rawOutput,
+        message: {
+          role: "assistant",
+          content: promptCapture.rawOutput,
+        },
+      }],
+    }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    })
+  }
+  let items
+  try {
+    items = await provider.provideInlineCompletionItems(
+      document.vscodeDocument as never,
+      position as never,
+      { triggerKind } as never,
+      cancellationToken() as never,
+    )
+  } finally {
+    globalThis.fetch = originalFetch
+  }
   const telemetry = latestTelemetry(output.lines)
   const selectedEvidence = selectedEvidenceBlocks(promptCapture.prompt, telemetry)
   const promptEvidence = telemetry?.evidencePromptBlocks !== undefined
@@ -2570,9 +2577,9 @@ function benchmarkSettings(options: CompletionQualityBenchmarkOptions): RemoteSe
   return {
     serverUrl: "",
     username: "benchmark",
-    defaultModel: options.model ?? process.env.OPENCODE_COMPLETION_MODEL ?? "",
+    defaultModel: options.model ?? process.env.COMPLETION_MODEL ?? "",
     defaultAgent: "",
-    localOnlyAgent: "vscode-local",
+    localOnlyAgent: "chipmate-local",
     context: {
       maxFileBytes: 16000,
       maxFiles: 8,
@@ -2585,8 +2592,8 @@ function benchmarkSettings(options: CompletionQualityBenchmarkOptions): RemoteSe
       enabled: true,
       provider: "openai-compatible",
       profile: "qwen-coder-fim",
-      apiBaseUrl: options.apiBaseUrl ?? process.env.OPENCODE_COMPLETION_API_BASE_URL ?? "",
-      model: options.model ?? process.env.OPENCODE_COMPLETION_MODEL ?? "",
+      apiBaseUrl: options.apiBaseUrl ?? process.env.COMPLETION_API_BASE_URL ?? "",
+      model: options.model ?? process.env.COMPLETION_MODEL ?? "",
       maxTokens: 160,
       temperature: 0,
       topP: 1,
@@ -2861,7 +2868,25 @@ function sampleFromPattern(pattern: string) {
     .replace(/[()^$[\]{}+?]/g, "")
 }
 
-function messageText(message: OpenCodeMessage) {
+function parseRequestJson(body: BodyInit | null | undefined): Record<string, unknown> {
+  if (typeof body !== "string") return {}
+  try {
+    const parsed = JSON.parse(body) as unknown
+    return parsed && typeof parsed === "object" ? parsed as Record<string, unknown> : {}
+  } catch {
+    return {}
+  }
+}
+
+function completionPromptFromChatBody(body: Record<string, unknown>) {
+  const messages = Array.isArray(body.messages) ? body.messages : []
+  const last = messages.at(-1)
+  if (!last || typeof last !== "object") return ""
+  const content = (last as { content?: unknown }).content
+  return typeof content === "string" ? content : ""
+}
+
+function messageText(message: CompletionModelMessage) {
   return message.parts
     .filter((part) => part.type === "text")
     .map((part) => part.text)

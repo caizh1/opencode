@@ -5,38 +5,36 @@ import * as vscode from "vscode"
 
 export async function run() {
   await activatesAndRegistersCommands()
-  await opensRemoteChatCommand()
+  await opensChatCommand()
   await opensActivityBarContainer()
   await manifestHidesEditorTitleEntries()
   await manifestContributesActivityBarContainer()
 }
 
 async function activatesAndRegistersCommands() {
-  const extension = vscode.extensions.getExtension("local.opencode-remote")
-  assert.ok(extension, "local.opencode-remote extension should be available")
+  const extension = vscode.extensions.getExtension("local.chipmate")
+  assert.ok(extension, "local.chipmate extension should be available")
 
   await extension.activate()
   const commands = await vscode.commands.getCommands(true)
 
-  assert.ok(commands.includes("opencode.remote.openChat"), "remote openChat command should be registered")
-  assert.ok(commands.includes("opencode.remote.connect"), "remote connect command should be registered")
-  assert.ok(commands.includes("opencode.remote.testConnection"), "remote testConnection command should be registered")
-  assert.ok(commands.includes("opencode.openTerminal"), "local openTerminal command should be registered")
-  assert.ok(commands.includes("opencode.openNewTerminal"), "local openNewTerminal command should be registered")
+  assert.ok(commands.includes("chipmate.openChat"), "openChat command should be registered")
+  assert.ok(commands.includes("chipmate.newSession"), "newSession command should be registered")
+  assert.ok(commands.includes("chipmate.openOutput"), "openOutput command should be registered")
 }
 
-async function opensRemoteChatCommand() {
-  await vscode.commands.executeCommand("opencode.remote.openChat")
+async function opensChatCommand() {
+  await vscode.commands.executeCommand("chipmate.openChat")
 }
 
 async function opensActivityBarContainer() {
-  await vscode.commands.executeCommand("workbench.view.extension.opencodeRemote")
-  await vscode.commands.executeCommand("opencodeRemote.sidebar.focus")
+  await vscode.commands.executeCommand("workbench.view.extension.chipmate")
+  await vscode.commands.executeCommand("chipmate.sidebar.focus")
 }
 
 async function manifestHidesEditorTitleEntries() {
-  const extension = vscode.extensions.getExtension("local.opencode-remote")
-  assert.ok(extension, "local.opencode-remote extension should be available")
+  const extension = vscode.extensions.getExtension("local.chipmate")
+  assert.ok(extension, "local.chipmate extension should be available")
 
   const manifestPath = path.join(extension.extensionPath, "package.json")
   const manifest = JSON.parse(await fs.readFile(manifestPath, "utf8"))
@@ -45,31 +43,27 @@ async function manifestHidesEditorTitleEntries() {
 }
 
 async function manifestContributesActivityBarContainer() {
-  const extension = vscode.extensions.getExtension("local.opencode-remote")
-  assert.ok(extension, "local.opencode-remote extension should be available")
+  const extension = vscode.extensions.getExtension("local.chipmate")
+  assert.ok(extension, "local.chipmate extension should be available")
 
   const manifestPath = path.join(extension.extensionPath, "package.json")
   const manifest = JSON.parse(await fs.readFile(manifestPath, "utf8"))
   const containers = manifest.contributes?.viewsContainers?.activitybar ?? []
   const explorerViews = manifest.contributes?.views?.explorer ?? []
-  const opencodeViews = manifest.contributes?.views?.opencodeRemote ?? []
-  const newViewID = "opencodeRemote.sidebar"
-  const oldViewID = ["opencodeRemote", "chat"].join(".")
+  const chipmateViews = manifest.contributes?.views?.chipmate ?? []
+  const newViewID = "chipmate.sidebar"
 
   assert.ok(
     containers.some(
       (container: { id?: string; icon?: string; title?: string }) =>
-        container.id === "opencodeRemote" &&
-        container.title === "OpenCode" &&
-        container.icon === "media/opencode.svg",
+        container.id === "chipmate" &&
+        container.title === "ChipMate" &&
+        container.icon === "media/chipmate.svg",
     ),
-    "OpenCode activity bar container should be contributed",
+    "ChipMate activity bar container should be contributed",
   )
-  assert.equal(manifest.icon, "media/opencode-icon.png")
-  assert.equal(JSON.stringify(manifest).includes(oldViewID), false)
   assert.equal(manifest.activationEvents?.includes(`onView:${newViewID}`), true)
   assert.equal(explorerViews.some((view: { id?: string }) => view.id === newViewID), false)
-  assert.equal(opencodeViews.some((view: { id?: string }) => view.id === newViewID), true)
-  await fs.access(path.join(extension.extensionPath, "media", "opencode-icon.png"))
-  await fs.access(path.join(extension.extensionPath, "media", "opencode.svg"))
+  assert.equal(chipmateViews.some((view: { id?: string }) => view.id === newViewID), true)
+  await fs.access(path.join(extension.extensionPath, "media", "chipmate.svg"))
 }

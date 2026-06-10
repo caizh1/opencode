@@ -155,7 +155,7 @@ export async function addPickedFilesToContext(store: LocalContextStore) {
     canSelectFiles: true,
     canSelectFolders: false,
     canSelectMany: true,
-    openLabel: "Add to OpenCode context",
+    openLabel: "Add to ChipMate context",
   })
   if (!picked) return 0
   for (const uri of picked) store.add(uri)
@@ -166,7 +166,7 @@ export async function buildCompletionPrompt(input: {
   document: vscode.TextDocument
   position: vscode.Position
   settings: RemoteSettings
-  transport?: "opencode" | "openai-compatible"
+  transport?: "openai-compatible"
   plan?: CompletionPlan
   retrievedSnippets?: RetrievedCompletionSnippet[]
   analysisEvidenceText?: string
@@ -304,7 +304,7 @@ function buildInstructionCompletionPrompt(input: {
   prefix: string
   suffix: string
   contextPack: CompletionContextPack
-  transport?: "opencode" | "openai-compatible"
+  transport?: "openai-compatible"
 }) {
   const task = input.plan.kind === "comment-to-test" || input.plan.kind === "natural-command"
     ? "Generate a unit test for the target symbol."
@@ -606,7 +606,7 @@ function localContextContract() {
     "Use only the supplied <file>, <diagnostics>, <git-diff>, and <local-code-graph> evidence blocks when answering questions about local code.",
     "Use the <local-analysis-pack> answer policy, query trace, summaries, state machines, and evidence refs when present.",
     "When local code graph evidence is present, cite paths and line ranges from the evidence; if evidence is insufficient, say what is missing instead of guessing.",
-    "Do not read, glob, grep, list, edit, or run shell commands against the remote OpenCode server filesystem to answer local VS Code questions.",
+    "Do not use an external server filesystem as a substitute for local VS Code context when answering local workspace questions.",
     "If the needed local file content is missing, ask the user to open the file in VS Code or reference it with @file.",
   ].join("\n")
 }

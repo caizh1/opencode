@@ -1,10 +1,11 @@
 import * as vscode from "vscode"
+import type { ChipMatePermissionProfile } from "./permissions"
 import { RAG_EMBEDDING_MAX_TOKENS_PER_REQUEST_DEFAULT } from "./rag-token"
 import type { CodeGraphAnalysisMode, CompletionCommentGuidedRetrievalMode, CompletionLogLevel, CompletionProfile, CompletionProvider, RagEmbeddingCheckpointMode, RagEmbeddingEncodingFormat, RemoteSettings } from "./types"
 
-export const PASSWORD_SECRET_KEY = "opencode.remote.password"
-export const COMPLETION_API_KEY_SECRET_KEY = "opencode.remote.completion.apiKey"
-export const RAG_API_KEY_SECRET_KEY = "opencode.remote.rag.apiKey"
+export const PASSWORD_SECRET_KEY = "chipmate.connection.password"
+export const COMPLETION_API_KEY_SECRET_KEY = "chipmate.model.apiKey"
+export const RAG_API_KEY_SECRET_KEY = "chipmate.rag.apiKey"
 export const RAG_EMBEDDING_BATCH_SIZE_DEFAULT = 128
 export const RAG_EMBEDDING_BATCH_SIZE_OPTIONS = [1, 5, 10, 32, 64, 128, 256, 512] as const
 export const RAG_EMBEDDING_BATCH_SIZE_MIN = 1
@@ -100,16 +101,34 @@ export type NormalizedRagSettingsInput = {
 }
 
 export function readRemoteSettings(): RemoteSettings {
-  const config = vscode.workspace.getConfiguration("opencode.remote")
+  const config = vscode.workspace.getConfiguration("chipmate")
   const ragEmbeddingEndpoint = normalizeServerUrl(config.get<string>("rag.embedding.endpoint", ""))
   const ragRerankEndpoint = normalizeServerUrl(config.get<string>("rag.rerank.endpoint", ""))
   const ragEmbeddingBatchSize = readRagEmbeddingBatchSize(config.get<unknown>("rag.embedding.batchSize", RAG_EMBEDDING_BATCH_SIZE_DEFAULT))
+  const chatApiBaseUrl = normalizeServerUrl(config.get<string>("chat.apiBaseUrl", ""))
+  const chatModel = config.get<string>("chat.model", "").trim()
+  const completionApiBaseUrl = normalizeServerUrl(config.get<string>("completion.apiBaseUrl", "")) || chatApiBaseUrl
+  const completionModelValue = config.get<string>("completion.model", "").trim() || chatModel
   return {
-    serverUrl: normalizeServerUrl(config.get<string>("serverUrl", "http://localhost:4096")),
-    username: config.get<string>("username", "opencode"),
-    defaultModel: config.get<string>("defaultModel", ""),
+    serverUrl: chatApiBaseUrl,
+    username: "chipmate",
+    defaultModel: config.get<string>("defaultModel", "") || chatModel,
     defaultAgent: config.get<string>("defaultAgent", ""),
-    localOnlyAgent: config.get<string>("localOnlyAgent", "vscode-local"),
+    localOnlyAgent: config.get<string>("localOnlyAgent", "chipmate-local"),
+    chat: {
+      apiBaseUrl: chatApiBaseUrl,
+      model: chatModel || config.get<string>("defaultModel", "").trim(),
+      maxTokens: Math.max(1, Math.min(32768, config.get<number>("chat.maxTokens", 4096))),
+      temperature: Math.max(0, Math.min(2, config.get<number>("chat.temperature", 0.2))),
+      topP: Math.max(0, Math.min(1, config.get<number>("chat.topP", 1))),
+      streaming: config.get<boolean>("chat.streaming", true),
+    },
+    skills: {
+      catalogUrl: normalizeServerUrl(config.get<string>("skills.catalogUrl", "")),
+    },
+    permissions: {
+      profile: readPermissionProfile(config.get<string>("permissions.profile", "askApproval")),
+    },
     context: {
       maxFileBytes: Math.max(1000, config.get<number>("context.maxFileBytes", 16000)),
       maxFiles: Math.max(1, Math.min(50, config.get<number>("context.maxFiles", 8))),
@@ -122,8 +141,8 @@ export function readRemoteSettings(): RemoteSettings {
       enabled: config.get<boolean>("completion.enabled", false),
       provider: readCompletionProvider(config.get<string>("completion.provider", "openai-compatible")),
       profile: readCompletionProfile(config.get<string>("completion.profile", "generic-chat")),
-      apiBaseUrl: normalizeServerUrl(config.get<string>("completion.apiBaseUrl", "")),
-      model: config.get<string>("completion.model", "").trim(),
+      apiBaseUrl: completionApiBaseUrl,
+      model: completionModelValue,
       maxTokens: Math.max(1, Math.min(4096, config.get<number>("completion.maxTokens", 128))),
       temperature: Math.max(0, Math.min(2, config.get<number>("completion.temperature", 0))),
       topP: Math.max(0, Math.min(1, config.get<number>("completion.topP", 1))),
@@ -275,24 +294,24 @@ export async function promptAndSaveConnectionSettings(context: vscode.ExtensionC
 export async function promptConnectionSettings(): Promise<ConnectionSettingsInput | undefined> {
   const current = readRemoteSettings()
   const serverUrl = await vscode.window.showInputBox({
-    title: "Remote OpenCode server URL",
-    prompt: "Enter the base URL for opencode serve.",
+    title: "ChipMate model API base URL",
+    prompt: "Enter an OpenAI-compatible /v1 base URL.",
     value: current.serverUrl,
     ignoreFocusOut: true,
   })
   if (!serverUrl) return undefined
 
   const username = await vscode.window.showInputBox({
-    title: "Remote OpenCode username",
-    prompt: "HTTP Basic Auth username. Leave as opencode unless you changed OPENCODE_SERVER_USERNAME.",
-    value: current.username || "opencode",
+    title: "ChipMate connection label",
+    prompt: "Optional local label for this model connection.",
+    value: current.username || "chipmate",
     ignoreFocusOut: true,
   })
   if (username === undefined) return undefined
 
   const password = await vscode.window.showInputBox({
-    title: "Remote OpenCode password",
-    prompt: "HTTP Basic Auth password. Leave empty if the server is unsecured.",
+    title: "ChipMate model API key",
+    prompt: "Bearer token for the OpenAI-compatible model API. Leave empty if the server is unsecured.",
     password: true,
     ignoreFocusOut: true,
   })
@@ -304,9 +323,9 @@ export async function promptConnectionSettings(): Promise<ConnectionSettingsInpu
 export async function saveConnectionSettings(context: vscode.ExtensionContext, input: ConnectionSettingsInput) {
   const settings = settingsFromConnectionInput(input)
 
-  const config = vscode.workspace.getConfiguration("opencode.remote")
-  await config.update("serverUrl", settings.serverUrl, vscode.ConfigurationTarget.Global)
-  await config.update("username", settings.username, vscode.ConfigurationTarget.Global)
+  const config = vscode.workspace.getConfiguration("chipmate")
+  await config.update("chat.apiBaseUrl", settings.serverUrl, vscode.ConfigurationTarget.Global)
+  await config.update("chat.model", settings.defaultModel, vscode.ConfigurationTarget.Global)
   if (connectionInputHasPassword(input)) await writeRemotePassword(context, input.password?.trim() || undefined)
 }
 
@@ -315,7 +334,7 @@ export function connectionInputHasPassword(input: ConnectionSettingsInput) {
 }
 
 export async function saveCompletionSettings(input: CompletionSettingsInput) {
-  const config = vscode.workspace.getConfiguration("opencode.remote")
+  const config = vscode.workspace.getConfiguration("chipmate")
   await config.update("completion.enabled", input.enabled, vscode.ConfigurationTarget.Global)
   await config.update("completion.provider", input.provider, vscode.ConfigurationTarget.Global)
   await config.update("completion.profile", readCompletionProfile(input.profile), vscode.ConfigurationTarget.Global)
@@ -328,7 +347,7 @@ export async function saveCompletionSettings(input: CompletionSettingsInput) {
 
 export async function saveRagSettings(input: RagSettingsInput) {
   const updates = ragSettingsUpdates(input)
-  const config = vscode.workspace.getConfiguration("opencode.remote")
+  const config = vscode.workspace.getConfiguration("chipmate")
   for (const update of updates) {
     try {
       await config.update(update.key, update.value, vscode.ConfigurationTarget.Global)
@@ -438,11 +457,11 @@ function normalizedRagSettingsEqual(left: NormalizedRagSettingsInput, right: Nor
 
 export function settingsFromConnectionInput(input: ConnectionSettingsInput): RemoteSettings {
   const serverUrl = normalizeServerUrl(input.serverUrl)
-  if (!serverUrl) throw new Error("Remote OpenCode server URL is required.")
+  if (!serverUrl) throw new Error("ChipMate model API base URL is required.")
   return {
     ...readRemoteSettings(),
     serverUrl,
-    username: input.username.trim() || "opencode",
+    username: input.username.trim() || "chipmate",
   }
 }
 
@@ -462,8 +481,13 @@ function readCompletionCommentGuidedRetrievalMode(input: string | undefined): Co
 }
 
 function readCompletionProvider(input: string): CompletionProvider {
-  if (input === "opencode" || input === "openai-compatible") return input
-  return "opencode"
+  if (input === "openai-compatible") return input
+  return "openai-compatible"
+}
+
+function readPermissionProfile(input: string | undefined): ChipMatePermissionProfile {
+  if (input === "readOnly" || input === "askApproval" || input === "trustedWorkspace" || input === "fullAccess") return input
+  return "askApproval"
 }
 
 function readCompletionProfile(input: string): CompletionProfile {

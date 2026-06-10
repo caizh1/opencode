@@ -84,7 +84,7 @@ const DEFAULT_EXCLUDES = [
   "**/dist/**",
   "**/out/**",
   "**/.vscode-test/**",
-  "**/.opencode/**",
+  "**/.chipmate/**",
 ]
 const execFile = promisify(childProcess.execFile)
 
@@ -986,7 +986,7 @@ export class LocalCodeGraphService implements vscode.Disposable {
 
   private async setEnabled(enabled: boolean) {
     await vscode.workspace
-      .getConfiguration("opencode.remote")
+      .getConfiguration("chipmate")
       .update("codeGraph.enabled", enabled, vscode.ConfigurationTarget.Workspace)
     if (!enabled) this.setStatus(disabledStatus())
   }
@@ -2364,7 +2364,7 @@ export class LocalCodeGraphService implements vscode.Disposable {
 
   private async probeRagEmbeddingProvider(dimension: number, signal?: AbortSignal) {
     if (!this.ragEmbeddingProvider) throw new Error("embedding provider is not configured")
-    const vector = (await this.ragEmbeddingProvider.embed(["opencode RAG connectivity probe"], signal))[0]
+    const vector = (await this.ragEmbeddingProvider.embed(["ChipMate RAG connectivity probe"], signal))[0]
     if (!vector) throw new Error("embedding provider returned no probe vector")
     if (dimension > 0 && vector.length !== dimension) {
       throw new Error(`embedding provider returned ${vector.length} dimension(s), expected ${dimension}`)

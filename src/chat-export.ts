@@ -60,7 +60,7 @@ export function buildExportIntentPrompt(input: {
     .join("\n\n")
 
   return [
-    "You classify export intent for a VS Code OpenCode chat extension.",
+    "You classify export intent for a VS Code ChipMate chat extension.",
     "Return only a compact JSON object. Do not include markdown fences or explanation.",
     "",
     "JSON schema:",
@@ -118,9 +118,9 @@ export function formatChatExportMarkdown(input: {
   if (messages.length === 0) return ""
 
   const exportedAt = input.exportedAt ?? new Date()
-  const title = input.sessionTitle?.trim() || "OpenCode chat"
+  const title = input.sessionTitle?.trim() || "ChipMate chat"
   const lines = [
-    "# OpenCode Chat Export",
+    "# ChipMate Chat Export",
     "",
     `Session: ${title}`,
     `Scope: ${input.scope === "lastAssistant" ? "Last assistant response" : "Current session"}`,
@@ -155,7 +155,7 @@ export function suggestExportFilename(input: {
   const exportedAt = input.exportedAt ?? new Date()
   const stamp = exportedAt.toISOString().slice(0, 19).replace(/[T:]/g, "-")
   const title = sanitizeFilenameBase(input.sessionTitle || "")
-  return ensureMarkdownExtension(`${title || "opencode-chat"}-${stamp}`)
+  return ensureMarkdownExtension(`${title || "chipmate-chat"}-${stamp}`)
 }
 
 function explicitScope(text: string): ExportScope | undefined {
@@ -269,6 +269,6 @@ function sanitizeFilenameBase(value: string) {
 }
 
 function ensureMarkdownExtension(value: string) {
-  const base = sanitizeFilenameBase(value) || "opencode-chat"
+  const base = sanitizeFilenameBase(value) || "chipmate-chat"
   return `${base}.md`
 }

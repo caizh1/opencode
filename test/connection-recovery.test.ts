@@ -2,40 +2,19 @@ import { describe, expect, test } from "bun:test"
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
 
-describe("connection and stale-session recovery wiring", () => {
+describe("ChipMate runtime wiring", () => {
   const extensionSource = readFileSync(join(import.meta.dir, "..", "src", "extension.ts"), "utf8")
-  const chatViewSource = readFileSync(join(import.meta.dir, "..", "src", "chat-view.ts"), "utf8")
+  const chatViewSource = readFileSync(join(import.meta.dir, "..", "src", "chipmate-chat-view.ts"), "utf8")
   const completionSource = readFileSync(join(import.meta.dir, "..", "src", "completion.ts"), "utf8")
   const coordinatorSource = readFileSync(join(import.meta.dir, "..", "src", "completion-request-coordinator.ts"), "utf8")
 
-  test("separates connection probes from applying an active client", () => {
-    expect(extensionSource).toContain("async function probeClient")
-    expect(extensionSource).toContain("const connectClient = async")
-    expect(extensionSource).toContain("client = next")
-    expect(extensionSource).toContain("void chatProvider.refresh()")
-  })
-
-  test("test connection does not replace the active client or refresh sessions", () => {
-    const start = extensionSource.indexOf("const testClientOnly = async")
-    const end = extensionSource.indexOf("const connect =", start)
-    const body = extensionSource.slice(start, end)
-
-    expect(body).toContain("Test succeeded")
-    expect(body).toContain("Click Connect to use this server")
-    expect(body).not.toContain("client =")
-    expect(body).not.toContain("chatProvider.refresh")
-  })
-
-  test("activation silently restores the saved connection", () => {
-    const start = extensionSource.indexOf("const restoreSavedConnection = async")
-    const end = extensionSource.indexOf("let chatProvider", start)
-    const body = extensionSource.slice(start, end)
-
-    expect(body).toContain("[connect] Restoring saved OpenCode connection")
-    expect(body).toContain("const next = await createClient()")
-    expect(body).toContain("await connectClient(next)")
-    expect(body).not.toContain("promptAndSaveConnectionSettings")
-    expect(extensionSource).toContain("void restoreSavedConnection().catch")
+  test("does not wire remote server connection probes or restored sessions", () => {
+    expect(extensionSource).not.toContain("probeClient")
+    expect(extensionSource).not.toContain("restoreSavedConnection")
+    expect(extensionSource).not.toContain("RemoteOpenCodeClient")
+    expect(extensionSource).not.toContain("opencode")
+    expect(chatViewSource).not.toContain("RemoteOpenCodeClient")
+    expect(chatViewSource).not.toContain("connectWithSettings")
   })
 
   test("prompts for a full window reload after extension upgrades", () => {
@@ -55,42 +34,7 @@ describe("connection and stale-session recovery wiring", () => {
     expect(body).toContain("showInformationMessage")
     expect(body).toContain("RELOAD_WINDOW_ACTION")
     expect(body).toContain('executeCommand("workbench.action.reloadWindow")')
-    expect(body).toContain("context.globalState.update(EXTENSION_UPDATE_RELOAD_ACCEPTED_KEY, reloadVersion)")
     expect(body).not.toContain("restartExtension")
-  })
-
-  test("webview connection reuses saved passwords when password is omitted", () => {
-    const start = extensionSource.indexOf("const connectWithSettings = async")
-    const end = extensionSource.indexOf("const restoreSavedConnection = async", start)
-    const body = extensionSource.slice(start, end)
-
-    expect(body).toContain("connectionInputHasPassword(input) ? input.password?.trim() || undefined : await readRemotePassword(context)")
-    expect(body).toContain("saveConnectionSettings(context, input)")
-    expect(body).toContain("new RemoteOpenCodeClient(settings, password)")
-    expect(chatViewSource).toContain("function connectionSettingsFromMessage")
-    expect(chatViewSource).toContain('Object.prototype.hasOwnProperty.call(message, "password")')
-  })
-
-  test("prompted connect saves connection settings only after a successful probe", () => {
-    const start = extensionSource.indexOf("const connect = async")
-    const end = extensionSource.indexOf("const connectWithSettings = async", start)
-    const body = extensionSource.slice(start, end)
-
-    expect(body).toContain("const input = await promptConnectionSettings()")
-    expect(body).toContain("await connectClient(next, () => saveConnectionSettings(context, input))")
-    expect(body).not.toContain("promptAndSaveConnectionSettings")
-  })
-
-  test("remote refresh failures leave connected state and clear the active client", () => {
-    expect(extensionSource).toContain("const clearClient = (target: RemoteOpenCodeClient)")
-    expect(extensionSource).toContain("if (client === target) client = undefined")
-    expect(extensionSource).toContain("clearClient,")
-
-    expect(chatViewSource).toContain("clearClient: (client: RemoteOpenCodeClient) => void")
-    expect(chatViewSource).toContain('this.reportRemoteConnectionFailure(client, "Failed to load sessions", sessionResult.reason)')
-    expect(chatViewSource).toContain('this.reportRemoteConnectionFailure(client, "Failed to load selected session", error)')
-    expect(chatViewSource).toContain("this.deps.clearClient(client)")
-    expect(chatViewSource).toContain("this.deps.setConnectionState(state, detail)")
   })
 
   test("debounces RAG configuration apply events", () => {
@@ -105,32 +49,72 @@ describe("connection and stale-session recovery wiring", () => {
     expect(extensionSource).not.toContain("codeGraph.refreshRagConfiguration()")
   })
 
-  test("RAG API key saves apply the active configuration", () => {
-    const start = extensionSource.indexOf("promptRagApiKey: async")
-    const end = extensionSource.indexOf("connectWithSettings,", start)
+  test("RAG API key command applies the active configuration", () => {
+    const start = extensionSource.indexOf('vscode.commands.registerCommand("chipmate.rag.setApiKey"')
+    const end = extensionSource.indexOf('vscode.commands.registerCommand("chipmate.codeGraph.index"', start)
     const body = extensionSource.slice(start, end)
 
     expect(body).toContain("promptAndSaveRagApiKey(context)")
-    expect(body).toContain("if (saved) await codeGraph.applyRagConfiguration()")
+    expect(body).toContain("await codeGraph.applyRagConfiguration()")
     expect(body).not.toContain("refreshRagConfiguration")
   })
 
-  test("remote failure state distinguishes auth failures from connection errors", () => {
-    expect(chatViewSource).toContain("RemoteOpenCodeAuthError")
-    expect(chatViewSource).toContain("RemoteOpenCodeConnectionError")
-    expect(chatViewSource).toContain('return "authFailed"')
-    expect(chatViewSource).toContain('return "error"')
-    expect(chatViewSource).toContain("isRequestTimeoutError")
+  test("chat view uses direct model agent runtime, skills, and workspace tools", () => {
+    for (const marker of [
+      "new OpenAIChatClient",
+      "new AgentRuntime",
+      "new ToolRegistry",
+      "new SkillsRuntime",
+      "new McpStdioRuntime",
+      "new WorkspaceTools",
+      "fetchChipMateCatalog",
+      "downloadChipMateCatalogPackage",
+      "this.installer.installZip",
+      "this.installer.rollback",
+    ]) {
+      expect(chatViewSource).toContain(marker)
+    }
   })
 
-  test("completion retries once when its remote session vanished", () => {
-    expect(completionSource).toContain("isSessionNotFoundError")
-    expect(completionSource).toContain("this.sessionID = undefined")
-    expect(completionSource).toContain("Completion session was not found; retrying with a new session.")
-    expect(completionSource).toContain("return this.sendCompletionWithSession(client, prompt, settings, signal)")
+  test("chat view asks the user before executing approval-gated tools", () => {
+    expect(chatViewSource).toContain("requestToolApproval")
+    expect(chatViewSource).toContain("vscode.window.showWarningMessage")
+    expect(chatViewSource).toContain("Allow Once")
+    expect(chatViewSource).toContain("Always Allow")
+    expect(chatViewSource).toContain("runSkillScript")
+    expect(chatViewSource).toContain("runMcpTool")
+    expect(chatViewSource).toContain("runShell")
+    expect(chatViewSource).toContain("writeWorkspace")
   })
 
-  test("completion logs request lifecycle and debug skip reasons", () => {
+  test("chat view serializes all icons used by dynamic webview controls", () => {
+    for (const iconName of ["add", "attach", "chat", "discard"]) {
+      expect(chatViewSource).toContain(`"${iconName}"`)
+    }
+    expect(chatViewSource).toContain('data-icon="add"')
+    expect(chatViewSource).toContain("icons.attach")
+    expect(chatViewSource).toContain("icons.chat")
+    expect(chatViewSource).toContain("icons.discard")
+  })
+
+  test("chat view uses compact glass chrome and a single session selector", () => {
+    expect(chatViewSource).toContain('class="chrome"')
+    expect(chatViewSource).toContain('class="sessionSwitch"')
+    expect(chatViewSource).toContain('id="sessionSelect"')
+    expect(chatViewSource).toContain('id="newSession"')
+    expect(chatViewSource).toContain("displaySessionTitle")
+    expect(chatViewSource).toContain("normalizedSessionTitle")
+    expect(chatViewSource).not.toContain('id="sessions"')
+    expect(chatViewSource).not.toContain('byId("sessions")')
+    expect(chatViewSource).not.toContain("position: absolute")
+    expect(chatViewSource.match(/\\.topbar\\s*\\{[^}]*border-bottom/s)).toBeNull()
+  })
+
+  test("completion is direct-model only and keeps request lifecycle logging", () => {
+    expect(completionSource).toContain("new CompletionModelClient(input.settings, apiKey)")
+    expect(completionSource).not.toContain("RemoteOpenCodeClient")
+    expect(completionSource).not.toContain("isSessionNotFoundError")
+    expect(completionSource).not.toContain("sendCompletionWithSession")
     for (const marker of [
       "triggered",
       "scheduled",
@@ -145,11 +129,10 @@ describe("connection and stale-session recovery wiring", () => {
     ]) {
       expect(`${completionSource}\n${coordinatorSource}`).toContain(marker)
     }
-
     for (const marker of [
       "skip: completion disabled",
       "skip: non-file document",
-      "skip: no active remote client",
+      "skip: direct completion API base URL is not configured",
       "skip: empty line at column 0",
       "reason=vscode-token",
       "returned source=${source}",

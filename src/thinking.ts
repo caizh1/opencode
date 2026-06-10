@@ -1,6 +1,9 @@
-import type { OpenCodePart } from "./types"
+export type ThinkingPart = {
+  type: string
+  text?: unknown
+}
 
-export function splitThinkingFromParts(parts: OpenCodePart[]) {
+export function splitThinkingFromParts(parts: ThinkingPart[]) {
   const text: string[] = []
   const reasoning: string[] = []
 

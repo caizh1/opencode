@@ -1,6 +1,19 @@
-import type { CompletionProfile, OpenCodeMessage, OpenCodePart, RemoteSettings } from "./types"
+import type { CompletionProfile, RemoteSettings } from "./types"
 
 export type CompletionTransport = "raw-completions" | "chat-completions"
+export type CompletionModelPart = {
+  type: "text" | "reasoning"
+  text: string
+}
+export type CompletionModelMessage = {
+  info: {
+    id: string
+    role: "assistant"
+    providerID: string
+    modelID: string
+  }
+  parts: CompletionModelPart[]
+}
 
 const QWEN_CODER_FIM_STOP = [
   "<|fim_prefix|>",
@@ -47,7 +60,7 @@ export class CompletionModelClient {
     profile?: CompletionProfile
     transport?: CompletionTransport
     seed?: number
-  }): Promise<OpenCodeMessage> {
+  }): Promise<CompletionModelMessage> {
     const baseUrl = this.settings.completion.apiBaseUrl
     const model = completionModel(this.settings)
     if (!baseUrl) throw new CompletionModelRequestError(0, "Completion API base URL is required.")
@@ -190,7 +203,7 @@ export function directCompletionRequestDiagnostic(error: unknown, profile: Compl
   return "Direct completion profile qwen-coder-fim requires an OpenAI-compatible raw /completions endpoint with Qwen FIM token support; this server appears to reject /completions. Use a FIM-compatible endpoint/profile for ordinary code, or use generic-chat only for instruction/comment-to-code completions."
 }
 
-function normalizeChatCompletionMessage(input: unknown): OpenCodeMessage {
+function normalizeChatCompletionMessage(input: unknown): CompletionModelMessage {
   const root = objectRecord(input)
   const choices = Array.isArray(root.choices) ? root.choices : []
   const choice = objectRecord(choices[0])
@@ -201,7 +214,7 @@ function normalizeChatCompletionMessage(input: unknown): OpenCodeMessage {
     throw new CompletionModelRequestError(0, "Completion model response has no message content.")
   }
 
-  const parts: OpenCodePart[] = []
+  const parts: CompletionModelPart[] = []
   if (reasoning) parts.push({ type: "reasoning", text: reasoning })
   if (content) parts.push({ type: "text", text: content })
   return {
@@ -215,7 +228,7 @@ function normalizeChatCompletionMessage(input: unknown): OpenCodeMessage {
   }
 }
 
-function normalizeRawCompletionMessage(input: unknown): OpenCodeMessage {
+function normalizeRawCompletionMessage(input: unknown): CompletionModelMessage {
   const root = objectRecord(input)
   const choices = Array.isArray(root.choices) ? root.choices : []
   const choice = objectRecord(choices[0])
@@ -226,7 +239,7 @@ function normalizeRawCompletionMessage(input: unknown): OpenCodeMessage {
     throw new CompletionModelRequestError(0, "Completion model response has no completion text.")
   }
 
-  const parts: OpenCodePart[] = []
+  const parts: CompletionModelPart[] = []
   if (reasoning) parts.push({ type: "reasoning", text: reasoning })
   if (content) parts.push({ type: "text", text: content })
   return {

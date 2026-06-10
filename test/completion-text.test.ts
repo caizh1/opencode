@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import { completionInsertText } from "../src/completion-text"
-import type { OpenCodeMessage, OpenCodePart } from "../src/types"
+import type { CompletionModelMessage, CompletionModelPart } from "../src/completion-model-client"
 
 describe("completion insert text", () => {
   test("uses text parts and drops structured reasoning", () => {
@@ -102,9 +102,9 @@ describe("completion insert text", () => {
   })
 })
 
-function message(parts: OpenCodePart[]): OpenCodeMessage {
+function message(parts: CompletionModelPart[]): CompletionModelMessage {
   return {
-    info: { id: "completion", role: "assistant" },
+    info: { id: "completion", role: "assistant", providerID: "test", modelID: "test" },
     parts,
   }
 }

@@ -189,15 +189,9 @@ export function routeLogValue(route: CompletionModelRoute, settings?: RemoteSett
     `route=${route.promptKind}`,
     `reason=${route.reason}`,
     `modelProfile=${route.modelProfile}`,
-    settings?.completion.provider === "openai-compatible"
-      ? `configuredProfile=${settings.completion.profile}`
-      : "",
-    settings?.completion.provider === "openai-compatible"
-      ? `effectiveProfile=${route.modelProfile}`
-      : "",
-    settings?.completion.provider === "openai-compatible"
-      ? `endpoint=${rawFimTransport ? "/completions" : "/chat/completions"}`
-      : "",
+    settings ? `configuredProfile=${settings.completion.profile}` : "",
+    settings ? `effectiveProfile=${route.modelProfile}` : "",
+    settings ? `endpoint=${rawFimTransport ? "/completions" : "/chat/completions"}` : "",
     `promptKind=${route.promptKind}`,
     `maxTokens=${route.maxTokens}`,
     `temperature=${route.temperature}`,

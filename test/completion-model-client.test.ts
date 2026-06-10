@@ -262,10 +262,10 @@ describe("direct completion model client", () => {
 function settings(baseUrl: string, input: { completionModel?: string; defaultModel?: string; profile?: RemoteSettings["completion"]["profile"] } = {}): RemoteSettings {
   return {
     serverUrl: "http://localhost:4096",
-    username: "opencode",
+    username: "chipmate",
     defaultModel: input.defaultModel ?? "",
     defaultAgent: "",
-    localOnlyAgent: "vscode-local",
+    localOnlyAgent: "chipmate-local",
     context: {
       maxFileBytes: 16000,
       maxFiles: 8,

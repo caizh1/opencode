@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs"
 import { join } from "node:path"
 
 describe("file mention flow", () => {
-  const chatViewSource = readFileSync(join(import.meta.dir, "..", "src", "chat-view.ts"), "utf8")
+  const chatViewSource = readFileSync(join(import.meta.dir, "..", "src", "chipmate-chat-view.ts"), "utf8")
   const contextSource = readFileSync(join(import.meta.dir, "..", "src", "context.ts"), "utf8")
 
   test("searches workspace files through an indexed mention flow", () => {

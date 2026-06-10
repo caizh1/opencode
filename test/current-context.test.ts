@@ -5,7 +5,7 @@ import { join } from "node:path"
 describe("default current file context", () => {
   const contextSource = readFileSync(join(import.meta.dir, "..", "src", "context.ts"), "utf8")
   const trackerSource = readFileSync(join(import.meta.dir, "..", "src", "editor-context.ts"), "utf8")
-  const chatViewSource = readFileSync(join(import.meta.dir, "..", "src", "chat-view.ts"), "utf8")
+  const chatViewSource = readFileSync(join(import.meta.dir, "..", "src", "chipmate-chat-view.ts"), "utf8")
   const extensionSource = readFileSync(join(import.meta.dir, "..", "src", "extension.ts"), "utf8")
 
   test("tracks the last local VS Code editor even after webview focus", () => {
@@ -23,9 +23,9 @@ describe("default current file context", () => {
     expect(chatViewSource).toContain("editorContext: this.deps.getEditorContext()")
   })
 
-  test("warns the model not to read remote server paths", () => {
+  test("warns the model to rely on local VS Code context", () => {
     expect(contextSource).toContain("local VS Code context supplied by the extension")
-    expect(contextSource).toContain("Do not read, glob, grep, list, edit, or run shell commands")
+    expect(contextSource).toContain("Do not use an external server filesystem")
     expect(contextSource).toContain("No local file content was captured")
   })
 
@@ -37,10 +37,8 @@ describe("default current file context", () => {
 
   test("reports actual sent context paths to output and UI state", () => {
     expect(chatViewSource).toContain("onContextSummary")
-    expect(chatViewSource).toContain("[context] sent")
-    expect(chatViewSource).toContain("autoContext: this.autoContextState()")
-    expect(chatViewSource).toContain("workspaceDiagnosticsSummary")
-    expect(chatViewSource).toContain("diagnosticCount: diagnostics.total")
-    expect(chatViewSource).toContain("vscode.workspace.getWorkspaceFolder(uri)")
+    expect(chatViewSource).toContain("contextSummary: this.contextSummary")
+    expect(chatViewSource).toContain("contextLabels: this.deps.contextStore.labels()")
+    expect(chatViewSource).toContain("buildChatPrompt")
   })
 })

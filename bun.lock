@@ -13,6 +13,7 @@
         "@vscode/test-electron": "^2.5.2",
         "@vscode/vsce": "^3.2.2",
         "eslint": "^9.25.1",
+        "jszip": "^3.10.1",
         "lucide": "^1.17.0",
         "typescript": "^5.8.3",
       },
