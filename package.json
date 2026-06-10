@@ -2,7 +2,7 @@
   "name": "chipmate",
   "displayName": "ChipMate",
   "description": "Local VS Code coding agent runtime with OpenAI-compatible models, skills, and workspace tools.",
-  "version": "0.1.8",
+  "version": "0.1.10",
   "publisher": "local",
   "license": "MIT",
   "icon": "media/chipmate-icon.png",

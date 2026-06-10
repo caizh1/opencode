@@ -4,6 +4,8 @@ import { join } from "node:path"
 
 describe("ChipMate model configuration flow", () => {
   const chatViewSource = readFileSync(join(import.meta.dir, "..", "src", "chipmate-chat-view.ts"), "utf8")
+  const htmlSource = readFileSync(join(import.meta.dir, "..", "src", "webview", "chipmate-html.ts"), "utf8")
+  const scriptSource = readFileSync(join(import.meta.dir, "..", "src", "webview", "chipmate-script.ts"), "utf8")
   const settingsSource = readFileSync(join(import.meta.dir, "..", "src", "settings.ts"), "utf8")
 
   test("uses direct OpenAI-compatible chat settings instead of remote provider discovery", () => {
@@ -15,11 +17,13 @@ describe("ChipMate model configuration flow", () => {
   })
 
   test("renders editable model and catalog settings in the ChipMate webview", () => {
-    expect(chatViewSource).toContain('id="apiBaseUrl"')
-    expect(chatViewSource).toContain('id="model"')
-    expect(chatViewSource).toContain('id="catalogUrl"')
-    expect(chatViewSource).toContain('id="permissionProfile"')
-    expect(chatViewSource).toContain('type: "saveSettings"')
+    expect(scriptSource).toContain('fieldInput("apiBaseUrl"')
+    expect(scriptSource).toContain('fieldInput("model"')
+    expect(scriptSource).toContain('fieldInput("catalogUrl"')
+    expect(scriptSource).toContain('fieldSelect("globalPermissionProfile"')
+    expect(scriptSource).toContain('type: "saveModelSettings"')
+    expect(scriptSource).toContain('type: "saveGlobalSettings"')
+    expect(htmlSource).toContain('id="modelPill"')
     expect(chatViewSource).toContain('config.update("chat.apiBaseUrl"')
     expect(chatViewSource).toContain('config.update("chat.model"')
     expect(chatViewSource).toContain('config.update("skills.catalogUrl"')

@@ -5,6 +5,10 @@ import { join } from "node:path"
 describe("ChipMate runtime wiring", () => {
   const extensionSource = readFileSync(join(import.meta.dir, "..", "src", "extension.ts"), "utf8")
   const chatViewSource = readFileSync(join(import.meta.dir, "..", "src", "chipmate-chat-view.ts"), "utf8")
+  const htmlSource = readFileSync(join(import.meta.dir, "..", "src", "webview", "chipmate-html.ts"), "utf8")
+  const scriptSource = readFileSync(join(import.meta.dir, "..", "src", "webview", "chipmate-script.ts"), "utf8")
+  const styleSource = readFileSync(join(import.meta.dir, "..", "src", "webview", "chipmate-styles.ts"), "utf8")
+  const iconSource = readFileSync(join(import.meta.dir, "..", "src", "webview", "chipmate-icons.ts"), "utf8")
   const completionSource = readFileSync(join(import.meta.dir, "..", "src", "completion.ts"), "utf8")
   const coordinatorSource = readFileSync(join(import.meta.dir, "..", "src", "completion-request-coordinator.ts"), "utf8")
 
@@ -89,25 +93,25 @@ describe("ChipMate runtime wiring", () => {
 
   test("chat view serializes all icons used by dynamic webview controls", () => {
     for (const iconName of ["add", "attach", "chat", "discard"]) {
-      expect(chatViewSource).toContain(`"${iconName}"`)
+      expect(iconSource).toContain(`"${iconName}"`)
     }
-    expect(chatViewSource).toContain('data-icon="add"')
-    expect(chatViewSource).toContain("icons.attach")
-    expect(chatViewSource).toContain("icons.chat")
-    expect(chatViewSource).toContain("icons.discard")
+    expect(scriptSource).toContain('icon("add")')
+    expect(scriptSource).toContain('icon("attach")')
+    expect(scriptSource).toContain('icon("chat")')
+    expect(scriptSource).toContain('icon("discard")')
   })
 
   test("chat view uses compact glass chrome and a single session selector", () => {
-    expect(chatViewSource).toContain('class="chrome"')
-    expect(chatViewSource).toContain('class="sessionSwitch"')
-    expect(chatViewSource).toContain('id="sessionSelect"')
-    expect(chatViewSource).toContain('id="newSession"')
-    expect(chatViewSource).toContain("displaySessionTitle")
-    expect(chatViewSource).toContain("normalizedSessionTitle")
-    expect(chatViewSource).not.toContain('id="sessions"')
-    expect(chatViewSource).not.toContain('byId("sessions")')
-    expect(chatViewSource).not.toContain("position: absolute")
-    expect(chatViewSource.match(/\\.topbar\\s*\\{[^}]*border-bottom/s)).toBeNull()
+    expect(htmlSource).toContain('class="glassFrame"')
+    expect(scriptSource).toContain('class="sessionBar"')
+    expect(scriptSource).toContain('id="sessionSelect"')
+    expect(scriptSource).toContain('id="newSession"')
+    expect(scriptSource).toContain("displaySessionTitle")
+    expect(scriptSource).toContain("normalizedSessionTitle")
+    expect(scriptSource).not.toContain('id="sessions"')
+    expect(scriptSource).not.toContain('byId("sessions")')
+    expect(styleSource).not.toContain("position: absolute")
+    expect(styleSource.match(/\\.brandBar\\s*\\{[^}]*border-bottom/s)).toBeNull()
   })
 
   test("completion is direct-model only and keeps request lifecycle logging", () => {

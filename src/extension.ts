@@ -80,6 +80,11 @@ export async function activate(context: vscode.ExtensionContext) {
       if (saved) vscode.window.setStatusBarMessage("ChipMate API key saved", 2000)
       return saved
     },
+    promptRagApiKey: async () => {
+      const saved = await promptAndSaveRagApiKey(context)
+      if (saved) vscode.window.setStatusBarMessage("ChipMate RAG API key saved", 2000)
+      return saved
+    },
     getEditorContext: () => editorContextTracker.snapshot(),
     openOutput: () => output.show(true),
   })
