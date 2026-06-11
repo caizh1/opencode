@@ -2,40 +2,43 @@ import { describe, expect, test } from "bun:test"
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
 
-describe("connection and stale-session recovery wiring", () => {
+describe("ChipMate direct runtime wiring", () => {
   const extensionSource = readFileSync(join(import.meta.dir, "..", "src", "extension.ts"), "utf8")
   const chatViewSource = readFileSync(join(import.meta.dir, "..", "src", "chat-view.ts"), "utf8")
+  const chatHtmlSource = readFileSync(join(import.meta.dir, "..", "src", "chat-html.ts"), "utf8")
   const completionSource = readFileSync(join(import.meta.dir, "..", "src", "completion.ts"), "utf8")
   const coordinatorSource = readFileSync(join(import.meta.dir, "..", "src", "completion-request-coordinator.ts"), "utf8")
+  const settingsSource = readFileSync(join(import.meta.dir, "..", "src", "settings.ts"), "utf8")
 
-  test("separates connection probes from applying an active client", () => {
-    expect(extensionSource).toContain("async function probeClient")
-    expect(extensionSource).toContain("const connectClient = async")
-    expect(extensionSource).toContain("client = next")
-    expect(extensionSource).toContain("void chatProvider.refresh()")
+  test("creates one workspace-host direct agent instead of a remote ChipMate client", () => {
+    expect(extensionSource).toContain("new DirectAgentClient")
+    expect(extensionSource).toContain("new SkillRegistry")
+    expect(extensionSource).toContain("new ToolRuntime")
+    expect(extensionSource).toContain("new AuditLog")
+    expect(extensionSource).toContain("getApiKey: () => readCompletionApiKey(context)")
+    expect(extensionSource).not.toContain("RemoteChipMateClient")
+    expect(extensionSource).not.toContain("LocalAnalysisBridge")
   })
 
-  test("test connection does not replace the active client or refresh sessions", () => {
-    const start = extensionSource.indexOf("const testClientOnly = async")
-    const end = extensionSource.indexOf("const connect =", start)
+  test("provider state is derived from chipmate provider settings and refreshes the chat view", () => {
+    const start = extensionSource.indexOf("const refreshProviderState = async")
+    const end = extensionSource.indexOf("const connectWithSettings", start)
     const body = extensionSource.slice(start, end)
 
-    expect(body).toContain("Test succeeded")
-    expect(body).toContain("Click Connect to use this server")
-    expect(body).not.toContain("client =")
-    expect(body).not.toContain("chatProvider.refresh")
+    expect(body).toContain("settings.provider.apiBaseUrl")
+    expect(body).toContain("settings.provider.chatModel")
+    expect(body).toContain("directClient.health()")
+    expect(body).toContain("setConnectionState(health.healthy ? \"connected\" : \"error\"")
+    expect(body).toContain("await chatProvider.refresh()")
   })
 
-  test("activation silently restores the saved connection", () => {
-    const start = extensionSource.indexOf("const restoreSavedConnection = async")
-    const end = extensionSource.indexOf("let chatProvider", start)
-    const body = extensionSource.slice(start, end)
-
-    expect(body).toContain("[connect] Restoring saved OpenCode connection")
-    expect(body).toContain("const next = await createClient()")
-    expect(body).toContain("await connectClient(next)")
-    expect(body).not.toContain("promptAndSaveConnectionSettings")
-    expect(extensionSource).toContain("void restoreSavedConnection().catch")
+  test("webview provider save maps the legacy form shape onto direct provider settings and API key storage", () => {
+    expect(settingsSource).toContain('await config.update("provider.apiBaseUrl"')
+    expect(settingsSource).toContain('await config.update("provider.chatModel"')
+    expect(settingsSource).toContain("if (connectionInputHasPassword(input)) await writeCompletionApiKey")
+    expect(settingsSource).toContain('export const PASSWORD_SECRET_KEY = "chipmate.provider.legacyPassword"')
+    expect(chatViewSource).toContain("function connectionSettingsFromMessage")
+    expect(chatViewSource).toContain('Object.prototype.hasOwnProperty.call(message, "password")')
   })
 
   test("prompts for a full window reload after extension upgrades", () => {
@@ -57,40 +60,6 @@ describe("connection and stale-session recovery wiring", () => {
     expect(body).toContain('executeCommand("workbench.action.reloadWindow")')
     expect(body).toContain("context.globalState.update(EXTENSION_UPDATE_RELOAD_ACCEPTED_KEY, reloadVersion)")
     expect(body).not.toContain("restartExtension")
-  })
-
-  test("webview connection reuses saved passwords when password is omitted", () => {
-    const start = extensionSource.indexOf("const connectWithSettings = async")
-    const end = extensionSource.indexOf("const restoreSavedConnection = async", start)
-    const body = extensionSource.slice(start, end)
-
-    expect(body).toContain("connectionInputHasPassword(input) ? input.password?.trim() || undefined : await readRemotePassword(context)")
-    expect(body).toContain("saveConnectionSettings(context, input)")
-    expect(body).toContain("new RemoteOpenCodeClient(settings, password)")
-    expect(chatViewSource).toContain("function connectionSettingsFromMessage")
-    expect(chatViewSource).toContain('Object.prototype.hasOwnProperty.call(message, "password")')
-  })
-
-  test("prompted connect saves connection settings only after a successful probe", () => {
-    const start = extensionSource.indexOf("const connect = async")
-    const end = extensionSource.indexOf("const connectWithSettings = async", start)
-    const body = extensionSource.slice(start, end)
-
-    expect(body).toContain("const input = await promptConnectionSettings()")
-    expect(body).toContain("await connectClient(next, () => saveConnectionSettings(context, input))")
-    expect(body).not.toContain("promptAndSaveConnectionSettings")
-  })
-
-  test("remote refresh failures leave connected state and clear the active client", () => {
-    expect(extensionSource).toContain("const clearClient = (target: RemoteOpenCodeClient)")
-    expect(extensionSource).toContain("if (client === target) client = undefined")
-    expect(extensionSource).toContain("clearClient,")
-
-    expect(chatViewSource).toContain("clearClient: (client: RemoteOpenCodeClient) => void")
-    expect(chatViewSource).toContain('this.reportRemoteConnectionFailure(client, "Failed to load sessions", sessionResult.reason)')
-    expect(chatViewSource).toContain('this.reportRemoteConnectionFailure(client, "Failed to load selected session", error)')
-    expect(chatViewSource).toContain("this.deps.clearClient(client)")
-    expect(chatViewSource).toContain("this.deps.setConnectionState(state, detail)")
   })
 
   test("debounces RAG configuration apply events", () => {
@@ -115,22 +84,18 @@ describe("connection and stale-session recovery wiring", () => {
     expect(body).not.toContain("refreshRagConfiguration")
   })
 
-  test("remote failure state distinguishes auth failures from connection errors", () => {
-    expect(chatViewSource).toContain("RemoteOpenCodeAuthError")
-    expect(chatViewSource).toContain("RemoteOpenCodeConnectionError")
-    expect(chatViewSource).toContain('return "authFailed"')
-    expect(chatViewSource).toContain('return "error"')
-    expect(chatViewSource).toContain("isRequestTimeoutError")
+  test("skills and permission settings refresh lightweight state without rebuilding the webview layout", () => {
+    expect(extensionSource).toContain('event.affectsConfiguration("chipmate.skills")')
+    expect(extensionSource).toContain("skills.invalidate()")
+    expect(extensionSource).toContain('event.affectsConfiguration("chipmate.permissions")')
+    expect(extensionSource).toContain("chatProvider.refreshState()")
+    expect(chatViewSource).toContain("savePermissionMode")
+    expect(chatViewSource).toContain("saveSkillsSettings")
+    expect(chatHtmlSource).toContain("permissionStatusPill")
+    expect(chatHtmlSource).toContain("skillsStatusPill")
   })
 
-  test("completion retries once when its remote session vanished", () => {
-    expect(completionSource).toContain("isSessionNotFoundError")
-    expect(completionSource).toContain("this.sessionID = undefined")
-    expect(completionSource).toContain("Completion session was not found; retrying with a new session.")
-    expect(completionSource).toContain("return this.sendCompletionWithSession(client, prompt, settings, signal)")
-  })
-
-  test("completion logs request lifecycle and debug skip reasons", () => {
+  test("completion logs request lifecycle and direct-provider skip reasons", () => {
     for (const marker of [
       "triggered",
       "scheduled",
@@ -149,7 +114,8 @@ describe("connection and stale-session recovery wiring", () => {
     for (const marker of [
       "skip: completion disabled",
       "skip: non-file document",
-      "skip: no active remote client",
+      "skip: direct completion API base URL is not configured",
+      "skip: direct completion model is not configured",
       "skip: empty line at column 0",
       "reason=vscode-token",
       "returned source=${source}",
@@ -157,5 +123,6 @@ describe("connection and stale-session recovery wiring", () => {
     ]) {
       expect(completionSource).toContain(marker)
     }
+    expect(completionSource).not.toContain("skip: no active remote client")
   })
 })

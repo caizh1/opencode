@@ -4,7 +4,7 @@ import {
   isInlineCompletionMessage,
   isInlineCompletionSession,
 } from "../src/completion-session"
-import type { OpenCodeMessage, OpenCodePart, OpenCodeSession } from "../src/types"
+import type { ChipMateMessage, ChipMatePart, ChipMateSession } from "../src/types"
 
 describe("inline completion session detection", () => {
   test("recognizes inline completion sessions by title", () => {
@@ -51,14 +51,14 @@ describe("inline completion session detection", () => {
   })
 })
 
-function session(title: string): OpenCodeSession {
+function session(title: string): ChipMateSession {
   return {
     id: `session-${title}`,
     title,
   }
 }
 
-function message(role: "user" | "assistant", parts: OpenCodePart[]): OpenCodeMessage {
+function message(role: "user" | "assistant", parts: ChipMatePart[]): ChipMateMessage {
   return {
     info: { id: "message", role },
     parts,

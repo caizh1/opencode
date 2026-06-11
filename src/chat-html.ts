@@ -2,6 +2,7 @@ import { randomBytes } from "node:crypto"
 import { liquidIcon, type LiquidIconName } from "./webview/liquid-icons"
 
 const liquidIconNames: LiquidIconName[] = [
+  "chip",
   "chat",
   "sparkle",
   "add",
@@ -51,7 +52,7 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
   <meta charset="UTF-8">
   <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}';">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>OpenCode Remote</title>
+  <title>ChipMate</title>
   <style>
     :root {
       color-scheme: light dark;
@@ -254,6 +255,86 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
     .completionSettingsGroup,
     .ragSettingsGroup { gap: 8px; min-width: 0; }
     .completionDirectFields.hidden { display: none; }
+    .skillsList {
+      display: grid;
+      gap: 7px;
+      min-width: 0;
+    }
+    .skillItem {
+      display: grid;
+      grid-template-columns: auto minmax(0, 1fr);
+      gap: 8px;
+      align-items: start;
+      min-width: 0;
+      padding: 8px;
+      border: 1px solid var(--oc-border);
+      border-radius: var(--oc-radius-lg);
+      background: var(--oc-soft-bg);
+    }
+    .skillItem input { margin-top: 2px; }
+    .skillMain { min-width: 0; display: grid; gap: 3px; }
+    .skillName { min-width: 0; font-size: 12px; font-weight: 650; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .skillDescription,
+    .skillMeta,
+    .comingSoonText {
+      min-width: 0;
+      color: var(--vscode-descriptionForeground);
+      font-size: 11px;
+      line-height: 1.35;
+      overflow-wrap: anywhere;
+    }
+    .permissionModeList {
+      display: grid;
+      gap: 4px;
+      min-width: 0;
+    }
+    .permissionModeButton {
+      width: 100%;
+      display: grid;
+      grid-template-columns: 24px minmax(0, 1fr) 18px;
+      align-items: center;
+      gap: 10px;
+      justify-content: flex-start;
+      min-height: 58px;
+      padding: 7px 9px;
+      text-align: left;
+      white-space: normal;
+    }
+    .permissionModeButton.is-active {
+      box-shadow: inset 2px 0 0 var(--vscode-focusBorder);
+      background: var(--oc-soft-bg);
+    }
+    .permissionModeIcon,
+    .permissionModeCheck {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 18px;
+      height: 18px;
+      color: var(--vscode-icon-foreground);
+    }
+    .permissionModeButton.auto .permissionModeIcon { color: var(--vscode-testing-iconPassed, #73c991); }
+    .permissionModeButton.full-access .permissionModeIcon { color: var(--vscode-editorWarning-foreground, #f97316); }
+    .permissionModeCopy {
+      min-width: 0;
+      display: grid;
+      gap: 2px;
+    }
+    .permissionModeTitle {
+      min-width: 0;
+      font-size: 12px;
+      font-weight: 700;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .permissionModeDesc {
+      min-width: 0;
+      color: var(--vscode-descriptionForeground);
+      font-size: 10px;
+      line-height: 1.25;
+      overflow-wrap: anywhere;
+    }
     .ragAdvanced {
       min-width: 0;
       border: 1px solid var(--vscode-panel-border);
@@ -2323,12 +2404,42 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       min-height: var(--composer-icon-button-size);
       color: var(--oc-muted);
     }
+    .composerStatusPill.is-hidden,
+    .composerStatusPill[hidden] {
+      display: none;
+    }
     .composerStatusPill .oc-liquid-icon,
     .composerIconButton .oc-liquid-icon,
     .toggles .oc-liquid-toggle .oc-liquid-icon,
     .toggles .oc-icon-toggle .oc-liquid-icon {
       width: 16px;
       height: 16px;
+    }
+    .composerStatusPill.hasText .pillText {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 5px;
+      min-width: 0;
+      width: 100%;
+    }
+    .composerStatusPill.hasText .pillGlyph {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      flex: 0 0 auto;
+      width: 15px;
+      height: 15px;
+    }
+    .composerStatusPill.hasText .pillGlyph .oc-liquid-icon {
+      width: 15px;
+      height: 15px;
+    }
+    .composerStatusPill.hasText .pillLabelText {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
     }
     .composerStatusPill:hover,
     .composerStatusPill.open {
@@ -2384,6 +2495,10 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       padding: 0 6px 6px;
       overflow: visible;
     }
+    .composerPrimaryRail {
+      border-top: 1px solid color-mix(in srgb, var(--oc-border) 70%, transparent);
+      padding-top: 6px;
+    }
     .composerPickerRail {
       display: inline-flex;
       align-items: center;
@@ -2391,6 +2506,29 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       flex: 1 1 auto;
       flex-wrap: wrap;
       min-width: 0;
+    }
+    .composerPickerRail .permissionTrigger,
+    .composerPickerRail .skillsTrigger {
+      width: auto;
+      height: 28px;
+      min-height: 28px;
+      padding: 0 8px;
+      border-radius: 999px;
+      border-color: var(--oc-border);
+      background: transparent;
+    }
+    .composerPickerRail .permissionTrigger {
+      flex: 0 0 118px;
+      min-width: 102px;
+      max-width: 132px;
+    }
+    .composerPickerRail .skillsTrigger {
+      flex: 0 1 96px;
+      min-width: 76px;
+      max-width: 112px;
+    }
+    .composerPickerRail .skillsTrigger.is-empty {
+      display: none;
     }
     .composerPickerRail .modelTrigger {
       flex: 1 1 132px;
@@ -2422,7 +2560,11 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       background: transparent;
     }
     .modelTrigger:hover,
-    .modelTrigger.open { background: var(--oc-hover-bg); }
+    .modelTrigger.open,
+    .permissionTrigger:hover,
+    .permissionTrigger.open,
+    .skillsTrigger:hover,
+    .skillsTrigger.open { background: var(--oc-hover-bg); }
     .agentTrigger.ready { border-color: var(--oc-border); }
     .agentTrigger.warning,
     .modelTrigger.warning {
@@ -2440,6 +2582,23 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
     .agentTrigger.warning .oc-liquid-chip-label,
     .modelTrigger.warning .oc-liquid-chip-label {
       color: var(--vscode-editorWarning-foreground);
+    }
+    .permissionTrigger.ask {
+      color: var(--vscode-focusBorder, var(--vscode-icon-foreground));
+      border-color: color-mix(in srgb, var(--vscode-focusBorder, #3794ff) 38%, var(--oc-border));
+    }
+    .permissionTrigger.auto {
+      color: var(--vscode-testing-iconPassed, #73c991);
+      border-color: color-mix(in srgb, var(--vscode-testing-iconPassed, #73c991) 44%, var(--oc-border));
+      background: color-mix(in srgb, var(--vscode-testing-iconPassed, #73c991) 8%, transparent);
+    }
+    .permissionTrigger.full-access {
+      color: var(--vscode-editorWarning-foreground, #f97316);
+      border-color: color-mix(in srgb, var(--vscode-editorWarning-foreground, #f97316) 56%, var(--oc-border));
+      background: color-mix(in srgb, var(--vscode-editorWarning-foreground, #f97316) 10%, transparent);
+    }
+    .skillsTrigger {
+      color: var(--oc-muted);
     }
     .composerActionRow {
       display: flex;
@@ -2564,6 +2723,15 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       background: var(--vscode-dropdown-background);
       box-shadow: 0 2px 8px color-mix(in srgb, black 16%, transparent);
     }
+    .composerStatusPopover.permissionPopover {
+      left: 8px;
+      right: auto;
+      width: min(320px, calc(100vw - 24px));
+      max-width: calc(100vw - 24px);
+      padding: 10px;
+      border-radius: 14px;
+      box-shadow: 0 12px 34px color-mix(in srgb, black 26%, transparent);
+    }
     .suggestion {
       width: 100%;
       border: 0;
@@ -2608,7 +2776,9 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
         gap: 4px;
       }
       .composerPickerRail .modelTrigger,
-      .composerPickerRail .agentTrigger {
+      .composerPickerRail .agentTrigger,
+      .composerPickerRail .permissionTrigger,
+      .composerPickerRail .skillsTrigger {
         flex-grow: 1;
         min-width: 74px;
         max-width: 132px;
@@ -2681,44 +2851,46 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
 <body>
   <div id="app" class="app mode-connection-only history-closed history-narrow">
     <header class="topbar">
-      <div class="mark">OC</div>
+      <div class="mark">CM</div>
       <div class="title">
-        <div class="name">OpenCode</div>
+        <div class="name">ChipMate</div>
         <div class="meta">
-          <span class="headerStatus"><span id="statusDot" class="oc-status-dot"></span><span id="server" class="server headerStatusText">OpenCode Remote UI loading...</span></span>
+          <span class="headerStatus"><span id="statusDot" class="oc-status-dot"></span><span id="server" class="server headerStatusText">ChipMate UI loading...</span></span>
         </div>
       </div>
       <div class="iconbar">
         <button id="historyToggle" class="oc-icon-btn oc-liquid-btn headerHistoryAction" type="button" title="History" aria-label="History">${liquidIcons.history}<span class="srOnly">History</span></button>
         <button id="newSession" class="oc-icon-btn oc-liquid-btn" type="button" title="New session" aria-label="New session">${liquidIcons.add}<span class="srOnly">New session</span></button>
         <button id="syncState" class="oc-icon-btn oc-liquid-btn" type="button" title="Refresh chat state" aria-label="Refresh chat state">${liquidIcons.refresh}<span class="srOnly">Refresh chat state</span></button>
-        <button id="settingsToggle" class="oc-icon-btn oc-liquid-btn" type="button" title="Connection settings" aria-label="Connection settings">${liquidIcons.settings}<span class="srOnly">Connection settings</span></button>
+        <button id="settingsToggle" class="oc-icon-btn oc-liquid-btn" type="button" title="ChipMate settings" aria-label="ChipMate settings">${liquidIcons.settings}<span class="srOnly">ChipMate settings</span></button>
       </div>
     </header>
-    <section id="settings" class="settings" aria-label="OpenCode Remote settings">
+    <section id="settings" class="settings" aria-label="ChipMate settings">
       <div class="settingsHeader">
         <div class="sectionTitle">Settings</div>
-        <div class="sectionMeta">OpenCode</div>
+        <div class="sectionMeta">ChipMate</div>
       </div>
       <div class="settingsHome" role="tablist" aria-label="Settings sections">
-        <button type="button" class="settingsEntry oc-settings-tile oc-liquid-card" data-settings-section="connect" role="tab" aria-selected="true">${liquidIcons.server}<span class="settingsEntryLabel">Connect</span></button>
+        <button type="button" class="settingsEntry oc-settings-tile oc-liquid-card" data-settings-section="connect" role="tab" aria-selected="true">${liquidIcons.chip}<span class="settingsEntryLabel">Provider</span></button>
         <button type="button" class="settingsEntry oc-settings-tile oc-liquid-card" data-settings-section="complete" role="tab" aria-selected="false">${liquidIcons.sparkle}<span class="settingsEntryLabel">Complete</span></button>
+        <button type="button" class="settingsEntry oc-settings-tile oc-liquid-card" data-settings-section="skills" role="tab" aria-selected="false">${liquidIcons.references}<span class="settingsEntryLabel">Skills</span></button>
         <button type="button" class="settingsEntry oc-settings-tile oc-liquid-card" data-settings-section="rag" role="tab" aria-selected="false">${liquidIcons.database}<span class="settingsEntryLabel">RAG</span></button>
         <button type="button" class="settingsEntry oc-settings-tile oc-liquid-card" data-settings-section="guard" role="tab" aria-selected="false">${liquidIcons.shield}<span class="settingsEntryLabel">Guard</span></button>
+        <button type="button" class="settingsEntry oc-settings-tile oc-liquid-card" data-settings-section="mcp" role="tab" aria-selected="false">${liquidIcons.agent}<span class="settingsEntryLabel">MCP</span></button>
       </div>
       <div id="connectionSettingsGroup" class="settingsSection active" data-settings-panel="connect" role="tabpanel">
         <div class="settingsHeader">
-          <div class="sectionTitle">Connect</div>
-          <div class="sectionMeta">Remote endpoint</div>
+          <div class="sectionTitle">Provider</div>
+          <div class="sectionMeta">OpenAI-compatible</div>
         </div>
         <div class="settingsGrid">
-          <label class="field">Server URL<input id="serverUrl" type="url" spellcheck="false" placeholder="http://localhost:4096"></label>
-          <label class="field">Username<input id="username" type="text" spellcheck="false" autocomplete="username" placeholder="opencode"></label>
-          <label class="field">Password<input id="password" type="password" autocomplete="current-password" placeholder="Leave empty for no password"></label>
+          <label class="field">API Base URL<input id="serverUrl" type="url" spellcheck="false" placeholder="http://localhost:8000/v1"></label>
+          <label class="field">Chat model<input id="username" type="text" spellcheck="false" autocomplete="off" placeholder="gpt-4.1"></label>
+          <label class="field">API key<input id="password" type="password" autocomplete="off" placeholder="Leave empty to keep existing key"></label>
         </div>
         <div class="row settingsActions connectionActions">
-          <button id="connect" class="oc-primary-btn oc-liquid-chip" type="button" title="Connect to this remote OpenCode server">${liquidIcons.server}<span class="oc-liquid-chip-label">Connect</span></button>
-          <button id="test" class="oc-icon-btn oc-liquid-btn" type="button" title="Test this remote OpenCode server without connecting" aria-label="Test remote OpenCode connection without connecting">${liquidIcons.beaker}<span class="srOnly">Test remote OpenCode connection without connecting</span></button>
+          <button id="connect" class="oc-primary-btn oc-liquid-chip" type="button" title="Save provider settings">${liquidIcons.chip}<span class="oc-liquid-chip-label">Save</span></button>
+          <button id="test" class="oc-icon-btn oc-liquid-btn" type="button" title="Test provider connection" aria-label="Test provider connection">${liquidIcons.beaker}<span class="srOnly">Test provider connection</span></button>
           <button id="refresh" class="oc-icon-btn oc-liquid-btn" type="button" title="Refresh chat state" aria-label="Refresh chat state">${liquidIcons.refresh}<span class="srOnly">Refresh chat state</span></button>
           <button id="openOutput" class="oc-icon-btn oc-liquid-btn" type="button" title="Open output log" aria-label="Open output log">${liquidIcons.file}<span class="srOnly">Open output log</span></button>
         </div>
@@ -2732,15 +2904,14 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
         <div class="settingsGrid">
           <label class="field checkbox"><input id="completionEnabled" type="checkbox"><span>Enable inline completion</span></label>
           <label class="field">Provider<select id="completionProvider">
-            <option value="openai-compatible">Direct Model API</option>
-            <option value="opencode">OpenCode legacy</option>
+            <option value="openai-compatible">OpenAI-compatible</option>
           </select></label>
           <div id="completionDirectFields" class="completionDirectFields hidden">
             <label class="field">Profile<select id="completionProfile">
               <option value="generic-chat">Generic Chat</option>
               <option value="qwen-coder-fim">Qwen Coder FIM</option>
             </select></label>
-            <label class="field">API Base URL<input id="completionApiBaseUrl" type="url" spellcheck="false" placeholder="http://localhost:8000/v1"></label>
+            <input id="completionApiBaseUrl" type="hidden">
             <label class="field">Model<input id="completionModel" type="text" spellcheck="false" placeholder="Qwen/Qwen3.6-27B-FP8"></label>
             <label class="field">Max tokens<input id="completionMaxTokens" type="number" min="1" max="4096" step="1"></label>
             <label class="field">Temperature<input id="completionTemperature" type="number" min="0" max="2" step="0.1"></label>
@@ -2755,6 +2926,17 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
           <button id="setCompletionApiKey" class="oc-icon-btn oc-liquid-btn" type="button" title="Set inline completion API key" aria-label="Set inline completion API key">${liquidIcons.key}<span class="srOnly">Set inline completion API key</span></button>
         </div>
         <div id="completionDetail" class="detail" aria-live="polite"></div>
+      </div>
+      <div id="skillsSettingsGroup" class="settingsSection" data-settings-panel="skills" role="tabpanel">
+        <div class="settingsHeader">
+          <div class="settingsCompactLine">${liquidIcons.references}<div class="sectionTitle">Skills</div></div>
+          <div id="skillsSettingsStatus" class="sectionMeta">Workspace</div>
+        </div>
+        <div id="skillsList" class="skillsList"></div>
+        <div class="row settingsActions">
+          <button id="saveSkillsSettings" class="oc-icon-btn oc-liquid-btn" type="button" title="Save enabled skills" aria-label="Save enabled skills">${liquidIcons.save}<span class="srOnly">Save enabled skills</span></button>
+        </div>
+        <div id="skillsDetail" class="detail visible" aria-live="polite">Skills are discovered from .agents/skills/*/SKILL.md.</div>
       </div>
       <div id="ragSettingsGroup" class="settingsSection ragSettingsGroup" data-settings-panel="rag" role="tabpanel">
         <div class="settingsHeader">
@@ -2805,6 +2987,13 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
         </div>
         <div id="guardSettingsDetail" class="detail visible" aria-live="polite">Local-only guard status will appear here.</div>
       </div>
+      <div id="mcpSettingsGroup" class="settingsSection" data-settings-panel="mcp" role="tabpanel">
+        <div class="settingsHeader">
+          <div class="settingsCompactLine">${liquidIcons.agent}<div class="sectionTitle">MCP</div></div>
+          <div class="sectionMeta">Coming Soon</div>
+        </div>
+        <div class="comingSoonText">ChipMate has reserved the MCP runtime boundary, but this build does not start servers, install artifacts, or expose MCP tools.</div>
+      </div>
     </section>
     <div class="body">
       <button id="historyBackdrop" class="historyBackdrop" type="button" title="Close history" aria-label="Close history"></button>
@@ -2834,7 +3023,7 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
             <div class="composerSupportRail" aria-label="Composer status details">
               <button id="contextStatusPill" class="composerStatusPill oc-icon-btn oc-liquid-btn context" type="button" title="Show context details"><span class="pillText">${liquidIcons.references}</span></button>
               <button id="indexStatusPill" class="composerStatusPill oc-icon-btn oc-liquid-btn index info compactRing" type="button" title="Show index details"><span class="pillText statusRing" aria-hidden="true">${liquidIcons.database}</span></button>
-              <button id="guardStatusPill" class="composerStatusPill oc-icon-btn oc-liquid-btn guard ok" type="button" title="Show guard details"><span class="pillText">${liquidIcons.shield}</span></button>
+              <button id="guardStatusPill" class="composerStatusPill oc-icon-btn oc-liquid-btn guard ok is-hidden" type="button" title="Show guard details" hidden><span class="pillText">${liquidIcons.shield}</span></button>
               <button id="usageStatusPill" class="composerStatusPill oc-icon-btn oc-liquid-btn usage pending" type="button" title="Show usage details"><span class="pillText">${liquidIcons.sparkle}</span></button>
             </div>
           </div>
@@ -2846,11 +3035,13 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
               <div id="suggestions" class="suggestions"></div>
               <div id="modelMenu" class="modelMenu" role="listbox" aria-label="Model" aria-hidden="true"></div>
               <div id="agentMenu" class="modelMenu agentMenu" role="listbox" aria-label="Agent" aria-hidden="true"></div>
-              <textarea id="input" placeholder="Ask OpenCode…"></textarea>
-              <div class="composerToolbar composerControlRail">
+              <textarea id="input" placeholder="Ask ChipMate…"></textarea>
+              <div class="composerToolbar composerPrimaryRail composerControlRail">
                 <div class="composerPickerRail">
+                  <button id="permissionStatusPill" class="composerStatusPill permissionTrigger oc-chip oc-liquid-chip permission ask" type="button" title="Show permission mode" aria-haspopup="dialog" aria-expanded="false" aria-controls="composerStatusPopover"><span class="pillText">${liquidIcons.shield}</span></button>
                   <button id="modelTrigger" class="modelTrigger oc-chip oc-liquid-chip" type="button" title="Model" aria-haspopup="listbox" aria-expanded="false" aria-controls="modelMenu">${liquidIcons.server}<span class="oc-liquid-chip-label">Model</span></button>
                   <button id="agentTrigger" class="modelTrigger agentTrigger oc-chip oc-liquid-chip" type="button" title="Agent" aria-haspopup="listbox" aria-expanded="false" aria-controls="agentMenu">${liquidIcons.agent}<span class="oc-liquid-chip-label">Agent</span></button>
+                  <button id="skillsStatusPill" class="composerStatusPill skillsTrigger oc-chip oc-liquid-chip context is-empty" type="button" title="Show skills" aria-haspopup="dialog" aria-expanded="false" aria-controls="composerStatusPopover"><span class="pillText">${liquidIcons.references}</span></button>
                 </div>
                 <div id="composerHint" class="composerHint">@ files, Ctrl+Enter send</div>
                 <button id="send" class="send oc-icon-btn oc-liquid-btn" type="button" title="Send" aria-label="Send message">${liquidIcons.send}<span class="srOnly">Send message</span></button>
@@ -2902,6 +3093,7 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
 	      shieldAlert: LIQUID_ICONS.diagnostics,
 	      shieldCheck: LIQUID_ICONS.shield,
 	      shieldOff: LIQUID_ICONS.shield,
+	      skill: LIQUID_ICONS.references,
 	      usage: LIQUID_ICONS.sparkle,
 	    };
     const RAG_EMBEDDING_BATCH_SIZE_DEFAULT = 128;
@@ -3020,6 +3212,7 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
 		    el("saveCompletionSettings").addEventListener("click", saveCompletionSettings);
 		    el("setCompletionApiKey").addEventListener("click", () => vscode.postMessage({ type: "setCompletionApiKey" }));
 		    el("testCompletionApi").addEventListener("click", testCompletionApi);
+        el("saveSkillsSettings").addEventListener("click", saveSkillsSettings);
 			    el("saveRagSettings").addEventListener("click", saveRagSettings);
 			    el("testRagSettings").addEventListener("click", testRagSettings);
 			    el("toggleRagIndexing").addEventListener("click", toggleRagIndexing);
@@ -3032,6 +3225,8 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
     el("composerStatusToggle").addEventListener("click", toggleComposerPanel);
     bindComposerStatusPill("contextStatusPill", "context", true);
     bindComposerStatusPill("indexStatusPill", "index", true);
+    bindComposerStatusPill("permissionStatusPill", "permission", false);
+    bindComposerStatusPill("skillsStatusPill", "skills", true);
     bindComposerStatusPill("guardStatusPill", "guard", false);
     bindComposerStatusPill("usageStatusPill", "usage", true);
     el("composerStatusPopover").addEventListener("click", onComposerStatusPopoverClick);
@@ -3166,6 +3361,9 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
 	      if (event.data.type === "completionStatus") {
 	        renderCompletionStatus(event.data.message || "", event.data.status || "info");
 	      }
+        if (event.data.type === "skillsStatus") {
+          renderSkillsStatus(event.data.message || "", event.data.status || "info");
+        }
 	      if (event.data.type === "ragStatus") {
 	        renderRagStatus(event.data.message || "", event.data.status || "info");
 	      }
@@ -3201,6 +3399,15 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
 	        settings: completionSettingsPayload()
 	      });
 	    }
+
+      function saveSkillsSettings() {
+        const enabled = Array.from(document.querySelectorAll("[data-skill-id]"))
+          .filter((input) => input.checked)
+          .map((input) => input.getAttribute("data-skill-id"))
+          .filter(Boolean);
+        renderSkillsStatus("Saving skills...", "info");
+        vscode.postMessage({ type: "saveSkillsSettings", enabled });
+      }
 
 	    function saveRagSettings() {
 	      if (!validateRagEmbeddingBatchSizeInput()) return;
@@ -3245,9 +3452,9 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
 	    function completionSettingsPayload() {
 	      return {
 	        enabled: el("completionEnabled").checked,
-	        provider: el("completionProvider").value,
+	        provider: "openai-compatible",
 	        profile: el("completionProfile").value,
-	        apiBaseUrl: el("completionApiBaseUrl").value,
+	        apiBaseUrl: el("serverUrl").value,
 	        model: el("completionModel").value,
 	        maxTokens: numberInputValue("completionMaxTokens", 128),
 	        temperature: numberInputValue("completionTemperature", 0),
@@ -3560,6 +3767,7 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
 		      renderModelSelector();
 		      renderAgentSelector();
 		      renderCompletionSettings();
+          renderSkillsSettings();
 		      renderRagSettings();
           renderGuardSettings();
 		      renderConnectionButtons();
@@ -3633,8 +3841,8 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
 	      if (!userEditedCompletionSettings) {
 	        el("completionEnabled").checked = Boolean(completion.enabled);
 	        el("completionProvider").value = completion.provider || "openai-compatible";
-	        el("completionProfile").value = completion.profile || "generic-chat";
-	        el("completionApiBaseUrl").value = completion.apiBaseUrl || "";
+	        el("completionProfile").value = completion.profile || "qwen-coder-fim";
+	        el("completionApiBaseUrl").value = (state.provider && state.provider.apiBaseUrl) || completion.apiBaseUrl || "";
 	        el("completionModel").value = completion.model || "";
 	        el("completionMaxTokens").value = String(completion.maxTokens || 128);
 	        el("completionTemperature").value = String(completion.temperature ?? 0);
@@ -3645,11 +3853,55 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
 	      el("testCompletionApi").disabled = !direct;
 	    }
 
-	    function renderCompletionStatus(message, status) {
+      function renderCompletionStatus(message, status) {
 	      const detail = el("completionDetail");
 	      detail.className = "detail " + detailStatusClass(status) + (message ? "visible" : "");
 	      detail.textContent = message || "";
 	    }
+
+      function renderSkillsSettings() {
+        const skills = Array.isArray(state.skills && state.skills.available) ? state.skills.available : [];
+        const enabled = new Set(Array.isArray(state.skills && state.skills.enabled) ? state.skills.enabled : []);
+        const list = el("skillsList");
+        list.textContent = "";
+        el("skillsSettingsStatus").textContent = skills.length ? enabled.size + "/" + skills.length + " enabled" : "No skills";
+        if (!skills.length) {
+          const empty = document.createElement("div");
+          empty.className = "comingSoonText";
+          empty.textContent = "No workspace skills found. Add SKILL.md files under .agents/skills/<name>/ to make them appear here.";
+          list.appendChild(empty);
+          return;
+        }
+        for (const skill of skills) {
+          const label = document.createElement("label");
+          label.className = "skillItem";
+          const checkbox = document.createElement("input");
+          checkbox.type = "checkbox";
+          checkbox.checked = Boolean(skill.enabled || enabled.has(skill.id) || enabled.has(skill.name));
+          checkbox.setAttribute("data-skill-id", skill.id || skill.name);
+          const main = document.createElement("span");
+          main.className = "skillMain";
+          const name = document.createElement("span");
+          name.className = "skillName";
+          name.textContent = skill.name || skill.id || "Skill";
+          const description = document.createElement("span");
+          description.className = "skillDescription";
+          description.textContent = skill.description || "No description.";
+          const meta = document.createElement("span");
+          meta.className = "skillMeta";
+          const tools = Array.isArray(skill.allowedTools) && skill.allowedTools.length ? " · allowed-tools: " + skill.allowedTools.join(", ") : "";
+          meta.textContent = (skill.path || ".agents/skills") + tools;
+          main.append(name, description, meta);
+          label.append(checkbox, main);
+          list.appendChild(label);
+        }
+      }
+
+      function renderSkillsStatus(message, status) {
+        const detail = el("skillsDetail");
+        detail.className = "detail " + detailStatusClass(status) + " visible";
+        detail.textContent = message || "Skills are discovered from .agents/skills/*/SKILL.md.";
+      }
 
 		    function renderRagSettings() {
 	      const rag = state.rag || {};
@@ -3724,8 +3976,8 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
 	      el("test").disabled = pending;
         el("connect").classList.toggle("is-active", connectPending);
         el("test").classList.toggle("is-spinning", testPending);
-        setChipLabel(el("connect"), "server", connectPending ? "Connecting" : "Connect");
-        setIconOnlyButton(el("test"), "beaker", testPending ? "Testing remote OpenCode connection" : "Test remote OpenCode connection without connecting");
+        setChipLabel(el("connect"), "chip", connectPending ? "Saving" : "Save");
+        setIconOnlyButton(el("test"), "beaker", testPending ? "Testing provider" : "Test provider connection");
 	    }
 
       function renderComposerToggles() {
@@ -3907,6 +4159,10 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       updateStatusPill(el("contextStatusPill"), context);
       const index = composerIndexStatus();
       updateStatusPill(el("indexStatusPill"), index);
+      const permission = composerPermissionStatus();
+      updateStatusPill(el("permissionStatusPill"), permission);
+      const skills = composerSkillsStatus();
+      updateStatusPill(el("skillsStatusPill"), skills);
       const guard = composerGuardStatus();
       updateStatusPill(el("guardStatusPill"), guard);
       const usage = composerUsageStatus();
@@ -3943,9 +4199,12 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
 
     function updateStatusPill(node, input) {
       const activePopover = activeComposerStatusPopover();
+      node.hidden = Boolean(input.hidden);
       node.className = input.className + (input.ring ? " compactRing" : "") + (activePopover === input.popover ? " open" : "");
+      node.classList.toggle("hasText", Boolean(input.showText));
       node.title = input.title || input.text;
       node.setAttribute("aria-label", input.ariaLabel || input.title || input.text);
+      if (node.hasAttribute("aria-expanded")) node.setAttribute("aria-expanded", activePopover === input.popover ? "true" : "false");
       node.style.removeProperty("--ring-progress");
       const label = node.querySelector(".pillText") || node;
       if (input.ring) {
@@ -3957,8 +4216,24 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
         return;
       }
       label.className = "pillText";
-      label.setAttribute("aria-hidden", "true");
-      label.innerHTML = input.icon || input.text || "";
+      label.textContent = "";
+      if (input.showText) {
+        label.removeAttribute("aria-hidden");
+        if (input.icon) {
+          const icon = document.createElement("span");
+          icon.className = "pillGlyph";
+          icon.setAttribute("aria-hidden", "true");
+          icon.innerHTML = input.icon;
+          label.appendChild(icon);
+        }
+        const text = document.createElement("span");
+        text.className = "pillLabelText";
+        text.textContent = input.text || "";
+        label.appendChild(text);
+      } else {
+        label.setAttribute("aria-hidden", "true");
+        label.innerHTML = input.icon || input.text || "";
+      }
       renderStatusBadge(node, input.badgeText);
     }
 
@@ -3999,12 +4274,14 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       const root = el("composerStatusPopover");
       const activePopover = activeComposerStatusPopover();
       root.textContent = "";
-      root.className = "composerStatusPopover" + (activePopover ? " open" : "");
+      root.className = "composerStatusPopover" + (activePopover ? " open " + activePopover + "Popover" : "");
       root.setAttribute("aria-hidden", activePopover ? "false" : "true");
       if (!activePopover) return;
       if (activePopover === "context") renderContextStatusPopover(root);
       if (activePopover === "diagnostics") renderDiagnosticsStatusPopover(root);
       if (activePopover === "index") renderIndexStatusPopover(root);
+      if (activePopover === "permission") renderPermissionStatusPopover(root);
+      if (activePopover === "skills") renderSkillsStatusPopover(root);
       if (activePopover === "guard") renderGuardStatusPopover(root);
       if (activePopover === "usage") renderUsageStatusPopover(root);
     }
@@ -4029,7 +4306,7 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
         if (name && composerHoverStatusPopover !== name) return;
         const popover = el("composerStatusPopover");
         const active = document.activeElement;
-        const activeStatusPill = active && active.closest && active.closest("#indexStatusPill, #usageStatusPill");
+        const activeStatusPill = active && active.closest && active.closest("#contextStatusPill, #indexStatusPill, #permissionStatusPill, #skillsStatusPill, #guardStatusPill, #usageStatusPill");
         if (popover.matches(":hover") || popover.matches(":focus-within") || activeStatusPill) return;
         composerHoverStatusPopover = "";
         renderComposerStatusBar();
@@ -4084,6 +4361,54 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       };
     }
 
+    function permissionMode() {
+      return (state.permissions && state.permissions.mode) || "ask";
+    }
+
+    function permissionModeLabel(mode) {
+      if (mode === "auto") return "替我审批";
+      if (mode === "full-access") return "完全访问";
+      return "请求批准";
+    }
+
+    function permissionModeDetail(mode) {
+      if (mode === "auto") return "低风险工具操作自动放行，高风险操作会被阻止或要求确认，并写入审计日志。";
+      if (mode === "full-access") return "工具操作不拦截、不询问，只写入审计日志。";
+      return "读取 workspace 文件自动允许；写文件、命令和网络操作按次审批或阻止，并写入审计日志。";
+    }
+
+    function composerPermissionStatus() {
+      const mode = permissionMode();
+      const label = permissionModeLabel(mode);
+      const kind = mode === "full-access" ? "full-access" : mode === "auto" ? "auto" : "ask";
+      return {
+        text: label,
+        title: label + ": " + permissionModeDetail(mode),
+        className: "composerStatusPill permissionTrigger oc-chip oc-liquid-chip permission " + kind,
+        popover: "permission",
+        ariaLabel: "Permission mode: " + label,
+        icon: mode === "full-access" ? STATUS_ICONS.shieldAlert : STATUS_ICONS.shieldCheck,
+        showText: true,
+      };
+    }
+
+    function composerSkillsStatus() {
+      const skills = state.skills || {};
+      const enabled = Array.isArray(skills.available) ? skills.available.filter((skill) => skill.enabled).length : (Array.isArray(skills.enabled) ? skills.enabled.length : 0);
+      const total = Array.isArray(skills.available) ? skills.available.length : 0;
+      const title = total ? enabled + " of " + total + " workspace skills enabled." : "No workspace skills discovered.";
+      return {
+        text: enabled > 0 ? "Skills " + enabled : "Skills",
+        title,
+        className: "composerStatusPill skillsTrigger oc-chip oc-liquid-chip context" + (total ? "" : " is-empty"),
+        popover: "skills",
+        ariaLabel: "Skills: " + title,
+        icon: STATUS_ICONS.skill,
+        showText: true,
+        hidden: total === 0,
+      };
+    }
+
     function codeGraphStatusView(graph, stateName) {
       let kind = "info";
       let shortLabel = "Off";
@@ -4125,19 +4450,21 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
         return {
           text: "Guard off",
           title: detail,
-	          className: "composerStatusPill oc-icon-btn oc-liquid-btn guard off",
+	          className: "composerStatusPill oc-icon-btn oc-liquid-btn guard off is-hidden",
           popover: "guard",
           ariaLabel: "Guard off: " + detail,
           icon: STATUS_ICONS.shieldOff,
+          hidden: true,
         };
       }
       return {
         text: "Guard ok",
         title: detail,
-	        className: "composerStatusPill oc-icon-btn oc-liquid-btn guard ok",
+	        className: "composerStatusPill oc-icon-btn oc-liquid-btn guard ok is-hidden",
         popover: "guard",
         ariaLabel: "Guard ok: " + detail,
         icon: STATUS_ICONS.shieldCheck,
+        hidden: true,
       };
     }
 
@@ -4224,7 +4551,7 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
     function guardStatusDetail() {
       if (!state.localOnlyMode) return "Local-only guard is off.";
       const agent = state.selectedAgent ? " VS Code agent: " + state.selectedAgent + "." : " VS Code agent unavailable.";
-      const model = state.selectedModel ? " Model: " + state.selectedModel + "." : " Model: server default.";
+      const model = state.selectedModel ? " Model: " + state.selectedModel + "." : " Model: provider default.";
       const sent = (state.lastContextSummary || []).filter((item) => !item.skipped).map((item) => item.path).slice(0, 4);
       const sentText = sent.length > 0 ? " Last sent: " + sent.join(", ") + "." : " Selected context will be sent with the next prompt.";
       return state.localOnlyWarning || "Local-only guard active." + agent + model + sentText;
@@ -4346,6 +4673,59 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       if (actions.childElementCount) root.appendChild(actions);
     }
 
+    function renderPermissionStatusPopover(root) {
+      const current = permissionMode();
+      appendStatusPopoverHeader(root, permissionModeLabel(current), permissionModeDetail(current));
+      const list = document.createElement("div");
+      list.className = "permissionModeList";
+      for (const mode of ["ask", "auto", "full-access"]) {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "permissionModeButton oc-liquid-btn " + mode + (mode === current ? " is-active" : "");
+        button.setAttribute("data-permission-mode", mode);
+        const icon = document.createElement("span");
+        icon.className = "permissionModeIcon";
+        icon.setAttribute("aria-hidden", "true");
+        icon.innerHTML = permissionModeIcon(mode);
+        const copy = document.createElement("span");
+        copy.className = "permissionModeCopy";
+        const title = document.createElement("span");
+        title.className = "permissionModeTitle";
+        title.textContent = permissionModeLabel(mode);
+        const description = document.createElement("span");
+        description.className = "permissionModeDesc";
+        description.textContent = permissionModeDetail(mode);
+        copy.append(title, description);
+        const check = document.createElement("span");
+        check.className = "permissionModeCheck";
+        check.setAttribute("aria-hidden", "true");
+        check.innerHTML = mode === current ? LIQUID_ICONS.apply : "";
+        button.append(icon, copy, check);
+        button.title = permissionModeDetail(mode);
+        list.appendChild(button);
+      }
+      root.appendChild(list);
+    }
+
+    function permissionModeIcon(mode) {
+      if (mode === "full-access") return STATUS_ICONS.shieldAlert;
+      return STATUS_ICONS.shieldCheck;
+    }
+
+    function renderSkillsStatusPopover(root) {
+      const skills = state.skills || {};
+      const available = Array.isArray(skills.available) ? skills.available : [];
+      const enabled = available.filter((skill) => skill.enabled);
+      appendStatusPopoverHeader(root, "Skills", available.length ? enabled.length + "/" + available.length + " enabled from .agents/skills." : "No workspace skills discovered.");
+      const rows = statusRows();
+      if (!available.length) appendStatusRow(rows, "Add .agents/skills/<name>/SKILL.md in this workspace.");
+      for (const skill of available.slice(0, 8)) {
+        appendStatusRow(rows, (skill.enabled ? "Enabled: " : "Available: ") + (skill.name || skill.id));
+      }
+      if (available.length > 8) appendStatusRow(rows, "+" + (available.length - 8) + " more skills in settings.");
+      root.appendChild(rows);
+    }
+
     function renderGuardStatusPopover(root) {
       appendStatusPopoverHeader(root, composerGuardSummary(), guardStatusDetail());
     }
@@ -4393,6 +4773,13 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
         removeMention(remove.getAttribute("data-remove-mention") || "");
         return;
       }
+      const permission = target.closest("[data-permission-mode]");
+      if (permission) {
+        vscode.postMessage({ type: "savePermissionMode", mode: permission.getAttribute("data-permission-mode") || "ask" });
+        composerPinnedStatusPopover = "";
+        composerHoverStatusPopover = "";
+        return;
+      }
       onCodeGraphAction(event);
     }
 
@@ -4410,7 +4797,7 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
         if (state.historyError) return;
         const empty = document.createElement("div");
         empty.className = "sessionEmpty";
-        empty.textContent = state.connectionState === "connected" ? "No remote sessions yet." : "Connect to load chat history.";
+        empty.textContent = state.connectionState === "connected" ? "No ChipMate sessions yet." : "Configure a provider to load chat history.";
         root.appendChild(empty);
         return;
       }
@@ -4424,7 +4811,7 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
         if (session.serverToolsUsed) {
           const badge = document.createElement("span");
           badge.className = "sessionBadge";
-          badge.textContent = " Server tools used";
+          badge.textContent = " Workspace tools used";
           name.appendChild(badge);
         }
         const time = document.createElement("div");
@@ -4497,7 +4884,7 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
         appendLiquidIcon(hero, "chat");
 	      const title = document.createElement("div");
 	      title.className = "emptyTitle";
-	      title.textContent = state.connectionState === "connected" ? "Ask with context" : "Connect OpenCode";
+	      title.textContent = state.connectionState === "connected" ? "Ask with context" : "Configure ChipMate";
 	      node.append(hero, title);
 	      const prompts = document.createElement("div");
 	      prompts.className = "emptyPrompts";
@@ -4756,12 +5143,12 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       node.className = "timelineItem assistant thinking";
       const avatar = document.createElement("div");
       avatar.className = "avatar";
-      avatar.textContent = "OC";
+      avatar.textContent = "CM";
       const card = document.createElement("div");
       card.className = "messageCard";
       const meta = document.createElement("div");
       meta.className = "messageMeta";
-      meta.textContent = "OpenCode";
+      meta.textContent = "ChipMate";
       const body = document.createElement("div");
       body.className = "messageBody";
       const label = document.createElement("span");
@@ -4787,7 +5174,7 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
         summary.textContent = part.type === "reasoning"
           ? "Thinking"
           : part.type === "serverToolWarning"
-            ? "Warning: server filesystem tool used"
+            ? "Warning: workspace filesystem tool used"
             : "Tool: " + (part.title || "tool") + (part.status ? " - " + part.status : "");
         const body = document.createElement("pre");
         body.textContent = part.detail || part.text || "";
@@ -6138,7 +6525,7 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       const wanted = ["", ...models.map((model) => model.id), current && !models.some((model) => model.id === current) ? current : "", "__manual"].filter(Boolean).join("\\n");
       if (existing !== wanted) {
         select.innerHTML = "";
-        select.appendChild(modelOption("", state.loadingModels ? "Loading models..." : "Use server default"));
+        select.appendChild(modelOption("", state.loadingModels ? "Loading models..." : "Use provider default"));
         for (const model of models) {
           const label = (model.isDefault ? "* " : "") + model.providerName + " / " + (model.name || model.modelID);
           select.appendChild(modelOption(model.id, label));
@@ -6204,7 +6591,7 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       root.setAttribute("aria-hidden", modelMenuOpen ? "false" : "true");
       if (!modelMenuOpen) return;
 
-      root.appendChild(modelMenuItem("", "Use server default", "Remote server chooses the model"));
+      root.appendChild(modelMenuItem("", "Use provider default", "Provider chooses the model"));
       const models = state.models || [];
       for (const model of models) {
         const name = model.name || model.modelID || model.id;
@@ -6344,10 +6731,10 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       if (!agentMenuOpen) return;
 
       const agents = state.agents || [];
-      const required = state.localOnlyAgent || state.selectedAgent || "vscode-local";
+      const required = state.localOnlyAgent || state.selectedAgent || "chipmate-local";
       const hasRequired = agents.some((agent) => agentMatchesRequired(agent, required));
       if (!hasRequired) {
-        root.appendChild(agentMenuItem({ id: required, name: required, description: "Required VS Code local agent is missing" }, true, false, true));
+        root.appendChild(agentMenuItem({ id: required, name: required, description: "Required ChipMate workspace agent is missing" }, true, false, true));
       }
       for (const agent of agents) {
         const isRequired = agentMatchesRequired(agent, required);
@@ -6430,22 +6817,22 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       const detail = document.createElement("span");
       detail.className = "modelMenuMeta";
       detail.textContent = localAgent
-        ? (agent.description || "Required for VS Code local context")
-        : "Unavailable for VS Code local mode";
+        ? (agent.description || "Required for ChipMate workspace context")
+        : "Unavailable for ChipMate workspace mode";
       button.append(label, detail);
       return button;
     }
 
     function currentModelLabel() {
       const current = state.selectedModel || "";
-      if (!current) return "Use server default";
+      if (!current) return "Use provider default";
       const match = (state.models || []).find((model) => model.id === current);
       return match ? (match.name || match.modelID || match.id) : current;
     }
 
     function currentAgentLabel() {
       if (!state.localOnlyMode && !state.selectedAgent) return "No agent";
-      const current = state.selectedAgent || state.localOnlyAgent || "vscode-local";
+      const current = state.selectedAgent || state.localOnlyAgent || "chipmate-local";
       if (state.loadingAgents) return "Loading agent";
       if (localOnlyAgentBlocked()) return "agent";
       return current;
@@ -6453,8 +6840,8 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
 
     function agentTitle() {
       if (state.localOnlyWarning) return state.localOnlyWarning;
-      if (!state.localOnlyMode && !state.selectedAgent) return "Remote server chooses the agent";
-      return "Using required VS Code local agent: " + (state.selectedAgent || state.localOnlyAgent || "vscode-local");
+      if (!state.localOnlyMode && !state.selectedAgent) return "ChipMate direct runtime chooses the agent";
+      return "Using required ChipMate workspace agent: " + (state.selectedAgent || state.localOnlyAgent || "chipmate-local");
     }
 
     function localOnlyAgentBlocked() {
@@ -6472,7 +6859,7 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
     }
 
     function shortModelName(value) {
-      if (!value) return "Server default";
+      if (!value) return "Provider default";
       const clean = String(value).replace(/\\s+\\(manual\\)$/i, "");
       const pieces = clean.split("/");
       return pieces[pieces.length - 1] || clean;
@@ -6564,7 +6951,7 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
 
     function roleLabel(role) {
       if (role === "user") return "You";
-      if (role === "assistant") return "OpenCode";
+      if (role === "assistant") return "ChipMate";
       if (role === "tool") return "Tool";
       if (role === "error") return "Error";
       return "Message";
@@ -6574,7 +6961,7 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       if (role === "user") return "You";
       if (role === "error") return "!";
       if (role === "tool") return "T";
-      return "OC";
+      return "CM";
     }
 
     function formatTime(value) {

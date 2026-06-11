@@ -1,4 +1,4 @@
-import type { OpenCodeMessage, OpenCodeSession } from "./types"
+import type { ChipMateMessage, ChipMateSession } from "./types"
 
 export const INLINE_COMPLETION_SESSION_TITLE = "VS Code inline completion"
 
@@ -9,11 +9,11 @@ const INLINE_COMPLETION_PROMPT_MARKERS = [
   "</file>",
 ]
 
-export function isInlineCompletionSession(session: Pick<OpenCodeSession, "title"> | undefined): boolean {
+export function isInlineCompletionSession(session: Pick<ChipMateSession, "title"> | undefined): boolean {
   return session?.title?.trim() === INLINE_COMPLETION_SESSION_TITLE
 }
 
-export function isInlineCompletionMessage(message: OpenCodeMessage | undefined): boolean {
+export function isInlineCompletionMessage(message: ChipMateMessage | undefined): boolean {
   if (!message) return false
   if (message.info.role === "assistant") return false
 

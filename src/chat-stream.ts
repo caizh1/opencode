@@ -1,35 +1,35 @@
 import type {
-  OpenCodeEvent,
-  OpenCodeGlobalEvent,
-  OpenCodeMessage,
-  OpenCodeMessageInfo,
-  OpenCodeMessagePart,
-  OpenCodeSessionStatus,
+  ChipMateEvent,
+  ChipMateGlobalEvent,
+  ChipMateMessage,
+  ChipMateMessageInfo,
+  ChipMateMessagePart,
+  ChipMateSessionStatus,
 } from "./types"
 
 export type ChatStreamApplyResult = {
-  messages: OpenCodeMessage[]
+  messages: ChipMateMessage[]
   changed: boolean
   idle: boolean
   completed: boolean
   refreshSessions: boolean
   error?: string
-  retry?: OpenCodeSessionStatus
+  retry?: ChipMateSessionStatus
 }
 
-export function normalizeOpenCodeEvent(input: unknown): OpenCodeEvent | undefined {
+export function normalizeChipMateEvent(input: unknown): ChipMateEvent | undefined {
   const root = objectRecord(input)
-  const payload = objectRecord((root as OpenCodeGlobalEvent).payload)
+  const payload = objectRecord((root as ChipMateGlobalEvent).payload)
   const candidate = payload.type ? payload : root
   const type = stringValue(candidate.type)
   if (!type) return
   return {
     type,
     properties: objectRecord(candidate.properties),
-  } as OpenCodeEvent
+  } as ChipMateEvent
 }
 
-export function openCodeEventSessionID(event: OpenCodeEvent) {
+export function chipMateEventSessionID(event: ChipMateEvent) {
   const properties = objectRecord(event.properties)
   if (event.type === "message.updated") return stringValue(objectRecord(properties.info).sessionID)
   if (event.type === "message.part.updated") return stringValue(objectRecord(properties.part).sessionID)
@@ -46,12 +46,12 @@ export function openCodeEventSessionID(event: OpenCodeEvent) {
   return ""
 }
 
-export function applyOpenCodeEventToMessages(
-  messages: OpenCodeMessage[],
-  event: OpenCodeEvent,
+export function applyChipMateEventToMessages(
+  messages: ChipMateMessage[],
+  event: ChipMateEvent,
   currentSessionID: string | undefined,
 ): ChatStreamApplyResult {
-  const relevantSessionID = openCodeEventSessionID(event)
+  const relevantSessionID = chipMateEventSessionID(event)
   const result = unchanged(messages)
   if (currentSessionID && relevantSessionID && relevantSessionID !== currentSessionID) return result
 
@@ -118,7 +118,7 @@ export function applyOpenCodeEventToMessages(
       const normalizedStatus = {
         ...status,
         type,
-      } as OpenCodeSessionStatus
+      } as ChipMateSessionStatus
       return {
         ...result,
         idle: type === "idle",
@@ -142,7 +142,7 @@ export function applyOpenCodeEventToMessages(
   }
 }
 
-function unchanged(messages: OpenCodeMessage[]): ChatStreamApplyResult {
+function unchanged(messages: ChipMateMessage[]): ChatStreamApplyResult {
   return {
     messages,
     changed: false,
@@ -152,7 +152,7 @@ function unchanged(messages: OpenCodeMessage[]): ChatStreamApplyResult {
   }
 }
 
-function messageInfoFromEvent(event: OpenCodeEvent): OpenCodeMessageInfo | undefined {
+function messageInfoFromEvent(event: ChipMateEvent): ChipMateMessageInfo | undefined {
   const info = objectRecord(objectRecord(event.properties).info)
   const id = stringValue(info.id)
   if (!id) return
@@ -163,10 +163,10 @@ function messageInfoFromEvent(event: OpenCodeEvent): OpenCodeMessageInfo | undef
     role: info.role === "user" || info.role === "assistant" ? info.role : undefined,
     time: objectRecord(info.time),
     error: normalizeMessageError(info.error),
-  } as OpenCodeMessageInfo
+  } as ChipMateMessageInfo
 }
 
-function messagePartFromEvent(input: unknown): OpenCodeMessagePart | undefined {
+function messagePartFromEvent(input: unknown): ChipMateMessagePart | undefined {
   const part = objectRecord(input)
   const type = stringValue(part.type)
   if (!type) return
@@ -176,13 +176,13 @@ function messagePartFromEvent(input: unknown): OpenCodeMessagePart | undefined {
     id: stringValue(part.id) || undefined,
     sessionID: stringValue(part.sessionID) || undefined,
     messageID: stringValue(part.messageID) || undefined,
-  } as OpenCodeMessagePart
+  } as ChipMateMessagePart
 }
 
 function messagePartFromDeltaEvent(
   properties: Record<string, unknown>,
   currentSessionID: string | undefined,
-): OpenCodeMessagePart | undefined {
+): ChipMateMessagePart | undefined {
   const partPayload = objectRecord(properties.part)
   const type = stringValue(partPayload.type) || stringValue(properties.type) || "text"
   const id = stringValue(partPayload.id) || stringValue(properties.partID)
@@ -194,10 +194,10 @@ function messagePartFromDeltaEvent(
     id,
     messageID,
     sessionID: stringValue(partPayload.sessionID) || stringValue(properties.sessionID) || currentSessionID,
-  } as OpenCodeMessagePart
+  } as ChipMateMessagePart
 }
 
-function upsertMessageInfo(messages: OpenCodeMessage[], info: OpenCodeMessageInfo) {
+function upsertMessageInfo(messages: ChipMateMessage[], info: ChipMateMessageInfo) {
   const index = messages.findIndex((message) => message.info.id === info.id)
   if (index === -1) return [...messages, { info, parts: [] }]
   return messages.map((message, messageIndex) =>
@@ -205,7 +205,7 @@ function upsertMessageInfo(messages: OpenCodeMessage[], info: OpenCodeMessageInf
   )
 }
 
-function upsertMessagePart(messages: OpenCodeMessage[], part: OpenCodeMessagePart, delta: string) {
+function upsertMessagePart(messages: ChipMateMessage[], part: ChipMateMessagePart, delta: string) {
   const messageID = part.messageID
   if (!messageID) return messages
   const index = messages.findIndex((message) => message.info.id === messageID)
@@ -238,13 +238,13 @@ function upsertMessagePart(messages: OpenCodeMessage[], part: OpenCodeMessagePar
     return {
       ...message,
       parts: message.parts.map((existing, partIndex) =>
-        partIndex === existingPartIndex ? mergePart(existing as OpenCodeMessagePart, part, delta) : existing,
+        partIndex === existingPartIndex ? mergePart(existing as ChipMateMessagePart, part, delta) : existing,
       ),
     }
   })
 }
 
-function mergePart(existing: OpenCodeMessagePart | undefined, part: OpenCodeMessagePart, delta: string): OpenCodeMessagePart {
+function mergePart(existing: ChipMateMessagePart | undefined, part: ChipMateMessagePart, delta: string): ChipMateMessagePart {
   const merged = {
     ...(existing ?? {}),
     ...part,
@@ -256,7 +256,7 @@ function mergePart(existing: OpenCodeMessagePart | undefined, part: OpenCodeMess
     merged.text = incomingText && incomingText.length >= existingText.length ? incomingText : `${existingText}${delta}`
   }
 
-  return merged as OpenCodeMessagePart
+  return merged as ChipMateMessagePart
 }
 
 function normalizeMessageError(input: unknown) {
@@ -266,7 +266,7 @@ function normalizeMessageError(input: unknown) {
   return {
     ...error,
     message,
-  } as OpenCodeMessageInfo["error"]
+  } as ChipMateMessageInfo["error"]
 }
 
 function sessionErrorMessage(input: unknown) {

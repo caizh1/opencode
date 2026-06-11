@@ -303,7 +303,7 @@ export function checkCParseOrCompile(input: CheckerInput): CEmbeddedQualityIssue
   }
   if (!clangAvailable()) return []
 
-  const dir = mkdtempSync(join(tmpdir(), "opencode-c-eval-"))
+  const dir = mkdtempSync(join(tmpdir(), "chipmate-c-eval-"))
   const file = join(dir, "fixture.c")
   try {
     writeFileSync(file, sanitizeCompileUnit(compileUnitText(input)))

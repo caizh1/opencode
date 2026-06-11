@@ -45,7 +45,6 @@ describe("accepted completion formatting command wiring", () => {
   })
 
   test("completion provider can route inline completions to a direct model API", () => {
-    expect(completionSource).toContain('settings.completion.provider === "openai-compatible"')
     expect(completionSource).toContain('input.route.promptKind === "qwen-fim"')
     expect(completionSource).toContain("buildQwenCoderFimPrompt")
     expect(completionSource).toContain("new CompletionModelClient(input.settings, apiKey)")
@@ -59,7 +58,7 @@ describe("accepted completion formatting command wiring", () => {
     expect(completionSource).toContain("maxTokens: route.maxTokens")
   })
 
-  test("inline completion provider does not depend on OpenCode chat agents", () => {
+  test("inline completion provider does not depend on ChipMate chat agents", () => {
     expect(completionSource).not.toContain("resolveRequestAgent")
     expect(completionSource).not.toContain("agentSelection")
     expect(completionSource).not.toContain("agent: agentSelection.agent")

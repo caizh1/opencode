@@ -23,9 +23,9 @@ describe("default current file context", () => {
     expect(chatViewSource).toContain("editorContext: this.deps.getEditorContext()")
   })
 
-  test("warns the model not to read remote server paths", () => {
+  test("warns the model to use workspace-host tools under ChipMate permissions", () => {
     expect(contextSource).toContain("local VS Code context supplied by the extension")
-    expect(contextSource).toContain("Do not read, glob, grep, list, edit, or run shell commands")
+    expect(contextSource).toContain("Use ChipMate workspace-host tools only under the active permission mode")
     expect(contextSource).toContain("No local file content was captured")
   })
 

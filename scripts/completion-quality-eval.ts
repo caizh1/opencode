@@ -15,7 +15,7 @@ import {
 import { CompletionRequestCoordinator, type CompletionRequestOutcome } from "../src/completion-request-coordinator"
 import { resolveCompletionPlanAfterSymbolRetrieval, routeCompletionModel, shouldRetryCompletionRejection } from "../src/completion-router"
 import type { CompletionPlan, RetrievedCompletionSnippet } from "../src/completion-types"
-import type { OpenCodeMessage, RemoteSettings } from "../src/types"
+import type { ChipMateMessage, RemoteSettings } from "../src/types"
 
 const CURSOR_MARKER = "<|cursor|>"
 const DEFAULT_REPEAT = 3
@@ -556,7 +556,7 @@ function simulatedLatency(fixture: CompletionQualityFixture, repeatIndex: number
   return latencies[repeatIndex % latencies.length]
 }
 
-function modelMessage(text: string): OpenCodeMessage {
+function modelMessage(text: string): ChipMateMessage {
   return {
     info: { id: "completion-quality-eval", role: "assistant" },
     parts: [{ type: "text", text }],
@@ -566,10 +566,10 @@ function modelMessage(text: string): OpenCodeMessage {
 function settings(): RemoteSettings {
   return {
     serverUrl: "http://localhost:4096",
-    username: "opencode",
+    username: "chipmate",
     defaultModel: "",
     defaultAgent: "",
-    localOnlyAgent: "vscode-local",
+    localOnlyAgent: "chipmate-local",
     context: {
       maxFileBytes: 16000,
       maxFiles: 8,

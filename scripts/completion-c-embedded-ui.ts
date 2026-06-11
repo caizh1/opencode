@@ -285,8 +285,8 @@ async function driveVsCode(scenarios: UiScenario[], options: UiMatrixOptions, re
   ])
   await delay(1000)
   const codeGraphIndexOutput = await ensureQemuCodeGraphIndexed(options)
-  await clearOpenCodeOutput()
-  const outputLogSnapshot = await snapshotOpenCodeOutputLogs()
+  await clearChipMateOutput()
+  const outputLogSnapshot = await snapshotChipMateOutputLogs()
 
   for (let index = 0; index < scenarios.length; index += 1) {
     const scenario = scenarios[index]
@@ -341,19 +341,19 @@ async function driveVsCode(scenarios: UiScenario[], options: UiMatrixOptions, re
     }
   }
 
-  const completionOutput = outputWithLogFallback(await copyOpenCodeOutput(), await readOpenCodeOutputLogDelta(outputLogSnapshot))
+  const completionOutput = outputWithLogFallback(await copyChipMateOutput(), await readChipMateOutputLogDelta(outputLogSnapshot))
   return [codeGraphIndexOutput, completionOutput].filter(Boolean).join("\n")
 }
 
 async function ensureQemuCodeGraphIndexed(options: UiMatrixOptions) {
   if (!options.qemuDirect || options.qemuCodeGraph !== "on") return ""
-  const snapshot = await snapshotOpenCodeOutputLogs()
-  vscodeCommand("OpenCode Remote: Rebuild Local Code Graph")
+  const snapshot = await snapshotChipMateOutputLogs()
+  vscodeCommand("ChipMate: Rebuild Local Code Graph")
   const started = Date.now()
   let latest = ""
   while (Date.now() - started < options.qemuIndexWaitMs) {
     await delay(2000)
-    latest = await readOpenCodeOutputLogDelta(snapshot)
+    latest = await readChipMateOutputLogDelta(snapshot)
     if (/\[codegraph\] indexed \d+ file\(s\), \d+ function\(s\)/.test(latest)) {
       return completionMatrixLogBlock("codegraph-index", latest)
     }
@@ -364,19 +364,19 @@ async function ensureQemuCodeGraphIndexed(options: UiMatrixOptions) {
   return completionMatrixLogBlock("codegraph-index", `${latest}\n[ui-matrix] codegraph index wait timed out after ${options.qemuIndexWaitMs}ms`)
 }
 
-async function clearOpenCodeOutput() {
-  await openOpenCodeOutput()
+async function clearChipMateOutput() {
+  await openChipMateOutput()
   vscodeCommand("View: Clear Output")
   await delay(800)
 }
 
-async function openOpenCodeOutput() {
-  vscodeCommand("OpenCode Remote: Open OpenCode Remote Output")
+async function openChipMateOutput() {
+  vscodeCommand("ChipMate: Open ChipMate Output")
   await delay(500)
 }
 
 async function commitInlineSuggestion() {
-  vscodeCommand("OpenCode Remote: Commit Inline Suggestion", { dismissFirst: false })
+  vscodeCommand("ChipMate: Commit Inline Suggestion", { dismissFirst: false })
   await delay(450)
 }
 
@@ -462,9 +462,9 @@ function vscodeCommand(command: string, options: { dismissFirst?: boolean } = {}
   ])
 }
 
-async function copyOpenCodeOutput() {
+async function copyChipMateOutput() {
   try {
-    await openOpenCodeOutput()
+    await openChipMateOutput()
     vscodeCommand("Output: Focus on Output View")
     runAppleScript([
       "tell application \"Visual Studio Code\" to activate",
@@ -482,9 +482,9 @@ async function copyOpenCodeOutput() {
   }
 }
 
-async function snapshotOpenCodeOutputLogs(): Promise<OutputLogSnapshot> {
+async function snapshotChipMateOutputLogs(): Promise<OutputLogSnapshot> {
   const snapshot: OutputLogSnapshot = new Map()
-  for (const path of openCodeOutputLogPaths()) {
+  for (const path of chipMateOutputLogPaths()) {
     try {
       snapshot.set(path, (await stat(path)).size)
     } catch {
@@ -494,9 +494,9 @@ async function snapshotOpenCodeOutputLogs(): Promise<OutputLogSnapshot> {
   return snapshot
 }
 
-async function readOpenCodeOutputLogDelta(snapshot: OutputLogSnapshot) {
+async function readChipMateOutputLogDelta(snapshot: OutputLogSnapshot) {
   const chunks: string[] = []
-  for (const path of openCodeOutputLogPaths()) {
+  for (const path of chipMateOutputLogPaths()) {
     try {
       const size = (await stat(path)).size
       const start = snapshot.get(path) ?? 0
@@ -509,10 +509,10 @@ async function readOpenCodeOutputLogDelta(snapshot: OutputLogSnapshot) {
   return chunks.join("\n")
 }
 
-function openCodeOutputLogPaths() {
+function chipMateOutputLogPaths() {
   const root = join(Bun.env.HOME ?? "", "Library", "Application Support", "Code", "logs")
   if (!existsSync(root)) return []
-  return spawnSync("find", [root, "-name", "*OpenCode Remote.log"], { encoding: "utf8" }).stdout
+  return spawnSync("find", [root, "-name", "*ChipMate.log"], { encoding: "utf8" }).stdout
     .split(/\r?\n/)
     .filter(Boolean)
     .sort()
@@ -826,7 +826,7 @@ function renderQemuFixPlan(results: UiResult[], options: UiMatrixOptions, output
         "### P1 - Commit command does not accept inline suggestions reliably",
         "",
         `Evidence: ${fallbackAccepted.length} scenario(s) needed Tab fallback. Examples: ${sampleIds(fallbackAccepted)}.`,
-        "Fix direction: inspect OpenCode Remote: Commit Inline Suggestion command focus handling and VS Code inline suggestion acceptance API use; prefer direct editor command execution over keyboard focus assumptions.",
+        "Fix direction: inspect ChipMate: Commit Inline Suggestion command focus handling and VS Code inline suggestion acceptance API use; prefer direct editor command execution over keyboard focus assumptions.",
         "Regression: UI script should record accepted edits without Tab fallback for A/QEMU smoke scenarios.",
         "",
       ]
@@ -1206,21 +1206,21 @@ async function writeQemuCodeWorkspace(options: UiMatrixOptions, sourceWorkspace:
   const codeGraphEnabled = options.qemuCodeGraph === "on"
   const codeGraphSettings = codeGraphEnabled
     ? {
-      "opencode.remote.codeGraph.maxFiles": options.qemuIndexMaxFiles,
-      "opencode.remote.codeGraph.workerConcurrency": 8,
-      "opencode.remote.codeGraph.queryCacheSize": 200,
+      "chipmate.codeGraph.maxFiles": options.qemuIndexMaxFiles,
+      "chipmate.codeGraph.workerConcurrency": 8,
+      "chipmate.codeGraph.queryCacheSize": 200,
     }
     : {}
   await writeFile(qemuCodeWorkspacePath(options), `${JSON.stringify({
     folders: [{ path: sourceWorkspace }],
     settings: {
-      "opencode.remote.completion.enabled": true,
-      "opencode.remote.completion.logLevel": "debug",
-      "opencode.remote.completion.debounceMs": 0,
-      "opencode.remote.codeGraph.enabled": codeGraphEnabled,
-      "opencode.remote.codeGraph.promptOnWorkspaceOpen": false,
+      "chipmate.completion.enabled": true,
+      "chipmate.completion.logLevel": "debug",
+      "chipmate.completion.debounceMs": 0,
+      "chipmate.codeGraph.enabled": codeGraphEnabled,
+      "chipmate.codeGraph.promptOnWorkspaceOpen": false,
       ...codeGraphSettings,
-      "opencode.remote.rag.embedding.resumeAutomatically": false,
+      "chipmate.rag.embedding.resumeAutomatically": false,
       "editor.inlineSuggest.enabled": true,
       "editor.tabCompletion": "off",
       "editor.acceptSuggestionOnEnter": "off",
@@ -1550,12 +1550,11 @@ function qemuOpenTabs(sourceWorkspace: string, relativePath: string | undefined,
 
 export function completionUiWorkspaceSettings(options: Pick<UiMatrixOptions, "apiBaseUrl" | "model" | "profile">) {
   const settings: Record<string, unknown> = {
-    "opencode.remote.completion.enabled": true,
-    "opencode.remote.completion.provider": "openai-compatible",
-    "opencode.remote.completion.logLevel": "debug",
-    "opencode.remote.completion.debounceMs": 0,
-    "opencode.remote.codeGraph.enabled": true,
-    "opencode.remote.codeGraph.promptOnWorkspaceOpen": false,
+    "chipmate.completion.enabled": true,
+    "chipmate.completion.logLevel": "debug",
+    "chipmate.completion.debounceMs": 0,
+    "chipmate.codeGraph.enabled": true,
+    "chipmate.codeGraph.promptOnWorkspaceOpen": false,
     "editor.inlineSuggest.enabled": true,
     "editor.tabCompletion": "off",
     "editor.acceptSuggestionOnEnter": "off",
@@ -1563,9 +1562,9 @@ export function completionUiWorkspaceSettings(options: Pick<UiMatrixOptions, "ap
     "files.autoSave": "off",
     "files.saveConflictResolution": "overwriteFileOnDisk",
   }
-  if (options.profile) settings["opencode.remote.completion.profile"] = options.profile
-  if (options.apiBaseUrl) settings["opencode.remote.completion.apiBaseUrl"] = options.apiBaseUrl
-  if (options.model) settings["opencode.remote.completion.model"] = options.model
+  if (options.profile) settings["chipmate.completion.profile"] = options.profile
+  if (options.apiBaseUrl) settings["chipmate.provider.apiBaseUrl"] = options.apiBaseUrl
+  if (options.model) settings["chipmate.completion.model"] = options.model
   return settings
 }
 

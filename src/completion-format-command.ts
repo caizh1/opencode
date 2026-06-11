@@ -1,7 +1,7 @@
 import * as vscode from "vscode"
 import type { CompletionRange } from "./completion-edit"
 
-export const FORMAT_ACCEPTED_COMPLETION_COMMAND = "opencode.remote.formatAcceptedCompletion"
+export const FORMAT_ACCEPTED_COMPLETION_COMMAND = "chipmate.completion.formatAcceptedCompletion"
 
 type FormatAcceptedCompletionArgs = {
   uri: string
@@ -11,7 +11,7 @@ type FormatAcceptedCompletionArgs = {
 export function completionFormatCommand(uri: vscode.Uri, range: CompletionRange): vscode.Command {
   return {
     command: FORMAT_ACCEPTED_COMPLETION_COMMAND,
-    title: "Format accepted OpenCode completion",
+    title: "Format accepted ChipMate completion",
     arguments: [{ uri: uri.toString(), range } satisfies FormatAcceptedCompletionArgs],
   }
 }

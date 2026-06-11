@@ -1,8 +1,11 @@
 import { agentListSummary, findAgentByName } from "./agent-name"
-import type { RemoteOpenCodeClient } from "./remote-client"
-import type { OpenCodeAgentInfo, RemoteSettings } from "./types"
+import type { ChipMateAgentInfo, RemoteSettings } from "./types"
 
-export const DEFAULT_LOCAL_ONLY_AGENT = "vscode-local"
+export const DEFAULT_LOCAL_ONLY_AGENT = "chipmate-local"
+
+type AgentListClient = {
+  listAgents(signal?: AbortSignal): Promise<ChipMateAgentInfo[]>
+}
 
 export type RequestAgentSelection = {
   agent?: string
@@ -25,7 +28,7 @@ export function localOnlyAgentName(settings: Pick<RemoteSettings, "localOnlyAgen
 
 export function selectRequestAgent(input: {
   settings: RemoteSettings
-  agents?: OpenCodeAgentInfo[]
+  agents?: ChipMateAgentInfo[]
   agentError?: string
 }): RequestAgentSelection {
   const settings = input.settings
@@ -47,7 +50,7 @@ export function selectRequestAgent(input: {
         label,
         strict: true,
         ready: false,
-        warning: `Required VS Code local agent "${agent}" has not been loaded from the remote OpenCode server yet.`,
+        warning: `Required ChipMate workspace agent "${agent}" has not been loaded yet.`,
       }
     }
     const match = findAgentByName(input.agents, agent)
@@ -57,7 +60,7 @@ export function selectRequestAgent(input: {
         label,
         strict: true,
         ready: false,
-        warning: `Required VS Code local agent "${agent}" was not found on the remote OpenCode server. Remote agents: ${agentListSummary(input.agents)}.`,
+        warning: `Required ChipMate workspace agent "${agent}" was not found. Available agents: ${agentListSummary(input.agents)}.`,
       }
     }
     if (match.disabled) {
@@ -66,7 +69,7 @@ export function selectRequestAgent(input: {
         label,
         strict: true,
         ready: false,
-        warning: `Required VS Code local agent "${agent}" is disabled on the remote OpenCode server.`,
+        warning: `Required ChipMate workspace agent "${agent}" is disabled.`,
       }
     }
     return {
@@ -96,7 +99,7 @@ export function selectRequestAgent(input: {
 
 export function requireRequestAgent(input: {
   settings: RemoteSettings
-  agents?: OpenCodeAgentInfo[]
+  agents?: ChipMateAgentInfo[]
   agentError?: string
 }) {
   const selection = selectRequestAgent(input)
@@ -107,7 +110,7 @@ export function requireRequestAgent(input: {
 }
 
 export async function resolveRequestAgent(
-  client: RemoteOpenCodeClient,
+  client: AgentListClient,
   settings: RemoteSettings,
   signal?: AbortSignal,
 ) {

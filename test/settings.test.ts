@@ -1,4 +1,6 @@
 import { beforeEach, describe, expect, mock, test } from "bun:test"
+import { mkdir, readFile, readdir, writeFile } from "node:fs/promises"
+import { join } from "node:path"
 
 type ConfigUpdate = {
   key: string
@@ -11,8 +13,69 @@ let updateFailures = new Map<string, Error>()
 let secretStores: ConfigUpdate[] = []
 let secretDeletes: string[] = []
 
+class UriShim {
+  constructor(readonly fsPath: string) {}
+
+  static file(path: string) {
+    return new UriShim(path)
+  }
+
+  static joinPath(base: { fsPath: string }, ...segments: string[]) {
+    return new UriShim(join(base.fsPath, ...segments))
+  }
+
+  toString() {
+    return `file://${this.fsPath}`
+  }
+}
+
 mock.module("vscode", () => ({
+  InlineCompletionTriggerKind: {
+    Invoke: 0,
+    Automatic: 1,
+  },
+  InlineCompletionItem: class InlineCompletionItem {
+    insertText: string
+    range?: unknown
+    command?: unknown
+    filterText?: string
+
+    constructor(insertText: string, range?: unknown, command?: unknown) {
+      this.insertText = insertText
+      this.range = range
+      this.command = command
+    }
+  },
+  Range: class Range {
+    start: { line: number; character: number }
+    end: { line: number; character: number }
+
+    constructor(startLine: number, startCharacter: number, endLine: number, endCharacter: number) {
+      this.start = { line: startLine, character: startCharacter }
+      this.end = { line: endLine, character: endCharacter }
+    }
+  },
+  DiagnosticSeverity: {
+    Error: 0,
+    Warning: 1,
+    Information: 2,
+    Hint: 3,
+  },
+  FileType: {
+    File: 1,
+    Directory: 2,
+  },
+  Uri: UriShim,
+  commands: {
+    executeCommand: async () => undefined,
+  },
+  languages: {
+    getDiagnostics: () => [],
+  },
   workspace: {
+    workspaceFolders: [],
+    asRelativePath: (uri: { fsPath?: string }) => uri.fsPath ?? "",
+    getWorkspaceFolder: () => undefined,
     getConfiguration: () => ({
       get: <T>(key: string, fallback: T) => configValues.has(key) ? configValues.get(key) as T : fallback,
       update: async (key: string, value: unknown) => {
@@ -21,10 +84,29 @@ mock.module("vscode", () => ({
         configUpdates.push({ key, value })
       },
     }),
+    fs: {
+      createDirectory: async (uri: UriShim) => mkdir(uri.fsPath, { recursive: true }),
+      writeFile: async (uri: UriShim, data: Uint8Array) => writeFile(uri.fsPath, data),
+      readFile: async (uri: UriShim) => readFile(uri.fsPath),
+      readDirectory: async (uri: UriShim) => {
+        const entries = await readdir(uri.fsPath, { withFileTypes: true })
+        return entries.map((entry) => [entry.name, entry.isDirectory() ? 2 : 1] as [string, number])
+      },
+    },
+  },
+  window: {
+    get activeTextEditor() {
+      return undefined
+    },
+    get visibleTextEditors() {
+      return []
+    },
   },
   ConfigurationTarget: {
     Global: "global",
   },
+  Position: class Position {},
+  Selection: class Selection {},
 }))
 
 const {
@@ -41,7 +123,7 @@ const {
   RAG_EMBEDDING_REQUEST_DELAY_DEFAULT_MS,
   RAG_EMBEDDING_TIMEOUT_DEFAULT_MS,
   RAG_EMBEDDING_TIMEOUT_LARGE_BATCH_MS,
-  PASSWORD_SECRET_KEY,
+  COMPLETION_API_KEY_SECRET_KEY,
   connectionInputHasPassword,
   ragEmbeddingTimeoutMsForBatchSize,
   ragSettingsInputChangesEmbeddingIdentity,
@@ -69,8 +151,8 @@ describe("connection settings", () => {
     await saveConnectionSettings(secretContext(), input)
 
     expect(configUpdates).toEqual([
-      { key: "serverUrl", value: "http://localhost:4096" },
-      { key: "username", value: "opencode" },
+      { key: "provider.apiBaseUrl", value: "http://localhost:4096" },
+      { key: "provider.chatModel", value: "opencode" },
     ])
     expect(secretStores).toEqual([])
     expect(secretDeletes).toEqual([])
@@ -80,7 +162,7 @@ describe("connection settings", () => {
     await saveConnectionSettings(secretContext(), { serverUrl: "http://localhost:4096", username: "opencode", password: " secret " })
 
     expect(connectionInputHasPassword({ serverUrl: "http://localhost:4096", username: "opencode", password: undefined })).toBe(true)
-    expect(secretStores).toEqual([{ key: PASSWORD_SECRET_KEY, value: "secret" }])
+    expect(secretStores).toEqual([{ key: COMPLETION_API_KEY_SECRET_KEY, value: "secret" }])
     expect(secretDeletes).toEqual([])
 
     secretStores = []
@@ -89,7 +171,7 @@ describe("connection settings", () => {
     await saveConnectionSettings(secretContext(), { serverUrl: "http://localhost:4096", username: "opencode", password: "" })
 
     expect(secretStores).toEqual([])
-    expect(secretDeletes).toEqual([PASSWORD_SECRET_KEY])
+    expect(secretDeletes).toEqual([COMPLETION_API_KEY_SECRET_KEY])
   })
 })
 

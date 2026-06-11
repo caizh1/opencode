@@ -9,16 +9,16 @@ describe("strict local-only agent selection", () => {
   const settingsSource = readFileSync(join(import.meta.dir, "..", "src", "settings.ts"), "utf8")
   const readme = readFileSync(join(import.meta.dir, "..", "README.md"), "utf8")
 
-  test("defaults local-only requests to the VS Code local agent", () => {
+  test("defaults local-only requests to the ChipMate workspace agent", () => {
     expect(settingsSource).toContain('strictLocalOnlyAgent: config.get<boolean>("context.strictLocalOnlyAgent", true)')
-    expect(localAgentSource).toContain('DEFAULT_LOCAL_ONLY_AGENT = "vscode-local"')
+    expect(localAgentSource).toContain('DEFAULT_LOCAL_ONLY_AGENT = "chipmate-local"')
     expect(localAgentSource).toContain("settings.context.localOnlyMode")
-    expect(localAgentSource).toContain("Required VS Code local agent")
+    expect(localAgentSource).toContain("Required ChipMate workspace agent")
   })
 
   test("fails closed when the required agent is missing", () => {
     expect(localAgentSource).toContain("MissingLocalOnlyAgentError")
-    expect(localAgentSource).toContain("was not found on the remote OpenCode server")
+    expect(localAgentSource).toContain("was not found. Available agents")
     expect(chatViewSource).toContain("ensureAgentList")
     expect(chatViewSource).toContain("throw new MissingLocalOnlyAgentError")
   })
@@ -30,9 +30,9 @@ describe("strict local-only agent selection", () => {
     expect(completionSource).not.toContain("agent: agentSelection.agent")
   })
 
-  test("documents vscode-local as required", () => {
-    expect(readme).toContain("vscode-local")
-    expect(readme).toContain("必须")
-    expect(readme).toContain("opencode.remote.context.strictLocalOnlyAgent")
+  test("documents chipmate-local as the workspace-host guard", () => {
+    expect(readme).toContain("chipmate-local")
+    expect(readme).toContain("workspace extension host")
+    expect(readme).toContain("chipmate.context.strictLocalOnlyAgent")
   })
 })

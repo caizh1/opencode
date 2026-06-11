@@ -1,6 +1,6 @@
-import type { OpenCodePart } from "./types"
+import type { ChipMatePart } from "./types"
 
-export function splitThinkingFromParts(parts: OpenCodePart[]) {
+export function splitThinkingFromParts(parts: ChipMatePart[]) {
   const text: string[] = []
   const reasoning: string[] = []
 

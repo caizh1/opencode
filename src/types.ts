@@ -1,9 +1,10 @@
 export type ConnectionState = "disconnected" | "connecting" | "connected" | "authFailed" | "error"
 export type CompletionLogLevel = "off" | "info" | "debug"
 export type CompletionProfile = "generic-chat" | "qwen-coder-fim"
-export type CompletionProvider = "opencode" | "openai-compatible"
+export type CompletionProvider = "openai-compatible"
 export type CompletionCommentGuidedRetrievalMode = "qa-exact" | "completion"
 export type CodeGraphAnalysisMode = "auto" | "fast" | "ast" | "semantic"
+export type PermissionMode = "ask" | "auto" | "full-access"
 
 export type RagEndpointKind = "disabled" | "localhost" | "private-lan" | "approved-host" | "blocked" | "error"
 export type RagAvailability = "not-configured" | "not-indexed" | "checking" | "indexing" | "ready" | "partial" | "paused" | "unavailable"
@@ -131,6 +132,13 @@ export type RagConfigurationApplyResult = {
 }
 
 export type RemoteSettings = {
+  provider: {
+    apiBaseUrl: string
+    chatModel: string
+    maxTokens: number
+    temperature: number
+    topP: number
+  }
   serverUrl: string
   username: string
   defaultModel: string
@@ -143,6 +151,15 @@ export type RemoteSettings = {
     includeGitDiff: boolean
     localOnlyMode: boolean
     strictLocalOnlyAgent: boolean
+  }
+  permissions: {
+    mode: PermissionMode
+  }
+  skills: {
+    enabled: string[]
+  }
+  mcp: {
+    enabled: boolean
   }
   completion: {
     enabled: boolean
@@ -195,7 +212,7 @@ export type HealthResponse = {
   version?: string
 }
 
-export type OpenCodeSession = {
+export type ChipMateSession = {
   id: string
   title?: string
   directory?: string
@@ -205,7 +222,7 @@ export type OpenCodeSession = {
   }
 }
 
-export type OpenCodeTokenUsage = {
+export type ChipMateTokenUsage = {
   total?: number
   input?: number
   output?: number
@@ -216,7 +233,7 @@ export type OpenCodeTokenUsage = {
   }
 }
 
-export type OpenCodeModelLimit = {
+export type ChipMateModelLimit = {
   context?: number
   output?: number
 }
@@ -252,7 +269,7 @@ export type RenderedSessionUsage = {
   }
 }
 
-export type OpenCodeMessageInfo = {
+export type ChipMateMessageInfo = {
   id: string
   sessionID?: string
   role?: "user" | "assistant"
@@ -261,7 +278,7 @@ export type OpenCodeMessageInfo = {
   agent?: string
   mode?: string
   cost?: number
-  tokens?: OpenCodeTokenUsage
+  tokens?: ChipMateTokenUsage
   finish?: string
   summary?: unknown
   time?: {
@@ -274,7 +291,7 @@ export type OpenCodeMessageInfo = {
   }
 }
 
-export type OpenCodePart =
+export type ChipMatePart =
   | {
       type: "text"
       text: string
@@ -308,28 +325,28 @@ export type OpenCodePart =
       [key: string]: unknown
     }
 
-export type OpenCodeMessage = {
-  info: OpenCodeMessageInfo
-  parts: OpenCodePart[]
+export type ChipMateMessage = {
+  info: ChipMateMessageInfo
+  parts: ChipMatePart[]
 }
 
-export type OpenCodeMessagePart = OpenCodePart & {
+export type ChipMateMessagePart = ChipMatePart & {
   id?: string
   sessionID?: string
   messageID?: string
 }
 
-export type OpenCodeSessionStatus =
+export type ChipMateSessionStatus =
   | { type: "idle" }
   | { type: "busy" }
   | { type: "retry"; attempt?: number; message?: string; next?: number }
   | { type: string; [key: string]: unknown }
 
-export type OpenCodeEvent =
+export type ChipMateEvent =
   | { type: "server.connected"; properties?: Record<string, unknown> }
-  | { type: "message.updated"; properties: { info?: OpenCodeMessageInfo } }
+  | { type: "message.updated"; properties: { info?: ChipMateMessageInfo } }
   | { type: "message.removed"; properties: { sessionID?: string; messageID?: string } }
-  | { type: "message.part.updated"; properties: { part?: OpenCodeMessagePart; delta?: string } }
+  | { type: "message.part.updated"; properties: { part?: ChipMateMessagePart; delta?: string } }
   | {
       type: "message.part.delta"
       properties: {
@@ -339,18 +356,18 @@ export type OpenCodeEvent =
         delta?: string
         text?: string
         type?: string
-        part?: OpenCodeMessagePart
+        part?: ChipMateMessagePart
       }
     }
   | { type: "message.part.removed"; properties: { sessionID?: string; messageID?: string; partID?: string } }
-  | { type: "session.status"; properties: { sessionID?: string; status?: OpenCodeSessionStatus } }
-  | { type: "session.error"; properties: { sessionID?: string; error?: OpenCodeMessageInfo["error"] | { data?: { message?: string }; message?: string } } }
-  | { type: "session.created" | "session.updated" | "session.deleted"; properties: { info?: OpenCodeSession } }
+  | { type: "session.status"; properties: { sessionID?: string; status?: ChipMateSessionStatus } }
+  | { type: "session.error"; properties: { sessionID?: string; error?: ChipMateMessageInfo["error"] | { data?: { message?: string }; message?: string } } }
+  | { type: "session.created" | "session.updated" | "session.deleted"; properties: { info?: ChipMateSession } }
   | { type: string; properties?: Record<string, unknown> }
 
-export type OpenCodeGlobalEvent = {
+export type ChipMateGlobalEvent = {
   directory?: string
-  payload?: OpenCodeEvent
+  payload?: ChipMateEvent
 }
 
 export type ChatContextOptions = {
@@ -366,7 +383,7 @@ export type PromptModel = {
   modelID: string
 }
 
-export type OpenCodeModelInfo = {
+export type ChipMateModelInfo = {
   id: string
   providerID: string
   modelID: string
@@ -377,7 +394,7 @@ export type OpenCodeModelInfo = {
   outputLimit?: number
 }
 
-export type OpenCodeAgentInfo = {
+export type ChipMateAgentInfo = {
   id: string
   name: string
   description?: string

@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test"
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import { normalizeTokenUsage, summarizeSessionUsage } from "../src/usage"
-import type { OpenCodeMessage, OpenCodeModelInfo } from "../src/types"
+import type { ChipMateMessage, ChipMateModelInfo } from "../src/types"
 
 describe("token usage summaries", () => {
   test("summarizes latest context, session totals, and remaining context", () => {
@@ -156,7 +156,7 @@ function assistant(
     providerID?: string
     modelID?: string
   },
-): OpenCodeMessage {
+): ChipMateMessage {
   return {
     info: {
       id,
@@ -176,7 +176,7 @@ function assistant(
   }
 }
 
-function model(id: string, contextLimit: number): OpenCodeModelInfo {
+function model(id: string, contextLimit: number): ChipMateModelInfo {
   const slash = id.indexOf("/")
   return {
     id,

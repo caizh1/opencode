@@ -5,20 +5,20 @@ import { join } from "node:path"
 describe("model selection flow", () => {
   const chatViewSource = readFileSync(join(import.meta.dir, "..", "src", "chat-view.ts"), "utf8")
   const chatHtmlSource = readFileSync(join(import.meta.dir, "..", "src", "chat-html.ts"), "utf8")
-  const remoteClientSource = readFileSync(join(import.meta.dir, "..", "src", "remote-client.ts"), "utf8")
+  const directClientSource = readFileSync(join(import.meta.dir, "..", "src", "direct-agent-client.ts"), "utf8")
 
-  test("loads models through config providers with provider fallback", () => {
-    expect(remoteClientSource).toContain("listConfigProviders")
-    expect(remoteClientSource).toContain('"/config/providers"')
-    expect(remoteClientSource).toContain("listProviders")
-    expect(remoteClientSource).toContain('"/provider"')
-    expect(remoteClientSource).toContain("normalizeModels")
+  test("loads models through OpenAI-compatible /models with configured fallback names", () => {
+    expect(directClientSource).toContain("async listModels")
+    expect(directClientSource).toContain("modelsUrl(settings.provider.apiBaseUrl)")
+    expect(directClientSource).toContain("/models unavailable, using configured models")
+    expect(directClientSource).toContain("configuredModels(settings)")
+    expect(directClientSource).toContain("normalizeModelInfos")
   })
 
   test("posts model state to the webview and persists selection", () => {
     expect(chatViewSource).toContain('{ type: "selectModel"; model: string }')
     expect(chatViewSource).toContain("private async selectModel")
-    expect(chatViewSource).toContain('config.update("defaultModel"')
+    expect(chatViewSource).toContain('config.update("provider.chatModel"')
     expect(chatViewSource).toContain("selectedModel: settings.defaultModel")
     expect(chatViewSource).toContain("models: this.models")
   })
@@ -29,8 +29,9 @@ describe("model selection flow", () => {
     expect(chatHtmlSource).toContain('id="modelMenu"')
     expect(chatHtmlSource).toContain('id="refreshModels"')
     expect(chatHtmlSource).toContain('class="composerActionRow toggles composerContextRail"')
-    expect(chatHtmlSource).toContain('class="composerToolbar composerControlRail"')
+    expect(chatHtmlSource).toContain('class="composerToolbar composerPrimaryRail composerControlRail"')
     expect(chatHtmlSource).toContain('class="composerPickerRail"')
+    expect(chatHtmlSource).toContain('id="permissionStatusPill" class="composerStatusPill permissionTrigger oc-chip oc-liquid-chip permission ask"')
     expect(chatHtmlSource).toContain('id="composerMore"')
     expect(chatHtmlSource).toContain('id="composerMoreMenu" class="modelMenu composerMoreMenu"')
     expect(chatHtmlSource).not.toContain('class="composerCommandRail"')
@@ -46,7 +47,7 @@ describe("model selection flow", () => {
     expect(chatHtmlSource).toContain('type: "selectModel"')
     expect(chatHtmlSource).toContain("renderModelMenu")
     expect(chatHtmlSource).toContain("toggleModelMenu")
-    expect(chatHtmlSource).toContain("Use server default")
+    expect(chatHtmlSource).toContain("Use provider default")
     expect(chatHtmlSource).toContain("Manual...")
   })
 

@@ -1,25 +1,25 @@
 import { describe, expect, test } from "bun:test"
 import { MissingLocalOnlyAgentError, requireRequestAgent, selectRequestAgent } from "../src/local-agent"
-import type { OpenCodeAgentInfo, RemoteSettings } from "../src/types"
+import type { ChipMateAgentInfo, RemoteSettings } from "../src/types"
 
-describe("VS Code local agent selection", () => {
-  test("requires vscode-local while local-only mode is active", () => {
+describe("ChipMate workspace agent selection", () => {
+  test("requires chipmate-local while local-only mode is active", () => {
     const selection = requireRequestAgent({
       settings: settings({ localOnlyMode: true }),
-      agents: [{ id: "vscode-local", name: "VS Code Local", isLocalOnly: true }],
+      agents: [{ id: "chipmate-local", name: "ChipMate Local", isLocalOnly: true }],
     })
 
     expect(selection).toMatchObject({
-      agent: "vscode-local",
+      agent: "chipmate-local",
       strict: true,
       ready: true,
     })
   })
 
-  test("accepts remote display names that normalize to vscode-local", () => {
+  test("accepts display names that normalize to chipmate-local", () => {
     for (const agent of [
-      { id: "Vscode-Local", name: "Vscode-Local" },
-      { id: "agent-generated-name", name: "VS Code Local" },
+      { id: "ChipMate-Local", name: "ChipMate-Local" },
+      { id: "agent-generated-name", name: "ChipMate Local" },
     ]) {
       const selection = requireRequestAgent({
         settings: settings({ localOnlyMode: true }),
@@ -27,14 +27,14 @@ describe("VS Code local agent selection", () => {
       })
 
       expect(selection).toMatchObject({
-        agent: "vscode-local",
+        agent: "chipmate-local",
         strict: true,
         ready: true,
       })
     }
   })
 
-  test("fails closed when vscode-local is missing", () => {
+  test("fails closed when chipmate-local is missing", () => {
     expect(() =>
       requireRequestAgent({
         settings: settings({ localOnlyMode: true }),
@@ -43,29 +43,29 @@ describe("VS Code local agent selection", () => {
     ).toThrow(MissingLocalOnlyAgentError)
   })
 
-  test("includes returned remote agents in missing-agent warnings", () => {
+  test("includes returned available agents in missing-agent warnings", () => {
     const selection = selectRequestAgent({
       settings: settings({ localOnlyMode: true }),
       agents: [{ id: "build", name: "Build Agent" }],
     })
 
     expect(selection.ready).toBe(false)
-    expect(selection.warning).toContain("Remote agents: build (Build Agent).")
+    expect(selection.warning).toContain("Available agents: build (Build Agent).")
   })
 
   test("does not fall back to the default agent in local-only mode", () => {
     const selection = selectRequestAgent({
       settings: settings({ localOnlyMode: true, defaultAgent: "build" }),
-      agents: [{ id: "vscode-local", name: "VS Code Local" }],
+      agents: [{ id: "chipmate-local", name: "ChipMate Local" }],
     })
 
-    expect(selection.agent).toBe("vscode-local")
+    expect(selection.agent).toBe("chipmate-local")
   })
 
   test("keeps default agent support when local-only mode is disabled", () => {
     const selection = requireRequestAgent({
       settings: settings({ localOnlyMode: false, defaultAgent: "build" }),
-      agents: [] satisfies OpenCodeAgentInfo[],
+      agents: [] satisfies ChipMateAgentInfo[],
     })
 
     expect(selection).toMatchObject({
@@ -78,11 +78,18 @@ describe("VS Code local agent selection", () => {
 
 function settings(input: { localOnlyMode: boolean; defaultAgent?: string }): RemoteSettings {
   return {
-    serverUrl: "http://localhost:4096",
-    username: "opencode",
+    provider: {
+      apiBaseUrl: "http://localhost:8000/v1",
+      chatModel: "chat-model",
+      maxTokens: 4096,
+      temperature: 0.2,
+      topP: 1,
+    },
+    serverUrl: "http://localhost:8000/v1",
+    username: "chipmate",
     defaultModel: "",
     defaultAgent: input.defaultAgent ?? "",
-    localOnlyAgent: "vscode-local",
+    localOnlyAgent: "chipmate-local",
     context: {
       maxFileBytes: 16000,
       maxFiles: 8,
@@ -93,7 +100,7 @@ function settings(input: { localOnlyMode: boolean; defaultAgent?: string }): Rem
     },
     completion: {
       enabled: false,
-      provider: "opencode",
+      provider: "openai-compatible",
       profile: "generic-chat",
       apiBaseUrl: "",
       model: "",
@@ -105,6 +112,15 @@ function settings(input: { localOnlyMode: boolean; defaultAgent?: string }): Rem
       debugFullRetrievalProbe: false,
       debugExpectedSymbol: "",
       commentGuidedRetrievalMode: "qa-exact",
+    },
+    permissions: {
+      mode: "ask",
+    },
+    skills: {
+      enabled: [],
+    },
+    mcp: {
+      enabled: false,
     },
     codeGraph: {
       enabled: false,

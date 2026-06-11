@@ -1,14 +1,14 @@
-import type { OpenCodeMessage, OpenCodeSession } from "./types"
+import type { ChipMateMessage, ChipMateSession } from "./types"
 
 export const CHAT_SESSION_TITLE = "VS Code chat"
 
 const PLUGIN_CHAT_PROMPT_PREFIX = "User question:\n"
 
-export function isPluginChatSession(session: Pick<OpenCodeSession, "title"> | undefined): boolean {
+export function isPluginChatSession(session: Pick<ChipMateSession, "title"> | undefined): boolean {
   return session?.title?.trim() === CHAT_SESSION_TITLE
 }
 
-export function isPluginChatMessage(message: OpenCodeMessage | undefined): boolean {
+export function isPluginChatMessage(message: ChipMateMessage | undefined): boolean {
   if (!message) return false
   if (message.info.role !== "user") return false
 

@@ -1,11 +1,11 @@
 import { describe, expect, test } from "bun:test"
-import { applyOpenCodeEventToMessages, normalizeOpenCodeEvent } from "../src/chat-stream"
-import type { OpenCodeEvent, OpenCodeMessage } from "../src/types"
+import { applyChipMateEventToMessages, normalizeChipMateEvent } from "../src/chat-stream"
+import type { ChipMateEvent, ChipMateMessage } from "../src/types"
 
 describe("chat stream events", () => {
-  test("normalizes wrapped and raw OpenCode events", () => {
+  test("normalizes wrapped and raw ChipMate events", () => {
     expect(
-      normalizeOpenCodeEvent({
+      normalizeChipMateEvent({
         payload: { type: "message.updated", properties: { info: { id: "m1", sessionID: "s1" } } },
       }),
     ).toMatchObject({
@@ -13,20 +13,20 @@ describe("chat stream events", () => {
       properties: { info: { id: "m1", sessionID: "s1" } },
     })
 
-    expect(normalizeOpenCodeEvent({ type: "server.connected", properties: {} })).toMatchObject({
+    expect(normalizeChipMateEvent({ type: "server.connected", properties: {} })).toMatchObject({
       type: "server.connected",
     })
-    expect(normalizeOpenCodeEvent({ payload: { properties: {} } })).toBeUndefined()
+    expect(normalizeChipMateEvent({ payload: { properties: {} } })).toBeUndefined()
   })
 
   test("updates messages and appends text deltas", () => {
-    let messages: OpenCodeMessage[] = []
-    let result = applyOpenCodeEventToMessages(messages, messageUpdated("s1", "m1"), "s1")
+    let messages: ChipMateMessage[] = []
+    let result = applyChipMateEventToMessages(messages, messageUpdated("s1", "m1"), "s1")
 
     expect(result.changed).toBe(true)
     expect(result.messages[0]?.info).toMatchObject({ id: "m1", role: "assistant" })
 
-    result = applyOpenCodeEventToMessages(
+    result = applyChipMateEventToMessages(
       result.messages,
       partUpdated({ id: "p1", sessionID: "s1", messageID: "m1", type: "text", text: "Hel" }, "Hel"),
       "s1",
@@ -34,7 +34,7 @@ describe("chat stream events", () => {
     messages = result.messages
     expect(textOf(messages[0]?.parts[0])).toBe("Hel")
 
-    result = applyOpenCodeEventToMessages(
+    result = applyChipMateEventToMessages(
       messages,
       partUpdated({ id: "p1", sessionID: "s1", messageID: "m1", type: "text", text: "" }, "lo"),
       "s1",
@@ -43,13 +43,13 @@ describe("chat stream events", () => {
   })
 
   test("applies message.part.delta events from part payloads and flat payloads", () => {
-    let result = applyOpenCodeEventToMessages([], messageUpdated("s1", "m1"), "s1")
-    result = applyOpenCodeEventToMessages(
+    let result = applyChipMateEventToMessages([], messageUpdated("s1", "m1"), "s1")
+    result = applyChipMateEventToMessages(
       result.messages,
       partDelta({ part: { id: "p1", sessionID: "s1", messageID: "m1", type: "text" }, delta: "Hel" }),
       "s1",
     )
-    result = applyOpenCodeEventToMessages(
+    result = applyChipMateEventToMessages(
       result.messages,
       partDelta({ sessionID: "s1", messageID: "m1", partID: "p1", type: "text", text: " lo" }),
       "s1",
@@ -57,7 +57,7 @@ describe("chat stream events", () => {
 
     expect(textOf(result.messages[0]?.parts[0])).toBe("Hel lo")
 
-    result = applyOpenCodeEventToMessages(
+    result = applyChipMateEventToMessages(
       result.messages,
       partDelta({ sessionID: "s1", messageID: "m1", partID: "p2", type: "reasoning", delta: "thinking" }),
       "s1",
@@ -66,8 +66,8 @@ describe("chat stream events", () => {
   })
 
   test("ignores message.part.delta events for other sessions or missing identifiers", () => {
-    const started = applyOpenCodeEventToMessages([], messageUpdated("s1", "m1"), "s1")
-    const ignoredSession = applyOpenCodeEventToMessages(
+    const started = applyChipMateEventToMessages([], messageUpdated("s1", "m1"), "s1")
+    const ignoredSession = applyChipMateEventToMessages(
       started.messages,
       partDelta({ sessionID: "s2", messageID: "m2", partID: "p2", type: "text", delta: "nope" }),
       "s1",
@@ -75,7 +75,7 @@ describe("chat stream events", () => {
     expect(ignoredSession.changed).toBe(false)
     expect(ignoredSession.messages).toBe(started.messages)
 
-    const missingPart = applyOpenCodeEventToMessages(
+    const missingPart = applyChipMateEventToMessages(
       started.messages,
       partDelta({ sessionID: "s1", messageID: "m1", type: "text", delta: "nope" }),
       "s1",
@@ -85,13 +85,13 @@ describe("chat stream events", () => {
   })
 
   test("keeps tool and reasoning parts structured", () => {
-    let result = applyOpenCodeEventToMessages([], messageUpdated("s1", "m1"), "s1")
-    result = applyOpenCodeEventToMessages(
+    let result = applyChipMateEventToMessages([], messageUpdated("s1", "m1"), "s1")
+    result = applyChipMateEventToMessages(
       result.messages,
       partUpdated({ id: "p1", sessionID: "s1", messageID: "m1", type: "reasoning", text: "thinking" }, "thinking"),
       "s1",
     )
-    result = applyOpenCodeEventToMessages(
+    result = applyChipMateEventToMessages(
       result.messages,
       partUpdated({
         id: "p2",
@@ -111,7 +111,7 @@ describe("chat stream events", () => {
   })
 
   test("preserves assistant usage fields from message updates", () => {
-    const result = applyOpenCodeEventToMessages(
+    const result = applyChipMateEventToMessages(
       [],
       {
         type: "message.updated",
@@ -149,14 +149,14 @@ describe("chat stream events", () => {
   })
 
   test("removes message parts and ignores other sessions", () => {
-    const started = applyOpenCodeEventToMessages([], messageUpdated("s1", "m1"), "s1")
-    const withPart = applyOpenCodeEventToMessages(
+    const started = applyChipMateEventToMessages([], messageUpdated("s1", "m1"), "s1")
+    const withPart = applyChipMateEventToMessages(
       started.messages,
       partUpdated({ id: "p1", sessionID: "s1", messageID: "m1", type: "text", text: "hello" }),
       "s1",
     )
 
-    const ignored = applyOpenCodeEventToMessages(
+    const ignored = applyChipMateEventToMessages(
       withPart.messages,
       partUpdated({ id: "p2", sessionID: "s2", messageID: "m2", type: "text", text: "nope" }),
       "s1",
@@ -164,7 +164,7 @@ describe("chat stream events", () => {
     expect(ignored.changed).toBe(false)
     expect(ignored.messages).toBe(withPart.messages)
 
-    const removed = applyOpenCodeEventToMessages(
+    const removed = applyChipMateEventToMessages(
       withPart.messages,
       { type: "message.part.removed", properties: { sessionID: "s1", messageID: "m1", partID: "p1" } },
       "s1",
@@ -174,26 +174,26 @@ describe("chat stream events", () => {
 
   test("reports idle, completed, and session errors", () => {
     expect(
-      applyOpenCodeEventToMessages([], { type: "session.status", properties: { sessionID: "s1", status: { type: "idle" } } }, "s1").idle,
+      applyChipMateEventToMessages([], { type: "session.status", properties: { sessionID: "s1", status: { type: "idle" } } }, "s1").idle,
     ).toBe(true)
 
     expect(
-      applyOpenCodeEventToMessages([], {
+      applyChipMateEventToMessages([], {
         type: "session.error",
         properties: { sessionID: "s1", error: { data: { message: "boom" } } },
       }, "s1").error,
     ).toBe("boom")
 
     expect(
-      applyOpenCodeEventToMessages([], {
+      applyChipMateEventToMessages([], {
         type: "message.updated",
         properties: { info: { id: "m1", sessionID: "s1", role: "assistant", time: { created: 1, completed: 2 } } },
       }, "s1").completed,
     ).toBe(true)
   })
 
-  test("reports remote session retry statuses", () => {
-    const result = applyOpenCodeEventToMessages(
+  test("reports ChipMate session retry statuses", () => {
+    const result = applyChipMateEventToMessages(
       [],
       {
         type: "session.status",
@@ -214,21 +214,21 @@ describe("chat stream events", () => {
   })
 })
 
-function messageUpdated(sessionID: string, messageID: string): OpenCodeEvent {
+function messageUpdated(sessionID: string, messageID: string): ChipMateEvent {
   return {
     type: "message.updated",
     properties: { info: { id: messageID, sessionID, role: "assistant", time: { created: 1 } } },
   }
 }
 
-function partUpdated(part: Record<string, unknown>, delta?: string): OpenCodeEvent {
+function partUpdated(part: Record<string, unknown>, delta?: string): ChipMateEvent {
   return {
     type: "message.part.updated",
     properties: { part, delta },
   }
 }
 
-function partDelta(properties: Record<string, unknown>): OpenCodeEvent {
+function partDelta(properties: Record<string, unknown>): ChipMateEvent {
   return {
     type: "message.part.delta",
     properties,

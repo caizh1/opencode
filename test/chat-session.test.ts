@@ -1,14 +1,14 @@
 import { describe, expect, test } from "bun:test"
 import { CHAT_SESSION_TITLE, isPluginChatMessage, isPluginChatSession } from "../src/chat-session"
-import type { OpenCodeMessage, OpenCodePart, OpenCodeSession } from "../src/types"
+import type { ChipMateMessage, ChipMatePart, ChipMateSession } from "../src/types"
 
 describe("plugin chat session detection", () => {
   test("recognizes plugin chat sessions by title", () => {
     expect(isPluginChatSession(session(CHAT_SESSION_TITLE))).toBe(true)
   })
 
-  test("does not treat ordinary OpenCode sessions as plugin chat sessions", () => {
-    expect(isPluginChatSession(session("Test Remote OpenCode Session"))).toBe(false)
+  test("does not treat ordinary ChipMate sessions as plugin chat sessions", () => {
+    expect(isPluginChatSession(session("Test Remote ChipMate Session"))).toBe(false)
     expect(isPluginChatSession(session("Untitled chat"))).toBe(false)
   })
 
@@ -27,14 +27,14 @@ describe("plugin chat session detection", () => {
   })
 })
 
-function session(title: string): OpenCodeSession {
+function session(title: string): ChipMateSession {
   return {
     id: `session-${title}`,
     title,
   }
 }
 
-function message(role: "user" | "assistant", parts: OpenCodePart[]): OpenCodeMessage {
+function message(role: "user" | "assistant", parts: ChipMatePart[]): ChipMateMessage {
   return {
     info: { id: "message", role },
     parts,

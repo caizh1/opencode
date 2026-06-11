@@ -21,18 +21,17 @@ import { planCompletion } from "./completion-plan"
 import { resolveCompletionPlanAfterSymbolRetrieval, routeCompletionModel, routeLogValue, shouldRetryCompletionRejection, type CompletionModelRoute } from "./completion-router"
 import { CompletionRequestCoordinator, type CompletionRequestCacheMetadata, type CompletionRequestOutcome } from "./completion-request-coordinator"
 import { completionRetrievalPlan, shouldRetrieveCompletionSnippetsForPlan, type CompletionRetrievalPreferredKind } from "./completion-retrieval"
-import { INLINE_COMPLETION_SESSION_TITLE } from "./completion-session"
 import { completionSnippetFromSymbol } from "./completion-snippets"
 import { resolveSymbols, symbolCandidateFromCodeGraph } from "./completion-symbol"
 import { fallbackCompletionText } from "./completion-test-fallback"
 import { COMPLETION_PLANNER_REVISION, completionTelemetryRoute, createCompletionRequestId, filePathHash, serializeCompletionDebugEvent, type CompletionDebugEvent, type CompletionTelemetryDraft } from "./completion-telemetry"
 import type { CompletionPlan, RetrievedCompletionSnippet } from "./completion-types"
 import { buildCompletionPrompt, buildQwenCoderFimPrompt, relativePath } from "./context"
-import { isSessionNotFoundError, parseModel, RemoteOpenCodeClient } from "./remote-client"
-import type { CompletionProfile, OpenCodeMessage, RemoteSettings } from "./types"
+import type { DirectAgentClient } from "./direct-agent-client"
+import type { CompletionProfile, ChipMateMessage, RemoteSettings } from "./types"
 
 type CompletionDeps = {
-  getClient: () => RemoteOpenCodeClient | undefined
+  getClient: () => DirectAgentClient | undefined
   getCompletionApiKey?: () => Promise<string | undefined>
   getSettings: () => RemoteSettings
   codeGraph?: CodeGraphContextProvider
@@ -50,7 +49,6 @@ type QualityCompletionEdit = CompletionEdit & {
 }
 
 export class RemoteCompletionProvider implements vscode.InlineCompletionItemProvider {
-  private sessionID?: string
   private readonly requests: CompletionRequestCoordinator
 
   constructor(private readonly deps: CompletionDeps) {
@@ -108,20 +106,13 @@ export class RemoteCompletionProvider implements vscode.InlineCompletionItemProv
       line: position.line,
       triggerKind: completionTriggerKind(context.triggerKind),
     })
-    const client = this.deps.getClient()
-    if (settings.completion.provider === "opencode" && !client) {
-      this.logDebug(settings, `skip: no active remote client ${details}`)
+    if (!settings.completion.apiBaseUrl) {
+      this.logDebug(settings, `skip: direct completion API base URL is not configured ${details}`)
       return
     }
-    if (settings.completion.provider === "openai-compatible") {
-      if (!settings.completion.apiBaseUrl) {
-        this.logDebug(settings, `skip: direct completion API base URL is not configured ${details}`)
-        return
-      }
-      if (!completionModel(settings)) {
-        this.logDebug(settings, `skip: direct completion model is not configured ${details}`)
-        return
-      }
+    if (!completionModel(settings)) {
+      this.logDebug(settings, `skip: direct completion model is not configured ${details}`)
+      return
     }
 
     this.logInfo(settings, `triggered ${completionPlannerLogDetails(plan, this.deps.extensionVersion)} ${details}`)
@@ -182,32 +173,18 @@ export class RemoteCompletionProvider implements vscode.InlineCompletionItemProv
         selectedContextText: (edit as QualityCompletionEdit).qualityContextText,
       }),
       runRemote: (signal) =>
-        settings.completion.provider === "openai-compatible"
-          ? this.directCompletionOutcome({
-              document,
-              position,
-              settings,
-              details,
-              started,
-              signal,
-              editInput,
-              plan,
-              telemetry,
-              selectedCompletionInfo: context.selectedCompletionInfo,
-            })
-          : this.remoteCompletionOutcome({
-              client: client!,
-              document,
-              position,
-              settings,
-              details,
-              started,
-              signal,
-              editInput,
-              plan,
-              telemetry,
-              selectedCompletionInfo: context.selectedCompletionInfo,
-            }),
+        this.directCompletionOutcome({
+          document,
+          position,
+          settings,
+          details,
+          started,
+          signal,
+          editInput,
+          plan,
+          telemetry,
+          selectedCompletionInfo: context.selectedCompletionInfo,
+        }),
       onRemoteReady: () => this.triggerInlineSuggestRefresh(document, cacheMetadata, settings, details),
     })
 
@@ -253,106 +230,6 @@ export class RemoteCompletionProvider implements vscode.InlineCompletionItemProv
 
     this.logReturned(settings, outcome.source, ready.edit, details, started)
     return [ready.item]
-  }
-
-  private async remoteCompletionOutcome(input: {
-    client: RemoteOpenCodeClient
-    document: vscode.TextDocument
-    position: vscode.Position
-    settings: RemoteSettings
-    details: string
-    started: number
-    signal: AbortSignal
-    editInput: Omit<CompletionEditInput, "text">
-    plan: CompletionPlan
-    telemetry: CompletionTelemetryDraft
-    selectedCompletionInfo?: SelectedCompletionInfo
-  }): Promise<CompletionRequestOutcome> {
-    try {
-      const symbolStarted = Date.now()
-      const retrievedSnippets = await this.retrieveCompletionSnippets({
-        document: input.document,
-        settings: input.settings,
-        details: input.details,
-        plan: input.plan,
-        editInput: input.editInput,
-        telemetry: input.telemetry,
-      })
-      input.telemetry.latencyMs.symbol = elapsedMs(symbolStarted)
-      input.telemetry.symbolCandidates = completionTelemetrySymbolCandidates(retrievedSnippets)
-      const plan = resolveCompletionPlanAfterSymbolRetrieval(input.plan, retrievedSnippets)
-      updateCompletionTelemetryPlan(input.telemetry, plan)
-      const route = routeCompletionModel({
-        plan,
-        settings: input.settings,
-        retrievedSnippets,
-      })
-      input.telemetry.modelRoute = completionTelemetryRoute(route)
-      input.telemetry.promptKind = completionTelemetryPromptKind(route)
-      updateCompletionTelemetryRoute(input.telemetry, route)
-      this.logDebug(input.settings, `${routeLogValue(route, input.settings)} ${input.details}`)
-      if (route.kind === "none") {
-        return this.noCompletionCandidateOutcome({
-          route,
-          settings: input.settings,
-          details: input.details,
-          started: input.started,
-          telemetry: input.telemetry,
-        })
-      }
-      if (route.kind === "deterministic-symbol") {
-        return this.deterministicCompletionOutcome({
-          route,
-          document: input.document,
-          settings: input.settings,
-          details: input.details,
-          started: input.started,
-          editInput: input.editInput,
-          plan,
-          retrievedSnippets,
-          telemetry: input.telemetry,
-          selectedCompletionInfo: input.selectedCompletionInfo,
-        })
-      }
-      const contextStarted = Date.now()
-      const prompt = await this.completionPromptForRoute({
-        route,
-        document: input.document,
-        position: input.position,
-        settings: input.settings,
-        details: input.details,
-        plan,
-        retrievedSnippets,
-        telemetry: input.telemetry,
-      })
-      input.telemetry.latencyMs.context = elapsedMs(contextStarted)
-      return await this.completionOutcomeWithRetry({
-        prompt: prompt.prompt,
-        selectedContextText: prompt.selectedContextText,
-        document: input.document,
-        settings: input.settings,
-        details: input.details,
-        started: input.started,
-        editInput: input.editInput,
-        plan,
-        retrievedSnippets,
-        textProfile: route.textProfile,
-        telemetry: input.telemetry,
-        selectedCompletionInfo: input.selectedCompletionInfo,
-        sendPrompt: (promptText) => this.sendCompletion(input.client, promptText, input.settings, input.signal),
-      })
-    } catch (error) {
-      if (input.signal.aborted) {
-        this.logCompletionTelemetry(input.settings, input.telemetry, input.started, false, "cancelled")
-        return { status: "rejected", reason: "cancelled", source: "remote" }
-      }
-      this.logInfo(
-        input.settings,
-        `Completion failed: ${formatError(error)} ${input.details} elapsedMs=${elapsedMs(input.started)}`,
-      )
-      this.logCompletionTelemetry(input.settings, input.telemetry, input.started, false, "remote-error")
-      return { status: "rejected", reason: "remote-error", source: "remote" }
-    }
   }
 
   private async directCompletionOutcome(input: {
@@ -485,7 +362,7 @@ export class RemoteCompletionProvider implements vscode.InlineCompletionItemProv
     details: string
     plan: CompletionPlan
     retrievedSnippets: RetrievedCompletionSnippet[]
-    transport?: "opencode" | "openai-compatible"
+    transport?: "openai-compatible"
     telemetry: CompletionTelemetryDraft
   }): Promise<{ prompt: string; selectedContextText: string }> {
     let selectedContextText = ""
@@ -667,12 +544,12 @@ export class RemoteCompletionProvider implements vscode.InlineCompletionItemProv
     textProfile: CompletionProfile
     telemetry: CompletionTelemetryDraft
     selectedCompletionInfo?: SelectedCompletionInfo
-    sendPrompt: (prompt: string) => Promise<OpenCodeMessage | undefined>
+    sendPrompt: (prompt: string) => Promise<ChipMateMessage | undefined>
     selectedContextText?: string
   }): Promise<CompletionRequestOutcome> {
     this.logInfo(input.settings, `sent ${input.details}`)
     const modelStarted = Date.now()
-    let response: OpenCodeMessage | undefined
+    let response: ChipMateMessage | undefined
     try {
       response = await input.sendPrompt(input.prompt)
     } finally {
@@ -704,7 +581,7 @@ export class RemoteCompletionProvider implements vscode.InlineCompletionItemProv
     const retryPrompt = completionRetryPrompt(input.prompt, input.editInput, initial.reason, input.textProfile)
     this.logInfo(input.settings, `retry-sent reason=${initial.reason} ${input.details}`)
     const retryModelStarted = Date.now()
-    let retryResponse: OpenCodeMessage | undefined
+    let retryResponse: ChipMateMessage | undefined
     try {
       retryResponse = await input.sendPrompt(retryPrompt)
     } finally {
@@ -942,7 +819,7 @@ export class RemoteCompletionProvider implements vscode.InlineCompletionItemProv
   }
 
   private completionOutcomeFromResponse(input: {
-    response: OpenCodeMessage | undefined
+    response: ChipMateMessage | undefined
     document: vscode.TextDocument
     settings: RemoteSettings
     details: string
@@ -1146,44 +1023,6 @@ export class RemoteCompletionProvider implements vscode.InlineCompletionItemProv
     this.logDebug(input.settings, `edit ${editDetails(qualityEdit)} visibleChars=${pipeline.candidateText.length} ${input.details}`)
     this.logCompletionTelemetry(input.settings, input.telemetry, input.started, true)
     return { status: "ok", edit: qualityEdit, source: "remote" }
-  }
-
-  private async getSession(client: RemoteOpenCodeClient, signal: AbortSignal) {
-    if (this.sessionID) return this.sessionID
-    const session = await client.createSession(INLINE_COMPLETION_SESSION_TITLE, signal)
-    this.sessionID = session.id
-    return session.id
-  }
-
-  private async sendCompletion(
-    client: RemoteOpenCodeClient,
-    prompt: string,
-    settings: RemoteSettings,
-    signal: AbortSignal,
-  ) {
-    try {
-      return await this.sendCompletionWithSession(client, prompt, settings, signal)
-    } catch (error) {
-      if (!isSessionNotFoundError(error)) throw error
-      this.sessionID = undefined
-      this.deps.output.appendLine("Completion session was not found; retrying with a new session.")
-      return this.sendCompletionWithSession(client, prompt, settings, signal)
-    }
-  }
-
-  private async sendCompletionWithSession(
-    client: RemoteOpenCodeClient,
-    prompt: string,
-    settings: RemoteSettings,
-    signal: AbortSignal,
-  ) {
-    const sessionID = await this.getSession(client, signal)
-    return client.sendMessage({
-      sessionID,
-      text: prompt,
-      model: parseModel(settings.defaultModel),
-      signal,
-    })
   }
 
   private logInfo(settings: RemoteSettings, message: string) {
@@ -1618,9 +1457,9 @@ function completionRequestKey(document: vscode.TextDocument, position: vscode.Po
   return [
     document.uri.toString(),
     document.languageId,
-    settings.completion.provider,
+    "openai-compatible",
     settings.completion.profile,
-    settings.completion.provider === "openai-compatible" ? document.version : "",
+    document.version,
     position.line,
     position.character,
     lineText,
@@ -1696,14 +1535,12 @@ function waitForOutcome(
 }
 
 function requestDetails(document: vscode.TextDocument, position: vscode.Position, settings: RemoteSettings) {
-  const model = settings.completion.provider === "openai-compatible"
-    ? completionModel(settings) || "direct-model-missing"
-    : settings.defaultModel.trim() || "server-default"
+  const model = completionModel(settings) || "direct-model-missing"
   return [
     `path="${quoteLogValue(relativePath(document.uri))}"`,
     `line=${position.line + 1}`,
     `character=${position.character + 1}`,
-    `provider=${settings.completion.provider}`,
+    "provider=openai-compatible",
     `profile=${settings.completion.profile}`,
     `model="${quoteLogValue(model)}"`,
     `debounceMs=${settings.completion.debounceMs}`,
@@ -1717,9 +1554,7 @@ function routeRequestDetails(route: CompletionModelRoute, settings: RemoteSettin
     `configuredProfile=${settings.completion.profile}`,
     `effectiveProfile=${route.modelProfile}`,
     `promptKind=${route.promptKind}`,
-    settings.completion.provider === "openai-compatible"
-      ? `transport=${transport}`
-      : "",
+    `transport=${transport}`,
   ].filter(Boolean).join(" ")
 }
 
@@ -2090,7 +1925,7 @@ function completionTelemetryPromptKind(route: CompletionModelRoute): NonNullable
   return route.promptKind
 }
 
-function deterministicCompletionMessage(text: string): OpenCodeMessage {
+function deterministicCompletionMessage(text: string): ChipMateMessage {
   return {
     info: {
       id: "deterministic-symbol",

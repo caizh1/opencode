@@ -1,9 +1,9 @@
 import type {
-  OpenCodeMessage,
-  OpenCodeMessageInfo,
-  OpenCodeModelInfo,
-  OpenCodeModelLimit,
-  OpenCodeTokenUsage,
+  ChipMateMessage,
+  ChipMateMessageInfo,
+  ChipMateModelInfo,
+  ChipMateModelLimit,
+  ChipMateTokenUsage,
   RenderedSessionUsage,
   RenderedUsage,
   UsageLevel,
@@ -11,7 +11,7 @@ import type {
 
 const USAGE_SEPARATOR = " | "
 
-export function usageFromMessageInfo(info: OpenCodeMessageInfo | undefined): RenderedUsage | undefined {
+export function usageFromMessageInfo(info: ChipMateMessageInfo | undefined): RenderedUsage | undefined {
   if (info?.role !== "assistant") return
   const tokens = normalizeTokenUsage(info.tokens)
   if (!tokens || !hasPositiveUsage(tokens)) return
@@ -19,8 +19,8 @@ export function usageFromMessageInfo(info: OpenCodeMessageInfo | undefined): Ren
 }
 
 export function summarizeSessionUsage(input: {
-  messages: OpenCodeMessage[]
-  models: OpenCodeModelInfo[]
+  messages: ChipMateMessage[]
+  models: ChipMateModelInfo[]
   selectedModel: string
   loadedMessageLimit?: number
 }): RenderedSessionUsage {
@@ -37,8 +37,8 @@ export function summarizeSessionUsage(input: {
       status: pending ? "pending" : "unavailable",
       summary: pending ? "Usage pending" : "Usage unavailable",
       detail: pending
-        ? "Token usage will appear after OpenCode returns an assistant response."
-        : "This OpenCode server did not return token usage for loaded assistant messages.",
+        ? "Token usage will appear after ChipMate returns an assistant response."
+        : "The configured provider did not return token usage for loaded assistant messages.",
       level: "normal",
     }
   }
@@ -67,10 +67,10 @@ export function summarizeSessionUsage(input: {
   }
 }
 
-export function normalizeTokenUsage(input: OpenCodeTokenUsage | unknown): OpenCodeTokenUsage | undefined {
+export function normalizeTokenUsage(input: ChipMateTokenUsage | unknown): ChipMateTokenUsage | undefined {
   const root = objectRecord(input)
   const cache = objectRecord(root.cache)
-  const usage: OpenCodeTokenUsage = {
+  const usage: ChipMateTokenUsage = {
     total: nonNegativeNumber(root.total),
     input: nonNegativeNumber(root.input),
     output: nonNegativeNumber(root.output),
@@ -84,7 +84,7 @@ export function normalizeTokenUsage(input: OpenCodeTokenUsage | unknown): OpenCo
   return usage
 }
 
-export function normalizeModelLimit(input: unknown): OpenCodeModelLimit {
+export function normalizeModelLimit(input: unknown): ChipMateModelLimit {
   const limit = objectRecord(input)
   return {
     context: positiveNumber(limit.context),
@@ -107,7 +107,7 @@ export function formatCost(value: number | undefined): string {
   return `$${value.toFixed(2)}`
 }
 
-function renderUsage(tokens: OpenCodeTokenUsage, cost: number | undefined): RenderedUsage {
+function renderUsage(tokens: ChipMateTokenUsage, cost: number | undefined): RenderedUsage {
   const input = tokens.input ?? 0
   const output = tokens.output ?? 0
   const reasoning = tokens.reasoning ?? 0
@@ -176,10 +176,10 @@ function totalUsage(usages: RenderedUsage[], maybeCapped: boolean): RenderedUsag
 }
 
 function resolveContextLimit(input: {
-  messages: OpenCodeMessage[]
-  models: OpenCodeModelInfo[]
+  messages: ChipMateMessage[]
+  models: ChipMateModelInfo[]
   selectedModel: string
-}): OpenCodeModelLimit {
+}): ChipMateModelLimit {
   const latestAssistant = [...input.messages]
     .reverse()
     .map((message) => message.info)
@@ -196,7 +196,7 @@ function resolveContextLimit(input: {
   }
 }
 
-function contextSummary(used: number, limit: OpenCodeModelLimit) {
+function contextSummary(used: number, limit: ChipMateModelLimit) {
   if (used <= 0) return
   if (!limit.context) {
     return {
@@ -233,13 +233,13 @@ function usageSummary(input: { input: number; output: number; reasoning: number;
   return parts.join(USAGE_SEPARATOR)
 }
 
-function isPendingZeroUsage(info: OpenCodeMessageInfo) {
+function isPendingZeroUsage(info: ChipMateMessageInfo) {
   if (info.time?.completed) return false
   const tokens = normalizeTokenUsage(info.tokens)
   return Boolean(tokens && !hasPositiveUsage(tokens))
 }
 
-function hasPositiveUsage(tokens: OpenCodeTokenUsage) {
+function hasPositiveUsage(tokens: ChipMateTokenUsage) {
   return [
     tokens.total,
     tokens.input,

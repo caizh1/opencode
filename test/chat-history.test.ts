@@ -41,15 +41,15 @@ describe("chat history flow", () => {
     expect(chatViewSource).toContain("this.reconcileSessionSelection()")
   })
 
-  test("hides external OpenCode sessions from plugin chat history", () => {
+  test("hides external ChipMate sessions from plugin chat history", () => {
     expect(chatViewSource).toContain("CHAT_SESSION_TITLE")
     expect(chatViewSource).toContain("hiddenExternalSessions")
     expect(chatViewSource).toContain("messages.some(isExternalChatMessage)")
     expect(chatViewSource).toContain("private async hideExternalSession")
-    expect(chatViewSource).toContain("Hidden external OpenCode session")
+    expect(chatViewSource).toContain("Hidden external ChipMate session")
   })
 
-  test("recovers when the remote server has lost the selected session", () => {
+  test("recovers when the direct runtime has lost the selected session", () => {
     expect(chatViewSource).toContain("isSessionNotFoundError")
     expect(chatViewSource).toContain("private reconcileSessionSelection")
     expect(chatViewSource).toContain("this.sessions.some((session) => session.id === this.sessionID)")
@@ -60,7 +60,7 @@ describe("chat history flow", () => {
   test("retries sends with a new session after stale-session errors", () => {
     expect(chatViewSource).toContain("let preparedMessage")
     expect(chatViewSource).toContain("private async sendPreparedMessage")
-    expect(chatViewSource).toContain("Selected remote session was not found; retrying with a new session.")
+    expect(chatViewSource).toContain("Selected ChipMate session was not found; retrying with a new session.")
     expect(chatViewSource).toContain("this.clearMissingSession(this.sessionID)")
   })
 
@@ -117,7 +117,7 @@ describe("chat history flow", () => {
     expect(body).not.toContain("isCloseAffordance")
   })
 
-  test("streams chat replies through OpenCode events with async polling fallback", () => {
+  test("streams chat replies through ChipMate events with async polling fallback", () => {
     expect(chatViewSource).toContain("ensureEventSubscription")
     expect(chatViewSource).toContain("subscribeEvents")
     expect(chatViewSource).toContain("sendMessageAsync")
@@ -142,7 +142,7 @@ describe("chat history flow", () => {
     expect(chatViewSource).toContain("this.stopMessagePollingFallback()")
     expect(chatViewSource).toContain("suppressStreamingEventsForSession")
     expect(chatViewSource).toContain("shouldSuppressStreamingEvent")
-    expect(chatViewSource).toContain("openCodeEventSessionID")
+    expect(chatViewSource).toContain("chipMateEventSessionID")
     expect(chatViewSource).toContain("sendCancellable:")
   })
 
@@ -156,8 +156,8 @@ describe("chat history flow", () => {
     expect(chatViewSource).toContain("remoteRetryMessage")
     expect(chatViewSource).toContain("this.clearActiveSendState()")
     expect(chatViewSource).toContain("this.sending = false")
-    expect(chatViewSource).toContain("远端 OpenCode 正在重试模型请求")
-    expect(chatStreamSource).toContain("retry?: OpenCodeSessionStatus")
+    expect(chatViewSource).toContain("远端 ChipMate 正在重试模型请求")
+    expect(chatStreamSource).toContain("retry?: ChipMateSessionStatus")
     expect(chatStreamSource).toContain('retry: type === "retry" ? normalizedStatus : undefined')
   })
 
@@ -364,10 +364,10 @@ describe("chat history flow", () => {
     expect(chatHtmlSource).toContain('part.type === "reasoning" ? " reasoning" : ""')
   })
 
-  test("marks remote server filesystem tool usage", () => {
-    expect(chatViewSource).toContain("SERVER_FILESYSTEM_TOOLS")
+  test("marks workspace filesystem tool usage", () => {
+    expect(chatViewSource).toContain("WORKSPACE_FILESYSTEM_TOOLS")
     expect(chatViewSource).toContain("serverToolWarning")
     expect(chatViewSource).toContain("flaggedSessions")
-    expect(chatHtmlSource).toContain("Server tools used")
+    expect(chatHtmlSource).toContain("Workspace tools used")
   })
 })

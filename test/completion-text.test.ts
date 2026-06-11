@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import { completionInsertText } from "../src/completion-text"
-import type { OpenCodeMessage, OpenCodePart } from "../src/types"
+import type { ChipMateMessage, ChipMatePart } from "../src/types"
 
 describe("completion insert text", () => {
   test("uses text parts and drops structured reasoning", () => {
@@ -102,7 +102,7 @@ describe("completion insert text", () => {
   })
 })
 
-function message(parts: OpenCodePart[]): OpenCodeMessage {
+function message(parts: ChipMatePart[]): ChipMateMessage {
   return {
     info: { id: "completion", role: "assistant" },
     parts,

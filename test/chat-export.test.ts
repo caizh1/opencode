@@ -53,7 +53,7 @@ describe("chat markdown export", () => {
       sessionTitle: "VS Code chat",
       exportedAt: new Date("2026-05-31T00:00:00.000Z"),
     })
-    expect(full).toContain("# OpenCode Chat Export")
+    expect(full).toContain("# ChipMate Chat Export")
     expect(full).toContain("## User - 2023-11-14T22:13:20.000Z")
     expect(full).toContain("## Assistant - 2023-11-14T22:13:21.000Z")
     expect(full).toContain("```c\nint x;\n```")

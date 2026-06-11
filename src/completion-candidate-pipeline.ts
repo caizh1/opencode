@@ -10,12 +10,12 @@ import { completionPostprocessDebug, postprocessCompletion, trimCompletionForCIn
 import { fallbackCompletionText } from "./completion-test-fallback"
 import { completionInsertText } from "./completion-text"
 import type { CompletionPlan, RetrievedCompletionSnippet } from "./completion-types"
-import type { CompletionProfile, OpenCodeMessage } from "./types"
+import type { CompletionProfile, ChipMateMessage } from "./types"
 
 export type CompletionCandidateDecision = "accepted" | "rejected"
 
 export type CompletionCandidatePipelineInput = {
-  response?: OpenCodeMessage
+  response?: ChipMateMessage
   rawText?: string
   textProfile: CompletionProfile
   editInput: Omit<CompletionEditInput, "text">

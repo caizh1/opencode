@@ -1,4 +1,4 @@
-import type { CompletionProfile, OpenCodeMessage, OpenCodePart, RemoteSettings } from "./types"
+import type { CompletionProfile, ChipMateMessage, ChipMatePart, RemoteSettings } from "./types"
 
 export type CompletionTransport = "raw-completions" | "chat-completions"
 
@@ -47,8 +47,8 @@ export class CompletionModelClient {
     profile?: CompletionProfile
     transport?: CompletionTransport
     seed?: number
-  }): Promise<OpenCodeMessage> {
-    const baseUrl = this.settings.completion.apiBaseUrl
+  }): Promise<ChipMateMessage> {
+    const baseUrl = completionApiBaseUrl(this.settings)
     const model = completionModel(this.settings)
     if (!baseUrl) throw new CompletionModelRequestError(0, "Completion API base URL is required.")
     if (!model) throw new CompletionModelRequestError(0, "Completion model is required.")
@@ -148,7 +148,11 @@ export class CompletionModelClient {
 }
 
 export function completionModel(settings: RemoteSettings) {
-  return settings.completion.model.trim() || settings.defaultModel.trim()
+  return settings.completion.model.trim() || settings.provider?.chatModel?.trim() || settings.defaultModel.trim()
+}
+
+function completionApiBaseUrl(settings: RemoteSettings) {
+  return settings.provider?.apiBaseUrl?.trim() || settings.completion.apiBaseUrl.trim()
 }
 
 export function completionMessages(prompt: string) {
@@ -190,7 +194,7 @@ export function directCompletionRequestDiagnostic(error: unknown, profile: Compl
   return "Direct completion profile qwen-coder-fim requires an OpenAI-compatible raw /completions endpoint with Qwen FIM token support; this server appears to reject /completions. Use a FIM-compatible endpoint/profile for ordinary code, or use generic-chat only for instruction/comment-to-code completions."
 }
 
-function normalizeChatCompletionMessage(input: unknown): OpenCodeMessage {
+function normalizeChatCompletionMessage(input: unknown): ChipMateMessage {
   const root = objectRecord(input)
   const choices = Array.isArray(root.choices) ? root.choices : []
   const choice = objectRecord(choices[0])
@@ -201,7 +205,7 @@ function normalizeChatCompletionMessage(input: unknown): OpenCodeMessage {
     throw new CompletionModelRequestError(0, "Completion model response has no message content.")
   }
 
-  const parts: OpenCodePart[] = []
+  const parts: ChipMatePart[] = []
   if (reasoning) parts.push({ type: "reasoning", text: reasoning })
   if (content) parts.push({ type: "text", text: content })
   return {
@@ -215,7 +219,7 @@ function normalizeChatCompletionMessage(input: unknown): OpenCodeMessage {
   }
 }
 
-function normalizeRawCompletionMessage(input: unknown): OpenCodeMessage {
+function normalizeRawCompletionMessage(input: unknown): ChipMateMessage {
   const root = objectRecord(input)
   const choices = Array.isArray(root.choices) ? root.choices : []
   const choice = objectRecord(choices[0])
@@ -226,7 +230,7 @@ function normalizeRawCompletionMessage(input: unknown): OpenCodeMessage {
     throw new CompletionModelRequestError(0, "Completion model response has no completion text.")
   }
 
-  const parts: OpenCodePart[] = []
+  const parts: ChipMatePart[] = []
   if (reasoning) parts.push({ type: "reasoning", text: reasoning })
   if (content) parts.push({ type: "text", text: content })
   return {

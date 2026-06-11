@@ -4,9 +4,9 @@ import { estimateEmbeddingTokens } from "./rag-token"
 import type { EmbeddingProvider, RagEndpointPolicyResult, RerankProvider, RerankResult } from "./rag-types"
 import type { RagSettings } from "./types"
 
-const RAG_RERANK_PROBE_QUERY = "opencode RAG rerank connectivity probe"
+const RAG_RERANK_PROBE_QUERY = "ChipMate RAG rerank connectivity probe"
 const RAG_RERANK_PROBE_DOCUMENTS = [
-  "opencode RAG rerank probe document",
+  "ChipMate RAG rerank probe document",
   "unrelated fallback document",
 ]
 
@@ -75,7 +75,7 @@ export function checkRagEndpoint(endpoint: string, allowedHosts: string[] = []):
   if (isLocalhost(host)) return { ok: true, kind: "localhost", url }
   if (isPrivateHost(host)) return { ok: true, kind: "private-lan", url }
   if (allowedHosts.map(normalizeHost).includes(host)) return { ok: true, kind: "approved-host", url }
-  return { ok: false, kind: "blocked", url, reason: `${url.hostname} is not localhost, private LAN, or in opencode.remote.rag.allowedHosts` }
+  return { ok: false, kind: "blocked", url, reason: `${url.hostname} is not localhost, private LAN, or in chipmate.rag.allowedHosts` }
 }
 
 export function createHttpEmbeddingProvider(settings: RagSettings, apiKey?: string, diagnostics?: RagHttpDiagnostics): EmbeddingProvider | undefined {

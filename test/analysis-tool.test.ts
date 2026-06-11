@@ -9,10 +9,9 @@ import {
   queryEvidence,
   runAnalysisTool,
 } from "../src/codegraph-analysis"
-import { createOpenCodeLocalAgentPolicyTemplate, createOpenCodeLocalAnalysisTool, localAnalysisToolNames } from "../src/analysis-tool-template"
 import type { CodeGraphIndex } from "../src/codegraph-types"
 
-describe("analysis tool API and offline evidence RAG", () => {
+describe("local codegraph analysis API and offline evidence RAG", () => {
   test("serves search, symbol, graph, module, and state-machine queries with audit", async () => {
     const index = sampleIndex()
     const search = await runAnalysisTool({ index, tool: "search", args: { query: "who calls nand_read_page" } })
@@ -76,22 +75,6 @@ describe("analysis tool API and offline evidence RAG", () => {
     const policy = evaluateAnswerPolicy("解释 X", emptyPack)
     expect(policy.allowed).toBe(false)
     expect(policy.confidence).toBe("none")
-  })
-
-  test("generates OpenCode custom tool and offline agent policy templates", () => {
-    const tool = createOpenCodeLocalAnalysisTool({ endpoint: "http://127.0.0.1:1234", token: "secret" })
-    expect(tool).toContain("@opencode-ai/plugin")
-    expect(tool).toContain("opencode_local_analysis")
-    expect(tool).toContain("Bearer")
-    expect(tool).toContain("queryEvidence")
-    expect(localAnalysisToolNames()).toContain("getStatePath")
-
-    const policy = JSON.parse(createOpenCodeLocalAgentPolicyTemplate())
-    expect(policy.agent["vscode-local"].permission.webfetch).toBe("deny")
-    expect(policy.agent["vscode-local"].permission.websearch).toBe("deny")
-    expect(policy.agent["vscode-local"].permission.edit).toBe("deny")
-    expect(policy.agent["vscode-local"].permission.bash).toBe("deny")
-    expect(policy.agent["vscode-local"].permission.opencode_local_analysis).toBe("allow")
   })
 })
 

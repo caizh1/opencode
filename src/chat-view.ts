@@ -13,11 +13,12 @@ import {
 } from "./chat-export"
 import { createChatViewHtml } from "./chat-html"
 import { CHAT_SESSION_TITLE, isPluginChatMessage, isPluginChatSession } from "./chat-session"
-import { applyOpenCodeEventToMessages, normalizeOpenCodeEvent, openCodeEventSessionID } from "./chat-stream"
+import { applyChipMateEventToMessages, normalizeChipMateEvent, chipMateEventSessionID } from "./chat-stream"
 import type { CodeGraphContextProvider } from "./codegraph-types"
 import type { CodeIntelligenceSnapshot } from "./analysis-types"
 import { CompletionModelClient, completionModel } from "./completion-model-client"
 import { isInlineCompletionMessage, isInlineCompletionSession } from "./completion-session"
+import { CHIPMATE_CHAT_VIEW_ID, CHIPMATE_COMMANDS, CHIPMATE_VIEW_CONTAINER_ID } from "./chipmate-constants"
 import {
   addPickedFilesToContext,
   buildChatPrompt,
@@ -29,34 +30,29 @@ import {
 import type { TrackedEditorContext } from "./editor-context"
 import { MissingLocalOnlyAgentError, selectRequestAgent } from "./local-agent"
 import { buildMentionIndex, searchMentionIndex, type MentionIndexEntry } from "./mention-index"
-import {
-  isSessionNotFoundError,
-  messageText,
-  parseModel,
-  RemoteOpenCodeAuthError,
-  RemoteOpenCodeClient,
-  RemoteOpenCodeConnectionError,
-} from "./remote-client"
+import { DirectAgentClient } from "./direct-agent-client"
+import type { SkillMetadata } from "./skills"
 import { splitThinkingFromParts } from "./thinking"
 import { summarizeSessionUsage, usageFromMessageInfo } from "./usage"
 import type {
   ChatContextOptions,
   ConnectionState,
-  OpenCodeAgentInfo,
-  OpenCodeMessage,
-  OpenCodeModelInfo,
-  OpenCodePart,
-  OpenCodeEvent,
-  OpenCodeSession,
-  OpenCodeSessionStatus,
+  ChipMateAgentInfo as ChipMateAgentInfo,
+  ChipMateMessage as ChipMateMessage,
+  ChipMateModelInfo as ChipMateModelInfo,
+  ChipMatePart as ChipMatePart,
+  ChipMateEvent as ChipMateEvent,
+  ChipMateSession as ChipMateSession,
+  ChipMateSessionStatus as ChipMateSessionStatus,
   PromptModel,
+  PermissionMode,
   CodeGraphStatus,
   RagConfigurationApplyResult,
   RagStatus,
   RenderedUsage,
   RemoteSettings,
 } from "./types"
-import { connectionInputHasPassword, ragSettingsInputChangesEmbeddingIdentity, ragSettingsInputMatchesCurrent, saveCompletionSettings, saveRagSettings, type CompletionSettingsInput, type ConnectionSettingsInput, type RagSettingsInput } from "./settings"
+import { connectionInputHasPassword, ragSettingsInputChangesEmbeddingIdentity, ragSettingsInputMatchesCurrent, saveCompletionSettings, savePermissionMode, saveRagSettings, saveSkillsSettings, type CompletionSettingsInput, type ConnectionSettingsInput, type RagSettingsInput } from "./settings"
 
 const SESSION_MESSAGE_LIMIT = 100
 const MODEL_REFRESH_TIMEOUT_MS = 8000
@@ -124,6 +120,8 @@ type ChatViewMessage =
       settings: RagSettingsInput
     }
   | { type: "setRagApiKey" }
+  | { type: "saveSkillsSettings"; enabled: string[] }
+  | { type: "savePermissionMode"; mode: PermissionMode }
   | {
       type: "sendMessage"
       text: string
@@ -165,7 +163,7 @@ type MentionIndexState = {
 }
 
 type ActiveSend = {
-  client: RemoteOpenCodeClient
+  client: DirectAgentClient
   sessionID: string
   generation: number
 }
@@ -174,7 +172,7 @@ type RemoteChatViewProviderDeps = {
   output: vscode.OutputChannel
   contextStore: LocalContextStore
   codeGraph?: CodeGraphContextProvider
-  getClient: () => RemoteOpenCodeClient | undefined
+  getClient: () => DirectAgentClient | undefined
   getSettings: () => RemoteSettings
   getCompletionApiKey: () => Promise<string | undefined>
   promptCompletionApiKey: () => Promise<boolean>
@@ -183,27 +181,29 @@ type RemoteChatViewProviderDeps = {
   connectWithSettings: (input: ConnectionSettingsInput) => Promise<void>
   testWithSettings: (input: ConnectionSettingsInput) => Promise<void>
   setConnectionState: (state: ConnectionState, detail?: string) => void
-  clearClient: (client: RemoteOpenCodeClient) => void
+  clearClient: (client: DirectAgentClient) => void
   openOutput: () => void
   suppressNextRagConfigurationApply?: () => void
+  invalidateSkills?: () => void
+  listSkills?: () => Promise<SkillMetadata[]>
 }
 
 export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
-  static readonly viewType = "opencodeRemote.sidebar"
+  static readonly viewType = CHIPMATE_CHAT_VIEW_ID
 
   private view?: vscode.WebviewView
   private sessionID?: string
   private sessions: RenderedSession[] = []
   private messages: RenderedMessage[] = []
-  private remoteMessages: OpenCodeMessage[] = []
+  private remoteMessages: ChipMateMessage[] = []
   private connectionState: ConnectionState = "disconnected"
-  private connectionDetail = "Ready. Enter a server URL and click Connect."
+  private connectionDetail = "Ready. Configure an OpenAI-compatible provider to start."
   private sending = false
   private loadingMessages = false
   private loadingModels = false
   private loadingAgents = false
-  private models: OpenCodeModelInfo[] = []
-  private agents: OpenCodeAgentInfo[] = []
+  private models: ChipMateModelInfo[] = []
+  private agents: ChipMateAgentInfo[] = []
   private modelError = ""
   private agentError = ""
   private historyError = ""
@@ -211,6 +211,9 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
   private codeIntelligence?: CodeIntelligenceSnapshot
   private loadingCodeIntelligence = false
   private codeIntelligenceError = ""
+  private skills: SkillMetadata[] = []
+  private skillsError = ""
+  private loadingSkills = false
   private lastContextSummary: ContextSummaryItem[] = []
   private readonly flaggedSessions = new Set<string>()
   private readonly hiddenCompletionSessions = new Set<string>()
@@ -219,7 +222,7 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
   private mentionIndex?: MentionIndexState
   private mentionIndexBuild?: Promise<MentionIndexState>
   private eventSubscription?: {
-    client: RemoteOpenCodeClient
+    client: DirectAgentClient
     controller: AbortController
     ready: Promise<boolean>
     path: EventStreamPath
@@ -247,7 +250,7 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
 
   resolveWebviewView(webviewView: vscode.WebviewView) {
     this.view = webviewView
-    this.deps.output.appendLine("[view] OpenCode Remote 0.0.14 using opencodeRemote.sidebar")
+    this.deps.output.appendLine(`[view] ChipMate using ${CHIPMATE_CHAT_VIEW_ID}`)
     webviewView.webview.options = {
       enableScripts: true,
     }
@@ -256,16 +259,17 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
       void this.handleMessage(message)
     })
     this.postState()
+    void this.refreshSkills()
   }
 
   async reveal() {
     try {
-      await vscode.commands.executeCommand("workbench.view.extension.opencodeRemote")
+      await vscode.commands.executeCommand(`workbench.view.extension.${CHIPMATE_VIEW_CONTAINER_ID}`)
       await vscode.commands.executeCommand(`${RemoteChatViewProvider.viewType}.focus`)
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
-      this.deps.output.appendLine(`[view] Failed to open workbench.view.extension.opencodeRemote / ${RemoteChatViewProvider.viewType}.focus: ${message}`)
-      vscode.window.setStatusBarMessage("Open OpenCode from the Activity Bar.", 3000)
+      this.deps.output.appendLine(`[view] Failed to open workbench.view.extension.${CHIPMATE_VIEW_CONTAINER_ID} / ${RemoteChatViewProvider.viewType}.focus: ${message}`)
+      vscode.window.setStatusBarMessage("Open ChipMate from the Activity Bar.", 3000)
     }
   }
 
@@ -280,6 +284,7 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   async refresh() {
+    await this.refreshSkills()
     const client = this.deps.getClient()
     if (!client || this.connectionState !== "connected") {
       this.stopEventSubscription()
@@ -308,7 +313,7 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
         this.reportRemoteConnectionFailure(client, "Failed to load selected session", error)
       }
     } catch (error) {
-      this.reportRemoteConnectionFailure(client, "Failed to refresh remote chat", error)
+      this.reportRemoteConnectionFailure(client, "Failed to refresh ChipMate chat", error)
     } finally {
       this.loadingMessages = false
       this.postState()
@@ -323,7 +328,7 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
     this.postState()
   }
 
-  private ensureEventSubscription(client: RemoteOpenCodeClient) {
+  private ensureEventSubscription(client: DirectAgentClient) {
     const current = this.eventSubscription
     if (current?.client === client && !current.controller.signal.aborted) {
       if (this.eventStreamReady) return Promise.resolve(true)
@@ -334,7 +339,7 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
     return this.startEventSubscription(client, "/event", true)
   }
 
-  private startEventSubscription(client: RemoteOpenCodeClient, path: EventStreamPath, allowGlobalFallback: boolean) {
+  private startEventSubscription(client: DirectAgentClient, path: EventStreamPath, allowGlobalFallback: boolean) {
     this.stopEventSubscription()
     this.eventStreamReady = false
     this.eventStreamFailed = false
@@ -416,20 +421,20 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
     this.eventStreamFailed = false
   }
 
-  private beginActiveSend(client: RemoteOpenCodeClient, sessionID: string) {
+  private beginActiveSend(client: DirectAgentClient, sessionID: string) {
     const generation = ++this.activeSendGeneration
     this.activeSend = { client, sessionID, generation }
     return generation
   }
 
-  private startSendStatusWatchdog(client: RemoteOpenCodeClient, sessionID: string, generation?: number) {
+  private startSendStatusWatchdog(client: DirectAgentClient, sessionID: string, generation?: number) {
     this.stopSendStatusWatchdog()
     const activeGeneration = generation ?? ++this.activeSendGeneration
     this.activeSend = { client, sessionID, generation: activeGeneration }
     this.scheduleSendStatusWatchdog(client, sessionID, activeGeneration)
   }
 
-  private scheduleSendStatusWatchdog(client: RemoteOpenCodeClient, sessionID: string, generation: number) {
+  private scheduleSendStatusWatchdog(client: DirectAgentClient, sessionID: string, generation: number) {
     this.stopSendStatusWatchdog()
     this.sendStatusTimer = setTimeout(() => {
       this.sendStatusTimer = undefined
@@ -443,14 +448,14 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
     this.sendStatusTimer = undefined
   }
 
-  private startMessagePollingFallback(client: RemoteOpenCodeClient, sessionID: string, generation = this.activeSend?.generation) {
+  private startMessagePollingFallback(client: DirectAgentClient, sessionID: string, generation = this.activeSend?.generation) {
     if (generation === undefined) return
     this.stopMessagePollingFallback()
     this.scheduleMessagePollingFallback(client, sessionID, generation, 0)
   }
 
   private scheduleMessagePollingFallback(
-    client: RemoteOpenCodeClient,
+    client: DirectAgentClient,
     sessionID: string,
     generation: number,
     delayMs = MESSAGE_POLL_INTERVAL_MS,
@@ -497,20 +502,20 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
       const accepted = await withRequestTimeout("session abort", SESSION_ABORT_TIMEOUT_MS, (signal) =>
         client.abortSession(sessionID, signal),
       )
-      this.deps.output.appendLine(`[send] remote abort ${sessionID}: ${accepted ? "accepted" : "not accepted"}`)
+      this.deps.output.appendLine(`[send] agent abort ${sessionID}: ${accepted ? "accepted" : "not accepted"}`)
       if (!accepted) {
         this.messages = [
           ...this.messages,
-          localMessage("error", "Stop requested, but the remote OpenCode server did not accept the abort request."),
+          localMessage("error", "Stop requested, but the ChipMate runtime did not accept the abort request."),
         ]
         this.postState()
       }
     } catch (error) {
       const message = formatErrorMessage(error)
-      this.deps.output.appendLine(`[send] remote abort ${sessionID} failed: ${message}`)
+      this.deps.output.appendLine(`[send] agent abort ${sessionID} failed: ${message}`)
       this.messages = [
         ...this.messages,
-        localMessage("error", `Stop requested, but the remote OpenCode abort request failed: ${message}`),
+        localMessage("error", `Stop requested, but the ChipMate abort request failed: ${message}`),
       ]
       this.postState()
     }
@@ -525,11 +530,11 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
     if (!sessionID || this.suppressedStreamingSessionID === sessionID) this.suppressedStreamingSessionID = undefined
   }
 
-  private shouldSuppressStreamingEvent(event: OpenCodeEvent, sessionID: string | undefined) {
+  private shouldSuppressStreamingEvent(event: ChipMateEvent, sessionID: string | undefined) {
     return Boolean(sessionID && this.suppressedStreamingSessionID === sessionID && isStreamingMessageEvent(event.type))
   }
 
-  private isActiveSend(client: RemoteOpenCodeClient, sessionID: string, generation: number) {
+  private isActiveSend(client: DirectAgentClient, sessionID: string, generation: number) {
     return (
       this.sending &&
       this.sessionID === sessionID &&
@@ -539,7 +544,7 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
     )
   }
 
-  private async pollActiveSendStatus(client: RemoteOpenCodeClient, sessionID: string, generation: number) {
+  private async pollActiveSendStatus(client: DirectAgentClient, sessionID: string, generation: number) {
     if (!this.isActiveSend(client, sessionID, generation)) return
 
     try {
@@ -564,7 +569,7 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
     if (this.isActiveSend(client, sessionID, generation)) this.scheduleSendStatusWatchdog(client, sessionID, generation)
   }
 
-  private async pollActiveSendMessages(client: RemoteOpenCodeClient, sessionID: string, generation: number) {
+  private async pollActiveSendMessages(client: DirectAgentClient, sessionID: string, generation: number) {
     if (!this.isActiveSend(client, sessionID, generation)) return
 
     try {
@@ -596,9 +601,9 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   private async failActiveSendWithRetry(
-    client: RemoteOpenCodeClient,
+    client: DirectAgentClient,
     sessionID: string,
-    status: OpenCodeSessionStatus,
+    status: ChipMateSessionStatus,
     generation = this.activeSend?.generation,
   ) {
     if (generation === undefined || !this.isActiveSend(client, sessionID, generation)) return
@@ -623,20 +628,20 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
     this.postState()
   }
 
-  private handleRemoteEvent(client: RemoteOpenCodeClient, rawEvent: unknown) {
+  private handleRemoteEvent(client: DirectAgentClient, rawEvent: unknown) {
     if (this.deps.getClient() !== client) return
-    const event = normalizeOpenCodeEvent(rawEvent)
+    const event = normalizeChipMateEvent(rawEvent)
     if (!event) return
     this.logRemoteEventType(event.type)
     if (event.type === "server.connected") return
 
-    const eventSessionID = openCodeEventSessionID(event)
+    const eventSessionID = chipMateEventSessionID(event)
     if (this.shouldSuppressStreamingEvent(event, eventSessionID)) {
       this.deps.output.appendLine(`[event] suppressed canceled stream event ${event.type} for ${eventSessionID}`)
       return
     }
 
-    const result = applyOpenCodeEventToMessages(this.remoteMessages, event, this.sessionID)
+    const result = applyChipMateEventToMessages(this.remoteMessages, event, this.sessionID)
     if (result.refreshSessions) {
       void this.refreshSessionList(client)
         .then(() => this.postState())
@@ -649,7 +654,7 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
     }
     if (result.error) {
       this.clearActiveSendState()
-      this.messages = [...this.messages, localMessage("error", `Remote session error: ${result.error}`)]
+      this.messages = [...this.messages, localMessage("error", `ChipMate session error: ${result.error}`)]
       this.postState()
     }
 
@@ -676,7 +681,7 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
     if (count <= 5 || count % 25 === 0) this.deps.output.appendLine(`[event] ${type} #${count}`)
   }
 
-  private finishActiveStreamAfterEventLoss(client: RemoteOpenCodeClient) {
+  private finishActiveStreamAfterEventLoss(client: DirectAgentClient) {
     if (!this.sending || !this.sessionID) return
     const sessionID = this.sessionID
     const generation =
@@ -689,7 +694,7 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
     void this.finishStreamingSession(client, sessionID)
   }
 
-  private async finishStreamingSession(client: RemoteOpenCodeClient, sessionID: string) {
+  private async finishStreamingSession(client: DirectAgentClient, sessionID: string) {
     if (this.finalizingSessions.has(sessionID)) return
     this.finalizingSessions.add(sessionID)
     const activeGeneration =
@@ -739,7 +744,7 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
       session.id === sessionID ? { ...session, serverToolsUsed: true } : session,
     )
     if (!alreadyFlagged) {
-      this.deps.output.appendLine(`[guard] remote server tools used in ${sessionID}: ${serverToolWarnings.join(", ")}`)
+      this.deps.output.appendLine(`[guard] workspace tools used in ${sessionID}: ${serverToolWarnings.join(", ")}`)
     }
   }
 
@@ -765,7 +770,7 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
       this.messages = []
       await this.refreshSessionList(client)
     } catch (error) {
-      this.reportRemoteConnectionFailure(client, "Failed to create remote session", error)
+      this.reportRemoteConnectionFailure(client, "Failed to create ChipMate session", error)
     } finally {
       this.loadingMessages = false
       this.postState()
@@ -774,6 +779,21 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
 
   refreshState() {
     this.postState()
+  }
+
+  private async refreshSkills() {
+    if (!this.deps.listSkills) return
+    this.loadingSkills = true
+    this.skillsError = ""
+    this.postState()
+    try {
+      this.skills = await this.deps.listSkills()
+    } catch (error) {
+      this.skillsError = formatErrorMessage(error)
+    } finally {
+      this.loadingSkills = false
+      this.postState()
+    }
   }
 
   async sendQuickQuestion(text: string, options: Partial<ChatContextOptions>) {
@@ -886,6 +906,12 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
         case "setRagApiKey":
           await this.setRagApiKey()
           break
+        case "saveSkillsSettings":
+          await this.saveSkillsSettings(message.enabled)
+          break
+        case "savePermissionMode":
+          await this.savePermissionMode(message.mode)
+          break
         case "sendMessage":
           await this.handleSendMessage(
             message.text,
@@ -895,13 +921,13 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
           break
       }
     } catch (error) {
-      this.reportError(`OpenCode Remote action failed: ${message.type}`, error)
+      this.reportError(`ChipMate action failed: ${message.type}`, error)
     }
   }
 
   private async indexCodeGraph(force: boolean) {
     if (!this.deps.codeGraph) {
-      vscode.window.showWarningMessage("Local code graph is not available in this OpenCode Remote view.")
+      vscode.window.showWarningMessage("Local code graph is not available in this ChipMate view.")
       return
     }
     await this.deps.codeGraph.indexWorkspace(force)
@@ -910,7 +936,7 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
 
   private async showCodeGraphStatus() {
     if (!this.deps.codeGraph) {
-      vscode.window.showWarningMessage("Local code graph is not available in this OpenCode Remote view.")
+      vscode.window.showWarningMessage("Local code graph is not available in this ChipMate view.")
       return
     }
     await this.deps.codeGraph.showStatus()
@@ -923,8 +949,8 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
       return
     }
     if (!this.deps.codeGraph) {
-      this.codeIntelligenceError = "Local code intelligence is not available in this OpenCode Remote view."
-      vscode.window.showWarningMessage("Local code intelligence is not available in this OpenCode Remote view.")
+      this.codeIntelligenceError = "Local code intelligence is not available in this ChipMate view."
+      vscode.window.showWarningMessage("Local code intelligence is not available in this ChipMate view.")
       this.postState()
       return
     }
@@ -1007,7 +1033,7 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
       const client = new CompletionModelClient(settings, await this.deps.getCompletionApiKey())
       const prompt = settings.completion.profile === "qwen-coder-fim"
         ? [
-            "<|repo_name|>opencode-test",
+            "<|repo_name|>chipmate-test",
             "<|file_sep|>test.ts\n",
             "<|fim_prefix|>const value = ",
             "<|fim_suffix|>;\n",
@@ -1119,10 +1145,36 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
     this.postState()
   }
 
+  private async saveSkillsSettings(enabled: string[]) {
+    try {
+      await saveSkillsSettings(enabled)
+      this.deps.invalidateSkills?.()
+      await this.refreshSkills()
+      this.postSkillsStatus("Skills settings saved.", "success")
+    } catch (error) {
+      const message = formatErrorMessage(error)
+      this.deps.output.appendLine(`[skills-settings] save failed: ${message}`)
+      this.postSkillsStatus(`Skills settings save failed: ${message}`, "error")
+    } finally {
+      this.postState()
+    }
+  }
+
+  private async savePermissionMode(mode: PermissionMode) {
+    try {
+      await savePermissionMode(mode)
+      this.postState()
+    } catch (error) {
+      const message = formatErrorMessage(error)
+      this.deps.output.appendLine(`[permissions] save failed: ${message}`)
+      vscode.window.showErrorMessage(`ChipMate permission mode save failed: ${message}`)
+    }
+  }
+
   private async addFile() {
     const count = await addPickedFilesToContext(this.deps.contextStore)
     this.postState()
-    if (count > 0) vscode.window.setStatusBarMessage(`Attached ${count} file(s) to OpenCode context`, 2000)
+    if (count > 0) vscode.window.setStatusBarMessage(`Attached ${count} file(s) to ChipMate context`, 2000)
   }
 
   private async selectSession(sessionID: string) {
@@ -1141,11 +1193,11 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
         try {
           await this.recoverMissingSession(client, sessionID)
         } catch (recoverError) {
-          this.reportRemoteConnectionFailure(client, "Failed to recover remote session", recoverError)
+          this.reportRemoteConnectionFailure(client, "Failed to recover ChipMate session", recoverError)
         }
         return
       }
-      this.reportRemoteConnectionFailure(client, "Failed to load remote session", error)
+      this.reportRemoteConnectionFailure(client, "Failed to load ChipMate session", error)
     } finally {
       this.loadingMessages = false
       this.postState()
@@ -1161,15 +1213,10 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
 
   private async selectModel(model: string) {
     const normalized = model.trim()
-    if (normalized && !parseModel(normalized)) {
-      this.modelError = "Model must be in provider/model format."
-      this.postState()
-      return
-    }
-    const config = vscode.workspace.getConfiguration("opencode.remote")
-    await config.update("defaultModel", normalized, vscode.ConfigurationTarget.Global)
+    const config = vscode.workspace.getConfiguration("chipmate")
+    await config.update("provider.chatModel", normalized, vscode.ConfigurationTarget.Global)
     this.modelError = ""
-    this.deps.output.appendLine(`[model] selected ${normalized || "server default"}`)
+    this.deps.output.appendLine(`[model] selected ${normalized || "configured default"}`)
     this.postState()
   }
 
@@ -1228,7 +1275,7 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
     if (!trimmed && mentionedFiles.length === 0) return
     if (this.sending) return
 
-    const client = this.connectedClient("Connect to a remote OpenCode server before sending.")
+    const client = this.connectedClient("Configure a ChipMate provider before sending.")
     if (!client) return
 
     this.clearStreamingEventSuppression()
@@ -1253,7 +1300,7 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
       }
       const modelSelection = this.modelForSettings(settings)
       strictAgentHint = agentSelection.strict
-        ? " Confirm the remote OpenCode server has the required VS Code local agent configured."
+        ? " Confirm the ChipMate workspace agent is available."
         : ""
       await this.waitForCodeGraphReady(settings)
       let contextSummary: ContextSummaryItem[] = []
@@ -1287,7 +1334,7 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
       if (preparedMessage && isSessionNotFoundError(error)) {
         try {
           this.clearMissingSession(this.sessionID)
-          this.deps.output.appendLine("[session] Selected remote session was not found; retrying with a new session.")
+          this.deps.output.appendLine("[session] Selected ChipMate session was not found; retrying with a new session.")
           sentStreaming = await this.sendPreparedMessage(client, preparedMessage, controller.signal)
           return
         } catch (retryError) {
@@ -1322,7 +1369,7 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
       this.pendingLocalUserMessageIDs.delete(optimistic.id)
       this.pendingLocalUserTexts.delete(optimistic.text)
       this.messages = [...this.messages, localMessage("error", `Failed to send message: ${message}`)]
-      this.reportRemoteConnectionFailure(client, "Failed to send message to remote OpenCode", finalError, message)
+      this.reportRemoteConnectionFailure(client, "Failed to send message to ChipMate", finalError, message)
     } finally {
       this.codeGraphWaitDetail = ""
       if (this.activeSendController === controller) this.activeSendController = undefined
@@ -1358,7 +1405,7 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
     throw new CodeGraphReadinessError(codeGraphErrorMessage(next))
   }
 
-  private async getOrCreateSession(client: RemoteOpenCodeClient, signal?: AbortSignal) {
+  private async getOrCreateSession(client: DirectAgentClient, signal?: AbortSignal) {
     if (this.sessionID) return this.sessionID
     const session = await client.createSession(CHAT_SESSION_TITLE, signal)
     this.sessionID = session.id
@@ -1367,7 +1414,7 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   private async sendPreparedMessage(
-    client: RemoteOpenCodeClient,
+    client: DirectAgentClient,
     input: { text: string; model?: PromptModel; agent?: string },
     signal?: AbortSignal,
   ) {
@@ -1394,7 +1441,7 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
     return true
   }
 
-  private async refreshSessionList(client: RemoteOpenCodeClient) {
+  private async refreshSessionList(client: DirectAgentClient) {
     const started = Date.now()
     const sessions = await withRequestTimeout("session list", SESSION_REFRESH_TIMEOUT_MS, (signal) => client.listSessions(signal))
     this.sessions = sessions
@@ -1407,7 +1454,7 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
   private reconcileSessionSelection() {
     if (this.sessionID && this.sessions.some((session) => session.id === this.sessionID)) return
     if (this.sessionID) {
-      this.deps.output.appendLine(`[session] Remote session ${this.sessionID} is no longer available; clearing selection.`)
+      this.deps.output.appendLine(`[session] ChipMate session ${this.sessionID} is no longer available; clearing selection.`)
     }
     this.sessionID = this.sessions[0]?.id
     if (!this.sessionID) {
@@ -1418,7 +1465,7 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
     }
   }
 
-  private async loadSelectedSessionMessages(client: RemoteOpenCodeClient) {
+  private async loadSelectedSessionMessages(client: DirectAgentClient) {
     if (!this.sessionID) {
       this.remoteMessages = []
       this.pendingLocalUserMessageIDs.clear()
@@ -1436,9 +1483,9 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
     }
   }
 
-  private async recoverMissingSession(client: RemoteOpenCodeClient, sessionID: string) {
+  private async recoverMissingSession(client: DirectAgentClient, sessionID: string) {
     this.clearMissingSession(sessionID)
-    this.deps.output.appendLine(`[session] Remote session ${sessionID} was not found; refreshing sessions.`)
+    this.deps.output.appendLine(`[session] ChipMate session ${sessionID} was not found; refreshing sessions.`)
     await this.refreshSessionList(client)
     this.sessions = this.sessions.filter((session) => session.id !== sessionID)
     this.reconcileSessionSelection()
@@ -1454,7 +1501,7 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
     this.messages = []
   }
 
-  private async loadSessionMessages(client: RemoteOpenCodeClient, sessionID: string) {
+  private async loadSessionMessages(client: DirectAgentClient, sessionID: string) {
     this.clearStreamingEventSuppression(sessionID)
     const started = Date.now()
     const messages = await withRequestTimeout("session messages", MESSAGE_REFRESH_TIMEOUT_MS, (signal) =>
@@ -1479,7 +1526,7 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
     this.applyServerToolWarnings(sessionID)
   }
 
-  private async hideCompletionSession(client: RemoteOpenCodeClient, sessionID: string) {
+  private async hideCompletionSession(client: DirectAgentClient, sessionID: string) {
     this.hiddenCompletionSessions.add(sessionID)
     this.sessions = this.sessions.filter((session) => session.id !== sessionID)
     if (this.sessionID === sessionID) {
@@ -1494,7 +1541,7 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
     this.reconcileSessionSelection()
   }
 
-  private async hideExternalSession(client: RemoteOpenCodeClient, sessionID: string) {
+  private async hideExternalSession(client: DirectAgentClient, sessionID: string) {
     this.hiddenExternalSessions.add(sessionID)
     this.sessions = this.sessions.filter((session) => session.id !== sessionID)
     if (this.sessionID === sessionID) {
@@ -1504,12 +1551,12 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
       this.pendingLocalUserTexts.clear()
       this.messages = []
     }
-    this.deps.output.appendLine(`[history] Hidden external OpenCode session ${sessionID}.`)
+    this.deps.output.appendLine(`[history] Hidden external ChipMate session ${sessionID}.`)
     await this.refreshSessionList(client)
     this.reconcileSessionSelection()
   }
 
-  private isVisibleChatSession(session: OpenCodeSession) {
+  private isVisibleChatSession(session: ChipMateSession) {
     if (this.hiddenCompletionSessions.has(session.id)) return false
     if (this.hiddenExternalSessions.has(session.id)) return false
     if (this.hiddenExportIntentSessions.has(session.id)) return false
@@ -1517,7 +1564,7 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
     return isPluginChatSession(session)
   }
 
-  private async refreshModelList(client: RemoteOpenCodeClient) {
+  private async refreshModelList(client: DirectAgentClient) {
     this.loadingModels = true
     this.modelError = ""
     this.postState()
@@ -1535,7 +1582,7 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
     }
   }
 
-  private async refreshAgentList(client: RemoteOpenCodeClient) {
+  private async refreshAgentList(client: DirectAgentClient) {
     this.loadingAgents = true
     this.agentError = ""
     this.postState()
@@ -1556,7 +1603,7 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
     }
   }
 
-  private async ensureAgentList(client: RemoteOpenCodeClient, settings: RemoteSettings) {
+  private async ensureAgentList(client: DirectAgentClient, settings: RemoteSettings) {
     if (!settings.context.localOnlyMode) return
     if (this.agents.length > 0 && !this.agentError) return
     await this.refreshAgentList(client)
@@ -1589,10 +1636,10 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   private modelForSettings(settings: RemoteSettings) {
-    const selected = settings.defaultModel.trim()
+    const selected = settings.provider.chatModel.trim()
     return {
-      model: parseModel(selected),
-      label: selected || "server default",
+      model: undefined,
+      label: selected || "provider default",
     }
   }
 
@@ -1638,7 +1685,7 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
     await this.sendMessage(text, options, mentionedFiles)
   }
 
-  private async classifyExportIntent(client: RemoteOpenCodeClient, text: string) {
+  private async classifyExportIntent(client: DirectAgentClient, text: string) {
     this.postExportStatus("Checking whether this is an export request...")
     const settings = this.deps.getSettings()
     const prompt = buildExportIntentPrompt({
@@ -1689,7 +1736,7 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
       sessionTitle: this.currentSessionTitle(),
     })
     const uri = await vscode.window.showSaveDialog({
-      title: "Export OpenCode chat as Markdown",
+      title: "Export ChipMate chat as Markdown",
       saveLabel: "Export",
       defaultUri: this.defaultExportUri(suggestedFilename),
       filters: {
@@ -1741,6 +1788,14 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
     })
   }
 
+  private postSkillsStatus(message: string, status = "info") {
+    this.view?.webview.postMessage({
+      type: "skillsStatus",
+      message,
+      status,
+    })
+  }
+
   private postState() {
     const settings = this.deps.getSettings()
     const agentSelection = this.agentForSettings(settings)
@@ -1750,12 +1805,21 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
         connectionState: this.connectionState,
         connectionDetail: this.connectionDetail,
         serverUrl: settings.serverUrl,
-        username: settings.username,
+        username: settings.provider.chatModel,
+        provider: settings.provider,
+        permissions: settings.permissions,
         defaults: {
           includeDiagnostics: settings.context.includeDiagnostics,
           includeGitDiff: settings.context.includeGitDiff,
         },
         completion: settings.completion,
+        skills: {
+          enabled: settings.skills.enabled,
+          available: this.skills,
+          loading: this.loadingSkills,
+          error: this.skillsError,
+        },
+        mcp: settings.mcp,
         rag: settings.rag,
         localOnlyMode: settings.context.localOnlyMode,
         localOnlyAgent: settings.localOnlyAgent,
@@ -1802,7 +1866,7 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   private reportRemoteConnectionFailure(
-    client: RemoteOpenCodeClient,
+    client: DirectAgentClient,
     prefix: string,
     error: unknown,
     detailMessage = formatErrorMessage(error),
@@ -1917,7 +1981,7 @@ function diagnosticSeverityName(severity: vscode.DiagnosticSeverity) {
   }
 }
 
-function renderSession(session: OpenCodeSession, serverToolsUsed = false): RenderedSession {
+function renderSession(session: ChipMateSession, serverToolsUsed = false): RenderedSession {
   return {
     id: session.id,
     title: session.title?.trim() || "Untitled chat",
@@ -1955,13 +2019,22 @@ function isStreamingMessageEvent(type: string) {
 }
 
 function connectionFailureState(error: unknown): ConnectionState {
-  if (error instanceof RemoteOpenCodeAuthError) return "authFailed"
-  if (error instanceof RemoteOpenCodeConnectionError || isRequestTimeoutError(error)) return "error"
+  if (isRequestTimeoutError(error)) return "error"
   return "error"
 }
 
 function isRequestTimeoutError(error: unknown) {
   return error instanceof Error && /\btimed out after \d+ms\b/i.test(error.message)
+}
+
+function isSessionNotFoundError(error: unknown) {
+  return error instanceof Error && /\bsession\b/i.test(error.message) && /\bnot\s+found\b/i.test(error.message)
+}
+
+function messageText(message: ChipMateMessage) {
+  return message.parts
+    .flatMap((part) => part.type === "text" && "text" in part && typeof part.text === "string" ? [part.text] : [])
+    .join("")
 }
 
 class CodeGraphReadinessError extends Error {
@@ -1982,19 +2055,19 @@ function codeGraphWaitDetail(status: CodeGraphStatus) {
 function codeGraphErrorMessage(status: CodeGraphStatus, cause?: unknown) {
   const causeMessage = cause ? formatErrorMessage(cause) : ""
   const detail = status.detail || causeMessage || "Local code graph indexing failed."
-  return `Local code graph is not ready: ${detail} Rebuild the local code graph or disable opencode.remote.codeGraph.enabled before sending.`
+  return `Local code graph is not ready: ${detail} Rebuild the local code graph or disable chipmate.codeGraph.enabled before sending.`
 }
 
-function remoteRetryMessage(status: OpenCodeSessionStatus) {
+function remoteRetryMessage(status: ChipMateSessionStatus) {
   const attempt = "attempt" in status && typeof status.attempt === "number" ? `（第 ${status.attempt} 次）` : ""
   const detail =
     "message" in status && typeof status.message === "string" && status.message.trim()
       ? `：${status.message.trim()}`
       : ""
-  return `远端 OpenCode 正在重试模型请求${attempt}${detail}。当前会话可能过大，可以新建会话后重试。`
+  return `远端 ChipMate 正在重试模型请求${attempt}${detail}。当前会话可能过大，可以新建会话后重试。`
 }
 
-function renderMessage(message: OpenCodeMessage): RenderedMessage {
+function renderMessage(message: ChipMateMessage): RenderedMessage {
   const error = message.info.error?.message
   if (error) {
     return {
@@ -2021,11 +2094,11 @@ function renderMessage(message: OpenCodeMessage): RenderedMessage {
     })
   }
   const serverToolWarnings = parts
-    .filter((part) => part.type === "tool" && isServerFilesystemTool(part.title))
+    .filter((part) => part.type === "tool" && isWorkspaceFilesystemTool(part.title))
     .map((part) => ({
       type: "serverToolWarning",
       title: part.title,
-      detail: `Remote server filesystem tool used: ${part.title}. This reply may have used code from the OpenCode server instead of VS Code local context.`,
+      detail: `Workspace filesystem tool used: ${part.title}. This reply may have read code through ChipMate tool permissions.`,
     }))
   parts.push(...serverToolWarnings)
   const rawText = split.text
@@ -2044,11 +2117,11 @@ function renderMessage(message: OpenCodeMessage): RenderedMessage {
   }
 }
 
-function isExternalChatMessage(message: OpenCodeMessage) {
+function isExternalChatMessage(message: ChipMateMessage) {
   return message.info.role === "user" && !isPluginChatMessage(message)
 }
 
-function renderPart(part: OpenCodePart): RenderedPart {
+function renderPart(part: ChipMatePart): RenderedPart {
   if (part.type === "text" && "text" in part && typeof part.text === "string") {
     return {
       type: part.type,
@@ -2093,14 +2166,14 @@ function localMessage(role: string, text: string): RenderedMessage {
   }
 }
 
-function toolStatus(part: OpenCodePart) {
+function toolStatus(part: ChipMatePart) {
   const state = toolState(part)
   if (typeof state?.status === "string") return state.status
   if (state?.error) return "error"
   return "called"
 }
 
-function toolDetail(part: OpenCodePart) {
+function toolDetail(part: ChipMatePart) {
   const state = toolState(part)
   const detail = {
     input: state?.input,
@@ -2111,7 +2184,7 @@ function toolDetail(part: OpenCodePart) {
   return truncate(JSON.stringify(detail, null, 2), 4000)
 }
 
-function toolState(part: OpenCodePart) {
+function toolState(part: ChipMatePart) {
   if (!("state" in part)) return undefined
   if (!part.state || typeof part.state !== "object") return undefined
   return part.state as {
@@ -2123,11 +2196,11 @@ function toolState(part: OpenCodePart) {
   }
 }
 
-const SERVER_FILESYSTEM_TOOLS = new Set(["read", "glob", "grep", "list", "bash", "edit", "write", "patch", "multiedit", "external_directory", "lsp"])
+const WORKSPACE_FILESYSTEM_TOOLS = new Set(["read", "glob", "grep", "list", "bash", "edit", "write", "patch", "multiedit", "external_directory", "lsp"])
 
-function isServerFilesystemTool(tool: string | undefined) {
+function isWorkspaceFilesystemTool(tool: string | undefined) {
   if (!tool) return false
-  return SERVER_FILESYSTEM_TOOLS.has(tool.toLowerCase())
+  return WORKSPACE_FILESYSTEM_TOOLS.has(tool.toLowerCase())
 }
 
 function looksLikeServerAgentError(message: string) {

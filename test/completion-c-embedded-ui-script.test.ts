@@ -14,13 +14,12 @@ describe("C/embedded UI matrix script settings", () => {
     const options = parseArgs(["--prepare-only", "--workspace", "/tmp/ui-matrix"])
     const settings = completionUiWorkspaceSettings(options)
 
-    expect(settings["opencode.remote.completion.provider"]).toBe("openai-compatible")
-    expect(settings["opencode.remote.completion.enabled"]).toBe(true)
-    expect(settings).not.toHaveProperty("opencode.remote.completion.apiBaseUrl")
-    expect(settings).not.toHaveProperty("opencode.remote.completion.model")
-    expect(settings).not.toHaveProperty("opencode.remote.completion.profile")
-    expect(settings).not.toHaveProperty("opencode.remote.rag.embedding.endpoint")
-    expect(settings).not.toHaveProperty("opencode.remote.rag.rerank.endpoint")
+    expect(settings["chipmate.completion.enabled"]).toBe(true)
+    expect(settings).not.toHaveProperty("chipmate.provider.apiBaseUrl")
+    expect(settings).not.toHaveProperty("chipmate.completion.model")
+    expect(settings).not.toHaveProperty("chipmate.completion.profile")
+    expect(settings).not.toHaveProperty("chipmate.rag.embedding.endpoint")
+    expect(settings).not.toHaveProperty("chipmate.rag.rerank.endpoint")
   })
 
   test("writes explicit direct model overrides without model-name whitelisting", () => {
@@ -37,16 +36,16 @@ describe("C/embedded UI matrix script settings", () => {
     ])
     const settings = completionUiWorkspaceSettings(options)
 
-    expect(settings["opencode.remote.completion.apiBaseUrl"]).toBe("https://dashscope.aliyuncs.com/compatible-mode/v1")
-    expect(settings["opencode.remote.completion.model"]).toBe("future-code-model-2026")
-    expect(settings["opencode.remote.completion.profile"]).toBe("generic-chat")
+    expect(settings["chipmate.provider.apiBaseUrl"]).toBe("https://dashscope.aliyuncs.com/compatible-mode/v1")
+    expect(settings["chipmate.completion.model"]).toBe("future-code-model-2026")
+    expect(settings["chipmate.completion.profile"]).toBe("generic-chat")
   })
 
   test("allows Qwen FIM profile only when explicitly requested", () => {
     const options = parseArgs(["--prepare-only", "--profile", "qwen-coder-fim"])
     const settings = completionUiWorkspaceSettings(options)
 
-    expect(settings["opencode.remote.completion.profile"]).toBe("qwen-coder-fim")
+    expect(settings["chipmate.completion.profile"]).toBe("qwen-coder-fim")
   })
 
   test("parses qemu direct options with safe defaults", () => {
@@ -145,10 +144,10 @@ describe("C/embedded UI matrix script settings", () => {
     const result = uiResult("E02-isr-safe-queue")
     result.changed = true
     const output = [
-      '[OpenCode Remote] completion request requestId=cc-ok path="/tmp/opencode-c-embedded-ui-matrix/scenarios/E02-isr-safe-queue/src/irq/timer_irq.c"',
+      '[completion] completion request requestId=cc-ok path="/tmp/opencode-c-embedded-ui-matrix/scenarios/E02-isr-safe-queue/src/irq/timer_irq.c"',
       '[completion-telemetry] {"requestId":"cc-ok","planKind":"body-continuation","modelRoute":"fim","insertMode":"insert-at-cursor","accepted":true}',
-      "[OpenCode Remote] returned source=remote requestId=cc-ok",
-      '[OpenCode Remote] completion request requestId=cc-later path="/tmp/opencode-c-embedded-ui-matrix/scenarios/E02-isr-safe-queue/src/irq/timer_irq.c"',
+      "[completion] returned source=remote requestId=cc-ok",
+      '[completion] completion request requestId=cc-later path="/tmp/opencode-c-embedded-ui-matrix/scenarios/E02-isr-safe-queue/src/irq/timer_irq.c"',
       '[completion-telemetry] {"requestId":"cc-later","planKind":"disabled","modelRoute":"none","insertMode":"insert-at-cursor","accepted":false,"rejectReason":"plan:disabled-plan"}',
     ].join("\n")
 
@@ -168,9 +167,9 @@ describe("C/embedded UI matrix script settings", () => {
   test("keeps returned inline, commit attempt, and applied text as separate evidence", () => {
     const result = uiResult("H02-crc-check")
     const output = [
-      '[OpenCode Remote] completion request requestId=cc-h02 path="/tmp/opencode-c-embedded-ui-matrix/scenarios/H02-crc-check/src/proto/frame.c"',
+      '[completion] completion request requestId=cc-h02 path="/tmp/opencode-c-embedded-ui-matrix/scenarios/H02-crc-check/src/proto/frame.c"',
       '[completion-telemetry] {"requestId":"cc-h02","planKind":"c-embedded-code","cIntent":"call-args","retrievalMode":"hybrid","evidenceKinds":["current-prefix","c-callee-signature","c-call-example"],"cEmbeddedEvidenceTrace":{"finalSelectedEvidenceCount":3,"minimumUsefulEvidenceMet":true},"contextLevel":"standard","promptKind":"qwen-fim","modelRoute":"fim","insertMode":"insert-at-cursor","accepted":true,"filterText":"crc16(data, len) != expected"}',
-      '[OpenCode Remote] returned source=remote range=3:8-3:8 insertMode=insert-at-cursor firstLine="crc16(data, len) != expected" requestId=cc-h02',
+      '[completion] returned source=remote range=3:8-3:8 insertMode=insert-at-cursor firstLine="crc16(data, len) != expected" requestId=cc-h02',
     ].join("\n")
 
     applyOutputTelemetry([result], output)

@@ -13,7 +13,7 @@ import { resolveSymbols, symbolCandidateFromCodeGraph, type ResolvedSymbolCandid
 import { fallbackCompletionText } from "../../src/completion-test-fallback"
 import { completionInsertText } from "../../src/completion-text"
 import type { CompletionPlanKind } from "../../src/completion-types"
-import type { OpenCodeMessage, RemoteSettings } from "../../src/types"
+import type { ChipMateMessage, RemoteSettings } from "../../src/types"
 
 const FIXTURE_DIR = join(import.meta.dir, "fixtures", "c")
 const TARGET_SYMBOL = "epr_ppn_raw_write_with_cb_dfx"
@@ -978,10 +978,10 @@ function completionIndex(relatedPath: string, documentText: string): CodeGraphIn
 function evalSettings(): RemoteSettings {
   return {
     serverUrl: "http://localhost:4096",
-    username: "opencode",
+    username: "chipmate",
     defaultModel: "",
     defaultAgent: "",
-    localOnlyAgent: "vscode-local",
+    localOnlyAgent: "chipmate-local",
     context: {
       maxFileBytes: 16000,
       maxFiles: 8,
@@ -1067,7 +1067,7 @@ function readFixture(name: string) {
   return readFileSync(join(FIXTURE_DIR, name), "utf8")
 }
 
-function modelMessage(text: string): OpenCodeMessage {
+function modelMessage(text: string): ChipMateMessage {
   return {
     info: { id: "phase1", role: "assistant" },
     parts: [{ type: "text", text }],
