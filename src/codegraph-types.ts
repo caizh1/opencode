@@ -183,6 +183,11 @@ export type CodeGraphStoredFileBase = Omit<
 
 export type CodeGraphStoredFilePart =
   | {
+      kind: "whole"
+      path: string
+      file: CodeGraphFile
+    }
+  | {
       kind: "base"
       path: string
       file: CodeGraphStoredFileBase
@@ -271,12 +276,12 @@ export type CodeGraphDerivedSidecarShard = {
 }
 
 export type CodeGraphDerivedSidecarManifest = {
-  version: 7
+  version: 9
   fields: Record<CodeGraphDerivedSidecarField, CodeGraphDerivedSidecarShard[]>
 }
 
 export type CodeGraphIndex = {
-  version: 1 | 2 | 3 | 4 | 5 | 6 | 7
+  version: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9
   rootPath: string
   rootName: string
   updatedAt: number
@@ -289,7 +294,7 @@ export type CodeGraphIndex = {
 }
 
 export type CodeGraphShardManifest = {
-  version: 7
+  version: 9
   rootPath: string
   rootName: string
   updatedAt: number
@@ -317,7 +322,7 @@ export type CodeGraphShardInfo = {
 }
 
 export type CodeGraphShardData = {
-  version: 7
+  version: 9
   key: string
   part: string
   fileParts: CodeGraphStoredFilePart[]
@@ -403,6 +408,8 @@ export type CodeGraphContextProvider = {
     maxBytes: number
     maxDepth: number
     maxFanout: number
+    retrievalMode?: CodeGraphEvidenceRetrievalMode
+    latencyBudgetMs?: number
   }): Promise<CodeGraphPromptContext | undefined>
   intelligenceSnapshot(): Promise<CodeIntelligenceSnapshot | undefined>
   runAnalysisTool(input: {

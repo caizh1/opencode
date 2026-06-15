@@ -532,6 +532,7 @@ function settings(input: Partial<RemoteSettings["completion"]> = {}): RemoteSett
       clangdPath: "",
       scipClangPath: "",
       excludeGlobs: [],
+      indexTests: false,
     },
     analysis: {
       bridgeEnabled: true,
@@ -568,6 +569,7 @@ function settings(input: Partial<RemoteSettings["completion"]> = {}): RemoteSett
         model: "",
       },
       allowedHosts: [],
+      indexTests: false,
       vectorTopK: 24,
       rerankTopK: 16,
     },

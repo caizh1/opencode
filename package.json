@@ -2,7 +2,7 @@
   "name": "chipmate",
   "displayName": "ChipMate",
   "description": "Direct OpenAI-compatible coding agent with workspace skills for VS Code",
-  "version": "0.0.207",
+  "version": "0.0.211",
   "icon": "media/chipmate-icon.png",
   "publisher": "local",
   "license": "MIT",
@@ -440,6 +440,11 @@
           },
           "description": "Additional VS Code glob patterns to exclude from local code graph indexing."
         },
+        "chipmate.codeGraph.indexTests": {
+          "type": "boolean",
+          "default": false,
+          "description": "Include files under path segments named test or tests in local code graph indexing. Disabled by default to avoid indexing large test corpora."
+        },
         "chipmate.analysis.maxEvidenceItems": {
           "type": "number",
           "default": 40,
@@ -622,6 +627,11 @@
             "type": "string"
           },
           "description": "Additional intranet hostnames allowed for embedding and rerank endpoints. Localhost and private IPs are allowed automatically."
+        },
+        "chipmate.rag.indexTests": {
+          "type": "boolean",
+          "default": false,
+          "description": "Embed RAG chunks for files under path segments named test or tests when those files are present in the local code graph."
         },
         "chipmate.rag.vectorTopK": {
           "type": "number",

@@ -1,7 +1,7 @@
 import * as cp from "node:child_process"
 import * as vscode from "vscode"
 import type { QueryEvidenceResult } from "./analysis-types"
-import type { CodeGraphContextProvider } from "./codegraph-types"
+import type { CodeGraphContextProvider, CodeGraphEvidenceRetrievalMode } from "./codegraph-types"
 import type { TrackedEditorContext } from "./editor-context"
 import {
   formatInstructionContext,
@@ -11,7 +11,9 @@ import {
   type CompletionContextPack,
 } from "./completion-context"
 import type { CompletionPlan, RetrievedCompletionSnippet } from "./completion-types"
-import type { ChatContextOptions, RemoteSettings } from "./types"
+import type { ChatContextOptions, RagStatus, RemoteSettings } from "./types"
+
+const CHAT_RAG_LATENCY_BUDGET_MS = 2000
 
 type FileContext = {
   uri: vscode.Uri
@@ -35,6 +37,11 @@ type ResolvedEditorContext = {
   document: vscode.TextDocument
   selection: vscode.Selection
   position: vscode.Position
+}
+
+type ChatRetrievalOptions = {
+  retrievalMode: CodeGraphEvidenceRetrievalMode
+  latencyBudgetMs?: number
 }
 
 export class MissingLocalContextError extends Error {
@@ -86,6 +93,9 @@ export async function buildChatPrompt(input: {
   )
   input.onContextSummary?.(context.summary)
   const relatedPaths = context.summary.filter((item) => !item.skipped).map((item) => item.path)
+  const retrievalOptions = input.settings.codeGraph.enabled
+    ? chatRetrievalOptions(input.codeGraph)
+    : { retrievalMode: "graph-only" as const }
   const codeGraph = input.settings.codeGraph.enabled
     ? await input.codeGraph?.buildContext({
         question: input.question,
@@ -93,6 +103,7 @@ export async function buildChatPrompt(input: {
         maxBytes: input.settings.codeGraph.maxEvidenceBytes,
         maxDepth: input.settings.codeGraph.maxGraphDepth,
         maxFanout: input.settings.codeGraph.maxFanout,
+        ...retrievalOptions,
       })
     : undefined
   const analysisEvidence = input.settings.codeGraph.enabled ? await retrieveChatAnalysisEvidence({
@@ -101,6 +112,7 @@ export async function buildChatPrompt(input: {
     codeGraph: input.codeGraph,
     relatedPaths,
     editorContext: input.editorContext,
+    retrievalOptions,
   }) : undefined
 
   if (input.settings.context.localOnlyMode) chunks.push(localContextContract(input.settings.tools.enabled))
@@ -126,6 +138,7 @@ async function retrieveChatAnalysisEvidence(input: {
   codeGraph?: CodeGraphContextProvider
   relatedPaths: string[]
   editorContext?: TrackedEditorContext
+  retrievalOptions: ChatRetrievalOptions
 }): Promise<QueryEvidenceResult | undefined> {
   if (!input.codeGraph) return undefined
   const currentFile = input.editorContext?.uri ? relativePath(input.editorContext.uri) : input.relatedPaths[0] ?? ""
@@ -134,7 +147,29 @@ async function retrieveChatAnalysisEvidence(input: {
     relatedPaths,
     maxEvidenceItems: input.settings.analysis.maxEvidenceItems,
     maxEvidenceBytes: input.settings.analysis.maxEvidenceBytes,
+    ...input.retrievalOptions,
   })
+}
+
+function chatRetrievalOptions(codeGraph?: CodeGraphContextProvider): ChatRetrievalOptions {
+  const retrievalMode = isChatRagReady(codeGraph?.status().rag) ? "hybrid" : "graph-only"
+  return retrievalMode === "hybrid"
+    ? { retrievalMode, latencyBudgetMs: CHAT_RAG_LATENCY_BUDGET_MS }
+    : { retrievalMode }
+}
+
+function isChatRagReady(rag: RagStatus | undefined) {
+  if (!rag) return false
+  const pending = rag.pendingChunkCount ?? Math.max(0, rag.chunks - rag.embeddedChunks)
+  return Boolean(
+    rag.enabled &&
+      rag.embeddingEnabled &&
+      rag.availability === "ready" &&
+      rag.indexAvailability === "ready" &&
+      rag.chunks > 0 &&
+      rag.embeddedChunks >= rag.chunks &&
+      pending === 0,
+  )
 }
 
 export async function addActiveFileToContext(store: LocalContextStore) {

@@ -1033,6 +1033,7 @@ function evalSettings(): RemoteSettings {
       clangdPath: "",
       scipClangPath: "",
       excludeGlobs: [],
+      indexTests: false,
     },
     analysis: {
       bridgeEnabled: true,
@@ -1069,6 +1070,7 @@ function evalSettings(): RemoteSettings {
         model: "",
       },
       allowedHosts: [],
+      indexTests: false,
       vectorTopK: 24,
       rerankTopK: 16,
     },

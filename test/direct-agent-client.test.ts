@@ -572,6 +572,38 @@ describe("DirectAgentClient", () => {
     ]))
   })
 
+  test("accepts finish_reason as a chat completion stream marker without DONE", async () => {
+    const outputLines: string[] = []
+    const baseUrl = await listen(async (request, response) => {
+      if (request.url !== "/v1/chat/completions") {
+        response.writeHead(404).end()
+        return
+      }
+      await collectJson(request)
+      response.writeHead(200, {
+        "content-type": "text/event-stream",
+      })
+      response.end([
+        sse({ choices: [{ delta: { content: "Finished by reason." } }] }),
+        sse({ choices: [{ delta: {}, finish_reason: "stop" }] }),
+      ].join(""))
+    })
+    const client = directClient(baseUrl, {
+      storageRoot: await tempDir("chipmate-finish-reason-storage-"),
+      outputLines,
+    })
+    const session = await client.createSession()
+
+    const assistant = await client.sendMessage({ sessionID: session.id, text: "first" })
+
+    expect(assistant.parts).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: "text", text: "Finished by reason." }),
+    ]))
+    expect(outputLines.join("\n")).toContain("[chat-stream] request start model=chat-model")
+    expect(outputLines.join("\n")).toContain("doneMarker=false")
+    expect(outputLines.join("\n")).toContain("finishReason=stop")
+  })
+
   test("records async stream interruptions when the provider closes before completion", async () => {
     const outputLines: string[] = []
     const baseUrl = await listen(async (request, response) => {
@@ -600,6 +632,68 @@ describe("DirectAgentClient", () => {
     expect(messages.some((message) => message.parts.some((part) => part.type === "text" && part.text.includes("Partial answer before clean close.")))).toBe(true)
     expect(outputLines.join("\n")).toContain("[send] interrupted")
     expect(outputLines.join("\n")).toContain("closed before completion marker")
+    expect(outputLines.join("\n")).toContain("deltaCount=")
+    expect(outputLines.join("\n")).toContain("textBytes=")
+    expect(outputLines.join("\n")).toContain("firstChunkMs=")
+    expect(outputLines.join("\n")).toContain("doneMarker=false")
+  })
+
+  test("diagnoses 200 streams that close without OpenAI SSE data", async () => {
+    const outputLines: string[] = []
+    const baseUrl = await listen(async (request, response) => {
+      if (request.url !== "/v1/chat/completions") {
+        response.writeHead(404).end()
+        return
+      }
+      await collectJson(request)
+      response.writeHead(200, {
+        "content-type": "text/event-stream",
+      })
+      response.end("event: ping\n\n")
+    })
+    const client = directClient(baseUrl, {
+      storageRoot: await tempDir("chipmate-empty-sse-storage-"),
+      outputLines,
+    })
+    const session = await client.createSession()
+
+    await expect(client.sendMessage({ sessionID: session.id, text: "first" })).rejects.toThrow(/rawPreview=event: ping/)
+
+    const output = outputLines.join("\n")
+    expect(output).toContain("[chat-stream] response status=200 contentType=text/event-stream")
+    expect(output).toContain("sseDataCount=0")
+    expect(output).toContain("rawBytes=")
+    expect(output).toContain("emptySsePreview=event: ping")
+  })
+
+  test("parses CRLF-delimited OpenAI SSE streams", async () => {
+    const outputLines: string[] = []
+    const baseUrl = await listen(async (request, response) => {
+      if (request.url !== "/v1/chat/completions") {
+        response.writeHead(404).end()
+        return
+      }
+      await collectJson(request)
+      response.writeHead(200, {
+        "content-type": "text/event-stream",
+      })
+      response.end([
+        `data: ${JSON.stringify({ choices: [{ delta: { content: "CRLF works." } }] })}\r\n\r\n`,
+        "data: [DONE]\r\n\r\n",
+      ].join(""))
+    })
+    const client = directClient(baseUrl, {
+      storageRoot: await tempDir("chipmate-crlf-sse-storage-"),
+      outputLines,
+    })
+    const session = await client.createSession()
+
+    const assistant = await client.sendMessage({ sessionID: session.id, text: "first" })
+
+    expect(assistant.parts).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: "text", text: "CRLF works." }),
+    ]))
+    expect(outputLines.join("\n")).toContain("doneMarker=true")
   })
 
   test("does not record session errors for user-aborted async sends", async () => {
@@ -781,6 +875,7 @@ function directSettings(baseUrl: string): RemoteSettings {
       clangdPath: "",
       scipClangPath: "",
       excludeGlobs: [],
+      indexTests: false,
     },
     analysis: {
       bridgeEnabled: false,
@@ -817,6 +912,7 @@ function directSettings(baseUrl: string): RemoteSettings {
         model: "",
       },
       allowedHosts: [],
+      indexTests: false,
       vectorTopK: 24,
       rerankTopK: 16,
     },

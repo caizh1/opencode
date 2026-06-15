@@ -305,6 +305,7 @@ function ragSettings(embeddingEndpoint = "http://127.0.0.1:8000/v1/embeddings", 
       model: "local-rerank",
     },
     allowedHosts: [],
+    indexTests: false,
     vectorTopK: 24,
     rerankTopK: 16,
   }

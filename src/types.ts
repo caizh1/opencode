@@ -81,6 +81,7 @@ export type RagSettings = {
     model: string
   }
   allowedHosts: string[]
+  indexTests: boolean
   vectorTopK: number
   rerankTopK: number
 }
@@ -200,6 +201,7 @@ export type RemoteSettings = {
     clangdPath: string
     scipClangPath: string
     excludeGlobs: string[]
+    indexTests: boolean
   }
   analysis: {
     bridgeEnabled: boolean

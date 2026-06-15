@@ -45,6 +45,14 @@ describe("code graph query observability", () => {
     expect(serviceSource).toContain("checkpoint.json")
   })
 
+  test("applies the test-directory indexing policy to scan and incremental paths", () => {
+    expect(serviceSource).toContain("skippedTestFiles=${scan.skippedTestFiles}")
+    expect(serviceSource).toContain("gitTrackedSourceFiles(root, settings.codeGraph.maxFiles + 1, settings.codeGraph.indexTests)")
+    expect(serviceSource).toContain("shouldIndexPath(path, { indexTests })")
+    expect(serviceSource).toContain("shouldIndexPath(path, { indexTests: settings.codeGraph.indexTests })")
+    expect(serviceSource).toContain("shouldIndexPath(relative, { indexTests: settings.codeGraph.indexTests })")
+  })
+
   test("returns retrieval metrics with prompt context", () => {
     expect(querySource).toContain("metricsForResult(result")
     expect(querySource).toContain("candidateCount")
@@ -54,8 +62,13 @@ describe("code graph query observability", () => {
 
   test("allows evidence queries to request graph-only mode while passing related paths", () => {
     expect(serviceSource).toContain("queryEvidence(question: string, options: CodeGraphEvidenceQueryOptions = {})")
-    expect(serviceSource).toContain('const hybrid = options.retrievalMode === "graph-only" ? undefined : this.hybridOptions()')
+    expect(serviceSource).toContain('const hybrid = options.retrievalMode === "graph-only" ? undefined : this.hybridOptions(options.latencyBudgetMs)')
     expect(serviceSource).toContain("}, hybrid, options.relatedPaths ?? [])")
+  })
+
+  test("allows prompt context builds to stay graph-only without configuring RAG providers", () => {
+    expect(serviceSource).toContain('const retrievalMode = input.retrievalMode ?? "hybrid"')
+    expect(serviceSource).toContain('hybrid: retrievalMode === "graph-only" ? undefined : this.hybridOptions(input.latencyBudgetMs)')
   })
 
   test("separates lightweight RAG probes from vector index rebuilds", () => {

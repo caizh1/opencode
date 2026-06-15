@@ -29,7 +29,7 @@ describe("code graph derived sidecar storage", () => {
     const derived = syntheticDerived()
     const sidecar = splitCodeGraphDerivedIndex(derived, { targetPartBytes: 700, hardPartBytes: 2400 })
 
-    expect(sidecar.manifest.version).toBe(7)
+    expect(sidecar.manifest.version).toBe(9)
     for (const field of CODEGRAPH_DERIVED_SIDECAR_FIELDS) {
       expect(sidecar.manifest.fields[field].length).toBeGreaterThan(0)
     }
@@ -44,8 +44,28 @@ describe("code graph derived sidecar storage", () => {
     expect(mergeCodeGraphDerivedSidecar(sidecar)).toEqual(derived)
   })
 
+  test("splits one huge derived postings term without losing records", () => {
+    const derived = syntheticDerived()
+    derived.postingsByTerm.huge_term = Array.from({ length: 180 }, (_, index) => ({
+      term: "huge_term",
+      path: `drivers/dense/file_${index % 4}.c`,
+      line: index + 1,
+      kind: "identifier",
+      weight: 1,
+      symbolId: `drivers/dense/file_${index % 4}.c:huge_${index}:1`,
+    }))
+
+    const sidecar = splitCodeGraphDerivedIndex(derived, { targetPartBytes: 900, hardPartBytes: 3000 })
+
+    expect(sidecar.manifest.fields.postingsByTerm.length).toBeGreaterThan(1)
+    expect(countPostingsInSidecar(sidecar)).toBe(countPostings(derived))
+    expect(mergeCodeGraphDerivedSidecar(sidecar)).toEqual(derived)
+  })
+
   test("rejects old persisted code graph versions so fixed builds rebuild from zero", () => {
-    expect(isCurrentCodeGraphIndexVersion(7)).toBe(true)
+    expect(isCurrentCodeGraphIndexVersion(9)).toBe(true)
+    expect(isCurrentCodeGraphIndexVersion(8)).toBe(false)
+    expect(isCurrentCodeGraphIndexVersion(7)).toBe(false)
     expect(isCurrentCodeGraphIndexVersion(6)).toBe(false)
     expect(isCurrentCodeGraphIndexVersion(5)).toBe(false)
     expect(isCurrentCodeGraphIndexVersion(4)).toBe(false)

@@ -241,12 +241,18 @@ export async function retrieveHybridEvidence(input: {
   for (const item of base.evidence) evidence.add(item)
 
   const hybrid = input.hybrid
+  const deadline = hybrid?.latencyBudgetMs !== undefined ? Date.now() + Math.max(0, hybrid.latencyBudgetMs) : undefined
   if (hybrid?.settings.embedding.enabled && hybrid.settings.vectorTopK > 0) {
     const vectorStarted = Date.now()
     try {
       if (!hybrid.embeddingProvider) throw new Error("embedding provider is not configured")
       if (!hybrid.vectorIndex || hybrid.vectorIndex.chunks.length === 0) throw new Error("local vector index is empty")
-      const queryVector = (await hybrid.embeddingProvider.embed([input.question], hybrid.signal))[0]
+      const queryVector = (await runWithHybridLatencyBudget(
+        "query embedding",
+        hybrid,
+        deadline,
+        (signal) => hybrid.embeddingProvider!.embed([input.question], signal),
+      ))[0]
       if (!queryVector) throw new Error("embedding provider returned no query vector")
       const hits = searchRagVectorIndex(hybrid.vectorIndex, queryVector, hybrid.settings.vectorTopK)
       trace.vectorCandidates = hits.length
@@ -270,7 +276,9 @@ export async function retrieveHybridEvidence(input: {
         evidence: ranked,
         provider: hybrid.rerankProvider,
         topK: hybrid.settings.rerankTopK,
-        signal: hybrid.signal,
+        signal: undefined,
+        deadline,
+        parentSignal: hybrid.signal,
       })
       trace.rerankedCandidates = Math.min(hybrid.settings.rerankTopK, ranked.length)
       trace.steps.push({ label: "rerank", detail: `${trace.rerankedCandidates} candidate(s) reranked`, elapsedMs: Date.now() - rerankStarted })
@@ -1131,17 +1139,24 @@ async function rerankEvidence(input: {
   provider: RerankProvider
   topK: number
   signal?: AbortSignal
+  parentSignal?: AbortSignal
+  deadline?: number
 }) {
   const strong = input.evidence.filter(isStrongEvidence)
   const ordinary = input.evidence.filter((item) => !isStrongEvidence(item))
   const selected = ordinary.slice(0, input.topK)
   if (selected.length === 0) return input.evidence
-  const scores = await input.provider.rerank({
-    query: input.question,
-    documents: selected.map((item) => item.snippet),
-    topN: selected.length,
-    signal: input.signal,
-  })
+  const scores = await runWithHybridLatencyBudget(
+    "rerank",
+    { signal: input.parentSignal ?? input.signal },
+    input.deadline,
+    (signal) => input.provider.rerank({
+      query: input.question,
+      documents: selected.map((item) => item.snippet),
+      topN: selected.length,
+      signal,
+    }),
+  )
   const byIndex = new Map(scores.map((item) => [item.index, item.score]))
   const reranked = selected
     .map((item, index) => {
@@ -1153,6 +1168,38 @@ async function rerankEvidence(input: {
     .sort((left, right) => right.score - left.score || left.path.localeCompare(right.path) || left.startLine - right.startLine)
   const unselected = ordinary.slice(input.topK)
   return [...strong.sort((left, right) => right.score - left.score), ...reranked, ...unselected]
+}
+
+async function runWithHybridLatencyBudget<T>(
+  label: string,
+  hybrid: Pick<HybridRetrievalOptions, "signal">,
+  deadline: number | undefined,
+  operation: (signal?: AbortSignal) => Promise<T>,
+): Promise<T> {
+  if (deadline === undefined) return operation(hybrid.signal)
+  const remainingMs = deadline - Date.now()
+  if (remainingMs <= 0) throw new Error(`${label} timed out before start`)
+
+  const controller = new AbortController()
+  let timedOut = false
+  const abortFromParent = () => controller.abort()
+  hybrid.signal?.addEventListener("abort", abortFromParent, { once: true })
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      timedOut = true
+      controller.abort()
+      reject(new Error(`${label} timed out after ${Math.max(0, Math.round(remainingMs))}ms`))
+    }, remainingMs)
+  })
+  const work = operation(controller.signal)
+  work.catch(() => undefined)
+  try {
+    return await Promise.race([work, timeout])
+  } finally {
+    if (timer) clearTimeout(timer)
+    hybrid.signal?.removeEventListener("abort", abortFromParent)
+  }
 }
 
 function isStrongEvidence(item: CodeGraphEvidence) {

@@ -1,5 +1,6 @@
 import * as crypto from "node:crypto"
 import { moduleKey, shardKeyForPath } from "./codegraph-index"
+import { shouldIndexPath } from "./indexing-path-policy"
 import { RagHttpError } from "./rag-provider"
 import { estimateEmbeddingTokens } from "./rag-token"
 import type { CodeGraphFile, CodeGraphIndex } from "./codegraph-types"
@@ -19,6 +20,7 @@ export type RagSerializedManifest = {
   rootPath: string
   updatedAt: number
   sourceIndexUpdatedAt?: number
+  indexTests?: boolean
   provider: string
   model: string
   dimension: number
@@ -217,6 +219,7 @@ export async function buildRagVectorIndex(input: {
   maxRetries?: number
   retryBackoffMs?: number
   initialElapsedMs?: number
+  indexTests?: boolean
   resumeMissing?: boolean
   sleep?: (ms: number) => Promise<void>
   onProgress?: (event: RagIndexBuildProgress) => void
@@ -229,7 +232,8 @@ export async function buildRagVectorIndex(input: {
 }): Promise<RagVectorIndex> {
   const buildStarted = Date.now()
   throwIfAborted(input.signal)
-  const chunks = buildRagChunks(input.index, input.stateMachines ?? [])
+  const indexTests = input.indexTests ?? true
+  const chunks = buildRagChunks(input.index, input.stateMachines ?? [], { indexTests })
   const changed = input.changedPaths ? new Set(input.changedPaths.map(normalizePath)) : undefined
   const resumeMissing = input.resumeMissing ?? true
   const previousById = new Map<string, { chunk: RagChunk; vector: number[] }>()
@@ -239,6 +243,7 @@ export async function buildRagVectorIndex(input: {
     && input.previous.dimension > 0
     && input.previous.provider === input.provider.id
     && input.previous.model === input.provider.model
+    && input.previous.indexTests === indexTests
     && (!providerDimension || input.previous.dimension === providerDimension)
   ) {
     for (let index = 0; index < input.previous.chunks.length; index++) {
@@ -329,6 +334,7 @@ export async function buildRagVectorIndex(input: {
       rootPath: input.index.rootPath,
       provider: input.provider,
       sourceIndexUpdatedAt: input.sourceIndexUpdatedAt ?? input.index.updatedAt,
+      indexTests,
       chunks,
       nextChunks: compacted.nextChunks,
       vectors: compacted.vectors,
@@ -642,15 +648,18 @@ export async function buildRagVectorIndex(input: {
   return finalIndex
 }
 
-export function buildRagChunks(index: CodeGraphIndex, stateMachines: StateMachine[] = []): RagChunk[] {
+export function buildRagChunks(index: CodeGraphIndex, stateMachines: StateMachine[] = [], options: { indexTests?: boolean } = {}): RagChunk[] {
   const chunks: RagChunk[] = []
-  for (const file of Object.values(index.files)) {
+  const indexTests = options.indexTests ?? true
+  const shouldInclude = (path: string) => shouldIndexPath(path, { indexTests })
+  const files = Object.values(index.files).filter((file) => shouldInclude(file.path))
+  for (const file of files) {
     chunks.push(...functionChunks(file))
     chunks.push(fileSummaryChunk(file))
     if (file.functions.length === 0) chunks.push(...textWindowChunks(file))
   }
-  chunks.push(...moduleSummaryChunks(index))
-  chunks.push(...stateMachines.flatMap(stateMachineChunks))
+  chunks.push(...moduleSummaryChunks(files))
+  chunks.push(...stateMachines.flatMap(stateMachineChunks).filter((item) => shouldInclude(item.path)))
   return dedupeChunks(chunks)
 }
 
@@ -699,6 +708,7 @@ export function createRagSerializedManifest(index: RagVectorIndex, metadata: Par
     rootPath: index.rootPath,
     updatedAt: index.updatedAt,
     sourceIndexUpdatedAt: index.sourceIndexUpdatedAt,
+    indexTests: index.indexTests,
     provider: index.provider,
     model: index.model,
     dimension: index.dimension,
@@ -768,6 +778,7 @@ function createVectorIndex(input: {
   rootPath: string
   provider: EmbeddingProvider
   sourceIndexUpdatedAt?: number
+  indexTests: boolean
   chunks: RagChunk[]
   nextChunks: RagChunk[]
   vectors: number[][]
@@ -785,6 +796,7 @@ function createVectorIndex(input: {
     rootPath: input.rootPath,
     updatedAt: Date.now(),
     sourceIndexUpdatedAt: input.sourceIndexUpdatedAt,
+    indexTests: input.indexTests,
     provider: input.provider.id,
     model: input.provider.model,
     dimension,
@@ -1088,9 +1100,9 @@ function textWindowChunks(file: CodeGraphFile): RagChunk[] {
   })]
 }
 
-function moduleSummaryChunks(index: CodeGraphIndex): RagChunk[] {
+function moduleSummaryChunks(files: CodeGraphFile[]): RagChunk[] {
   const modules = new Map<string, CodeGraphFile[]>()
-  for (const file of Object.values(index.files)) {
+  for (const file of files) {
     const key = moduleKey(file.path)
     const rows = modules.get(key) ?? []
     rows.push(file)

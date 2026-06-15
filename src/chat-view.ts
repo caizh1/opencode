@@ -1117,10 +1117,13 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
       const currentRagSettings = this.deps.getSettings().rag
       const unchanged = ragSettingsInputMatchesCurrent(input, currentRagSettings)
       const embeddingIdentityChanged = ragSettingsInputChangesEmbeddingIdentity(input, currentRagSettings)
+      const contentPolicyChanged = Boolean(input.indexTests) !== currentRagSettings.indexTests
       const existingIndexReason = ragExistingIndexConfirmationReason(this.deps.codeGraph?.status().rag)
       let forceRebuild = false
       let preserveExistingIndex = false
-      if (existingIndexReason) {
+      if (contentPolicyChanged) {
+        forceRebuild = true
+      } else if (existingIndexReason) {
         forceRebuild = await this.confirmForceRagRebuild(embeddingIdentityChanged ? "embedding-change" : existingIndexReason)
         if (!forceRebuild && embeddingIdentityChanged) {
           this.postState()

@@ -144,6 +144,7 @@ function settings(input: { localOnlyMode: boolean; defaultAgent?: string }): Rem
       clangdPath: "",
       scipClangPath: "",
       excludeGlobs: [],
+      indexTests: false,
     },
     analysis: {
       bridgeEnabled: true,
@@ -180,6 +181,7 @@ function settings(input: { localOnlyMode: boolean; defaultAgent?: string }): Rem
         model: "",
       },
       allowedHosts: [],
+      indexTests: false,
       vectorTopK: 24,
       rerankTopK: 16,
     },

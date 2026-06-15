@@ -72,6 +72,7 @@ export type RagSettingsInput = {
   rerankEndpoint: string
   rerankModel: string
   allowedHosts: string[]
+  indexTests: boolean
   vectorTopK: number
   rerankTopK: number
 }
@@ -103,6 +104,7 @@ export type NormalizedRagSettingsInput = {
   rerankEndpoint: string
   rerankModel: string
   allowedHosts: string[]
+  indexTests: boolean
   vectorTopK: number
   rerankTopK: number
 }
@@ -185,6 +187,7 @@ export function readRemoteSettings(): RemoteSettings {
       clangdPath: config.get<string>("codeGraph.clangdPath", "").trim(),
       scipClangPath: config.get<string>("codeGraph.scipClangPath", "").trim(),
       excludeGlobs: readStringArray(config.get<unknown>("codeGraph.excludeGlobs", [])),
+      indexTests: config.get<boolean>("codeGraph.indexTests", false),
     },
     analysis: {
       bridgeEnabled: config.get<boolean>("analysis.bridge.enabled", true),
@@ -222,6 +225,7 @@ export function readRemoteSettings(): RemoteSettings {
         model: config.get<string>("rag.rerank.model", "").trim(),
       },
       allowedHosts: readStringArray(config.get<unknown>("rag.allowedHosts", [])),
+      indexTests: config.get<boolean>("rag.indexTests", false),
       vectorTopK: Math.max(0, Math.min(200, config.get<number>("rag.vectorTopK", 24))),
       rerankTopK: Math.max(0, Math.min(200, config.get<number>("rag.rerankTopK", 16))),
     },
@@ -416,6 +420,7 @@ export function ragSettingsUpdates(input: RagSettingsInput): SettingsUpdate[] {
     { key: "rag.rerank.endpoint", value: normalized.rerankEndpoint },
     { key: "rag.rerank.model", value: normalized.rerankModel },
     { key: "rag.allowedHosts", value: normalized.allowedHosts },
+    { key: "rag.indexTests", value: normalized.indexTests },
     { key: "rag.vectorTopK", value: normalized.vectorTopK },
     { key: "rag.rerankTopK", value: normalized.rerankTopK },
   ]
@@ -444,6 +449,7 @@ export function normalizeRagSettingsInput(input: RagSettingsInput): NormalizedRa
     rerankEndpoint: normalizeServerUrl(input.rerankEndpoint),
     rerankModel: input.rerankModel.trim(),
     allowedHosts: cleanStringArray(input.allowedHosts),
+    indexTests: Boolean(input.indexTests),
     vectorTopK: clampInteger(input.vectorTopK, 0, 200, 24),
     rerankTopK: clampInteger(input.rerankTopK, 0, 200, 16),
   }
@@ -471,6 +477,7 @@ export function normalizeCurrentRagSettings(settings = readRemoteSettings().rag)
     rerankEndpoint: settings.rerank.endpoint,
     rerankModel: settings.rerank.model,
     allowedHosts: cleanStringArray(settings.allowedHosts),
+    indexTests: settings.indexTests,
     vectorTopK: settings.vectorTopK,
     rerankTopK: settings.rerankTopK,
   }

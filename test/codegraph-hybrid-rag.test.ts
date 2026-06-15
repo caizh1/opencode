@@ -121,6 +121,33 @@ describe("hybrid offline evidence RAG", () => {
     expect(embeddingCalls.count).toBe(0)
     expect(rerankCalls.count).toBe(0)
   })
+
+  test("hybrid retrieval falls back when query embedding exceeds the latency budget", async () => {
+    const index = sampleIndex()
+    const buildEmbedding = fakeEmbeddingProvider()
+    const vectorIndex = await buildRagVectorIndex({ index, provider: buildEmbedding })
+    const embeddingCalls = { count: 0 }
+    const rerankCalls = { count: 0 }
+
+    const result = await retrieveHybridEvidence({
+      index,
+      question: "explain flash page verification",
+      maxBytes: 60000,
+      hybrid: {
+        settings: settings({ embedding: true, rerank: true }),
+        embeddingProvider: slowEmbeddingProvider(embeddingCalls),
+        rerankProvider: countingRerankProvider(rerankCalls),
+        vectorIndex,
+        latencyBudgetMs: 5,
+      },
+    })
+
+    expect(result?.trace?.some((step) => step.label === "fallback" && step.detail.includes("query embedding timed out"))).toBe(true)
+    expect(result?.trace?.some((step) => step.label === "vector")).toBe(false)
+    expect(result?.evidence.some((item) => item.path === "boot/storage.c")).toBe(true)
+    expect(embeddingCalls.count).toBe(1)
+    expect(rerankCalls.count).toBe(0)
+  })
 })
 
 function sampleIndex(): CodeGraphIndex {
@@ -179,6 +206,7 @@ function settings(input: { embedding: boolean; rerank?: boolean }): RagSettings 
       model: "fake-rerank",
     },
     allowedHosts: [],
+    indexTests: false,
     vectorTopK: 8,
     rerankTopK: 8,
   }
@@ -206,6 +234,18 @@ function countingEmbeddingProvider(calls: { count: number }): EmbeddingProvider 
     model: "fake",
     embed: async (input) => {
       calls.count += 1
+      return input.map(embedText)
+    },
+  }
+}
+
+function slowEmbeddingProvider(calls: { count: number }): EmbeddingProvider {
+  return {
+    id: "slow",
+    model: "slow",
+    embed: async (input) => {
+      calls.count += 1
+      await new Promise((resolve) => setTimeout(resolve, 100))
       return input.map(embedText)
     },
   }

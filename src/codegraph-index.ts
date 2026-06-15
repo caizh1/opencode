@@ -10,7 +10,7 @@ import type {
   CodeGraphSymbol,
 } from "./codegraph-types"
 
-export const CURRENT_CODE_GRAPH_INDEX_VERSION = 7 as const
+export const CURRENT_CODE_GRAPH_INDEX_VERSION = 9 as const
 export type CodeGraphYield = () => Promise<void>
 
 export function isCurrentCodeGraphIndexVersion(version: unknown): version is typeof CURRENT_CODE_GRAPH_INDEX_VERSION {

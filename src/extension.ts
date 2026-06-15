@@ -160,6 +160,13 @@ export async function activate(context: vscode.ExtensionContext) {
       if (event.affectsConfiguration("chipmate.rag")) {
         if (Date.now() >= ignoreRagConfigurationChangesUntil) scheduleRagConfigurationApply()
       }
+      if (event.affectsConfiguration("chipmate.codeGraph.indexTests")) {
+        output.appendLine("[codegraph] test directory indexing setting changed; queued full rebuild")
+        void codeGraph.indexWorkspace(true).catch((error) => {
+          const message = error instanceof Error ? error.message : String(error)
+          output.appendLine(`[codegraph] rebuild after test indexing setting change failed: ${message}`)
+        })
+      }
       if (event.affectsConfiguration("chipmate.provider") || event.affectsConfiguration("chipmate.permissions") || event.affectsConfiguration("chipmate.tools")) {
         chatProvider.refreshState()
       }

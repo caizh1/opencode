@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, mock, test } from "bun:test"
 import type { QueryEvidenceResult } from "../src/analysis-types"
-import type { CodeGraphEvidenceQueryOptions } from "../src/codegraph-types"
-import type { RemoteSettings } from "../src/types"
+import type { CodeGraphContextProvider, CodeGraphEvidenceQueryOptions } from "../src/codegraph-types"
+import type { CodeGraphStatus, RagAvailability, RagStatus, RemoteSettings } from "../src/types"
 
 let workspaceFolders: Array<{ name: string; uri: UriShim }> = []
 let textDocuments: FakeDocument[] = []
@@ -52,6 +52,9 @@ mock.module("vscode", () => ({
     Information: 2,
     Hint: 3,
   },
+  ConfigurationTarget: {
+    Global: "global",
+  },
   languages: {
     getDiagnostics: () => [],
   },
@@ -92,7 +95,7 @@ describe("QA chat evidence retrieval", () => {
   test("queries analysis evidence with the raw QA question and related workspace paths", async () => {
     const document = fakeDocument("ftl/bkm/ftl_bkm.c", "int ftl_bkm_init_free_mng(void) { return 0; }\n")
     textDocuments = [document]
-    const calls: Array<{ question: string; options?: CodeGraphEvidenceQueryOptions }> = []
+    const calls: CapturedCodeGraphCalls = { build: [], query: [] }
     const question = "请解释 FTL BKM 模块的职责、入口和状态机"
 
     const prompt = await buildChatPrompt({
@@ -111,27 +114,141 @@ describe("QA chat evidence retrieval", () => {
         selection: { isEmpty: true } as never,
         position: { line: 0, character: 0 } as never,
       },
-      codeGraph: {
-        buildContext: async () => undefined,
-        queryEvidence: async (capturedQuestion: string, options?: CodeGraphEvidenceQueryOptions) => {
-          calls.push({ question: capturedQuestion, options })
-          return queryEvidenceResult(capturedQuestion)
-        },
-      } as never,
+      codeGraph: codeGraphWithRagStatus(readyRagStatus(), calls),
     })
 
-    expect(calls).toHaveLength(1)
-    expect(calls[0]?.question).toBe(question)
-    expect(calls[0]?.question).not.toContain("body-statement")
-    expect(calls[0]?.options).toMatchObject({
+    expect(calls.query).toHaveLength(1)
+    expect(calls.query[0]?.question).toBe(question)
+    expect(calls.query[0]?.question).not.toContain("body-statement")
+    expect(calls.build[0]).toMatchObject({
+      question,
+      retrievalMode: "hybrid",
+      latencyBudgetMs: 2000,
+    })
+    expect(calls.query[0]?.options).toMatchObject({
       relatedPaths: ["ftl/bkm/ftl_bkm.c"],
       maxEvidenceItems: 40,
       maxEvidenceBytes: 60000,
+      retrievalMode: "hybrid",
+      latencyBudgetMs: 2000,
     })
     expect(prompt).toContain("Local analysis evidence pack:")
     expect(prompt).toContain("ftl/bkm/ftl_bkm.c")
   })
+
+  test("uses graph-only retrieval while RAG is indexing", async () => {
+    const calls = await buildPromptWithRagStatus({ availability: "indexing", indexAvailability: "partial", embeddedChunks: 12, pendingChunkCount: 8 })
+
+    expect(calls.build[0]).toMatchObject({ retrievalMode: "graph-only" })
+    expect(calls.build[0]?.latencyBudgetMs).toBeUndefined()
+    expect(calls.query[0]?.options).toMatchObject({ retrievalMode: "graph-only" })
+    expect(calls.query[0]?.options?.latencyBudgetMs).toBeUndefined()
+  })
+
+  test("does not use hybrid retrieval for incomplete RAG states", async () => {
+    const cases: Array<{ availability: RagAvailability; indexAvailability: RagStatus["indexAvailability"] }> = [
+      { availability: "partial", indexAvailability: "partial" },
+      { availability: "paused", indexAvailability: "paused" },
+      { availability: "unavailable", indexAvailability: "none" },
+      { availability: "not-indexed", indexAvailability: "none" },
+      { availability: "checking", indexAvailability: "none" },
+    ]
+
+    for (const item of cases) {
+      const calls = await buildPromptWithRagStatus({
+        availability: item.availability,
+        indexAvailability: item.indexAvailability,
+        embeddedChunks: item.availability === "partial" ? 8 : 0,
+        pendingChunkCount: item.availability === "partial" ? 2 : 10,
+      })
+      expect(calls.build[0]?.retrievalMode).toBe("graph-only")
+      expect(calls.query[0]?.options?.retrievalMode).toBe("graph-only")
+    }
+  })
+
+  test("allows hybrid retrieval only when RAG is complete and ready", async () => {
+    const calls = await buildPromptWithRagStatus(readyRagStatus())
+
+    expect(calls.build[0]).toMatchObject({ retrievalMode: "hybrid", latencyBudgetMs: 2000 })
+    expect(calls.query[0]?.options).toMatchObject({ retrievalMode: "hybrid", latencyBudgetMs: 2000 })
+  })
 })
+
+type CapturedCodeGraphCalls = {
+  build: Array<Parameters<CodeGraphContextProvider["buildContext"]>[0]>
+  query: Array<{ question: string; options?: CodeGraphEvidenceQueryOptions }>
+}
+
+async function buildPromptWithRagStatus(rag: Partial<RagStatus>) {
+  const document = fakeDocument("ftl/bkm/ftl_bkm.c", "int ftl_bkm_init_free_mng(void) { return 0; }\n")
+  textDocuments = [document]
+  const calls: CapturedCodeGraphCalls = { build: [], query: [] }
+  await buildChatPrompt({
+    question: "请解释 FTL BKM 模块",
+    options: {
+      includeSelection: false,
+      includeCurrentFile: true,
+      includeOpenFiles: false,
+      includeDiagnostics: false,
+      includeGitDiff: false,
+    },
+    settings: settings(),
+    contextStore: new LocalContextStore(),
+    editorContext: {
+      uri: document.uri as never,
+      selection: { isEmpty: true } as never,
+      position: { line: 0, character: 0 } as never,
+    },
+    codeGraph: codeGraphWithRagStatus(rag, calls),
+  })
+  return calls
+}
+
+function codeGraphWithRagStatus(rag: Partial<RagStatus>, calls: CapturedCodeGraphCalls): CodeGraphContextProvider {
+  return {
+    status: () => codeGraphStatus(rag),
+    buildContext: async (input) => {
+      calls.build.push(input)
+      return undefined
+    },
+    queryEvidence: async (question, options) => {
+      calls.query.push({ question, options })
+      return queryEvidenceResult(question)
+    },
+  } as CodeGraphContextProvider
+}
+
+function codeGraphStatus(rag: Partial<RagStatus>): CodeGraphStatus {
+  return {
+    state: "ready",
+    detail: "ready",
+    enabled: true,
+    indexedFiles: 1,
+    indexedFunctions: 1,
+    indexedMacros: 0,
+    truncated: false,
+    rag: {
+      ...readyRagStatus(),
+      ...rag,
+    },
+  }
+}
+
+function readyRagStatus(): RagStatus {
+  return {
+    enabled: true,
+    availability: "ready",
+    indexAvailability: "ready",
+    embeddingEnabled: true,
+    rerankEnabled: true,
+    endpointKind: "localhost",
+    chunks: 10,
+    embeddedChunks: 10,
+    indexedChunkCount: 10,
+    pendingChunkCount: 0,
+    vectorShards: 1,
+  }
+}
 
 function fakeDocument(path: string, text: string): FakeDocument {
   const lines = text.replace(/\r\n/g, "\n").split("\n")
@@ -250,6 +367,7 @@ function settings(): RemoteSettings {
       clangdPath: "",
       scipClangPath: "",
       excludeGlobs: [],
+      indexTests: false,
     },
     analysis: {
       bridgeEnabled: false,
@@ -286,6 +404,7 @@ function settings(): RemoteSettings {
         model: "",
       },
       allowedHosts: [],
+      indexTests: false,
       vectorTopK: 24,
       rerankTopK: 16,
     },

@@ -1,6 +1,7 @@
 import {
   CODEGRAPH_JSON_HARD_PART_BYTES,
   CODEGRAPH_JSON_TARGET_PART_BYTES,
+  estimateJsonBytes,
   splitArrayValueIntoBoundedChunks,
   splitRecordIntoBoundedJsonParts,
   type BoundedJsonPart,
@@ -39,12 +40,19 @@ export const CODEGRAPH_FILE_ARRAY_FIELDS: CodeGraphStoredFileArrayField[] = [
   "astSummary.controls",
 ]
 
+const LARGE_FILE_SIZE_BYTES = 2 * 1024 * 1024
+const LARGE_FILE_ARRAY_ITEMS = 25000
+const LARGE_FILE_RECORD_BYTES = 24 * 1024 * 1024
+
 type SplitFilesOptions = {
   shardKey: string
   basePath: string
   label: string
   targetPartBytes?: number
   hardPartBytes?: number
+  stringify?: (value: unknown) => string | undefined
+  onLargeFileSplit?: (event: { path: string; field: CodeGraphStoredFileArrayField; items: number; chunks: number }) => void
+  onProgress?: (event: { label: string; processed: number; total: number }) => void
 }
 
 export function splitCodeGraphFilesForStorage(
@@ -60,6 +68,7 @@ export function splitCodeGraphFilesForStorage(
     label: options.label,
     targetPartBytes: options.targetPartBytes ?? CODEGRAPH_JSON_TARGET_PART_BYTES,
     hardPartBytes: options.hardPartBytes ?? CODEGRAPH_JSON_HARD_PART_BYTES,
+    stringify: options.stringify,
     pathForPart: (_partIndex, partKey) => `${normalizeBasePath(options.basePath)}/${partKey}.json`,
     createPayload: (records, partKey) => ({
       version: CURRENT_CODE_GRAPH_INDEX_VERSION,
@@ -74,9 +83,14 @@ export function splitCodeGraphFilesForStorage(
 
 export function mergeCodeGraphFileStorageParts(parts: CodeGraphShardData[]): Record<string, CodeGraphFile> {
   const builders = new Map<string, FileBuilder>()
+  const wholeFiles = Object.create(null) as Record<string, CodeGraphFile>
   for (const payload of parts) {
     assertFileShardVersion(payload.version, payload.key, payload.part)
     for (const part of payload.fileParts) {
+      if (part.kind === "whole") {
+        wholeFiles[part.path] = part.file
+        continue
+      }
       const builder = getBuilder(builders, part.path)
       if (part.kind === "base") {
         builder.base = part.file
@@ -87,7 +101,7 @@ export function mergeCodeGraphFileStorageParts(parts: CodeGraphShardData[]): Rec
       }
     }
   }
-  const files: Record<string, CodeGraphFile> = Object.create(null) as Record<string, CodeGraphFile>
+  const files: Record<string, CodeGraphFile> = { ...wholeFiles }
   for (const [path, builder] of [...builders.entries()].sort(([left], [right]) => left.localeCompare(right))) {
     if (!builder.base) throw new Error(`Missing stored code graph file base for ${path}.`)
     files[path] = buildFileFromParts(builder.base, builder.arrays)
@@ -96,6 +110,13 @@ export function mergeCodeGraphFileStorageParts(parts: CodeGraphShardData[]): Rec
 }
 
 function splitCodeGraphFile(file: CodeGraphFile, options: SplitFilesOptions): CodeGraphStoredFilePart[] {
+  if (!shouldSplitCodeGraphFile(file, options)) {
+    return [{
+      kind: "whole",
+      path: file.path,
+      file,
+    }]
+  }
   const parts: CodeGraphStoredFilePart[] = [{
     kind: "base",
     path: file.path,
@@ -110,6 +131,9 @@ function splitCodeGraphFile(file: CodeGraphFile, options: SplitFilesOptions): Co
       label: `${options.label} file ${file.path} ${field}`,
       targetPartBytes: options.targetPartBytes ?? CODEGRAPH_JSON_TARGET_PART_BYTES,
       hardPartBytes: options.hardPartBytes ?? CODEGRAPH_JSON_HARD_PART_BYTES,
+      stringify: options.stringify,
+      progressIntervalItems: 2048,
+      onProgress: options.onProgress,
       createPayload: (items) => ({
         version: CURRENT_CODE_GRAPH_INDEX_VERSION,
         key: options.shardKey,
@@ -123,6 +147,7 @@ function splitCodeGraphFile(file: CodeGraphFile, options: SplitFilesOptions): Co
         }],
       } satisfies CodeGraphShardData),
     })
+    options.onLargeFileSplit?.({ path: file.path, field, items: values.length, chunks: chunks.length })
     for (const chunk of chunks) {
       parts.push({
         kind: "array",
@@ -135,6 +160,27 @@ function splitCodeGraphFile(file: CodeGraphFile, options: SplitFilesOptions): Co
     }
   }
   return parts
+}
+
+function shouldSplitCodeGraphFile(file: CodeGraphFile, options: SplitFilesOptions) {
+  const hardPartBytes = options.hardPartBytes ?? CODEGRAPH_JSON_HARD_PART_BYTES
+  if (file.size > LARGE_FILE_SIZE_BYTES) return true
+  if (CODEGRAPH_FILE_ARRAY_FIELDS.reduce((count, field) => count + fileArray(file, field).length, 0) > LARGE_FILE_ARRAY_ITEMS) return true
+  try {
+    const bytes = estimateJsonBytes({
+      version: CURRENT_CODE_GRAPH_INDEX_VERSION,
+      key: options.shardKey,
+      part: "single-file",
+      fileParts: [{
+        kind: "whole",
+        path: file.path,
+        file,
+      }],
+    } satisfies CodeGraphShardData, { label: `${options.label} file ${file.path}`, stringify: options.stringify })
+    return bytes > Math.min(LARGE_FILE_RECORD_BYTES, Math.floor(hardPartBytes * 0.75))
+  } catch {
+    return true
+  }
 }
 
 function fileBase(file: CodeGraphFile): CodeGraphStoredFileBase {
@@ -261,6 +307,7 @@ function getBuilder(builders: Map<string, FileBuilder>, path: string) {
 }
 
 function filePartRecordKey(part: CodeGraphStoredFilePart) {
+  if (part.kind === "whole") return `${part.path}\0whole`
   if (part.kind === "base") return `${part.path}\0base`
   return `${part.path}\0${part.field}\0${part.offset.toString(36).padStart(8, "0")}`
 }

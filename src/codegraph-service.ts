@@ -42,6 +42,7 @@ import {
   createCodeGraphStorageManifest,
 } from "./codegraph-storage-schema"
 import { LocalAnalysisJobQueue, recordStateTransition, type LocalAnalysisJob } from "./local-analysis-service"
+import { shouldIndexPath } from "./indexing-path-policy"
 import type { AnalysisToolName, AnalysisToolResult, CodeIntelligenceSnapshot, QueryEvidenceResult } from "./analysis-types"
 import { extractStateMachines } from "./state-machine-extractor"
 import { checkRagEndpoint, createHttpEmbeddingProvider, createHttpRerankProvider, probeRagRerankProvider, type RagHttpDiagnosticEvent, type RagHttpDiagnostics } from "./rag-provider"
@@ -64,6 +65,7 @@ import {
 } from "./rag-index"
 import type { EmbeddingProvider, HybridRetrievalOptions, RagVectorIndex, RerankProvider } from "./rag-types"
 import type {
+  CodeGraphEvidenceRetrievalMode,
   CodeGraphFile,
   CodeGraphEvidenceQueryOptions,
   CodeGraphIndex,
@@ -91,6 +93,7 @@ const STATE_TRANSITION_LIMIT = 25
 const SOURCE_GLOB = "**/*.{c,h,cc,cpp,cxx,hpp,hxx}"
 const SOURCE_EXTENSIONS = new Set([".c", ".h", ".cc", ".cpp", ".cxx", ".hpp", ".hxx"])
 const LARGE_INDEX_LAZY_FILE_THRESHOLD = 100000
+const CODEGRAPH_STORAGE_WRITE_CONCURRENCY = 4
 const JOB_CHECKPOINT_VERSION = 1
 const RAG_INDEX_SAFE_CHECKPOINT_CHUNK_INTERVAL = 2048
 const RAG_INDEX_SAFE_CHECKPOINT_INTERVAL_MS = 30000
@@ -524,14 +527,17 @@ export class LocalCodeGraphService implements vscode.Disposable {
     maxBytes: number
     maxDepth: number
     maxFanout: number
+    retrievalMode?: CodeGraphEvidenceRetrievalMode
+    latencyBudgetMs?: number
   }): Promise<CodeGraphPromptContext | undefined> {
     const settings = this.getSettings()
     if (!settings.codeGraph.enabled) return undefined
     if (!this.index) await this.ensureIndexLoaded()
     const activeIndex = await this.activeIndexForQuestion(input.question, input.relatedPaths)
     if (!activeIndex) return undefined
+    const retrievalMode = input.retrievalMode ?? "hybrid"
     this.resizeQueryCache(settings.codeGraph.queryCacheSize)
-    const cacheKey = `${codeGraphQueryCacheKey(input)}:${this.ragIndex?.updatedAt ?? 0}:${settings.rag.embedding.enabled ? "rag" : "fallback"}`
+    const cacheKey = `${codeGraphQueryCacheKey(input)}:${retrievalMode}:${input.latencyBudgetMs ?? "none"}:${retrievalMode === "hybrid" ? this.ragIndex?.updatedAt ?? 0 : 0}:${settings.rag.embedding.enabled ? "rag" : "fallback"}`
     const cached = this.queryCache.get(cacheKey)
     if (cached) {
       this.jobs.recordQueryCacheHit()
@@ -551,7 +557,7 @@ export class LocalCodeGraphService implements vscode.Disposable {
       maxBytes: input.maxBytes,
       maxDepth: input.maxDepth,
       maxFanout: input.maxFanout,
-      hybrid: this.hybridOptions(),
+      hybrid: retrievalMode === "graph-only" ? undefined : this.hybridOptions(input.latencyBudgetMs),
     })
     if (context) {
       this.cacheQueryContext(cacheKey, context)
@@ -574,7 +580,7 @@ export class LocalCodeGraphService implements vscode.Disposable {
     const activeIndex = await this.activeIndexForQuestion(question, options.relatedPaths ?? [])
     if (!activeIndex) return undefined
     const settings = this.getSettings()
-    const hybrid = options.retrievalMode === "graph-only" ? undefined : this.hybridOptions()
+    const hybrid = options.retrievalMode === "graph-only" ? undefined : this.hybridOptions(options.latencyBudgetMs)
     const result = await queryEvidenceAsync(activeIndex, question, {
       maxEvidenceItems: options.maxEvidenceItems ?? settings.analysis.maxEvidenceItems,
       maxEvidenceBytes: options.maxEvidenceBytes ?? settings.analysis.maxEvidenceBytes,
@@ -707,9 +713,10 @@ export class LocalCodeGraphService implements vscode.Disposable {
         detail: "Scanning local C/C++ files.",
         progress: { completed: 0, total: 0 },
       })
-      const files = await discoverWorkspaceSourceFiles(root, settings, ignoreGlobs)
+      const scan = await discoverWorkspaceSourceFiles(root, settings, ignoreGlobs)
+      const files = scan.files
       await budget.yieldNow()
-      this.output.appendLine(`[codegraph] scan ${Date.now() - started}ms, found ${Math.min(files.length, settings.codeGraph.maxFiles)} file(s)`)
+      this.output.appendLine(`[codegraph] scan ${Date.now() - started}ms, found ${Math.min(files.length, settings.codeGraph.maxFiles)} file(s) skippedTestFiles=${scan.skippedTestFiles}`)
       const truncated = files.length > settings.codeGraph.maxFiles
       const selected = files.slice(0, settings.codeGraph.maxFiles)
       const nextFiles: Record<string, CodeGraphFile> = {}
@@ -815,10 +822,15 @@ export class LocalCodeGraphService implements vscode.Disposable {
     this.watcher = vscode.workspace.createFileSystemWatcher(SOURCE_GLOB)
     this.context.subscriptions.push(this.watcher)
     const queueChange = (uri: vscode.Uri, deleted: boolean) => {
-      if (!this.getSettings().codeGraph.enabled) return
+      const settings = this.getSettings()
+      if (!settings.codeGraph.enabled) return
       const path = workspaceRelativePath(uri)
+      if (!shouldIndexPath(path, { indexTests: settings.codeGraph.indexTests })) {
+        if (!this.index?.files[path]) return
+        deleted = true
+      }
       this.pendingChanges.set(path, { uri, deleted })
-      const threshold = this.getSettings().codeGraph.watcherRescanThreshold
+      const threshold = settings.codeGraph.watcherRescanThreshold
       if (this.pendingChanges.size >= threshold) {
         this.rescanScheduled = true
         this.jobs.recordWatcherStorm()
@@ -948,7 +960,9 @@ export class LocalCodeGraphService implements vscode.Disposable {
       await this.waitWhilePaused()
       const change = changes[index]
       const relative = workspaceRelativePath(change.uri)
-      if (change.deleted) {
+      if (!shouldIndexPath(relative, { indexTests: settings.codeGraph.indexTests })) {
+        delete this.index.files[relative]
+      } else if (change.deleted) {
         delete this.index.files[relative]
       } else {
         const fileCount = Object.keys(this.index.files).length
@@ -1090,6 +1104,9 @@ export class LocalCodeGraphService implements vscode.Disposable {
     const fileSaveStarted = Date.now()
     this.output.appendLine(`[codegraph] saving file shard parts logicalShards=${groups.size} targetPartBytes=${CODEGRAPH_JSON_TARGET_PART_BYTES} hardPartBytes=${CODEGRAPH_JSON_HARD_PART_BYTES}`)
     for (const [key, files] of [...groups.entries()].sort(([left], [right]) => left.localeCompare(right))) {
+      const shardPlanningStarted = Date.now()
+      this.output.appendLine(`[codegraph] planning file shard ${key} files=${Object.keys(files).length}`)
+      let lastSplitProgressLog = 0
       const stats = buildIndexStats(files)
       const parts = splitCodeGraphFilesForStorage(files, {
         shardKey: key,
@@ -1097,7 +1114,18 @@ export class LocalCodeGraphService implements vscode.Disposable {
         basePath: `shards/${shardGeneration}/${this.shardDirectoryName(key)}`,
         targetPartBytes: CODEGRAPH_JSON_TARGET_PART_BYTES,
         hardPartBytes: CODEGRAPH_JSON_HARD_PART_BYTES,
+        onLargeFileSplit: (event) => {
+          this.output.appendLine(`[codegraph] splitting large file ${event.path} field=${event.field} items=${event.items} chunks=${event.chunks}`)
+        },
+        onProgress: (event) => {
+          const now = Date.now()
+          if (now - lastSplitProgressLog >= 2000 || event.processed >= event.total) {
+            lastSplitProgressLog = now
+            this.output.appendLine(`[codegraph] splitting progress ${event.label} ${event.processed}/${event.total}`)
+          }
+        },
       })
+      this.output.appendLine(`[codegraph] planned file shard ${key} parts=${parts.length} maxPartBytes=${parts.reduce((max, part) => Math.max(max, part.estimatedBytes), 0)} elapsedMs=${Date.now() - shardPlanningStarted}`)
       manifestShards.push({
         key,
         files: stats.files,
@@ -1111,17 +1139,19 @@ export class LocalCodeGraphService implements vscode.Disposable {
           estimatedBytes: part.estimatedBytes,
         })),
       })
-      for (const part of parts) {
+      await writePartsWithConcurrency(parts, CODEGRAPH_STORAGE_WRITE_CONCURRENCY, async (part, index) => {
         this.setStatus({
           ...this.statusValue,
-          detail: `Saving shard ${key} part ${part.key}.`,
+          detail: `Saving shard ${key} part ${index + 1}/${parts.length}.`,
           currentShard: key,
         })
         await writeJsonRelative(dir, part.path, part.payload, `file shard ${key}`, part.key)
         filePartCount += 1
         maxFilePartBytes = Math.max(maxFilePartBytes, part.estimatedBytes)
         await budget.yieldIfNeeded()
-      }
+      }, (completed, total) => {
+        this.output.appendLine(`[codegraph] saved file shard ${key} part ${completed}/${total}`)
+      })
     }
     this.output.appendLine(`[codegraph] saving file shard parts done logicalShards=${manifestShards.length} parts=${filePartCount} maxPartBytes=${maxFilePartBytes} elapsedMs=${Date.now() - fileSaveStarted}`)
 
@@ -1285,7 +1315,7 @@ export class LocalCodeGraphService implements vscode.Disposable {
     return mergeCodeGraphFileStorageParts(parts)
   }
 
-  private hybridOptions(): HybridRetrievalOptions {
+  private hybridOptions(latencyBudgetMs?: number): HybridRetrievalOptions {
     this.configureRagProviders()
     const embeddingReady = Boolean(this.ragStatusValue.embeddingEnabled && this.ragIndex && this.ragEmbeddingProvider && this.currentRagIndexMatchesProvider())
     const rerankReady = Boolean(this.ragStatusValue.rerankEnabled && this.ragRerankProvider)
@@ -1294,6 +1324,7 @@ export class LocalCodeGraphService implements vscode.Disposable {
       vectorIndex: embeddingReady ? this.ragIndex : undefined,
       embeddingProvider: embeddingReady ? this.ragEmbeddingProvider : undefined,
       rerankProvider: rerankReady ? this.ragRerankProvider : undefined,
+      latencyBudgetMs,
     }
   }
 
@@ -1457,6 +1488,7 @@ export class LocalCodeGraphService implements vscode.Disposable {
   }
 
   private currentRagIndexMatchesProvider() {
+    const settings = this.getSettings().rag
     const providerDimension = this.ragEmbeddingProvider?.dimension && this.ragEmbeddingProvider.dimension > 0
       ? this.ragEmbeddingProvider.dimension
       : undefined
@@ -1467,12 +1499,14 @@ export class LocalCodeGraphService implements vscode.Disposable {
         && this.ragIndex.model === this.ragEmbeddingProvider.model
         && (!providerDimension || this.ragIndex.dimension === providerDimension)
         && this.ragIndex.sourceIndexUpdatedAt === this.index?.updatedAt
+        && this.ragIndex.indexTests === settings.indexTests
         && this.ragIndex.dimension > 0
         && this.ragIndex.vectors.length > 0,
     )
   }
 
   private ragIndexCanContinueElapsed() {
+    const settings = this.getSettings().rag
     const providerDimension = this.ragEmbeddingProvider?.dimension && this.ragEmbeddingProvider.dimension > 0
       ? this.ragEmbeddingProvider.dimension
       : undefined
@@ -1483,6 +1517,7 @@ export class LocalCodeGraphService implements vscode.Disposable {
         && this.ragIndex.model === this.ragEmbeddingProvider.model
         && (!providerDimension || this.ragIndex.dimension <= 0 || this.ragIndex.dimension === providerDimension)
         && this.ragIndex.sourceIndexUpdatedAt === this.index?.updatedAt
+        && this.ragIndex.indexTests === settings.indexTests
         && (this.ragIndex.pendingChunkCount ?? 0) > 0,
     )
   }
@@ -1692,6 +1727,7 @@ export class LocalCodeGraphService implements vscode.Disposable {
         && existing.provider === this.ragEmbeddingProvider.id
         && existing.model === this.ragEmbeddingProvider.model
         && existing.sourceIndexUpdatedAt === sourceIndexUpdatedAt
+        && existing.indexTests === this.getSettings().rag.indexTests
         && existing.dimension > 0
         && existing.vectors.length > 0,
     )
@@ -1703,7 +1739,9 @@ export class LocalCodeGraphService implements vscode.Disposable {
       existing?.chunks.length ?? 0,
     )
     if (totalChunks <= 0 && this.index && !this.isLazyManifestIndex()) {
-      totalChunks = buildRagChunks(this.index, extractStateMachines(this.index, { maxTransitions: this.getSettings().codeGraph.maxStateTransitions })).length
+      totalChunks = buildRagChunks(this.index, extractStateMachines(this.index, { maxTransitions: this.getSettings().codeGraph.maxStateTransitions }), {
+        indexTests: this.getSettings().rag.indexTests,
+      }).length
     }
     if (totalChunks <= 0) return undefined
 
@@ -1715,6 +1753,7 @@ export class LocalCodeGraphService implements vscode.Disposable {
       rootPath: root.uri.fsPath,
       updatedAt: Date.now(),
       sourceIndexUpdatedAt,
+      indexTests: this.getSettings().rag.indexTests,
       provider: this.ragEmbeddingProvider.id,
       model: this.ragEmbeddingProvider.model,
       dimension,
@@ -2274,6 +2313,7 @@ export class LocalCodeGraphService implements vscode.Disposable {
         index: activeIndex,
         provider: this.ragEmbeddingProvider,
         sourceIndexUpdatedAt: this.index.updatedAt,
+        indexTests: settings.indexTests,
         signal,
         previous: options.ignorePrevious ? undefined : this.ragIndex,
         changedPaths,
@@ -2492,6 +2532,12 @@ export class LocalCodeGraphService implements vscode.Disposable {
         this.setRagStatus(await this.probeRagProvidersOnly())
         return
       }
+      if (manifest.indexTests !== settings.indexTests) {
+        this.output.appendLine(`[rag-index] stored vector index content policy changed; rebuild required indexTests=${settings.indexTests}`)
+        this.ragIndex = undefined
+        this.setRagStatus(await this.probeRagProvidersOnly())
+        return
+      }
       const chunks: RagVectorIndex["chunks"] = []
       const vectors: RagVectorIndex["vectors"] = []
       const shardsDir = vscode.Uri.joinPath(this.ragDir(root), "shards")
@@ -2511,6 +2557,7 @@ export class LocalCodeGraphService implements vscode.Disposable {
         model: manifest.model,
         dimension: manifest.dimension,
         sourceIndexUpdatedAt: manifest.sourceIndexUpdatedAt,
+        indexTests: manifest.indexTests,
         chunks,
         vectors,
         totalChunks: manifest.totalChunks ?? manifest.chunks,
@@ -2632,15 +2679,17 @@ export class LocalCodeGraphService implements vscode.Disposable {
   }
 
   private async saveDerivedSidecar(indexDir: vscode.Uri, sidecar: CodeGraphDerivedSidecarData, budget = new WorkBudget()) {
-    for (const part of sidecar.parts) {
+    await writePartsWithConcurrency(sidecar.parts, CODEGRAPH_STORAGE_WRITE_CONCURRENCY, async (part, index) => {
       this.setStatus({
         ...this.statusValue,
-        detail: `Saving derived ${part.payload.field} part ${part.key}.`,
+        detail: `Saving derived ${part.payload.field} part ${index + 1}/${sidecar.parts.length}.`,
         currentShard: part.payload.field,
       })
       await writeJsonRelative(indexDir, part.path, part.payload, `derived ${part.payload.field}`, part.key)
       await budget.yieldIfNeeded()
-    }
+    }, (completed, total) => {
+      this.output.appendLine(`[codegraph] saved derived sidecar part ${completed}/${total}`)
+    })
   }
 
   private async loadDerivedSidecar(
@@ -3011,26 +3060,45 @@ function excludeGlob(extra: string[]) {
 }
 
 async function discoverWorkspaceSourceFiles(root: vscode.WorkspaceFolder, settings: RemoteSettings, ignoreGlobs: string[]) {
-  const gitFiles = await gitTrackedSourceFiles(root, settings.codeGraph.maxFiles + 1)
-  if (gitFiles.length > 0) return gitFiles
+  const gitScan = await gitTrackedSourceFiles(root, settings.codeGraph.maxFiles + 1, settings.codeGraph.indexTests)
+  if (gitScan.trackedSourceFiles > 0) return gitScan
   const files = await vscode.workspace.findFiles(
     SOURCE_GLOB,
     excludeGlob([...settings.codeGraph.excludeGlobs, ...ignoreGlobs]),
     settings.codeGraph.maxFiles + 1,
   )
-  return files.filter((uri) => !isSensitivePath(workspaceRelativePath(uri)))
+  const selected: vscode.Uri[] = []
+  let skippedTestFiles = 0
+  for (const uri of files) {
+    const path = workspaceRelativePath(uri)
+    if (isSensitivePath(path)) continue
+    if (!shouldIndexPath(path, { indexTests: settings.codeGraph.indexTests })) {
+      skippedTestFiles += 1
+      continue
+    }
+    selected.push(uri)
+  }
+  return { files: selected, skippedTestFiles, trackedSourceFiles: selected.length + skippedTestFiles }
 }
 
-async function gitTrackedSourceFiles(root: vscode.WorkspaceFolder, limit: number) {
+async function gitTrackedSourceFiles(root: vscode.WorkspaceFolder, limit: number, indexTests: boolean) {
   try {
     const { stdout } = await execFile("git", ["-C", root.uri.fsPath, "ls-files", "-z"], { maxBuffer: 64 * 1024 * 1024 })
-    const paths = stdout
-      .split("\0")
-      .filter((path) => path && isSourcePath(path) && !isSensitivePath(path))
-      .slice(0, limit)
-    return paths.map((path) => vscode.Uri.joinPath(root.uri, ...path.replace(/\\/g, "/").split("/")))
+    const files: vscode.Uri[] = []
+    let skippedTestFiles = 0
+    let trackedSourceFiles = 0
+    for (const path of stdout.split("\0")) {
+      if (!path || !isSourcePath(path) || isSensitivePath(path)) continue
+      trackedSourceFiles += 1
+      if (!shouldIndexPath(path, { indexTests })) {
+        skippedTestFiles += 1
+        continue
+      }
+      if (files.length < limit) files.push(vscode.Uri.joinPath(root.uri, ...path.replace(/\\/g, "/").split("/")))
+    }
+    return { files, skippedTestFiles, trackedSourceFiles }
   } catch {
-    return []
+    return { files: [], skippedTestFiles: 0, trackedSourceFiles: 0 }
   }
 }
 
@@ -3375,6 +3443,27 @@ function toolQuestion(tool: AnalysisToolName, args: Record<string, unknown>) {
 
 function currentHeapUsed() {
   return typeof process !== "undefined" && typeof process.memoryUsage === "function" ? process.memoryUsage().heapUsed : 0
+}
+
+async function writePartsWithConcurrency<TPart>(
+  parts: TPart[],
+  concurrency: number,
+  writePart: (part: TPart, index: number) => Promise<void>,
+  onProgress: (completed: number, total: number) => void,
+) {
+  let next = 0
+  let completed = 0
+  const workerCount = Math.max(1, Math.min(Math.floor(concurrency), parts.length))
+  const workers = Array.from({ length: workerCount }, async () => {
+    while (next < parts.length) {
+      const index = next
+      next += 1
+      await writePart(parts[index], index)
+      completed += 1
+      onProgress(completed, parts.length)
+    }
+  })
+  await Promise.all(workers)
 }
 
 function encodeJson(value: unknown, label = "code graph JSON", part?: string) {

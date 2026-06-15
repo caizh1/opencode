@@ -53,7 +53,7 @@ describe("code graph derived index", () => {
       files: sampleFiles(),
     })
 
-    expect(index.version).toBe(7)
+    expect(index.version).toBe(9)
     expect(index.derived?.functionIdsByName.storage_boot).toEqual(["boot/storage.c:storage_boot:3"])
     expect(index.derived?.symbolsByName.storage_boot[0].kind).toBe("function")
     expect(index.stats?.files).toBe(2)
@@ -77,7 +77,7 @@ describe("code graph derived index", () => {
       files: { [path]: legacyFile as CodeGraphFile },
     })
 
-    expect(index.version).toBe(7)
+    expect(index.version).toBe(9)
     expect(index.files[path].tokens.length).toBeGreaterThan(0)
     expect(index.derived?.postingsByTerm.nand.length).toBeGreaterThan(0)
   })

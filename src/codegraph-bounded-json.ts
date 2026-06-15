@@ -38,6 +38,8 @@ export type SplitArrayRecordIntoBoundedJsonPartsOptions<TValue, TPayload> = {
   stringify?: JsonStringify
 }
 
+type SplitProgress = (event: { label: string; processed: number; total: number }) => void
+
 const encoder = new TextEncoder()
 
 export function encodeBoundedJson(value: unknown, options: BoundedJsonOptions): Uint8Array {
@@ -52,6 +54,10 @@ export function stringifyBoundedJson(value: unknown, options: BoundedJsonOptions
     throw new Error(`${storagePartLabel(options)} is ${bytes} bytes, above hard JSON part limit ${hardPartBytes}.`)
   }
   return json
+}
+
+export function estimateJsonBytes(value: unknown, options: { label?: string; stringify?: JsonStringify } = {}): number {
+  return jsonByteLength(stringifyForDiagnostic(value, { label: options.label ?? "JSON estimate", stringify: options.stringify }))
 }
 
 export function splitRecordIntoBoundedJsonParts<TValue, TPayload>(
@@ -182,42 +188,75 @@ export function splitArrayValueIntoBoundedChunks<TValue, TPayload>(options: {
   targetPartBytes?: number
   hardPartBytes?: number
   stringify?: JsonStringify
+  progressIntervalItems?: number
+  onProgress?: SplitProgress
 }): TValue[][] {
   const hardPartBytes = normalizeHardPartBytes(options.hardPartBytes)
   const targetPartBytes = normalizeTargetPartBytes(options.targetPartBytes, hardPartBytes)
   const chunks: TValue[][] = []
   let current: TValue[] = []
+  let currentEstimatedBytes = 0
+  const progressIntervalItems = Math.max(1, Math.floor(options.progressIntervalItems ?? 2048))
 
   const flush = () => {
     if (current.length === 0) return
-    chunks.push(current)
+    finalizeArrayChunk({
+      values: current,
+      label: options.label,
+      hardPartBytes,
+      createPayload: options.createPayload,
+      chunks,
+      stringify: options.stringify,
+    })
     current = []
+    currentEstimatedBytes = 0
   }
 
   for (let index = 0; index < options.values.length; index += 1) {
     const item = options.values[index]
-    stringifyBoundedJson(options.createPayload([item]), {
+    const singlePayload = options.createPayload([item])
+    const singleBytes = jsonByteLength(stringifyBoundedJson(singlePayload, {
       label: `${options.label} item ${index}`,
       hardPartBytes,
       stringify: options.stringify,
-    })
-    const next = [...current, item]
-    const nextBytes = jsonByteLength(stringifyBoundedJson(options.createPayload(next), {
-      label: options.label,
-      hardPartBytes,
-      stringify: options.stringify,
     }))
-    if (current.length > 0 && nextBytes > targetPartBytes) {
+    if (current.length > 0 && currentEstimatedBytes + singleBytes > targetPartBytes) {
       flush()
-      current.push(item)
-      continue
     }
-    current = next
-    if (nextBytes >= hardPartBytes) flush()
+    current.push(item)
+    currentEstimatedBytes += singleBytes
+    if (currentEstimatedBytes >= hardPartBytes) flush()
+    if ((index + 1) % progressIntervalItems === 0 || index + 1 === options.values.length) {
+      options.onProgress?.({ label: options.label, processed: index + 1, total: options.values.length })
+    }
   }
 
   flush()
   return chunks
+}
+
+function finalizeArrayChunk<TValue, TPayload>(options: {
+  values: TValue[]
+  label: string
+  hardPartBytes: number
+  createPayload: (values: TValue[]) => TPayload
+  chunks: TValue[][]
+  stringify?: JsonStringify
+}) {
+  try {
+    stringifyBoundedJson(options.createPayload(options.values), {
+      label: options.label,
+      hardPartBytes: options.hardPartBytes,
+      stringify: options.stringify,
+    })
+    options.chunks.push(options.values)
+    return
+  } catch (error) {
+    if (options.values.length <= 1 || !isHardLimitError(error)) throw error
+    const midpoint = Math.ceil(options.values.length / 2)
+    finalizeArrayChunk({ ...options, values: options.values.slice(0, midpoint) })
+    finalizeArrayChunk({ ...options, values: options.values.slice(midpoint) })
+  }
 }
 
 export function codeGraphPartName(part: number) {
@@ -255,6 +294,11 @@ function stringifyForDiagnostic(value: unknown, options: BoundedJsonOptions): st
     const message = error instanceof Error ? error.message : String(error)
     throw new Error(`Failed to serialize ${storagePartLabel(options)}: ${message}`)
   }
+}
+
+function isHardLimitError(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error)
+  return message.includes("above hard JSON part limit")
 }
 
 function storagePartLabel(options: BoundedJsonOptions) {

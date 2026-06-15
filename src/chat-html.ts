@@ -3426,6 +3426,7 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce(), bra
             <label class="field">Max retries<input id="ragEmbeddingMaxRetries" type="number" min="0" max="10" step="1"></label>
             <label class="field">Retry backoff ms<input id="ragEmbeddingRetryBackoffMs" type="number" min="0" max="120000" step="500"></label>
             <label class="field checkbox"><input id="ragEmbeddingResumeAutomatically" type="checkbox"><span>Resume automatically</span></label>
+            <label class="field checkbox"><input id="ragIndexTests" type="checkbox"><span>Index test directories</span></label>
             <label class="field">Resume delay ms<input id="ragEmbeddingResumeDelayMs" type="number" min="0" max="3600000" step="1000"></label>
             <label class="field">Allowed hosts<input id="ragAllowedHosts" type="text" spellcheck="false" placeholder="rag.internal, 10.0.0.20"></label>
             <label class="field">Vector top K<input id="ragVectorTopK" type="number" min="0" max="200" step="1"></label>
@@ -3635,7 +3636,7 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce(), bra
 	        renderCompletionSettings();
 	      });
 	    }
-	    for (const id of ["ragEmbeddingEndpoint", "ragEmbeddingModel", "ragEmbeddingBatchSize", "ragEmbeddingMaxTokensPerRequest", "ragEmbeddingConcurrentRequests", "ragEmbeddingMaxInFlightTokens", "ragEmbeddingEncodingFormat", "ragEmbeddingCheckpointMode", "ragEmbeddingCheckpointChunkInterval", "ragEmbeddingCheckpointIntervalMs", "ragEmbeddingRequestDelayMs", "ragEmbeddingMaxRequestsPerRun", "ragEmbeddingMaxRetries", "ragEmbeddingRetryBackoffMs", "ragEmbeddingResumeAutomatically", "ragEmbeddingResumeDelayMs", "ragRerankEndpoint", "ragRerankModel", "ragAllowedHosts", "ragVectorTopK", "ragRerankTopK"]) {
+	    for (const id of ["ragEmbeddingEndpoint", "ragEmbeddingModel", "ragEmbeddingBatchSize", "ragEmbeddingMaxTokensPerRequest", "ragEmbeddingConcurrentRequests", "ragEmbeddingMaxInFlightTokens", "ragEmbeddingEncodingFormat", "ragEmbeddingCheckpointMode", "ragEmbeddingCheckpointChunkInterval", "ragEmbeddingCheckpointIntervalMs", "ragEmbeddingRequestDelayMs", "ragEmbeddingMaxRequestsPerRun", "ragEmbeddingMaxRetries", "ragEmbeddingRetryBackoffMs", "ragEmbeddingResumeAutomatically", "ragIndexTests", "ragEmbeddingResumeDelayMs", "ragRerankEndpoint", "ragRerankModel", "ragAllowedHosts", "ragVectorTopK", "ragRerankTopK"]) {
 	      el(id).addEventListener("input", () => {
 	        userEditedRagSettings = true;
 	      });
@@ -3972,6 +3973,7 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce(), bra
 	        rerankEndpoint: el("ragRerankEndpoint").value,
 	        rerankModel: el("ragRerankModel").value,
 	        allowedHosts: stringListInputValue("ragAllowedHosts"),
+	        indexTests: el("ragIndexTests").checked,
 	        vectorTopK: numberInputValue("ragVectorTopK", 24),
 	        rerankTopK: numberInputValue("ragRerankTopK", 16)
 	      };
@@ -4410,6 +4412,7 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce(), bra
 	        el("ragEmbeddingMaxRetries").value = String(embedding.maxRetries ?? 3);
 	        el("ragEmbeddingRetryBackoffMs").value = String(embedding.retryBackoffMs ?? 2000);
 	        el("ragEmbeddingResumeAutomatically").checked = embedding.resumeAutomatically !== false;
+	        el("ragIndexTests").checked = rag.indexTests === true;
 	        el("ragEmbeddingResumeDelayMs").value = String(embedding.resumeDelayMs ?? 60000);
 	        el("ragRerankEndpoint").value = rerank.endpoint || "";
 	        el("ragRerankModel").value = rerank.model || "";

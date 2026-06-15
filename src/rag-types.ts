@@ -21,6 +21,7 @@ export type RagVectorIndex = {
   rootPath: string
   updatedAt: number
   sourceIndexUpdatedAt?: number
+  indexTests?: boolean
   provider: string
   model: string
   dimension: number
@@ -101,6 +102,7 @@ export type HybridRetrievalOptions = {
   embeddingProvider?: EmbeddingProvider
   rerankProvider?: RerankProvider
   signal?: AbortSignal
+  latencyBudgetMs?: number
 }
 
 export type HybridRetrievalStep = {

@@ -320,6 +320,7 @@ function settings(baseUrl: string, input: { completionModel?: string; defaultMod
       clangdPath: "",
       scipClangPath: "",
       excludeGlobs: [],
+      indexTests: false,
     },
     analysis: {
       bridgeEnabled: true,
@@ -356,6 +357,7 @@ function settings(baseUrl: string, input: { completionModel?: string; defaultMod
         model: "",
       },
       allowedHosts: [],
+      indexTests: false,
       vectorTopK: 24,
       rerankTopK: 16,
     },

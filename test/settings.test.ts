@@ -219,6 +219,8 @@ describe("RAG settings validation", () => {
     expect(settings.rag.embedding.timeoutMs).toBe(RAG_EMBEDDING_TIMEOUT_DEFAULT_MS)
     expect(settings.rag.embedding.requestDelayMs).toBe(RAG_EMBEDDING_REQUEST_DELAY_DEFAULT_MS)
     expect(settings.rag.embedding.configError).toBeUndefined()
+    expect(settings.rag.indexTests).toBe(false)
+    expect(settings.codeGraph.indexTests).toBe(false)
   })
 
   test("derives embedding timeout from the configured batch size", () => {
@@ -328,6 +330,7 @@ describe("RAG settings validation", () => {
       embeddingConcurrentRequests: 4,
       embeddingCheckpointMode: "safe",
       embeddingRequestDelayMs: 1000,
+      indexTests: true,
       rerankEndpoint: "http://127.0.0.1:8000/other-rerank",
       rerankModel: "different-rerank",
       vectorTopK: 48,
@@ -348,6 +351,12 @@ describe("RAG settings validation", () => {
     expect(configUpdates.find((update) => update.key === "rag.embedding.maxInFlightTokens")?.value).toBe(32768)
     expect(configUpdates.find((update) => update.key === "rag.embedding.encodingFormat")?.value).toBe("auto")
     expect(configUpdates.find((update) => update.key === "rag.embedding.requestDelayMs")?.value).toBe(RAG_EMBEDDING_REQUEST_DELAY_DEFAULT_MS)
+  })
+
+  test("saves the RAG test-directory indexing policy", async () => {
+    await saveRagSettings(ragInput({ indexTests: true }))
+
+    expect(configUpdates.find((update) => update.key === "rag.indexTests")?.value).toBe(true)
   })
 
   test("saves checkpoint settings as optional RAG embedding updates", async () => {
@@ -415,6 +424,7 @@ function ragInput(overrides: Partial<Parameters<typeof saveRagSettings>[0]> = {}
     rerankEndpoint: "http://127.0.0.1:8000/rerank",
     rerankModel: "local-rerank",
     allowedHosts: [],
+    indexTests: false,
     vectorTopK: 24,
     rerankTopK: 16,
     ...overrides,

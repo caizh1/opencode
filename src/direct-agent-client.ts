@@ -380,6 +380,11 @@ export class DirectAgentClient {
       body.tools = input.exposedTools
       body.tool_choice = "auto"
     }
+    const requestStarted = Date.now()
+    const promptBytes = textByteLength(JSON.stringify(input.messages))
+    this.deps.output.appendLine(
+      `[chat-stream] request start model=${settings.provider.chatModel || "default"} messages=${input.messages.length} promptBytes=${promptBytes} tools=${settings.tools.enabled && input.exposedTools.length > 0 ? "enabled" : "disabled"}`,
+    )
     const response = await fetch(chatCompletionsUrl(settings.provider.apiBaseUrl), {
       method: "POST",
       headers: await this.headers(true),
@@ -391,6 +396,8 @@ export class DirectAgentClient {
       throw new Error(`Chat completion failed: ${response.status} ${response.statusText}${text ? `: ${text}` : ""}`)
     }
     if (!response.body) throw new Error("Chat completion stream is empty.")
+    const responseContentType = response.headers.get("content-type") ?? "unknown"
+    this.deps.output.appendLine(`[chat-stream] response status=${response.status} contentType=${responseContentType}`)
 
     let text = ""
     const toolCalls = new Map<number, ChatToolCall>()
@@ -401,15 +408,35 @@ export class DirectAgentClient {
     const decoder = new TextDecoder()
     let buffer = ""
     let completed = false
+    let doneMarker = false
+    let finishReason = ""
+    let deltaCount = 0
+    let sseDataCount = 0
+    let emptySseBlockCount = 0
+    let rawByteCount = 0
+    let rawPreview = ""
+    let emptySsePreview = ""
+    let firstChunkMs: number | undefined
     const processSseBlock = (raw: string) => {
-      for (const data of parseSseData(raw)) {
+      const dataItems = parseSseData(raw)
+      if (dataItems.length === 0 && raw.trim()) {
+        emptySseBlockCount += 1
+        if (!emptySsePreview) emptySsePreview = streamPreview(raw)
+      }
+      for (const data of dataItems) {
+        sseDataCount += 1
         if (data === "[DONE]") {
           completed = true
+          doneMarker = true
           continue
         }
         const delta = parseDelta(data)
+        deltaCount += 1
         if (delta.error) throw new Error(`Chat completion stream failed: ${delta.error}`)
-        if (delta.finishReason) completed = true
+        if (delta.finishReason) {
+          completed = true
+          finishReason = delta.finishReason
+        }
         if (delta.content) {
           text += delta.content
           const part = {
@@ -456,17 +483,33 @@ export class DirectAgentClient {
         throw new Error(`Chat completion stream read failed: ${formatErrorMessage(error)}`)
       }
       if (chunk.done) break
-      buffer += decoder.decode(chunk.value, { stream: true })
-      let boundary = buffer.indexOf("\n\n")
-      while (boundary !== -1) {
-        const raw = buffer.slice(0, boundary)
-        buffer = buffer.slice(boundary + 2)
+      if (firstChunkMs === undefined) {
+        firstChunkMs = Date.now() - requestStarted
+        this.deps.output.appendLine(`[chat-stream] first chunk ${firstChunkMs}ms`)
+      }
+      const decoded = decoder.decode(chunk.value, { stream: true })
+      rawByteCount += chunk.value.byteLength
+      if (rawPreview.length < 512) rawPreview = truncateString(rawPreview + decoded, 512)
+      buffer += decoded
+      let boundary = findSseBoundary(buffer)
+      while (boundary) {
+        const raw = buffer.slice(0, boundary.index)
+        buffer = buffer.slice(boundary.index + boundary.length)
         processSseBlock(raw)
-        boundary = buffer.indexOf("\n\n")
+        boundary = findSseBoundary(buffer)
       }
     }
+    const decodedTail = decoder.decode()
+    if (decodedTail) {
+      rawByteCount += textByteLength(decodedTail)
+      if (rawPreview.length < 512) rawPreview = truncateString(rawPreview + decodedTail, 512)
+      buffer += decodedTail
+    }
     if (buffer.trim()) processSseBlock(buffer)
-    if (!completed) throw new Error("Chat completion stream closed before completion marker.")
+    const streamElapsedMs = Date.now() - requestStarted
+    const streamSummary = `deltaCount=${deltaCount} sseDataCount=${sseDataCount} textBytes=${textByteLength(text)} rawBytes=${rawByteCount} firstChunkMs=${firstChunkMs ?? "none"} streamElapsedMs=${streamElapsedMs} doneMarker=${doneMarker ? "true" : "false"} finishReason=${finishReason || "none"} contentType=${responseContentType} emptySseBlocks=${emptySseBlockCount}${emptySsePreview ? ` emptySsePreview=${emptySsePreview}` : ""}${!completed && rawPreview ? ` rawPreview=${streamPreview(rawPreview)}` : ""}`
+    this.deps.output.appendLine(`[chat-stream] closed ${streamSummary}`)
+    if (!completed) throw new Error(`Chat completion stream closed before completion marker. ${streamSummary}`)
 
     return {
       assistant: input.assistant,
@@ -730,6 +773,14 @@ function parseSseData(raw: string) {
     .filter(Boolean)
 }
 
+function findSseBoundary(input: string) {
+  const lf = input.indexOf("\n\n")
+  const crlf = input.indexOf("\r\n\r\n")
+  if (lf === -1 && crlf === -1) return undefined
+  if (crlf !== -1 && (lf === -1 || crlf < lf)) return { index: crlf, length: 4 }
+  return { index: lf, length: 2 }
+}
+
 function parseDelta(data: string) {
   const result: {
     content: string
@@ -803,6 +854,15 @@ async function readText(uri: vscode.Uri) {
 function truncateString(input: string, max: number) {
   if (input.length <= max) return input
   return input.slice(0, max)
+}
+
+function streamPreview(input: string) {
+  const normalized = input
+    .replace(/[\r\n\t]+/g, " ")
+    .replace(/[^\x20-\x7e]/g, "?")
+    .replace(/\s+/g, " ")
+    .trim()
+  return truncateString(normalized || "<empty>", 240)
 }
 
 function formatErrorMessage(error: unknown) {

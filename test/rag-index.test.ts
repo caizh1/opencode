@@ -25,6 +25,35 @@ describe("local RAG vector index", () => {
     expect(decodeRagShardVectors(encoded, vectorIndex.dimension)).toHaveLength(shard.vectors.length)
   })
 
+  test("filters test directory chunks when RAG test indexing is disabled", async () => {
+    const index = sampleIndexWithTests()
+    const chunks = buildRagChunks(index, [], { indexTests: false })
+
+    expect(chunks.some((chunk) => chunk.path.startsWith("test/") || chunk.path.includes("/tests/"))).toBe(false)
+    expect(chunks.some((chunk) => chunk.path === "contest/keep.c")).toBe(true)
+
+    const withTests = buildRagChunks(index, [], { indexTests: true })
+    expect(withTests.some((chunk) => chunk.path === "test/helpers/spec.c")).toBe(true)
+    expect(withTests.some((chunk) => chunk.path === "src/tests/helper.c")).toBe(true)
+
+    const vectorIndex = await buildRagVectorIndex({ index, provider: nonZeroCountingEmbeddingProvider(), indexTests: false })
+    expect(vectorIndex.indexTests).toBe(false)
+    expect(vectorIndex.chunks).toEqual(chunks)
+    expect(createRagSerializedManifest(vectorIndex).indexTests).toBe(false)
+  })
+
+  test("does not reuse previous vectors when the RAG test indexing policy changes", async () => {
+    const index = sampleIndexWithTests()
+    const provider = nonZeroCountingEmbeddingProvider()
+    const first = await buildRagVectorIndex({ index, provider, indexTests: true })
+    provider.calls = 0
+
+    const second = await buildRagVectorIndex({ index, provider, previous: first, indexTests: false })
+
+    expect(second.indexTests).toBe(false)
+    expect(provider.calls).toBe(buildRagChunks(index, [], { indexTests: false }).length)
+  })
+
   test("reuses unchanged chunk vectors during incremental rebuilds", async () => {
     const index = sampleIndex()
     const provider = countingEmbeddingProvider()
@@ -671,6 +700,38 @@ int nand_read_page(void) { return ecc_check(); }
   }
 }
 
+function sampleIndexWithTests(): CodeGraphIndex {
+  const files = [
+    ...Object.values(sampleIndex().files),
+    parseCFile({
+      path: "test/helpers/spec.c",
+      hash: "test-spec",
+      size: 1,
+      text: "int spec_helper(void) { return 0; }",
+    }),
+    parseCFile({
+      path: "src/tests/helper.c",
+      hash: "nested-test-helper",
+      size: 1,
+      text: "int nested_test_helper(void) { return 0; }",
+    }),
+    parseCFile({
+      path: "contest/keep.c",
+      hash: "contest",
+      size: 1,
+      text: "int contest_keep(void) { return 0; }",
+    }),
+  ]
+  return {
+    version: 1,
+    rootPath: "/repo",
+    rootName: "repo",
+    updatedAt: 1,
+    truncated: false,
+    files: Object.fromEntries(files.map((file) => [file.path, file])),
+  }
+}
+
 function generatedIndex(functionCount: number): CodeGraphIndex {
   const functions = Array.from({ length: functionCount }, (_, index) => `int generated_${index}(void) { return ${index}; }`).join("\n")
   const file = parseCFile({
@@ -707,6 +768,17 @@ function countingEmbeddingProvider(dimension?: number): EmbeddingProvider & { ca
     async embed(input) {
       this.calls += input.length
       return input.map(embedText)
+    },
+  }
+}
+
+function nonZeroCountingEmbeddingProvider(): EmbeddingProvider & { calls: number } {
+  return {
+    ...fakeEmbeddingProvider(3),
+    calls: 0,
+    async embed(input) {
+      this.calls += input.length
+      return input.map((_, index) => normalize([1, index % 2, 0]))
     },
   }
 }
