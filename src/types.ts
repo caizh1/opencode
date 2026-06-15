@@ -151,9 +151,14 @@ export type RemoteSettings = {
     includeGitDiff: boolean
     localOnlyMode: boolean
     strictLocalOnlyAgent: boolean
+    maxHistoryTurns: number
+    maxHistoryBytes: number
   }
   permissions: {
     mode: PermissionMode
+  }
+  tools: {
+    enabled: boolean
   }
   skills: {
     enabled: string[]
@@ -340,6 +345,7 @@ export type ChipMateSessionStatus =
   | { type: "idle" }
   | { type: "busy" }
   | { type: "retry"; attempt?: number; message?: string; next?: number }
+  | { type: "error"; message?: string; interrupted?: boolean }
   | { type: string; [key: string]: unknown }
 
 export type ChipMateEvent =

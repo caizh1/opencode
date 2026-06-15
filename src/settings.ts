@@ -10,7 +10,7 @@ export const RAG_EMBEDDING_BATCH_SIZE_OPTIONS = [1, 5, 10, 32, 64, 128, 256, 512
 export const RAG_EMBEDDING_BATCH_SIZE_MIN = 1
 export const RAG_EMBEDDING_BATCH_SIZE_MAX = 512
 export const RAG_EMBEDDING_BATCH_SIZE_ERROR = "Embedding batch size must be one of 1, 5, 10, 32, 64, 128, 256, or 512."
-export const RAG_EMBEDDING_TIMEOUT_DEFAULT_MS = 30000
+export const RAG_EMBEDDING_TIMEOUT_DEFAULT_MS = 60000
 export const RAG_EMBEDDING_TIMEOUT_LARGE_BATCH_MS = 90000
 export const RAG_EMBEDDING_CONCURRENT_REQUESTS_DEFAULT = 3
 export const RAG_EMBEDDING_CONCURRENT_REQUESTS_MIN = 1
@@ -134,9 +134,14 @@ export function readRemoteSettings(): RemoteSettings {
       includeGitDiff: config.get<boolean>("context.includeGitDiff", false),
       localOnlyMode: config.get<boolean>("context.localOnlyMode", true),
       strictLocalOnlyAgent: config.get<boolean>("context.strictLocalOnlyAgent", true),
+      maxHistoryTurns: Math.max(0, Math.min(20, config.get<number>("context.maxHistoryTurns", 3))),
+      maxHistoryBytes: Math.max(0, Math.min(200000, config.get<number>("context.maxHistoryBytes", 12000))),
     },
     permissions: {
       mode: readPermissionMode(config.get<string>("permissions.mode", "ask")),
+    },
+    tools: {
+      enabled: config.get<boolean>("tools.enabled", false),
     },
     skills: {
       enabled: readStringArray(config.get<unknown>("skills.enabled", [])),
@@ -363,6 +368,11 @@ export async function saveProviderSettings(input: ProviderSettingsInput) {
 export async function savePermissionMode(mode: PermissionMode) {
   const config = vscode.workspace.getConfiguration(CHIPMATE_CONFIG_SECTION)
   await config.update("permissions.mode", readPermissionMode(mode), vscode.ConfigurationTarget.Global)
+}
+
+export async function saveToolsEnabled(enabled: boolean) {
+  const config = vscode.workspace.getConfiguration(CHIPMATE_CONFIG_SECTION)
+  await config.update("tools.enabled", Boolean(enabled), vscode.ConfigurationTarget.Global)
 }
 
 export async function saveSkillsSettings(enabled: string[]) {

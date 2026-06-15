@@ -107,7 +107,7 @@ describe("ChipMate skills", () => {
       "name: firmware-review",
       "description: Review firmware patches",
       "allowed-tools:",
-      "  - chipmate_read_file",
+      "  - chipmate_read",
       "  - chipmate_run_command",
       "user-invocable: true",
       "---",
@@ -118,20 +118,24 @@ describe("ChipMate skills", () => {
     expect(parsed.frontmatter).toMatchObject({
       name: "firmware-review",
       description: "Review firmware patches",
-      "allowed-tools": ["chipmate_read_file", "chipmate_run_command"],
+      "allowed-tools": ["chipmate_read", "chipmate_run_command"],
       "user-invocable": true,
     })
-    expect(renderSkillsForPrompt([{
+    const skill = {
       id: "repo:firmware-review",
       name: "firmware-review",
       description: "Review firmware patches",
       path: "/repo/.agents/skills/firmware-review/SKILL.md",
       enabled: true,
-      allowedTools: ["chipmate_read_file", "chipmate_run_command"],
+      allowedTools: ["chipmate_read", "chipmate_run_command"],
       disableModelInvocation: false,
       userInvocable: true,
       body: parsed.body,
-    }])).toContain("Allowed tools requested by skill metadata: chipmate_read_file, chipmate_run_command")
+    }
+    expect(renderSkillsForPrompt([skill], { toolsEnabled: true })).toContain("Allowed tools requested by skill metadata: chipmate_read, chipmate_run_command")
+    expect(renderSkillsForPrompt([skill], { toolsEnabled: false })).not.toContain("Allowed tools requested by skill metadata")
+    expect(renderSkillsForPrompt([skill], { toolsEnabled: true, exposedToolNames: ["chipmate_read"] })).toContain("Allowed tools requested by skill metadata: chipmate_read")
+    expect(renderSkillsForPrompt([skill], { toolsEnabled: true, exposedToolNames: ["chipmate_read"] })).not.toContain("chipmate_run_command")
   })
 
   test("discovers only workspace .agents/skills/*/SKILL.md entries and marks configured skills enabled", async () => {
@@ -142,7 +146,7 @@ describe("ChipMate skills", () => {
       "---",
       "name: review",
       "description: Review local changes",
-      "allowed-tools: [chipmate_read_file]",
+      "allowed-tools: [chipmate_read]",
       "---",
       "Read the diff and summarize risks.",
       "",
@@ -166,7 +170,7 @@ describe("ChipMate skills", () => {
       name: "review",
       description: "Review local changes",
       enabled: true,
-      allowedTools: ["chipmate_read_file"],
+      allowedTools: ["chipmate_read"],
     })
     await expect(registry.loadSkill("review")).resolves.toMatchObject({
       body: expect.stringContaining("Read the diff"),

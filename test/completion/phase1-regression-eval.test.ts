@@ -990,6 +990,18 @@ function evalSettings(): RemoteSettings {
       localOnlyMode: true,
       strictLocalOnlyAgent: true,
     },
+    permissions: {
+      mode: "ask",
+    },
+    tools: {
+      enabled: false,
+    },
+    skills: {
+      enabled: [],
+    },
+    mcp: {
+      enabled: false,
+    },
     completion: {
       enabled: true,
       provider: "openai-compatible" as const,

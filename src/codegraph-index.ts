@@ -10,8 +10,12 @@ import type {
   CodeGraphSymbol,
 } from "./codegraph-types"
 
-export const CURRENT_CODE_GRAPH_INDEX_VERSION = 4 as const
+export const CURRENT_CODE_GRAPH_INDEX_VERSION = 7 as const
 export type CodeGraphYield = () => Promise<void>
+
+export function isCurrentCodeGraphIndexVersion(version: unknown): version is typeof CURRENT_CODE_GRAPH_INDEX_VERSION {
+  return version === CURRENT_CODE_GRAPH_INDEX_VERSION
+}
 
 function emptyRecord<T>(): Record<string, T> {
   return Object.create(null) as Record<string, T>
@@ -341,11 +345,16 @@ export function shardInfo(key: string, files: Record<string, CodeGraphFile>): Co
   const stats = buildIndexStats(files)
   return {
     key,
-    path: `shards/${shardFileName(key)}`,
     files: stats.files,
     functions: stats.functions,
     macros: stats.macros,
     bytes: stats.bytes,
+    parts: [{
+      key: "0000",
+      path: `shards/${shardFileName(key)}`,
+      entries: stats.files,
+      estimatedBytes: 0,
+    }],
   }
 }
 

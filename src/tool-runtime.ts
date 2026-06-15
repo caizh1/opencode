@@ -30,7 +30,7 @@ export class ToolRuntime {
 
   async execute(input: ToolRuntimeInput): Promise<ToolRuntimeResult> {
     switch (input.name) {
-      case "chipmate_read_file":
+      case "chipmate_read":
         return this.readFile(input)
       case "chipmate_write_file":
         return this.writeFile(input)
@@ -52,45 +52,11 @@ export class ToolRuntime {
       {
         type: "function",
         function: {
-          name: "chipmate_read_file",
+          name: "chipmate_read",
           description: "Read a UTF-8 text file from the current workspace host.",
           parameters: objectSchema({
             path: { type: "string", description: "Absolute or workspace-relative path to read." },
           }, ["path"]),
-        },
-      },
-      {
-        type: "function",
-        function: {
-          name: "chipmate_write_file",
-          description: "Write UTF-8 text to a file on the current workspace host.",
-          parameters: objectSchema({
-            path: { type: "string", description: "Absolute or workspace-relative path to write." },
-            content: { type: "string", description: "Full file content to write." },
-          }, ["path", "content"]),
-        },
-      },
-      {
-        type: "function",
-        function: {
-          name: "chipmate_run_command",
-          description: "Run a shell command on the current workspace host.",
-          parameters: objectSchema({
-            command: { type: "string", description: "Command line to run with the platform default shell." },
-            cwd: { type: "string", description: "Optional working directory. Defaults to the workspace root." },
-          }, ["command"]),
-        },
-      },
-      {
-        type: "function",
-        function: {
-          name: "chipmate_http_request",
-          description: "Call an HTTP endpoint reachable from the current workspace host.",
-          parameters: objectSchema({
-            url: { type: "string", description: "HTTP or HTTPS URL." },
-            method: { type: "string", description: "HTTP method, default GET." },
-            body: { type: "string", description: "Optional request body." },
-          }, ["url"]),
         },
       },
     ]

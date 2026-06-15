@@ -1,10 +1,10 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test"
-import { mkdir, readFile, readdir, writeFile } from "node:fs/promises"
+import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises"
 import * as http from "node:http"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import type { SkillRegistry } from "../src/skills"
-import type { ToolRuntime, ToolRuntimeResult } from "../src/tool-runtime"
+import type { ToolRuntime as ToolRuntimeInstance, ToolRuntimeResult } from "../src/tool-runtime"
 import type { RemoteSettings } from "../src/types"
 
 let workspaceFolders: Array<{ name: string; uri: UriShim }> = []
@@ -89,6 +89,7 @@ mock.module("vscode", () => ({
         const entries = await readdir(uri.fsPath, { withFileTypes: true })
         return entries.map((entry) => [entry.name, entry.isDirectory() ? 2 : 1] as [string, number])
       },
+      delete: async (uri: UriShim) => rm(uri.fsPath, { force: true, recursive: true }),
     },
   },
   window: {
@@ -104,6 +105,7 @@ mock.module("vscode", () => ({
 }))
 
 const { DirectAgentClient } = await import("../src/direct-agent-client")
+const { ToolRuntime } = await import("../src/tool-runtime")
 
 let servers: http.Server[] = []
 
@@ -114,6 +116,18 @@ beforeEach(() => {
 afterEach(async () => {
   await Promise.all(servers.map((server) => new Promise<void>((resolve) => server.close(() => resolve()))))
   servers = []
+})
+
+describe("ToolRuntime", () => {
+  test("only exposes read tool definitions to models", () => {
+    const runtime = new ToolRuntime({} as never)
+    const toolNames = runtime.toolDefinitions().map((definition) => definition.function.name)
+
+    expect(toolNames).toEqual(["chipmate_read"])
+    expect(toolNames).not.toContain("chipmate_write_file")
+    expect(toolNames).not.toContain("chipmate_run_command")
+    expect(toolNames).not.toContain("chipmate_http_request")
+  })
 })
 
 describe("DirectAgentClient", () => {
@@ -139,6 +153,176 @@ describe("DirectAgentClient", () => {
     ])
   })
 
+  test("does not expose or execute tool calls when tools are disabled", async () => {
+    const requests: Array<{ url?: string; body: Record<string, unknown> }> = []
+    const baseUrl = await listen(async (request, response) => {
+      if (request.url !== "/v1/chat/completions") {
+        response.writeHead(404).end()
+        return
+      }
+      const body = await collectJson(request)
+      requests.push({ url: request.url, body })
+      response.writeHead(200, {
+        "content-type": "text/event-stream",
+      })
+      response.end([
+        sse({ choices: [{ delta: { content: "Checking " } }] }),
+        sse({ choices: [{ delta: { tool_calls: [{ index: 0, id: "call_1", function: { name: "chipmate_read", arguments: "{\"path\":\"README.md\"}" } }] } }] }),
+        "data: [DONE]\n\n",
+      ].join(""))
+    })
+    const toolResults: Array<{ name: string; arguments: Record<string, unknown> }> = []
+    const client = directClient(baseUrl, {
+      tools: {
+        toolDefinitions: () => [{
+          type: "function",
+          function: {
+            name: "chipmate_read",
+            description: "Read a file",
+            parameters: { type: "object", properties: { path: { type: "string" } }, required: ["path"] },
+          },
+        }],
+        execute: async (input: { name: string; arguments: Record<string, unknown> }): Promise<ToolRuntimeResult> => {
+          toolResults.push({ name: input.name, arguments: input.arguments })
+          return {
+            title: "Read file",
+            output: "tool result text",
+            approved: true,
+          }
+        },
+      } as unknown as ToolRuntimeInstance,
+    })
+
+    const session = await client.createSession()
+    const assistant = await client.sendMessage({ sessionID: session.id, text: "inspect repo" })
+
+    expect(requests).toHaveLength(1)
+    expect(requests[0]?.body).toMatchObject({
+      model: "chat-model",
+      stream: true,
+    })
+    expect(requests[0]?.body).not.toHaveProperty("tools")
+    expect(requests[0]?.body).not.toHaveProperty("tool_choice")
+    expect(requests[0]?.body.messages).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ role: "tool" }),
+    ]))
+    expect(toolResults).toEqual([])
+    expect(assistant.parts).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: "text", text: expect.stringContaining("工具调用已关闭") }),
+    ]))
+  })
+
+  test("sends recent clean chat history without replaying old local context", async () => {
+    const requests: Array<{ url?: string; body: Record<string, unknown> }> = []
+    const baseUrl = await listen(async (request, response) => {
+      if (request.url !== "/v1/chat/completions") {
+        response.writeHead(404).end()
+        return
+      }
+      const body = await collectJson(request)
+      requests.push({ url: request.url, body })
+      response.writeHead(200, {
+        "content-type": "text/event-stream",
+      })
+      response.end([
+        sse({ choices: [{ delta: { content: requests.length === 1 ? "First answer." : "Second answer." } }] }),
+        "data: [DONE]\n\n",
+      ].join(""))
+    })
+    const client = directClient(baseUrl, { storageRoot: await tempDir("chipmate-history-storage-") })
+    const session = await client.createSession()
+
+    await client.sendMessage({
+      sessionID: session.id,
+      text: [
+        "User question:",
+        "Explain the failure",
+        "",
+        "Local workspace context:",
+        "secret old file context",
+        "",
+        "Local code graph evidence:",
+        "secret old graph evidence",
+      ].join("\n"),
+    })
+    await client.sendMessage({ sessionID: session.id, text: "continue" })
+
+    expect(requests).toHaveLength(2)
+    expect(requests[1]?.body.messages).toEqual([
+      expect.objectContaining({ role: "system" }),
+      { role: "user", content: "Explain the failure" },
+      { role: "assistant", content: "First answer." },
+      { role: "user", content: "continue" },
+    ])
+    expect(JSON.stringify(requests[1]?.body.messages)).not.toContain("secret old file context")
+    expect(JSON.stringify(requests[1]?.body.messages)).not.toContain("secret old graph evidence")
+  })
+
+  test("keeps chat history disabled when maxHistoryTurns is zero", async () => {
+    const requests: Array<{ url?: string; body: Record<string, unknown> }> = []
+    const baseUrl = await listen(async (request, response) => {
+      if (request.url !== "/v1/chat/completions") {
+        response.writeHead(404).end()
+        return
+      }
+      requests.push({ url: request.url, body: await collectJson(request) })
+      response.writeHead(200, {
+        "content-type": "text/event-stream",
+      })
+      response.end([
+        sse({ choices: [{ delta: { content: "ok" } }] }),
+        "data: [DONE]\n\n",
+      ].join(""))
+    })
+    const client = directClient(baseUrl, {
+      historyTurns: 0,
+      storageRoot: await tempDir("chipmate-no-history-storage-"),
+    })
+    const session = await client.createSession()
+
+    await client.sendMessage({ sessionID: session.id, text: "first" })
+    await client.sendMessage({ sessionID: session.id, text: "second" })
+
+    expect(requests[1]?.body.messages).toEqual([
+      expect.objectContaining({ role: "system" }),
+      { role: "user", content: "second" },
+    ])
+  })
+
+  test("trims long assistant history from the front and keeps the tail", async () => {
+    const requests: Array<{ url?: string; body: Record<string, unknown> }> = []
+    const longAnswer = `${"A".repeat(200)}TAIL`
+    const baseUrl = await listen(async (request, response) => {
+      if (request.url !== "/v1/chat/completions") {
+        response.writeHead(404).end()
+        return
+      }
+      const body = await collectJson(request)
+      requests.push({ url: request.url, body })
+      response.writeHead(200, {
+        "content-type": "text/event-stream",
+      })
+      response.end([
+        sse({ choices: [{ delta: { content: requests.length === 1 ? longAnswer : "done" } }] }),
+        "data: [DONE]\n\n",
+      ].join(""))
+    })
+    const client = directClient(baseUrl, {
+      historyBytes: 60,
+      storageRoot: await tempDir("chipmate-trim-history-storage-"),
+    })
+    const session = await client.createSession()
+
+    await client.sendMessage({ sessionID: session.id, text: "first" })
+    await client.sendMessage({ sessionID: session.id, text: "continue" })
+
+    const messages = requests[1]?.body.messages as Array<{ role: string; content?: string }>
+    const assistantHistory = messages.find((message) => message.role === "assistant")?.content ?? ""
+    expect(assistantHistory).toEndWith("TAIL")
+    expect(assistantHistory.length).toBeLessThanOrEqual(60)
+    expect(assistantHistory).not.toContain("A".repeat(80))
+  })
+
   test("streams chat completions, executes tool calls, and stores session JSONL on the workspace host", async () => {
     const requests: Array<{ url?: string; body: Record<string, unknown> }> = []
     const baseUrl = await listen(async (request, response) => {
@@ -154,7 +338,7 @@ describe("DirectAgentClient", () => {
       if (requests.length === 1) {
         response.end([
           sse({ choices: [{ delta: { content: "Checking " } }] }),
-          sse({ choices: [{ delta: { tool_calls: [{ index: 0, id: "call_1", function: { name: "chipmate_read_file", arguments: "{\"path\":" } }] } }] }),
+          sse({ choices: [{ delta: { tool_calls: [{ index: 0, id: "call_1", function: { name: "chipmate_read", arguments: "{\"path\":" } }] } }] }),
           sse({ choices: [{ delta: { tool_calls: [{ index: 0, function: { arguments: "\"README.md\"}" } }] } }] }),
           "data: [DONE]\n\n",
         ].join(""))
@@ -169,11 +353,12 @@ describe("DirectAgentClient", () => {
     const toolResults: Array<{ name: string; arguments: Record<string, unknown> }> = []
     const client = directClient(baseUrl, {
       storageRoot,
+      toolsEnabled: true,
       tools: {
         toolDefinitions: () => [{
           type: "function",
           function: {
-            name: "chipmate_read_file",
+            name: "chipmate_read",
             description: "Read a file",
             parameters: { type: "object", properties: { path: { type: "string" } }, required: ["path"] },
           },
@@ -187,7 +372,7 @@ describe("DirectAgentClient", () => {
             risk: "low",
           }
         },
-      } as unknown as ToolRuntime,
+      } as unknown as ToolRuntimeInstance,
     })
 
     const session = await client.createSession()
@@ -199,13 +384,16 @@ describe("DirectAgentClient", () => {
       stream: true,
       tool_choice: "auto",
     })
+    const exposedToolNames = ((requests[0]?.body.tools ?? []) as Array<{ function: { name: string } }>)
+      .map((tool) => tool.function.name)
+    expect(exposedToolNames).toEqual(["chipmate_read"])
     expect(requests[1]?.body.messages).toEqual(expect.arrayContaining([
       expect.objectContaining({ role: "tool", tool_call_id: "call_1", content: "tool result text" }),
     ]))
-    expect(toolResults).toEqual([{ name: "chipmate_read_file", arguments: { path: "README.md" } }])
+    expect(toolResults).toEqual([{ name: "chipmate_read", arguments: { path: "README.md" } }])
     expect(assistant.parts).toEqual(expect.arrayContaining([
       expect.objectContaining({ type: "text", text: "Done with tool." }),
-      expect.objectContaining({ type: "tool", tool: "chipmate_read_file" }),
+      expect.objectContaining({ type: "tool", tool: "chipmate_read" }),
     ]))
 
     const sessionLog = await readFile(join(storageRoot, "sessions", `${session.id}.jsonl`), "utf8")
@@ -213,19 +401,289 @@ describe("DirectAgentClient", () => {
     expect(sessionLog).toContain("\"role\":\"user\"")
     expect(sessionLog).toContain("\"role\":\"assistant\"")
   })
+
+  test("blocks legacy read-file tool calls that were not exposed to the model", async () => {
+    const requests: Array<{ url?: string; body: Record<string, unknown> }> = []
+    const outputLines: string[] = []
+    const baseUrl = await listen(async (request, response) => {
+      if (request.url !== "/v1/chat/completions") {
+        response.writeHead(404).end()
+        return
+      }
+      const body = await collectJson(request)
+      requests.push({ url: request.url, body })
+      response.writeHead(200, {
+        "content-type": "text/event-stream",
+      })
+      if (requests.length === 1) {
+        response.end([
+          sse({ choices: [{ delta: { content: "Trying old tool." } }] }),
+          sse({ choices: [{ delta: { tool_calls: [{ index: 0, id: "call_legacy", function: { name: "chipmate_read_file", arguments: "{\"path\":\"README.md\"}" } }] } }] }),
+          "data: [DONE]\n\n",
+        ].join(""))
+        return
+      }
+      response.end([
+        sse({ choices: [{ delta: { content: "Blocked handled." } }] }),
+        "data: [DONE]\n\n",
+      ].join(""))
+    })
+    const toolResults: Array<{ name: string; arguments: Record<string, unknown> }> = []
+    const client = directClient(baseUrl, {
+      outputLines,
+      toolsEnabled: true,
+      tools: {
+        toolDefinitions: () => [{
+          type: "function",
+          function: {
+            name: "chipmate_read",
+            description: "Read a file",
+            parameters: { type: "object", properties: { path: { type: "string" } }, required: ["path"] },
+          },
+        }],
+        execute: async (input: { name: string; arguments: Record<string, unknown> }): Promise<ToolRuntimeResult> => {
+          toolResults.push({ name: input.name, arguments: input.arguments })
+          return {
+            title: "Unexpected",
+            output: "should not execute",
+            approved: true,
+          }
+        },
+      } as unknown as ToolRuntimeInstance,
+    })
+
+    const session = await client.createSession()
+    const assistant = await client.sendMessage({ sessionID: session.id, text: "read README" })
+
+    expect(requests).toHaveLength(2)
+    const exposedToolNames = ((requests[0]?.body.tools ?? []) as Array<{ function: { name: string } }>)
+      .map((tool) => tool.function.name)
+    expect(exposedToolNames).toEqual(["chipmate_read"])
+    expect(toolResults).toEqual([])
+    expect(requests[1]?.body.messages).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        role: "tool",
+        tool_call_id: "call_legacy",
+        content: "Tool is not exposed to the model in this chat mode: chipmate_read_file",
+      }),
+    ]))
+    expect(assistant.parts).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        type: "tool",
+        tool: "chipmate_read_file",
+        state: expect.objectContaining({
+          status: "blocked",
+          output: "Tool is not exposed to the model in this chat mode: chipmate_read_file",
+        }),
+      }),
+      expect.objectContaining({ type: "text", text: "Blocked handled." }),
+    ]))
+    expect(outputLines.join("\n")).toContain("[tool] blocked unexposed tool_call name=chipmate_read_file")
+  })
+
+  test("does not replay prior tool results as next-turn history", async () => {
+    const requests: Array<{ url?: string; body: Record<string, unknown> }> = []
+    const baseUrl = await listen(async (request, response) => {
+      if (request.url !== "/v1/chat/completions") {
+        response.writeHead(404).end()
+        return
+      }
+      const body = await collectJson(request)
+      requests.push({ url: request.url, body })
+      response.writeHead(200, {
+        "content-type": "text/event-stream",
+      })
+      if (requests.length === 1) {
+        response.end([
+          sse({ choices: [{ delta: { content: "Checking " } }] }),
+          sse({ choices: [{ delta: { tool_calls: [{ index: 0, id: "call_1", function: { name: "chipmate_read", arguments: "{\"path\":\"README.md\"}" } }] } }] }),
+          "data: [DONE]\n\n",
+        ].join(""))
+        return
+      }
+      response.end([
+        sse({ choices: [{ delta: { content: "follow up" } }] }),
+        "data: [DONE]\n\n",
+      ].join(""))
+    })
+    const client = directClient(baseUrl, {
+      storageRoot: await tempDir("chipmate-tool-history-storage-"),
+      toolsEnabled: true,
+      tools: {
+        toolDefinitions: () => [{
+          type: "function",
+          function: {
+            name: "chipmate_read",
+            description: "Read a file",
+            parameters: { type: "object", properties: { path: { type: "string" } }, required: ["path"] },
+          },
+        }],
+        execute: async (): Promise<ToolRuntimeResult> => ({
+          title: "Read file",
+          output: "tool result text",
+          approved: true,
+        }),
+      } as unknown as ToolRuntimeInstance,
+    })
+    const session = await client.createSession()
+
+    await client.sendMessage({ sessionID: session.id, text: "inspect repo" })
+    await client.sendMessage({ sessionID: session.id, text: "continue" })
+
+    expect(requests[1]?.body.messages).toEqual(expect.arrayContaining([
+      expect.objectContaining({ role: "tool", content: "tool result text" }),
+    ]))
+    expect(requests[2]?.body.messages).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ role: "tool" }),
+    ]))
+    expect(JSON.stringify(requests[2]?.body.messages)).not.toContain("tool result text")
+  })
+
+  test("persists interrupted partial assistant text for next-turn history", async () => {
+    const requests: Array<{ url?: string; body: Record<string, unknown> }> = []
+    const baseUrl = await listen(async (request, response) => {
+      if (request.url !== "/v1/chat/completions") {
+        response.writeHead(404).end()
+        return
+      }
+      const body = await collectJson(request)
+      requests.push({ url: request.url, body })
+      response.writeHead(200, {
+        "content-type": "text/event-stream",
+      })
+      if (requests.length === 1) {
+        response.write(sse({ choices: [{ delta: { content: "Partial answer before interruption." } }] }))
+        response.destroy(new Error("stream interrupted"))
+        return
+      }
+      response.end([
+        sse({ choices: [{ delta: { content: "continued" } }] }),
+        "data: [DONE]\n\n",
+      ].join(""))
+    })
+    const client = directClient(baseUrl, { storageRoot: await tempDir("chipmate-partial-history-storage-") })
+    const session = await client.createSession()
+
+    await expect(client.sendMessage({ sessionID: session.id, text: "first" })).rejects.toThrow()
+    await client.sendMessage({ sessionID: session.id, text: "continue" })
+
+    expect(requests[1]?.body.messages).toEqual(expect.arrayContaining([
+      { role: "assistant", content: "Partial answer before interruption." },
+    ]))
+  })
+
+  test("records async stream interruptions when the provider closes before completion", async () => {
+    const outputLines: string[] = []
+    const baseUrl = await listen(async (request, response) => {
+      if (request.url !== "/v1/chat/completions") {
+        response.writeHead(404).end()
+        return
+      }
+      await collectJson(request)
+      response.writeHead(200, {
+        "content-type": "text/event-stream",
+      })
+      response.write(sse({ choices: [{ delta: { content: "Partial answer before clean close." } }] }))
+      response.end()
+    })
+    const client = directClient(baseUrl, {
+      storageRoot: await tempDir("chipmate-async-interrupt-storage-"),
+      outputLines,
+    })
+    const session = await client.createSession()
+
+    await client.sendMessageAsync({ sessionID: session.id, text: "first" })
+    await waitFor(async () => (await client.getSessionStatuses())[session.id]?.type === "error")
+
+    const messages = await client.getMessages(session.id)
+    expect(messages.some((message) => message.info.error?.message?.includes("对话已中断"))).toBe(true)
+    expect(messages.some((message) => message.parts.some((part) => part.type === "text" && part.text.includes("Partial answer before clean close.")))).toBe(true)
+    expect(outputLines.join("\n")).toContain("[send] interrupted")
+    expect(outputLines.join("\n")).toContain("closed before completion marker")
+  })
+
+  test("does not record session errors for user-aborted async sends", async () => {
+    const outputLines: string[] = []
+    let receivedRequest!: () => void
+    const requestReceived = new Promise<void>((resolve) => {
+      receivedRequest = resolve
+    })
+    const baseUrl = await listen(async (request, response) => {
+      if (request.url !== "/v1/chat/completions") {
+        response.writeHead(404).end()
+        return
+      }
+      await collectJson(request)
+      response.writeHead(200, {
+        "content-type": "text/event-stream",
+      })
+      response.write(sse({ choices: [{ delta: { content: "Partial answer before user stop." } }] }))
+      receivedRequest()
+    })
+    const client = directClient(baseUrl, {
+      storageRoot: await tempDir("chipmate-user-abort-storage-"),
+      outputLines,
+    })
+    const session = await client.createSession()
+
+    await client.sendMessageAsync({ sessionID: session.id, text: "first" })
+    await requestReceived
+    await client.abortSession(session.id)
+    await new Promise((resolve) => setTimeout(resolve, 20))
+
+    const messages = await client.getMessages(session.id)
+    expect(messages.some((message) => Boolean(message.info.error))).toBe(false)
+    expect(outputLines.join("\n")).not.toContain("[send] interrupted")
+  })
+
+  test("deletes persisted sessions and emits session.deleted", async () => {
+    const baseUrl = await listen((_request, response) => {
+      response.writeHead(404).end()
+    })
+    const client = directClient(baseUrl, { storageRoot: await tempDir("chipmate-delete-session-storage-") })
+    const events: unknown[] = []
+    const controller = new AbortController()
+    const subscription = client.subscribeEvents((event) => events.push(event), controller.signal)
+    const first = await client.createSession("First chat")
+    const second = await client.createSession("Second chat")
+    await client.abortSession(first.id)
+
+    await expect(client.deleteSession(first.id)).resolves.toBe(true)
+    controller.abort()
+    await subscription
+
+    await expect(client.listSessions()).resolves.toEqual([
+      expect.objectContaining({ id: second.id, title: "Second chat" }),
+    ])
+    await expect(client.getMessages(first.id)).resolves.toEqual([])
+    expect((await client.getSessionStatuses())[first.id]).toBeUndefined()
+    expect(events).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        type: "session.deleted",
+        properties: { info: expect.objectContaining({ id: first.id, title: "First chat" }) },
+      }),
+    ]))
+  })
 })
 
 function directClient(baseUrl: string, overrides: Partial<{
   storageRoot: string
-  tools: ToolRuntime
+  outputLines: string[]
+  tools: ToolRuntimeInstance
+  toolsEnabled: boolean
+  historyTurns: number
+  historyBytes: number
 }> = {}) {
   const settings = directSettings(baseUrl)
+  settings.tools.enabled = overrides.toolsEnabled === true
+  if (overrides.historyTurns !== undefined) settings.context.maxHistoryTurns = overrides.historyTurns
+  if (overrides.historyBytes !== undefined) settings.context.maxHistoryBytes = overrides.historyBytes
   return new DirectAgentClient({
     context: {
       globalStorageUri: UriShim.file(overrides.storageRoot ?? join(tmpdir(), "chipmate-direct-storage-default")),
     },
     output: {
-      appendLine: () => undefined,
+      appendLine: (line: string) => overrides.outputLines?.push(line),
     },
     getSettings: () => settings,
     getApiKey: async () => "secret",
@@ -240,8 +698,17 @@ function directClient(baseUrl: string, overrides: Partial<{
         output: "noop",
         approved: true,
       }),
-    } as unknown as ToolRuntime,
+    } as unknown as ToolRuntimeInstance,
   } as never)
+}
+
+async function waitFor(predicate: () => boolean | Promise<boolean>, timeoutMs = 1000) {
+  const started = Date.now()
+  while (Date.now() - started < timeoutMs) {
+    if (await predicate()) return
+    await new Promise((resolve) => setTimeout(resolve, 10))
+  }
+  throw new Error("Timed out waiting for condition.")
 }
 
 function directSettings(baseUrl: string): RemoteSettings {
@@ -265,9 +732,14 @@ function directSettings(baseUrl: string): RemoteSettings {
       includeGitDiff: false,
       localOnlyMode: true,
       strictLocalOnlyAgent: true,
+      maxHistoryTurns: 3,
+      maxHistoryBytes: 12000,
     },
     permissions: {
       mode: "full-access",
+    },
+    tools: {
+      enabled: false,
     },
     skills: {
       enabled: [],

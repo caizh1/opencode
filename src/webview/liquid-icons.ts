@@ -23,12 +23,18 @@ export type LiquidIconName =
   | "retry"
   | "apply"
   | "database"
+  | "searchIndex"
   | "beaker"
   | "key"
+  | "tool"
+  | "toolDisabled"
   | "shield"
   | "save"
   | "discard"
+  | "close"
   | "more"
+
+type LiquidIconPath = string | { d: string; className?: string }
 
 const liquidIconPaths = {
   chip: [
@@ -146,6 +152,14 @@ const liquidIconPaths = {
     "M5 6.8v5.2c0 1.8 3.1 3.2 7 3.2s7-1.4 7-3.2V6.8",
     "M5 12v5.2c0 1.8 3.1 3.2 7 3.2s7-1.4 7-3.2V12",
   ],
+  searchIndex: [
+    "M5.2 6.8c0-1.7 3-3 6.8-3s6.8 1.3 6.8 3-3 3-6.8 3-6.8-1.3-6.8-3Z",
+    "M5.2 6.8v4.1c0 1.5 2.2 2.7 5.4 2.9",
+    "M5.2 10.9v4.2c0 1.4 2 2.6 4.8 2.8",
+    "M15.4 13.2a3.4 3.4 0 1 0 0 6.8 3.4 3.4 0 0 0 0-6.8Z",
+    "M17.9 19.1l2.1 2.1",
+    "M9.4 6.7h5.2",
+  ],
   beaker: [
     "M9 4.4h6",
     "M10 4.5v4.2l-4.5 7.9c-.8 1.5.2 3.4 1.9 3.4h9.2c1.7 0 2.7-1.9 1.9-3.4L14 8.7V4.5",
@@ -154,6 +168,13 @@ const liquidIconPaths = {
   key: [
     "M14.2 9.8a4 4 0 1 0-3.5 4l-4.8 4.8v1.8h3v-2.6h2.6l2.3-2.3",
     "M14.4 8.2h.1",
+  ],
+  tool: [
+    "M15.2 4.2a4.4 4.4 0 0 0-5.5 5.5L5.2 14.2a2.7 2.7 0 0 0 3.8 3.8l4.5-4.5a4.4 4.4 0 0 0 5.5-5.5l-2.8 2.8-2.1-2.1 2.8-2.8Z",
+  ],
+  toolDisabled: [
+    "M15.2 4.2a4.4 4.4 0 0 0-5.5 5.5L5.2 14.2a2.7 2.7 0 0 0 3.8 3.8l4.5-4.5a4.4 4.4 0 0 0 5.5-5.5l-2.8 2.8-2.1-2.1 2.8-2.8Z",
+    { d: "M5 5 19 19", className: "oc-liquid-icon-disabled-slash" },
   ],
   shield: [
     "M12 3.8c2 1.6 4 2.4 6.5 2.6v5.5c0 4.2-2.6 6.7-6.5 8.3-3.9-1.6-6.5-4.1-6.5-8.3V6.4C8 6.2 10 5.4 12 3.8Z",
@@ -170,10 +191,14 @@ const liquidIconPaths = {
     "M5.5 8.3h13",
     "M10.2 12l3.6 3.6M13.8 12l-3.6 3.6",
   ],
+  close: [
+    "M6.4 6.4l11.2 11.2",
+    "M17.6 6.4L6.4 17.6",
+  ],
   more: [
     "M6.5 12h.1M12 12h.1M17.5 12h.1",
   ],
-} as const satisfies Record<LiquidIconName, readonly string[]>
+} as const satisfies Record<LiquidIconName, readonly LiquidIconPath[]>
 
 export function liquidIcon(
   name: LiquidIconName,
@@ -186,7 +211,11 @@ export function liquidIcon(
   const a11y = options.decorative === false
     ? 'role="img"'
     : 'aria-hidden="true" focusable="false"'
-  const paths = liquidIconPaths[name].map((path) => `<path d="${path}"></path>`).join("")
+  const paths = liquidIconPaths[name].map((path) => {
+    if (typeof path === "string") return `<path d="${path}"></path>`
+    const pathClassName = path.className ? ` class="${safeClassName(path.className)}"` : ""
+    return `<path${pathClassName} d="${path.d}"></path>`
+  }).join("")
   return `<svg class="${className}" viewBox="0 0 24 24" ${a11y} fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">${paths}</svg>`
 }
 

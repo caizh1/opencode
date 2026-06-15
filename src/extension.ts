@@ -120,6 +120,7 @@ export async function activate(context: vscode.ExtensionContext) {
 
   chatProvider = new RemoteChatViewProvider({
     output,
+    extensionUri: context.extensionUri,
     contextStore,
     codeGraph,
     getClient: () => client,
@@ -159,7 +160,7 @@ export async function activate(context: vscode.ExtensionContext) {
       if (event.affectsConfiguration("chipmate.rag")) {
         if (Date.now() >= ignoreRagConfigurationChangesUntil) scheduleRagConfigurationApply()
       }
-      if (event.affectsConfiguration("chipmate.provider") || event.affectsConfiguration("chipmate.permissions")) {
+      if (event.affectsConfiguration("chipmate.provider") || event.affectsConfiguration("chipmate.permissions") || event.affectsConfiguration("chipmate.tools")) {
         chatProvider.refreshState()
       }
     }),

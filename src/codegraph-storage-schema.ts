@@ -80,7 +80,7 @@ export function createCodeGraphStorageManifest(index: CodeGraphIndex, stateMachi
   const files = Object.values(index.files)
   const symbolCount = Object.values(derived.symbolsByPath).reduce((count, values) => count + values.length, 0)
   const postingCount = Object.values(derived.postingsByTerm).reduce((count, values) => count + values.length, 0)
-  const edgeCount = createCodeGraphStorageEdges(index, stateMachines).length
+  const edgeCount = countCodeGraphStorageEdges(index, stateMachines)
   const moduleCount = new Set(files.map((file) => moduleKey(file.path))).size
   return {
     version: CODEGRAPH_STORAGE_SCHEMA_VERSION,
@@ -152,6 +152,18 @@ export function createCodeGraphStorageEdges(index: CodeGraphIndex, stateMachines
     }
   }
   return edges
+}
+
+export function countCodeGraphStorageEdges(index: CodeGraphIndex, stateMachines: StateMachine[] = []): number {
+  let count = 0
+  for (const file of Object.values(index.files)) {
+    count += file.includes.length * 2
+    count += file.types.length
+    count += file.macros.length + file.globals.length
+    for (const fn of file.functions) count += fn.calls.length
+  }
+  for (const machine of stateMachines) count += machine.transitions.length
+  return count
 }
 
 function edge(

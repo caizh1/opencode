@@ -212,6 +212,26 @@ describe("chat stream events", () => {
       next: 1780364586400,
     })
   })
+
+  test("reports interrupted ChipMate session error statuses", () => {
+    const result = applyChipMateEventToMessages(
+      [],
+      {
+        type: "session.status",
+        properties: {
+          sessionID: "s1",
+          status: { type: "error", interrupted: true, message: "stream closed before completion marker" },
+        },
+      },
+      "s1",
+    )
+
+    expect(result.interruption).toMatchObject({
+      type: "error",
+      interrupted: true,
+      message: "stream closed before completion marker",
+    })
+  })
 })
 
 function messageUpdated(sessionID: string, messageID: string): ChipMateEvent {

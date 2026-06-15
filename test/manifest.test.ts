@@ -59,6 +59,10 @@ describe("extension manifest", () => {
       enum: ["ask", "auto", "full-access"],
       default: "ask",
     })
+    expect(properties["chipmate.tools.enabled"]).toMatchObject({
+      type: "boolean",
+      default: false,
+    })
     expect(properties["chipmate.skills.enabled"]).toMatchObject({
       type: "array",
       default: [],
@@ -79,6 +83,8 @@ describe("extension manifest", () => {
     expect(properties["chipmate.analysis.maxEvidenceItems"]?.default).toBe(40)
     expect(properties["chipmate.rag.embedding.endpoint"]?.type).toBe("string")
     expect(properties["chipmate.rag.embedding.batchSize"]?.enum).toEqual([1, 5, 10, 32, 64, 128, 256, 512])
+    expect(properties["chipmate.rag.embedding.timeoutMs"]?.default).toBe(60000)
+    expect(properties["chipmate.rag.embedding.timeoutMs"]?.deprecationMessage).toContain("1-256 use 60000ms")
     expect(properties["chipmate.rag.allowedHosts"]?.type).toBe("array")
   })
 
@@ -106,5 +112,9 @@ describe("extension manifest", () => {
     ]) {
       expect(existsSync(join(import.meta.dir, "..", icon))).toBe(true)
     }
+    const activityIcon = readFileSync(join(import.meta.dir, "..", "media", "chipmate.svg"), "utf8")
+    expect(activityIcon).toContain('stroke="currentColor"')
+    expect(activityIcon).not.toContain("<linearGradient")
+    expect(activityIcon).not.toContain('width="256"')
   })
 })

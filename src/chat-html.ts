@@ -26,11 +26,15 @@ const liquidIconNames: LiquidIconName[] = [
   "retry",
   "apply",
   "database",
+  "searchIndex",
   "beaker",
   "key",
+  "tool",
+  "toolDisabled",
   "shield",
   "save",
   "discard",
+  "close",
   "more",
 ]
 
@@ -45,12 +49,30 @@ export function createNonce(length = 32) {
   return nonce
 }
 
-export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
+function escapeHtmlAttribute(value: string) {
+  return value.replace(/[&<>"']/g, (char) => {
+    if (char === "&") return "&amp;"
+    if (char === "<") return "&lt;"
+    if (char === ">") return "&gt;"
+    if (char === '"') return "&quot;"
+    return "&#39;"
+  })
+}
+
+export function createChatViewHtml(cspSource: string, nonce = createNonce(), brandIconUri = "", mermaidScriptUri = "") {
+  const escapedBrandIconUri = escapeHtmlAttribute(brandIconUri)
+  const escapedMermaidScriptUri = escapeHtmlAttribute(mermaidScriptUri)
+  const mermaidScriptTag = escapedMermaidScriptUri
+    ? `<script nonce="${nonce}" src="${escapedMermaidScriptUri}"></script>`
+    : ""
+  const brandIconMarkup = escapedBrandIconUri
+    ? `<img class="brandIconImage" src="${escapedBrandIconUri}" alt="" aria-hidden="true">`
+    : liquidIcons.chip
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}';">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src ${cspSource} data:; style-src ${cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}' ${cspSource};">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>ChipMate</title>
   <style>
@@ -62,7 +84,12 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       --oc-accent: var(--vscode-focusBorder);
     }
     * { box-sizing: border-box; }
-    html, body { height: 100%; }
+    html, body {
+      height: 100%;
+      overflow: hidden;
+      overscroll-behavior: none;
+      overflow-anchor: none;
+    }
     body {
       margin: 0;
       font-family: var(--vscode-font-family);
@@ -83,6 +110,8 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       height: 100vh;
       min-height: 0;
       overflow: hidden;
+      overscroll-behavior: none;
+      overflow-anchor: none;
       background: var(--vscode-sideBar-background);
     }
     .topbar {
@@ -107,6 +136,24 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       font-weight: 700;
       font-size: 10px;
       box-shadow: none;
+    }
+    .brandMark,
+    .brandAvatar {
+      overflow: hidden;
+      padding: 0;
+    }
+    .brandMark .brandIconImage,
+    .brandAvatar .brandIconImage {
+      display: block;
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      border-radius: inherit;
+    }
+    .brandMark .oc-liquid-icon,
+    .brandAvatar .oc-liquid-icon {
+      width: 70%;
+      height: 70%;
     }
     .title { min-width: 0; display: grid; gap: 2px; }
     .name { font-weight: 650; line-height: 1.1; }
@@ -288,6 +335,66 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       gap: 4px;
       min-width: 0;
     }
+    .toolsToggleButton {
+      width: 100%;
+      display: grid;
+      grid-template-columns: 24px minmax(0, 1fr) 42px;
+      align-items: center;
+      gap: 10px;
+      min-height: 54px;
+      padding: 8px 9px;
+      margin-bottom: 7px;
+      text-align: left;
+      white-space: normal;
+    }
+    .toolsToggleCopy {
+      min-width: 0;
+      display: grid;
+      gap: 2px;
+    }
+    .toolsToggleTitle {
+      min-width: 0;
+      font-size: 12px;
+      font-weight: 700;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .toolsToggleDesc,
+    .permissionModeDisabledNote {
+      min-width: 0;
+      color: var(--vscode-descriptionForeground);
+      font-size: 11px;
+      line-height: 1.35;
+      overflow-wrap: anywhere;
+    }
+    .toolsToggleTrack {
+      display: flex;
+      align-items: center;
+      justify-content: flex-start;
+      width: 38px;
+      height: 22px;
+      padding: 3px;
+      border-radius: 999px;
+      border: 1px solid var(--oc-border);
+      background: var(--vscode-input-background);
+      box-shadow: inset 0 1px 0 color-mix(in srgb, white 18%, transparent);
+    }
+    .toolsToggleButton.is-on .toolsToggleTrack {
+      justify-content: flex-end;
+      border-color: var(--vscode-focusBorder);
+      background: color-mix(in srgb, var(--vscode-focusBorder) 36%, var(--vscode-input-background));
+    }
+    .toolsToggleKnob {
+      width: 14px;
+      height: 14px;
+      border-radius: 999px;
+      background: var(--vscode-foreground);
+      box-shadow: 0 2px 8px color-mix(in srgb, black 28%, transparent);
+    }
+    .permissionModeList.is-disabled {
+      opacity: 0.58;
+    }
     .permissionModeButton {
       width: 100%;
       display: grid;
@@ -303,6 +410,9 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
     .permissionModeButton.is-active {
       box-shadow: inset 2px 0 0 var(--vscode-focusBorder);
       background: var(--oc-soft-bg);
+    }
+    .permissionModeButton:disabled {
+      cursor: default;
     }
     .permissionModeIcon,
     .permissionModeCheck {
@@ -380,6 +490,8 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       display: grid;
       grid-template-columns: minmax(0, 1fr);
       overflow: hidden;
+      overscroll-behavior: none;
+      overflow-anchor: none;
     }
     .app.mode-connection-only .body,
     .app.mode-settings-page .body { display: none; }
@@ -423,15 +535,27 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
     .sessionRow {
       width: 100%;
       display: grid;
-      gap: 3px;
-      text-align: left;
+      grid-template-columns: minmax(0, 1fr) 26px;
+      align-items: center;
+      gap: 4px;
       color: var(--vscode-foreground);
       background: transparent;
       border-radius: 6px;
-      padding: 8px;
+      padding: 4px;
     }
     .sessionRow:hover { background: var(--vscode-list-hoverBackground); }
     .sessionRow.active { background: var(--vscode-list-activeSelectionBackground); color: var(--vscode-list-activeSelectionForeground); }
+    .sessionSelect {
+      min-width: 0;
+      display: grid;
+      gap: 3px;
+      padding: 4px;
+      border-radius: 5px;
+      color: inherit;
+      background: transparent;
+      text-align: left;
+    }
+    .sessionSelect:hover { background: transparent; }
     .sessionName { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
     .sessionBadge {
       margin-left: 5px;
@@ -439,18 +563,61 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       font-size: 10px;
     }
     .sessionTime { color: var(--vscode-descriptionForeground); font-size: 10px; }
+    .sessionRow.active .sessionTime { color: inherit; opacity: 0.75; }
+    .sessionDelete {
+      width: 24px;
+      min-width: 24px;
+      height: 24px;
+      min-height: 24px;
+      border-radius: 7px;
+      padding: 0;
+      color: var(--vscode-descriptionForeground);
+      opacity: 0.54;
+    }
+    .sessionDelete .oc-liquid-icon { width: 14px; height: 14px; }
+    .sessionDelete:hover,
+    .sessionDelete:focus-visible {
+      color: var(--vscode-errorForeground, var(--vscode-foreground));
+      opacity: 1;
+    }
     .sessionEmpty { padding: 12px 8px; color: var(--vscode-descriptionForeground); font-size: 12px; line-height: 1.4; }
-    .chatMain { display: flex; flex-direction: column; min-width: 0; min-height: 0; overflow: hidden; }
+    .chatMain {
+      display: flex;
+      flex-direction: column;
+      min-width: 0;
+      min-height: 0;
+      overflow: hidden;
+      overscroll-behavior: none;
+      overflow-anchor: none;
+    }
     .messages {
       flex: 1;
       min-height: 0;
       overflow: auto;
+      overscroll-behavior: contain;
+      overflow-anchor: none;
       padding: 12px 10px;
       display: flex;
       flex-direction: column;
       gap: 11px;
       scroll-behavior: smooth;
     }
+    .jumpLatest {
+      display: none;
+      align-self: center;
+      flex: 0 0 auto;
+      margin: 0 0 6px;
+      min-height: 26px;
+      padding: 2px 9px;
+      gap: 6px;
+      color: var(--vscode-foreground);
+      background: var(--vscode-editor-background);
+      border: 1px solid var(--vscode-focusBorder);
+      box-shadow: 0 4px 14px color-mix(in srgb, black 18%, transparent);
+    }
+    .jumpLatest.visible { display: inline-flex; }
+    .jumpLatest .oc-liquid-icon { width: 14px; height: 14px; }
+    .jumpLatestText { font-size: 11px; font-weight: 650; line-height: 1; }
     .empty {
       margin: auto;
       width: min(100%, 340px);
@@ -515,6 +682,11 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       font-weight: 700;
       color: var(--vscode-button-foreground);
       background: var(--vscode-button-background);
+    }
+    .avatar.brandAvatar {
+      color: var(--vscode-icon-foreground, var(--vscode-foreground));
+      background: transparent;
+      border: 1px solid var(--vscode-panel-border);
     }
     .timelineItem.user .avatar { color: var(--vscode-badge-foreground); background: var(--vscode-badge-background); }
     .timelineItem.error .avatar { color: var(--vscode-errorForeground); background: var(--vscode-inputValidation-errorBackground, transparent); }
@@ -598,21 +770,7 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       line-height: 1.55;
     }
     .messageCard.messageCollapsed .messageBody,
-    .messageCard.messageCollapsed .messageOutline,
-    .messageCard.messageCollapsed .messageLongHint { display: none; }
-    .messageCard.longAnswer:not(.longExpanded) .messageBody {
-      max-height: min(620px, 72vh);
-      overflow: auto;
-      border-bottom: 1px solid var(--vscode-panel-border);
-    }
-    .messageLongHint {
-      display: none;
-      padding: 5px 11px 8px;
-      color: var(--vscode-descriptionForeground);
-      font-size: 10px;
-      background: var(--vscode-sideBar-background);
-    }
-    .messageCard.longAnswer:not(.longExpanded) .messageLongHint { display: block; }
+    .messageCard.messageCollapsed .messageOutline { display: none; }
     .messageOutline {
       display: flex;
       align-items: center;
@@ -624,6 +782,9 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       color: var(--vscode-descriptionForeground);
       font-size: 9px;
       overflow-x: auto;
+      overscroll-behavior-x: contain;
+      overscroll-behavior-y: auto;
+      overflow-anchor: none;
       scrollbar-width: thin;
     }
     .messageOutlineSummary { flex: 0 0 auto; font-weight: 650; color: var(--vscode-foreground); }
@@ -738,6 +899,9 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       width: 100%;
       overflow-x: auto;
       overflow-y: hidden;
+      overscroll-behavior-x: contain;
+      overscroll-behavior-y: auto;
+      overflow-anchor: none;
     }
     .tableBlock table {
       min-width: 100%;
@@ -771,8 +935,11 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
     .tableRaw {
       display: none;
       margin: 0;
-      max-height: 260px;
-      overflow: auto;
+      overflow-x: auto;
+      overflow-y: visible;
+      overscroll-behavior-x: contain;
+      overscroll-behavior-y: auto;
+      overflow-anchor: none;
       padding: 9px;
       border-top: 1px solid var(--vscode-panel-border);
       color: var(--vscode-foreground);
@@ -784,7 +951,8 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
     }
     .tableBlock.raw .tableScroll { display: none; }
     .tableBlock.raw .tableRaw { display: block; }
-    .codeBlock {
+    .codeBlock,
+    .diagramBlock {
       margin: 11px 0;
       border: 1px solid var(--vscode-panel-border);
       border-radius: 7px;
@@ -809,7 +977,14 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       white-space: nowrap;
       font-weight: 650;
     }
-    .copyCode {
+    .diagramActions {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      flex: 0 0 auto;
+    }
+    .copyCode,
+    .toggleDiagramSource {
       width: 24px;
       min-width: 24px;
       height: 24px;
@@ -818,14 +993,73 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       color: var(--vscode-descriptionForeground);
       opacity: 0.58;
     }
-    .copyCode .oc-liquid-icon { width: 14px; height: 14px; }
+    .copyCode .oc-liquid-icon,
+    .toggleDiagramSource .oc-liquid-icon { width: 14px; height: 14px; }
     .codeBlock:hover .copyCode,
+    .diagramBlock:hover .copyCode,
+    .diagramBlock:hover .toggleDiagramSource,
     .copyCode:focus-visible,
-    .copyCode:hover {
+    .copyCode:hover,
+    .toggleDiagramSource:focus-visible,
+    .toggleDiagramSource:hover {
       opacity: 1;
     }
-    .codeBlock pre { margin: 0; padding: 10px; overflow: auto; white-space: pre; line-height: 1.45; }
+    .codeBlock pre {
+      margin: 0;
+      padding: 10px;
+      overflow-x: auto;
+      overflow-y: visible;
+      overscroll-behavior-x: contain;
+      overscroll-behavior-y: auto;
+      overflow-anchor: none;
+      white-space: pre;
+      line-height: 1.45;
+    }
     .codeBlock code { font-family: var(--vscode-editor-font-family); font-size: var(--chat-code-font-size); }
+    .diagramCanvas,
+    .diagramSource {
+      overflow-x: auto;
+      overflow-y: visible;
+      overscroll-behavior-x: contain;
+      overscroll-behavior-y: auto;
+      overflow-anchor: none;
+    }
+    .diagramCanvas {
+      min-height: 120px;
+      display: grid;
+      align-items: center;
+      justify-items: center;
+      padding: 12px;
+      color: var(--vscode-foreground);
+      background: var(--vscode-editor-background);
+    }
+    .diagramCanvas svg {
+      max-width: 100%;
+      height: auto;
+    }
+    .diagramStatus {
+      width: 100%;
+      color: var(--vscode-descriptionForeground);
+      font-size: 11px;
+      text-align: center;
+    }
+    .diagramStatus.error {
+      color: var(--vscode-errorForeground);
+      text-align: left;
+    }
+    .diagramSource {
+      display: none;
+      margin: 0;
+      padding: 10px;
+      border-top: 1px solid var(--vscode-panel-border);
+      color: var(--vscode-foreground);
+      background: var(--vscode-textCodeBlock-background);
+      font-family: var(--vscode-editor-font-family);
+      font-size: var(--chat-code-font-size);
+      line-height: 1.45;
+      white-space: pre;
+    }
+    .diagramBlock.show-source .diagramSource { display: block; }
     .syntaxKeyword { color: var(--vscode-symbolIcon-keywordForeground, #c586c0); }
     .syntaxString { color: var(--vscode-symbolIcon-stringForeground, #ce9178); }
     .syntaxComment { color: var(--vscode-descriptionForeground); font-style: italic; }
@@ -837,10 +1071,17 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
     .syntaxDeleted { color: var(--vscode-gitDecoration-deletedResourceForeground, #f48771); }
     .syntaxHunk { color: var(--vscode-charts-blue, #4da3ff); }
     .toolCard {
-      margin-top: 8px;
+      margin-top: 4px;
       border: 1px solid var(--vscode-panel-border);
-      border-radius: 7px;
-      background: var(--vscode-sideBar-background);
+      border-radius: 6px;
+      background: color-mix(in srgb, var(--vscode-sideBar-background) 82%, transparent);
+      overflow: hidden;
+      transition: border-color 120ms ease, background 120ms ease;
+    }
+    .toolCard:hover,
+    .toolCard:focus-within {
+      border-color: color-mix(in srgb, var(--vscode-focusBorder) 42%, var(--vscode-panel-border));
+      background: color-mix(in srgb, var(--vscode-sideBar-background) 88%, var(--vscode-focusBorder) 8%);
     }
     .toolCard.serverWarning {
       border-color: var(--vscode-inputValidation-warningBorder, var(--vscode-editorWarning-foreground));
@@ -851,23 +1092,67 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       color: var(--vscode-descriptionForeground);
       background: var(--vscode-sideBar-background);
     }
+    .toolCard.reasoning.is-running summary {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      min-width: 0;
+    }
+    .reasoningSummaryLabel {
+      flex: 0 0 auto;
+      color: var(--vscode-foreground);
+      font-weight: 650;
+    }
+    .reasoningPreview {
+      flex: 1 1 auto;
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      color: var(--vscode-descriptionForeground);
+    }
+    .toolCard.reasoning.is-running .dots {
+      flex: 0 0 auto;
+    }
     .toolCard summary {
       cursor: pointer;
-      padding: 6px 8px;
+      min-height: 22px;
+      padding: 2px 7px;
       color: var(--vscode-descriptionForeground);
-      font-size: 11px;
+      font-size: 10px;
+      line-height: 1.2;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      outline: none;
+    }
+    .toolCard summary:focus-visible {
+      color: var(--vscode-foreground);
+      background: color-mix(in srgb, var(--vscode-focusBorder) 12%, transparent);
     }
     .toolCard pre {
       margin: 0;
-      padding: 7px;
-      overflow: auto;
+      padding: 6px 7px;
+      overflow-x: auto;
+      overflow-y: visible;
+      overscroll-behavior-x: contain;
+      overscroll-behavior-y: auto;
+      overflow-anchor: none;
       border-top: 1px solid var(--vscode-panel-border);
-      font-size: var(--chat-content-font-size);
-      line-height: 1.3;
+      font-size: 10px;
+      line-height: 1.35;
       white-space: pre-wrap;
     }
-    .toolCard.reasoning pre { max-height: 120px; color: var(--vscode-descriptionForeground); }
-    .thinking .messageBody { display: flex; align-items: center; gap: 8px; color: var(--vscode-descriptionForeground); }
+    .toolCard.reasoning pre { color: var(--vscode-descriptionForeground); }
+    .timelineItem.thinking .messageBody {
+      min-height: 22px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      color: var(--vscode-descriptionForeground);
+      font-size: 10px;
+      line-height: 1.2;
+    }
     .dots { display: inline-flex; gap: 4px; }
     .dots span { width: 5px; height: 5px; border-radius: 999px; background: var(--vscode-descriptionForeground); opacity: 0.45; }
     .composerWrap {
@@ -1010,12 +1295,16 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
     .composerStatusPill.panel { color: var(--vscode-foreground); }
     .composerStatusPill.context { --ring-fill: var(--vscode-focusBorder); }
     .composerStatusPill.index.ready { color: var(--vscode-testing-iconPassed, #73c991); --ring-fill: var(--vscode-testing-iconPassed, #73c991); --ring-empty: color-mix(in srgb, var(--vscode-testing-iconPassed, #73c991) 20%, transparent); --ring-border: color-mix(in srgb, var(--vscode-testing-iconPassed, #73c991) 42%, transparent); }
+    .composerStatusPill.rag.ready { color: var(--vscode-testing-iconPassed, #73c991); --ring-fill: var(--vscode-testing-iconPassed, #73c991); --ring-empty: color-mix(in srgb, var(--vscode-testing-iconPassed, #73c991) 20%, transparent); --ring-border: color-mix(in srgb, var(--vscode-testing-iconPassed, #73c991) 42%, transparent); }
     .composerStatusPill.index.indexing,
     .composerStatusPill.index.info { --ring-fill: var(--vscode-focusBorder); --ring-empty: color-mix(in srgb, var(--vscode-focusBorder) 20%, transparent); --ring-border: color-mix(in srgb, var(--vscode-focusBorder) 34%, transparent); }
+    .composerStatusPill.rag.indexing { --ring-fill: var(--vscode-focusBorder); --ring-empty: color-mix(in srgb, var(--vscode-focusBorder) 20%, transparent); --ring-border: color-mix(in srgb, var(--vscode-focusBorder) 34%, transparent); }
     .composerStatusPill.index.warning,
     .composerStatusPill.guard.warning { color: var(--vscode-editorWarning-foreground, #cca700); --ring-fill: var(--vscode-editorWarning-foreground, #cca700); --ring-empty: color-mix(in srgb, var(--vscode-editorWarning-foreground, #cca700) 20%, transparent); --ring-border: color-mix(in srgb, var(--vscode-editorWarning-foreground, #cca700) 34%, transparent); }
+    .composerStatusPill.rag.warning { color: var(--vscode-editorWarning-foreground, #cca700); --ring-fill: var(--vscode-editorWarning-foreground, #cca700); --ring-empty: color-mix(in srgb, var(--vscode-editorWarning-foreground, #cca700) 20%, transparent); --ring-border: color-mix(in srgb, var(--vscode-editorWarning-foreground, #cca700) 34%, transparent); }
     .composerStatusPill.usage.warning { color: var(--vscode-editorWarning-foreground, #cca700); }
     .composerStatusPill.index.error { color: var(--vscode-errorForeground, #f48771); --ring-fill: var(--vscode-errorForeground, #f48771); --ring-empty: color-mix(in srgb, var(--vscode-errorForeground, #f48771) 20%, transparent); --ring-border: color-mix(in srgb, var(--vscode-errorForeground, #f48771) 34%, transparent); }
+    .composerStatusPill.rag.error { color: var(--vscode-errorForeground, #f48771); --ring-fill: var(--vscode-errorForeground, #f48771); --ring-empty: color-mix(in srgb, var(--vscode-errorForeground, #f48771) 20%, transparent); --ring-border: color-mix(in srgb, var(--vscode-errorForeground, #f48771) 34%, transparent); }
     .composerStatusPill.usage.error { color: var(--vscode-errorForeground, #f48771); }
     .composerStatusPill.guard.ok { color: var(--vscode-testing-iconPassed, #73c991); }
     .composerStatusPill.guard.off { color: var(--vscode-descriptionForeground); }
@@ -1646,11 +1935,13 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
     @media (forced-colors: active) {
       .messageAction,
       .messageOutlineButton,
+      .diagramBlock,
       .tableBlock,
       .tableBlock th,
       .tableBlock td,
       .copyTable,
       .toggleTableRaw,
+      .toggleDiagramSource,
       .composerStatusPill,
       .statusRing,
 	      .statusActionButton,
@@ -1814,6 +2105,9 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       height: 16px;
       flex: 0 0 auto;
       pointer-events: none;
+    }
+    .oc-liquid-icon-disabled-slash {
+      stroke: currentColor;
     }
     .oc-chip,
     .oc-liquid-chip {
@@ -2297,20 +2591,24 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       line-height: 1.48;
     }
     .messageActions,
-    .tableActions {
+    .tableActions,
+    .diagramActions {
       opacity: 0;
       transition: opacity 100ms ease;
     }
     .timelineItem:hover .messageActions,
     .timelineItem:focus-within .messageActions,
     .tableBlock:hover .tableActions,
-    .tableBlock:focus-within .tableActions {
+    .tableBlock:focus-within .tableActions,
+    .diagramBlock:hover .diagramActions,
+    .diagramBlock:focus-within .diagramActions {
       opacity: 1;
     }
     .messageAction,
     .copyCode,
     .copyTable,
-    .toggleTableRaw {
+    .toggleTableRaw,
+    .toggleDiagramSource {
       width: 24px;
       min-width: 24px;
       height: 24px;
@@ -2325,11 +2623,13 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
     .messageAction:hover,
     .copyCode:hover,
     .copyTable:hover,
-    .toggleTableRaw:hover {
+    .toggleTableRaw:hover,
+    .toggleDiagramSource:hover {
       color: var(--vscode-foreground);
       background: var(--oc-hover-bg);
     }
     .codeBlock,
+    .diagramBlock,
     .tableBlock,
     .toolCard {
       border: 1px solid var(--oc-border);
@@ -2344,12 +2644,20 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       border-bottom: 1px solid var(--oc-border);
       background: var(--vscode-sideBar-background);
     }
-    .copyCode { opacity: 0; }
+    .copyCode,
+    .toggleDiagramSource { opacity: 0; }
     .codeBlock:hover .copyCode,
     .codeBlock:focus-within .copyCode,
-    .copyCode:focus-visible { opacity: 1; }
+    .diagramBlock:hover .copyCode,
+    .diagramBlock:focus-within .copyCode,
+    .diagramBlock:hover .toggleDiagramSource,
+    .diagramBlock:focus-within .toggleDiagramSource,
+    .copyCode:focus-visible,
+    .toggleDiagramSource:focus-visible { opacity: 1; }
     .composerWrap {
       position: relative;
+      container-name: composer-shell;
+      container-type: inline-size;
       gap: 4px;
       padding: 5px 6px 6px;
       border-top-color: var(--oc-border);
@@ -2470,6 +2778,8 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
     .composerPanel { gap: 5px; }
     .composer {
       gap: 0;
+      container-name: composer;
+      container-type: inline-size;
       border: 1px solid var(--vscode-input-border, var(--oc-border));
       border-radius: var(--oc-radius-lg);
       background: var(--vscode-input-background);
@@ -2503,7 +2813,7 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       display: inline-flex;
       align-items: center;
       gap: 6px;
-      flex: 1 1 auto;
+      flex: 1 1 0;
       flex-wrap: wrap;
       min-width: 0;
     }
@@ -2596,6 +2906,11 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       color: var(--vscode-editorWarning-foreground, #f97316);
       border-color: color-mix(in srgb, var(--vscode-editorWarning-foreground, #f97316) 56%, var(--oc-border));
       background: color-mix(in srgb, var(--vscode-editorWarning-foreground, #f97316) 10%, transparent);
+    }
+    .permissionTrigger.tools-off {
+      color: var(--vscode-descriptionForeground);
+      border-color: color-mix(in srgb, var(--vscode-descriptionForeground) 34%, var(--oc-border));
+      background: color-mix(in srgb, var(--vscode-descriptionForeground) 6%, transparent);
     }
     .skillsTrigger {
       color: var(--oc-muted);
@@ -2727,10 +3042,86 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       left: 8px;
       right: auto;
       width: min(320px, calc(100vw - 24px));
-      max-width: calc(100vw - 24px);
+      max-width: none;
+      overflow-x: hidden;
       padding: 10px;
       border-radius: 14px;
       box-shadow: 0 12px 34px color-mix(in srgb, black 26%, transparent);
+    }
+    .composerStatusPopover.permissionPopover .toolsToggleButton.oc-liquid-btn {
+      display: grid;
+      grid-template-columns: 24px minmax(0, 1fr) 42px;
+      align-items: center;
+      justify-content: stretch;
+      gap: 10px;
+      width: 100%;
+      max-width: none;
+      min-width: 0;
+      height: auto;
+      min-height: 54px;
+      padding: 8px 9px;
+      text-align: left;
+      white-space: normal;
+      overflow: visible;
+    }
+    .composerStatusPopover.permissionPopover .toolsToggleCopy {
+      min-width: 0;
+      overflow: hidden;
+    }
+    .composerStatusPopover.permissionPopover .toolsToggleTitle {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .composerStatusPopover.permissionPopover .toolsToggleDesc,
+    .composerStatusPopover.permissionPopover .permissionModeDesc,
+    .composerStatusPopover.permissionPopover .permissionModeDisabledNote {
+      word-break: normal;
+      overflow-wrap: anywhere;
+    }
+    .composerStatusPopover.permissionPopover .permissionModeButton.oc-liquid-btn {
+      display: grid;
+      grid-template-columns: 24px minmax(0, 1fr) 18px;
+      align-items: center;
+      justify-content: stretch;
+      gap: 10px;
+      width: 100%;
+      max-width: none;
+      min-width: 0;
+      height: auto;
+      min-height: 58px;
+      padding: 7px 9px;
+      text-align: left;
+      white-space: normal;
+      overflow: visible;
+    }
+    .composerStatusPopover.permissionPopover .permissionModeCopy {
+      min-width: 0;
+      overflow: hidden;
+    }
+    .composerStatusPopover.permissionPopover .permissionModeIcon,
+    .composerStatusPopover.permissionPopover .permissionModeCheck {
+      flex: 0 0 auto;
+    }
+    @media (max-width: 360px) {
+      .composerStatusPopover.permissionPopover {
+        left: 6px;
+        width: min(308px, calc(100vw - 18px));
+        padding: 8px;
+      }
+      .composerStatusPopover.permissionPopover .toolsToggleButton.oc-liquid-btn {
+        grid-template-columns: 20px minmax(0, 1fr) 38px;
+        gap: 7px;
+        min-height: 52px;
+        padding: 7px;
+      }
+      .composerStatusPopover.permissionPopover .permissionModeButton.oc-liquid-btn {
+        grid-template-columns: 20px minmax(0, 1fr) 16px;
+        gap: 7px;
+        min-height: 54px;
+        padding: 7px;
+      }
     }
     .suggestion {
       width: 100%;
@@ -2809,6 +3200,75 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
         height: var(--composer-icon-button-size);
       }
     }
+    @container composer (max-width: 420px) {
+      .composerToolbar {
+        gap: 5px;
+      }
+      .composerPickerRail {
+        flex-wrap: nowrap;
+        gap: 5px;
+      }
+      .composerPickerRail .permissionTrigger,
+      .composerPickerRail .skillsTrigger {
+        flex: 0 0 30px;
+        width: 30px;
+        min-width: 30px;
+        max-width: 30px;
+        justify-content: center;
+        padding: 0;
+      }
+      .composerPickerRail .modelTrigger,
+      .composerPickerRail .agentTrigger,
+      .composerPickerRail .agentTrigger.warning,
+      .composerPickerRail .modelTrigger.warning {
+        flex: 1 1 96px;
+        width: auto;
+        min-width: 74px;
+        max-width: none;
+        justify-content: flex-start;
+        padding: 0 8px;
+      }
+      .composerPickerRail .permissionTrigger .pillLabelText,
+      .composerPickerRail .skillsTrigger .pillLabelText {
+        display: none;
+      }
+      .composerToolbar .send {
+        margin-inline-start: 0;
+      }
+    }
+    @container composer (max-width: 300px) {
+      .composerPickerRail {
+        gap: 4px;
+      }
+      .composerPickerRail .permissionTrigger {
+        flex-basis: 28px;
+        width: 28px;
+        min-width: 28px;
+        max-width: 28px;
+      }
+      .composerPickerRail .modelTrigger,
+      .composerPickerRail .agentTrigger,
+      .composerPickerRail .skillsTrigger,
+      .composerPickerRail .agentTrigger.warning,
+      .composerPickerRail .modelTrigger.warning {
+        flex-basis: 28px;
+        width: 28px;
+        min-width: 28px;
+        max-width: 28px;
+      }
+      .composerPickerRail .modelTrigger,
+      .composerPickerRail .agentTrigger,
+      .composerPickerRail .skillsTrigger,
+      .composerPickerRail .agentTrigger.warning,
+      .composerPickerRail .modelTrigger.warning {
+        justify-content: center;
+        padding: 0;
+      }
+      .composerPickerRail .modelTrigger .oc-liquid-chip-label,
+      .composerPickerRail .agentTrigger .oc-liquid-chip-label {
+        display: none;
+      }
+    }
     @media (forced-colors: active) {
       .oc-tool-btn,
       .oc-icon-btn,
@@ -2825,6 +3285,7 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       .composerProgressTrack,
       .messageCard,
       .codeBlock,
+      .diagramBlock,
       .tableBlock,
       .composer {
         forced-color-adjust: auto;
@@ -2851,7 +3312,7 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
 <body>
   <div id="app" class="app mode-connection-only history-closed history-narrow">
     <header class="topbar">
-      <div class="mark">CM</div>
+      <div class="mark brandMark" aria-hidden="true">${brandIconMarkup}</div>
       <div class="title">
         <div class="name">ChipMate</div>
         <div class="meta">
@@ -2952,7 +3413,7 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
         <details class="ragAdvanced">
           <summary>Advanced</summary>
           <div class="settingsGrid">
-            <label class="field">Batch size<select id="ragEmbeddingBatchSize" title="Embedding request timeout is automatic: 1-256 use 30s, 512 uses 90s"><option value="1">1</option><option value="5">5</option><option value="10">10</option><option value="32">32</option><option value="64">64</option><option value="128">128</option><option value="256">256</option><option value="512">512</option></select></label>
+            <label class="field">Batch size<select id="ragEmbeddingBatchSize" title="Embedding request timeout is automatic: 1-256 use 60s, 512 uses 90s"><option value="1">1</option><option value="5">5</option><option value="10">10</option><option value="32">32</option><option value="64">64</option><option value="128">128</option><option value="256">256</option><option value="512">512</option></select></label>
             <label class="field">Max tokens/request<input id="ragEmbeddingMaxTokensPerRequest" type="number" min="1" max="1000000" step="1024"></label>
             <label class="field">Concurrent requests<input id="ragEmbeddingConcurrentRequests" type="number" min="1" max="8" step="1"></label>
             <label class="field">Max in-flight tokens<input id="ragEmbeddingMaxInFlightTokens" type="number" min="32768" max="1000000" step="1024"></label>
@@ -3002,7 +3463,7 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
           <div class="historyTitle">History</div>
           <div class="row">
             <button id="refreshHistory" class="oc-icon-btn oc-liquid-btn" type="button" title="Refresh sessions" aria-label="Refresh sessions">${liquidIcons.refresh}<span class="srOnly">Refresh sessions</span></button>
-            <button id="closeHistory" class="oc-icon-btn oc-liquid-btn" type="button" title="Close history" aria-label="Close history">${liquidIcons.discard}<span class="srOnly">Close history</span></button>
+            <button id="closeHistory" class="oc-icon-btn oc-liquid-btn" type="button" title="Close history" aria-label="Close history">${liquidIcons.close}<span class="srOnly">Close history</span></button>
           </div>
         </div>
         <div id="sessionList" class="sessionList"></div>
@@ -3011,6 +3472,7 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
         <main id="messages" class="messages">
           <div class="empty">Ask with context</div>
         </main>
+        <button id="jumpLatest" class="jumpLatest oc-chip oc-liquid-chip" type="button" title="Jump to latest message" aria-label="Jump to latest message" aria-hidden="true" tabindex="-1">${liquidIcons.more}<span class="jumpLatestText">Latest</span></button>
         <footer class="composerWrap">
           <div id="composerStatusBar" class="composerStatusBar" aria-live="polite">
             <button id="composerStatusToggle" class="composerStatusToggle oc-icon-toggle oc-liquid-toggle" type="button" aria-expanded="true" aria-controls="composerPanel" title="Hide input panel">
@@ -3023,6 +3485,7 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
             <div class="composerSupportRail" aria-label="Composer status details">
               <button id="contextStatusPill" class="composerStatusPill oc-icon-btn oc-liquid-btn context" type="button" title="Show context details"><span class="pillText">${liquidIcons.references}</span></button>
               <button id="indexStatusPill" class="composerStatusPill oc-icon-btn oc-liquid-btn index info compactRing" type="button" title="Show index details"><span class="pillText statusRing" aria-hidden="true">${liquidIcons.database}</span></button>
+              <button id="ragStatusPill" class="composerStatusPill oc-icon-btn oc-liquid-btn rag info compactRing" type="button" title="Show RAG index details"><span class="pillText statusRing" aria-hidden="true">${liquidIcons.searchIndex}</span></button>
               <button id="guardStatusPill" class="composerStatusPill oc-icon-btn oc-liquid-btn guard ok is-hidden" type="button" title="Show guard details" hidden><span class="pillText">${liquidIcons.shield}</span></button>
               <button id="usageStatusPill" class="composerStatusPill oc-icon-btn oc-liquid-btn usage pending" type="button" title="Show usage details"><span class="pillText">${liquidIcons.sparkle}</span></button>
             </div>
@@ -3038,7 +3501,7 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
               <textarea id="input" placeholder="Ask ChipMate…"></textarea>
               <div class="composerToolbar composerPrimaryRail composerControlRail">
                 <div class="composerPickerRail">
-                  <button id="permissionStatusPill" class="composerStatusPill permissionTrigger oc-chip oc-liquid-chip permission ask" type="button" title="Show permission mode" aria-haspopup="dialog" aria-expanded="false" aria-controls="composerStatusPopover"><span class="pillText">${liquidIcons.shield}</span></button>
+                  <button id="permissionStatusPill" class="composerStatusPill permissionTrigger oc-chip oc-liquid-chip permission tools-off is-empty" type="button" title="工具关闭：模型工具调用已关闭，权限模式暂不生效。" aria-label="模型工具调用：已关闭。权限模式暂不生效。" aria-haspopup="dialog" aria-expanded="false" aria-controls="composerStatusPopover"><span class="pillText">${liquidIcons.toolDisabled}</span></button>
                   <button id="modelTrigger" class="modelTrigger oc-chip oc-liquid-chip" type="button" title="Model" aria-haspopup="listbox" aria-expanded="false" aria-controls="modelMenu">${liquidIcons.server}<span class="oc-liquid-chip-label">Model</span></button>
                   <button id="agentTrigger" class="modelTrigger agentTrigger oc-chip oc-liquid-chip" type="button" title="Agent" aria-haspopup="listbox" aria-expanded="false" aria-controls="agentMenu">${liquidIcons.agent}<span class="oc-liquid-chip-label">Agent</span></button>
                   <button id="skillsStatusPill" class="composerStatusPill skillsTrigger oc-chip oc-liquid-chip context is-empty" type="button" title="Show skills" aria-haspopup="dialog" aria-expanded="false" aria-controls="composerStatusPopover"><span class="pillText">${liquidIcons.references}</span></button>
@@ -3080,22 +3543,30 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       </section>
     </div>
   </div>
+  ${mermaidScriptTag}
   <script nonce="${nonce}">
 	    const vscode = acquireVsCodeApi();
 	    const el = (id) => document.getElementById(id);
 	    const LIQUID_ICONS = ${liquidIconForScript};
+	    const BRAND_ICON_URI = ${JSON.stringify(brandIconUri)};
+    const MERMAID_MAX_SOURCE_BYTES = 100000;
+    let mermaidInitialized = false;
+    let mermaidRenderSerial = 0;
 	    const STATUS_ICONS = {
-	      context: LIQUID_ICONS.references,
-	      database: LIQUID_ICONS.database,
-	      diagnostics: LIQUID_ICONS.diagnostics,
+		      context: LIQUID_ICONS.references,
+		      database: LIQUID_ICONS.database,
+		      diagnostics: LIQUID_ICONS.diagnostics,
 	      panelBottomClose: LIQUID_ICONS.more,
 	      panelBottomOpen: LIQUID_ICONS.chat,
 	      shieldAlert: LIQUID_ICONS.diagnostics,
 	      shieldCheck: LIQUID_ICONS.shield,
-	      shieldOff: LIQUID_ICONS.shield,
-	      skill: LIQUID_ICONS.references,
-	      usage: LIQUID_ICONS.sparkle,
-	    };
+		      shieldOff: LIQUID_ICONS.shield,
+	      tool: LIQUID_ICONS.tool,
+	      toolsOff: LIQUID_ICONS.toolDisabled,
+		      skill: LIQUID_ICONS.references,
+		      rag: LIQUID_ICONS.searchIndex,
+		      usage: LIQUID_ICONS.sparkle,
+		    };
     const RAG_EMBEDDING_BATCH_SIZE_DEFAULT = 128;
     const RAG_EMBEDDING_BATCH_SIZE_OPTIONS = [1, 5, 10, 32, 64, 128, 256, 512];
     const RAG_EMBEDDING_BATCH_SIZE_ERROR = "Embedding batch size must be one of 1, 5, 10, 32, 64, 128, 256, or 512.";
@@ -3117,10 +3588,13 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
 	    let userEditedConnection = false;
 	    let userEditedCompletionSettings = false;
 	    let userEditedRagSettings = false;
-    let historyTouched = false;
-    let historyOpen = false;
-    let userNearBottom = true;
-    let mentionedFiles = [];
+	    let historyTouched = false;
+	    let historyOpen = false;
+	    let userNearBottom = true;
+	    let autoFollowMessages = true;
+	    let forceNextMessageFollow = false;
+	    let lastMessagesScrollTop = 0;
+	    let mentionedFiles = [];
     let mentionResults = [];
     let activeSuggestion = 0;
     let searchTimer = 0;
@@ -3137,11 +3611,10 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
     let composerPinnedStatusPopover = "";
     let composerHoverStatusPopover = "";
     let composerHoverCloseTimer = 0;
-    let codeIntelligenceVisible = false;
-    let selectedStateMachineId = "";
-    const collapsedMessages = new Set();
-    const expandedLongMessages = new Set();
-    const messageJumpIndex = new Map();
+	    let codeIntelligenceVisible = false;
+	    let selectedStateMachineId = "";
+	    const collapsedMessages = new Set();
+	    const messageJumpIndex = new Map();
 
     el("server").textContent = "UI ready";
     el("connectionDetail").className = "detail";
@@ -3171,9 +3644,22 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
 	      });
 	    }
 
-    el("messages").addEventListener("scroll", () => {
-      userNearBottom = isNearBottom(el("messages"));
-    });
+    const messagesRoot = el("messages");
+    messagesRoot.addEventListener("scroll", (event) => {
+      if (event.target === messagesRoot) {
+        handleMessagesScroll(messagesRoot);
+        return;
+      }
+      if (isNestedMessageScroller(event.target)) pauseAutoFollowForUser();
+    }, true);
+    messagesRoot.addEventListener("wheel", (event) => {
+      if (redirectNestedVerticalWheel(event, messagesRoot)) return;
+      if (isNestedMessageScroller(event.target) || event.deltaY < 0) pauseAutoFollowForUser();
+    }, { capture: true, passive: false });
+    messagesRoot.addEventListener("touchstart", (event) => {
+      if (isNestedMessageScroller(event.target)) pauseAutoFollowForUser();
+    }, { capture: true, passive: true });
+    el("jumpLatest").addEventListener("click", jumpToLatestMessage);
     window.addEventListener("resize", () => {
       renderShell();
       positionModelMenu();
@@ -3225,6 +3711,7 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
     el("composerStatusToggle").addEventListener("click", toggleComposerPanel);
     bindComposerStatusPill("contextStatusPill", "context", true);
     bindComposerStatusPill("indexStatusPill", "index", true);
+    bindComposerStatusPill("ragStatusPill", "rag", true);
     bindComposerStatusPill("permissionStatusPill", "permission", false);
     bindComposerStatusPill("skillsStatusPill", "skills", true);
     bindComposerStatusPill("guardStatusPill", "guard", false);
@@ -3503,7 +3990,7 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
 	    }
 
       function ragEmbeddingTimeoutMsForBatchSize(batchSize) {
-        return Number(batchSize) === 512 ? 90000 : 30000;
+        return Number(batchSize) === 512 ? 90000 : 60000;
       }
 
       function ragEmbeddingBatchSizeSelectValue(batchSize) {
@@ -3630,8 +4117,8 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
         setNotice(state.localOnlyWarning || "Required VS Code local agent is unavailable.");
         return;
       }
-      userNearBottom = true;
-      vscode.postMessage({
+	      enableAutoFollowMessages();
+	      vscode.postMessage({
         type: "sendMessage",
         text,
         mentionedFiles,
@@ -4159,6 +4646,8 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       updateStatusPill(el("contextStatusPill"), context);
       const index = composerIndexStatus();
       updateStatusPill(el("indexStatusPill"), index);
+      const rag = composerRagStatus();
+      updateStatusPill(el("ragStatusPill"), rag);
       const permission = composerPermissionStatus();
       updateStatusPill(el("permissionStatusPill"), permission);
       const skills = composerSkillsStatus();
@@ -4277,10 +4766,11 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       root.className = "composerStatusPopover" + (activePopover ? " open " + activePopover + "Popover" : "");
       root.setAttribute("aria-hidden", activePopover ? "false" : "true");
       if (!activePopover) return;
-      if (activePopover === "context") renderContextStatusPopover(root);
-      if (activePopover === "diagnostics") renderDiagnosticsStatusPopover(root);
-      if (activePopover === "index") renderIndexStatusPopover(root);
-      if (activePopover === "permission") renderPermissionStatusPopover(root);
+	      if (activePopover === "context") renderContextStatusPopover(root);
+	      if (activePopover === "diagnostics") renderDiagnosticsStatusPopover(root);
+	      if (activePopover === "index") renderIndexStatusPopover(root);
+	      if (activePopover === "rag") renderRagStatusPopover(root);
+	      if (activePopover === "permission") renderPermissionStatusPopover(root);
       if (activePopover === "skills") renderSkillsStatusPopover(root);
       if (activePopover === "guard") renderGuardStatusPopover(root);
       if (activePopover === "usage") renderUsageStatusPopover(root);
@@ -4306,7 +4796,7 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
         if (name && composerHoverStatusPopover !== name) return;
         const popover = el("composerStatusPopover");
         const active = document.activeElement;
-        const activeStatusPill = active && active.closest && active.closest("#contextStatusPill, #indexStatusPill, #permissionStatusPill, #skillsStatusPill, #guardStatusPill, #usageStatusPill");
+        const activeStatusPill = active && active.closest && active.closest("#contextStatusPill, #indexStatusPill, #ragStatusPill, #permissionStatusPill, #skillsStatusPill, #guardStatusPill, #usageStatusPill");
         if (popover.matches(":hover") || popover.matches(":focus-within") || activeStatusPill) return;
         composerHoverStatusPopover = "";
         renderComposerStatusBar();
@@ -4345,11 +4835,11 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       return count;
     }
 
-    function composerIndexStatus() {
-      const graph = state.codeGraph || {};
-      const stateName = graph.state || "disabled";
-      const view = codeGraphStatusView(graph, stateName);
-      const title = codeGraphTitle(graph, view.label);
+	    function composerIndexStatus() {
+	      const graph = state.codeGraph || {};
+	      const stateName = graph.state || "disabled";
+	      const view = codeGraphStatusView(graph, stateName);
+	      const title = codeGraphTitle(graph, view.label);
       return {
         text: view.shortLabel,
         title,
@@ -4357,12 +4847,80 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
         popover: "index",
         ariaLabel: "Index status: " + view.shortLabel + ". " + title,
         ring: indexStatusRing(graph, stateName, view.kind),
-	        ringIcon: STATUS_ICONS.database,
-      };
+		        ringIcon: STATUS_ICONS.database,
+	      };
+	    }
+
+	    function composerRagStatus() {
+	      const rag = state.codeGraph && state.codeGraph.rag;
+	      const view = ragStatusView(rag);
+	      const title = codeGraphRagMeta(rag) || view.label;
+	      return {
+	        text: view.shortLabel,
+	        title,
+		        className: "composerStatusPill oc-icon-btn oc-liquid-btn rag " + view.kind,
+	        popover: "rag",
+	        ariaLabel: "RAG index status: " + view.shortLabel + ". " + title,
+	        ring: ragStatusRing(rag, view.kind),
+		        ringIcon: STATUS_ICONS.rag,
+	      };
+	    }
+
+	    function ragStatusView(rag) {
+	      if (!rag || rag.availability === "not-configured") {
+	        return { kind: "info", shortLabel: "RAG off", label: "RAG not configured" };
+	      }
+	      if (rag.availability === "ready") {
+	        return { kind: "ready", shortLabel: "RAG ready", label: "RAG ready" + ragChunkProgressLabel(rag) };
+	      }
+	      if (rag.availability === "indexing") {
+	        return { kind: "indexing", shortLabel: "RAG indexing", label: "RAG indexing" + ragChunkProgressLabel(rag) };
+	      }
+	      if (rag.availability === "checking") {
+	        return { kind: "indexing", shortLabel: "RAG checking", label: "RAG checking embedding endpoint" };
+	      }
+	      if (rag.availability === "partial") {
+	        return { kind: "warning", shortLabel: "RAG partial", label: "RAG partial" + ragChunkProgressLabel(rag) };
+	      }
+	      if (rag.availability === "paused") {
+	        return { kind: "warning", shortLabel: "RAG paused", label: "RAG paused" + ragChunkProgressLabel(rag) };
+	      }
+	      if (rag.availability === "unavailable") {
+	        return { kind: "error", shortLabel: "RAG error", label: "RAG unavailable" };
+	      }
+	      if (rag.availability === "not-indexed") {
+	        return { kind: "warning", shortLabel: "RAG not indexed", label: "RAG not indexed" };
+	      }
+	      return { kind: "info", shortLabel: "RAG off", label: "RAG not configured" };
+	    }
+
+	    function ragStatusRing(rag, kind) {
+	      if (kind === "indexing") {
+	        const progress = ragProgressRatio(rag);
+	        return progress === undefined ? { indeterminate: true } : { progress };
+	      }
+	      if (kind === "ready") return { progress: 1 };
+	      if (kind === "warning") return { progress: ragProgressRatio(rag) ?? 0 };
+	      if (kind === "error") return { progress: ragProgressRatio(rag) ?? 1 };
+	      return { progress: 0 };
+	    }
+
+	    function ragProgressRatio(rag) {
+	      if (!rag || !rag.chunks) return undefined;
+	      return clamp01(Number(rag.embeddedChunks || rag.indexedChunkCount || 0) / Number(rag.chunks));
+	    }
+
+	    function ragChunkProgressLabel(rag) {
+	      if (!rag || !rag.chunks) return "";
+	      return ": " + formatCount(rag.embeddedChunks || rag.indexedChunkCount || 0) + "/" + formatCount(rag.chunks) + " chunks";
+	    }
+
+	    function permissionMode() {
+      return (state.permissions && state.permissions.mode) || "ask";
     }
 
-    function permissionMode() {
-      return (state.permissions && state.permissions.mode) || "ask";
+    function toolsEnabled() {
+      return Boolean(state.tools && state.tools.enabled);
     }
 
     function permissionModeLabel(mode) {
@@ -4379,15 +4937,17 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
 
     function composerPermissionStatus() {
       const mode = permissionMode();
-      const label = permissionModeLabel(mode);
-      const kind = mode === "full-access" ? "full-access" : mode === "auto" ? "auto" : "ask";
+      const enabled = toolsEnabled();
+      const label = enabled ? permissionModeLabel(mode) : "工具关闭";
+      const kind = enabled ? (mode === "full-access" ? "full-access" : mode === "auto" ? "auto" : "ask") : "tools-off";
+      const detail = enabled ? permissionModeDetail(mode) : "模型工具调用已关闭；权限模式暂不生效。";
       return {
         text: label,
-        title: label + ": " + permissionModeDetail(mode),
-        className: "composerStatusPill permissionTrigger oc-chip oc-liquid-chip permission " + kind,
+        title: label + ": " + detail,
+        className: "composerStatusPill permissionTrigger oc-chip oc-liquid-chip permission " + kind + (enabled ? "" : " is-empty"),
         popover: "permission",
-        ariaLabel: "Permission mode: " + label,
-        icon: mode === "full-access" ? STATUS_ICONS.shieldAlert : STATUS_ICONS.shieldCheck,
+        ariaLabel: enabled ? "模型工具调用：已开启。权限模式：" + label : "模型工具调用：已关闭。权限模式暂不生效。",
+        icon: enabled ? (mode === "full-access" ? STATUS_ICONS.shieldAlert : STATUS_ICONS.shieldCheck) : STATUS_ICONS.toolsOff,
         showText: true,
       };
     }
@@ -4646,10 +5206,10 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       return count + " " + label + (count === 1 ? "" : "s");
     }
 
-    function renderIndexStatusPopover(root) {
-      const graph = state.codeGraph || { state: "disabled", detail: "Local code graph is disabled.", indexedFiles: 0, indexedFunctions: 0, indexedMacros: 0, truncated: false };
-      const stateName = graph.state || "disabled";
-      let view = codeGraphView(graph, stateName);
+	    function renderIndexStatusPopover(root) {
+	      const graph = state.codeGraph || { state: "disabled", detail: "Local code graph is disabled.", indexedFiles: 0, indexedFunctions: 0, indexedMacros: 0, truncated: false };
+	      const stateName = graph.state || "disabled";
+	      let view = codeGraphView(graph, stateName);
       if (state.codeGraphWaitDetail) {
         view = {
           ...view,
@@ -4669,20 +5229,86 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
         button.disabled = Boolean(action.disabled);
         if (action.message) button.setAttribute("data-code-graph-action", action.message);
         actions.appendChild(button);
-      }
-      if (actions.childElementCount) root.appendChild(actions);
-    }
+	      }
+	      if (actions.childElementCount) root.appendChild(actions);
+	    }
 
-    function renderPermissionStatusPopover(root) {
+	    function renderRagStatusPopover(root) {
+	      const rag = state.codeGraph && state.codeGraph.rag;
+	      const view = ragStatusView(rag);
+	      const detail = codeGraphRagMeta(rag) || "RAG not configured. Configure embedding settings to build vector evidence.";
+	      appendStatusPopoverHeader(root, view.label, detail);
+	      const progress = ragProgressRatio(rag);
+	      if (progress !== undefined) {
+	        appendStatusRow(root, "Progress " + formatRingProgress(progress) + " · " + formatCount(rag.embeddedChunks || rag.indexedChunkCount || 0) + "/" + formatCount(rag.chunks || 0) + " chunks");
+	      } else if (view.kind === "indexing") {
+	        appendStatusRow(root, "Progress waiting for chunk totals.");
+	      }
+	      const actions = [
+	        ...ragControlActions(rag),
+	        { label: "Settings", title: "Open RAG settings", settings: true },
+	      ];
+	      const actionRoot = document.createElement("div");
+	      actionRoot.className = "statusPopoverActions";
+	      for (const action of actions) {
+	        const button = document.createElement("button");
+	        button.className = "statusActionButton" + (action.settings ? " primary" : "");
+	        button.type = "button";
+	        button.textContent = action.label;
+	        button.title = action.title || action.label;
+	        button.disabled = Boolean(action.disabled);
+	        if (action.message) button.setAttribute("data-code-graph-action", action.message);
+	        if (action.settings) button.setAttribute("data-open-rag-settings", "true");
+	        actionRoot.appendChild(button);
+	      }
+	      if (actionRoot.childElementCount) root.appendChild(actionRoot);
+	    }
+
+	    function renderPermissionStatusPopover(root) {
       const current = permissionMode();
-      appendStatusPopoverHeader(root, permissionModeLabel(current), permissionModeDetail(current));
+      const enabled = toolsEnabled();
+      appendStatusPopoverHeader(root, enabled ? permissionModeLabel(current) : "工具关闭", enabled ? permissionModeDetail(current) : "模型工具调用已关闭，权限模式暂不生效。");
+      const toggle = document.createElement("button");
+      toggle.type = "button";
+      toggle.className = "toolsToggleButton oc-liquid-btn" + (enabled ? " is-on" : "");
+      toggle.setAttribute("data-tools-enabled", enabled ? "false" : "true");
+      toggle.setAttribute("role", "switch");
+      toggle.setAttribute("aria-checked", enabled ? "true" : "false");
+      const toggleIcon = document.createElement("span");
+      toggleIcon.className = "permissionModeIcon";
+      toggleIcon.setAttribute("aria-hidden", "true");
+      toggleIcon.innerHTML = STATUS_ICONS.tool;
+      const toggleCopy = document.createElement("span");
+      toggleCopy.className = "toolsToggleCopy";
+      const toggleTitle = document.createElement("span");
+      toggleTitle.className = "toolsToggleTitle";
+      toggleTitle.textContent = "模型工具调用";
+      const toggleDesc = document.createElement("span");
+      toggleDesc.className = "toolsToggleDesc";
+      toggleDesc.textContent = enabled ? "已开启，工具执行继续受下方权限模式控制。" : "已关闭，不向模型暴露工具 schema。";
+      toggleCopy.append(toggleTitle, toggleDesc);
+      const toggleTrack = document.createElement("span");
+      toggleTrack.className = "toolsToggleTrack";
+      toggleTrack.setAttribute("aria-hidden", "true");
+      const toggleKnob = document.createElement("span");
+      toggleKnob.className = "toolsToggleKnob";
+      toggleTrack.appendChild(toggleKnob);
+      toggle.append(toggleIcon, toggleCopy, toggleTrack);
+      root.appendChild(toggle);
+      if (!enabled) {
+        const note = document.createElement("div");
+        note.className = "permissionModeDisabledNote";
+        note.textContent = "权限模式仅在工具开启时生效。";
+        root.appendChild(note);
+      }
       const list = document.createElement("div");
-      list.className = "permissionModeList";
+      list.className = "permissionModeList" + (enabled ? "" : " is-disabled");
       for (const mode of ["ask", "auto", "full-access"]) {
         const button = document.createElement("button");
         button.type = "button";
         button.className = "permissionModeButton oc-liquid-btn " + mode + (mode === current ? " is-active" : "");
         button.setAttribute("data-permission-mode", mode);
+        button.disabled = !enabled;
         const icon = document.createElement("span");
         icon.className = "permissionModeIcon";
         icon.setAttribute("aria-hidden", "true");
@@ -4701,7 +5327,7 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
         check.setAttribute("aria-hidden", "true");
         check.innerHTML = mode === current ? LIQUID_ICONS.apply : "";
         button.append(icon, copy, check);
-        button.title = permissionModeDetail(mode);
+        button.title = enabled ? permissionModeDetail(mode) : "权限模式仅在工具开启时生效。";
         list.appendChild(button);
       }
       root.appendChild(list);
@@ -4780,10 +5406,27 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
         composerHoverStatusPopover = "";
         return;
       }
-      onCodeGraphAction(event);
-    }
+	      const toolsToggle = target.closest("[data-tools-enabled]");
+	      if (toolsToggle) {
+	        vscode.postMessage({ type: "saveToolsEnabled", enabled: toolsToggle.getAttribute("data-tools-enabled") === "true" });
+	        return;
+	      }
+	      const ragSettings = target.closest("[data-open-rag-settings]");
+	      if (ragSettings) {
+	        openRagSettingsFromPopover();
+	        return;
+	      }
+	      onCodeGraphAction(event);
+	    }
 
-    function renderSessions() {
+	    function openRagSettingsFromPopover() {
+	      activeSettingsSection = "rag";
+	      settingsOpen = true;
+	      closeComposerStatusPopoverState();
+	      render();
+	    }
+
+	    function renderSessions() {
       const root = el("sessionList");
       root.innerHTML = "";
       const sessions = state.sessions || [];
@@ -4802,9 +5445,12 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
         return;
       }
       for (const session of sessions) {
-        const row = document.createElement("button");
+        const row = document.createElement("div");
         row.className = "sessionRow " + (session.id === state.currentSessionID ? "active" : "");
-        row.title = session.title || "Untitled chat";
+        const select = document.createElement("button");
+        select.className = "sessionSelect";
+        select.type = "button";
+        select.title = session.title || "Untitled chat";
         const name = document.createElement("div");
         name.className = "sessionName";
         name.textContent = session.title || "Untitled chat";
@@ -4817,8 +5463,8 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
         const time = document.createElement("div");
         time.className = "sessionTime";
         time.textContent = formatTime(session.updated || session.created);
-        row.append(name, time);
-        row.addEventListener("click", () => {
+        select.append(name, time);
+        select.addEventListener("click", () => {
           vscode.postMessage({ type: "selectSession", sessionID: session.id });
           if (window.innerWidth < 760) {
             historyTouched = true;
@@ -4826,40 +5472,215 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
             renderShell();
           }
         });
+        const deleteButton = document.createElement("button");
+        deleteButton.className = "sessionDelete oc-icon-btn oc-liquid-btn";
+        deleteButton.type = "button";
+        deleteButton.title = "Delete chat history";
+        deleteButton.setAttribute("aria-label", "Delete chat history");
+        deleteButton.innerHTML = LIQUID_ICONS.discard + '<span class="srOnly">Delete chat history</span>';
+        deleteButton.addEventListener("click", () => {
+          vscode.postMessage({ type: "deleteSession", sessionID: session.id });
+        });
+        row.append(select, deleteButton);
         root.appendChild(row);
       }
     }
 
-    function renderMessages() {
-      const root = el("messages");
-      const stick = userNearBottom;
-      const previousScrollTop = root.scrollTop;
-      root.innerHTML = "";
-      const messages = state.messages || [];
-      if (state.loadingMessages && messages.length === 0) {
-        const loading = document.createElement("div");
-        loading.className = "loadingLine";
-        loading.textContent = "Loading messages...";
-        root.appendChild(loading);
-      } else if (messages.length === 0) {
-        root.appendChild(emptyState());
-      } else {
-        for (let index = 0; index < messages.length; index += 1) root.appendChild(messageNode(messages[index], index));
-      }
-      if (state.sending && !hasAssistantContentAfterLastUser(messages)) root.appendChild(thinkingNode());
-      requestAnimationFrame(() => {
-        if (stick) {
-          root.scrollTop = root.scrollHeight;
-          userNearBottom = true;
-          return;
-        }
-        const maxScrollTop = Math.max(0, root.scrollHeight - root.clientHeight);
-        root.scrollTop = Math.min(previousScrollTop, maxScrollTop);
-        userNearBottom = isNearBottom(root);
-      });
-    }
+	    function renderMessages() {
+	      const root = el("messages");
+	      const messages = state.messages || [];
+	      const stick = autoFollowMessages && (userNearBottom || forceNextMessageFollow);
+	      const previousScrollTop = root.scrollTop;
+	      const horizontalScrollState = collectMessageHorizontalScrollState(root);
+	      if (state.loadingMessages && messages.length === 0) {
+	        const loading = document.createElement("div");
+	        loading.className = "loadingLine";
+	        loading.textContent = "Loading messages...";
+	        root.replaceChildren(loading);
+	      } else if (messages.length === 0) {
+	        root.replaceChildren(emptyState());
+	      } else {
+	        const entries = messages.map((item, index) => {
+	          const key = stableMessageKey(item, index);
+	          return {
+	            key,
+	            fingerprint: messageRenderFingerprint(item, index, key),
+	            build: () => messageNode(item, index)
+	          };
+	        });
+	        if (state.sending && !hasAssistantContentAfterLastUser(messages)) {
+	          entries.push({ key: "__thinking", fingerprint: "thinking", build: thinkingNode });
+	        }
+	        reconcileMessageNodes(root, entries);
+	      }
+	      restoreMessageHorizontalScrollState(root, horizontalScrollState);
+	      requestAnimationFrame(() => {
+	        if (stick) {
+	          root.scrollTop = root.scrollHeight;
+	          userNearBottom = true;
+	          autoFollowMessages = true;
+	          forceNextMessageFollow = false;
+	          lastMessagesScrollTop = root.scrollTop;
+	          renderJumpLatest();
+	          return;
+	        }
+	        const maxScrollTop = Math.max(0, root.scrollHeight - root.clientHeight);
+	        root.scrollTop = Math.min(previousScrollTop, maxScrollTop);
+	        userNearBottom = isNearBottom(root);
+	        if (userNearBottom) autoFollowMessages = true;
+	        forceNextMessageFollow = false;
+	        lastMessagesScrollTop = root.scrollTop;
+	        renderJumpLatest();
+	      });
+	    }
 
-    function hasAssistantContentAfterLastUser(messages) {
+	    function reconcileMessageNodes(root, entries) {
+	      const reusable = new Map();
+	      for (const child of Array.from(root.children)) {
+	        const key = child.getAttribute("data-message-key");
+	        if (key) reusable.set(key, child);
+	      }
+	      const nextNodes = entries.map((entry) => {
+	        const node = reusable.get(entry.key);
+	        if (node && node.getAttribute("data-message-fingerprint") === entry.fingerprint) return node;
+	        return entry.build();
+	      });
+	      let cursor = root.firstChild;
+	      for (const node of nextNodes) {
+	        if (node === cursor) {
+	          cursor = cursor.nextSibling;
+	          continue;
+	        }
+	        root.insertBefore(node, cursor);
+	      }
+	      while (cursor) {
+	        const next = cursor.nextSibling;
+	        root.removeChild(cursor);
+	        cursor = next;
+	      }
+	    }
+
+	    function collectMessageHorizontalScrollState(root) {
+	      const scrollState = new Map();
+	      for (const card of Array.from(root.querySelectorAll(".messageCard[data-message-key]"))) {
+	        const key = card.getAttribute("data-message-key");
+	        if (!key) continue;
+	        const stateForMessage = {
+	          outlineScrollLeft: Array.from(card.querySelectorAll(".messageOutline")).map((node) => node.scrollLeft),
+	          codeScrollLeft: Array.from(card.querySelectorAll(".codeBlock pre")).map((node) => node.scrollLeft),
+	          diagramScrollLeft: Array.from(card.querySelectorAll(".diagramCanvas, .diagramSource")).map((node) => node.scrollLeft),
+	          tableScrollLeft: Array.from(card.querySelectorAll(".tableScroll")).map((node) => node.scrollLeft),
+	          tableRawScrollLeft: Array.from(card.querySelectorAll(".tableRaw")).map((node) => node.scrollLeft)
+	        };
+	        if (
+	          stateForMessage.outlineScrollLeft.some(Boolean) ||
+	          stateForMessage.codeScrollLeft.some(Boolean) ||
+	          stateForMessage.diagramScrollLeft.some(Boolean) ||
+	          stateForMessage.tableScrollLeft.some(Boolean) ||
+	          stateForMessage.tableRawScrollLeft.some(Boolean)
+	        ) {
+	          scrollState.set(key, stateForMessage);
+	        }
+	      }
+	      return scrollState;
+	    }
+
+	    function restoreMessageHorizontalScrollState(root, scrollState) {
+	      for (const card of Array.from(root.querySelectorAll(".messageCard[data-message-key]"))) {
+	        const key = card.getAttribute("data-message-key");
+	        if (!key) continue;
+	        const saved = scrollState.get(key);
+	        restoreNestedScrollList(card.querySelectorAll(".messageOutline"), saved && saved.outlineScrollLeft, "scrollLeft");
+	        restoreNestedScrollList(card.querySelectorAll(".codeBlock pre"), saved && saved.codeScrollLeft, "scrollLeft");
+	        restoreNestedScrollList(card.querySelectorAll(".diagramCanvas, .diagramSource"), saved && saved.diagramScrollLeft, "scrollLeft");
+	        restoreNestedScrollList(card.querySelectorAll(".tableScroll"), saved && saved.tableScrollLeft, "scrollLeft");
+	        restoreNestedScrollList(card.querySelectorAll(".tableRaw"), saved && saved.tableRawScrollLeft, "scrollLeft");
+	      }
+	    }
+
+	    function restoreNestedScrollList(nodes, values, property) {
+	      if (!values) return;
+	      Array.from(nodes).forEach((node, index) => {
+	        const value = values[index] || 0;
+	        if (value > 0) node[property] = value;
+	      });
+	    }
+
+	    function handleMessagesScroll(root) {
+	      const nextNearBottom = isNearBottom(root);
+	      const movedUp = root.scrollTop < lastMessagesScrollTop - 1;
+	      userNearBottom = nextNearBottom;
+	      if (nextNearBottom) {
+	        autoFollowMessages = true;
+	      } else if (movedUp) {
+	        autoFollowMessages = false;
+	      }
+	      lastMessagesScrollTop = root.scrollTop;
+	      renderJumpLatest();
+	    }
+
+	    function redirectNestedVerticalWheel(event, root) {
+	      const nested = nestedMessageScroller(event.target);
+	      if (!nested) return false;
+	      if (!isPlainVerticalWheel(event)) {
+	        pauseAutoFollowForUser();
+	        return false;
+	      }
+	      if (event.deltaY < 0) pauseAutoFollowForUser();
+	      event.preventDefault();
+	      root.scrollTop += event.deltaY;
+	      handleMessagesScroll(root);
+	      return true;
+	    }
+
+	    function isPlainVerticalWheel(event) {
+	      if (event.shiftKey) return false;
+	      return Math.abs(event.deltaY) > Math.abs(event.deltaX);
+	    }
+
+	    function pauseAutoFollowForUser() {
+	      if (!autoFollowMessages) return;
+	      autoFollowMessages = false;
+	      renderJumpLatest();
+	    }
+
+	    function enableAutoFollowMessages() {
+	      autoFollowMessages = true;
+	      userNearBottom = true;
+	      forceNextMessageFollow = true;
+	      renderJumpLatest();
+	    }
+
+	    function jumpToLatestMessage() {
+	      const root = el("messages");
+	      enableAutoFollowMessages();
+	      root.scrollTop = root.scrollHeight;
+	      lastMessagesScrollTop = root.scrollTop;
+	      renderJumpLatest();
+	    }
+
+	    function renderJumpLatest() {
+	      const button = el("jumpLatest");
+	      const visible = Boolean(!autoFollowMessages && !userNearBottom && messageHasAnyContent(state.messages || []));
+	      button.classList.toggle("visible", visible);
+	      button.setAttribute("aria-hidden", visible ? "false" : "true");
+	      button.tabIndex = visible ? 0 : -1;
+	    }
+
+	    function messageHasAnyContent(messages) {
+	      return messages.some((item) => messageHasContent(item));
+	    }
+
+	    function isNestedMessageScroller(target) {
+	      return Boolean(nestedMessageScroller(target));
+	    }
+
+	    function nestedMessageScroller(target) {
+	      const node = target && target.nodeType === 1 ? target : target && target.parentElement;
+	      return node ? node.closest(".codeBlock pre, .diagramCanvas, .diagramSource, .tableScroll, .tableRaw, .messageOutline, .toolCard pre") : null;
+	    }
+
+	    function hasAssistantContentAfterLastUser(messages) {
       let hasAssistantContent = false;
       for (let index = messages.length - 1; index >= 0; index -= 1) {
         const item = messages[index];
@@ -4926,14 +5747,16 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       return node;
     }
 
-    function messageNode(item, index) {
-      const messageKey = stableMessageKey(item, index);
-      const bodyId = "message-body-" + domSafeId(messageKey);
-      const node = document.createElement("article");
-      node.className = "timelineItem " + (item.role || "message");
-      const avatar = document.createElement("div");
+	    function messageNode(item, index) {
+	      const messageKey = stableMessageKey(item, index);
+	      const bodyId = "message-body-" + domSafeId(messageKey);
+	      const node = document.createElement("article");
+	      node.className = "timelineItem " + (item.role || "message");
+	      node.setAttribute("data-message-key", messageKey);
+	      node.setAttribute("data-message-fingerprint", messageRenderFingerprint(item, index, messageKey));
+	      const avatar = document.createElement("div");
       avatar.className = "avatar";
-      avatar.textContent = avatarText(item.role);
+      setAvatarContent(avatar, item.role);
       const card = document.createElement("div");
       card.setAttribute("data-message-key", messageKey);
       const meta = document.createElement("div");
@@ -4956,38 +5779,42 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       const body = document.createElement("div");
       body.className = "messageBody";
       body.id = bodyId;
-      if (item.text) renderMarkdownInto(body, item.text);
-      renderPartCards(body, item);
-      const structureTargets = messageStructureTargets(body);
-      const isLarge = isLargeMessage(item, body, structureTargets);
-      const isCollapsed = collapsedMessages.has(messageKey);
-      const isExpandedLong = expandedLongMessages.has(messageKey);
-      card.className = "messageCard"
-        + (isCollapsed ? " messageCollapsed" : "")
-        + (isLarge ? " longAnswer" : "")
-        + (isLarge && isExpandedLong ? " longExpanded" : "");
-      const actions = messageActions(item, messageKey, bodyId, {
-        hasStructureTargets: structureTargets.length > 0,
-        isCollapsed,
-        isLarge,
-        isExpandedLong
-      });
+	      if (item.text) renderMarkdownInto(body, item.text);
+	      renderPartCards(body, item);
+	      const structureTargets = messageStructureTargets(body);
+	      const isCollapsed = collapsedMessages.has(messageKey);
+	      card.className = "messageCard"
+	        + (isCollapsed ? " messageCollapsed" : "");
+	      const actions = messageActions(item, messageKey, bodyId, {
+	        hasStructureTargets: structureTargets.length > 0,
+	        isCollapsed
+	      });
       if (actions.childElementCount) stats.appendChild(actions);
       stats.appendChild(time);
       meta.append(role, stats);
       card.appendChild(meta);
-      const outline = messageOutline(body, messageKey);
-      if (outline) card.appendChild(outline);
-      card.appendChild(body);
-      if (isLarge) {
-        const hint = document.createElement("div");
-        hint.className = "messageLongHint";
-        hint.textContent = "Long answer limited for performance. Use Full to expand.";
-        card.appendChild(hint);
-      }
-      node.append(avatar, card);
-      return node;
-    }
+	      const outline = messageOutline(body, messageKey);
+	      if (outline) card.appendChild(outline);
+	      card.appendChild(body);
+	      node.append(avatar, card);
+	      return node;
+	    }
+
+	    function messageRenderFingerprint(item, index, messageKey) {
+	      const payload = {
+	        role: item.role || "message",
+	        text: item.text || "",
+	        parts: item.parts || [],
+	        usage: item.usage || null,
+	        timeCreated: item.timeCreated || "",
+	        collapsed: collapsedMessages.has(messageKey || stableMessageKey(item, index))
+	      };
+	      try {
+	        return JSON.stringify(payload);
+	      } catch {
+	        return String(payload.role) + ":" + String(payload.text).length + ":" + String(payload.timeCreated);
+	      }
+	    }
 
     function stableMessageKey(item, index) {
       return String(item.id || ((item.role || "message") + "-" + (item.timeCreated || index) + "-" + index));
@@ -5008,16 +5835,9 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
         actions.appendChild(messageActionButton("MD", markdownTitle, "copyMarkdown", (button) => copyTextWithFeedback(item.text, button, "Copied Markdown.")));
       }
       if (options.hasStructureTargets) {
-        actions.appendChild(messageActionButton("Jump", "Jump to next code or table block", "jumpStructure", () => scrollToNextMessageStructure(messageKey)));
+        actions.appendChild(messageActionButton("Jump", "Jump to next code, diagram, or table block", "jumpStructure", () => scrollToNextMessageStructure(messageKey)));
       }
-      if (options.isLarge) {
-        const label = options.isExpandedLong ? "Limit" : "Full";
-        const title = options.isExpandedLong ? "Restore large answer limit" : "Expand full long answer";
-        const expandLong = messageActionButton(label, title, "expandLong", () => toggleLongMessage(messageKey));
-        expandLong.setAttribute("aria-pressed", options.isExpandedLong ? "true" : "false");
-        actions.appendChild(expandLong);
-      }
-      const collapse = messageActionButton(options.isCollapsed ? "Expand" : "Collapse", options.isCollapsed ? "Expand answer" : "Collapse answer", "collapseMessage", () => toggleMessageCollapse(messageKey));
+	      const collapse = messageActionButton(options.isCollapsed ? "Expand" : "Collapse", options.isCollapsed ? "Expand answer" : "Collapse answer", "collapseMessage", () => toggleMessageCollapse(messageKey));
       collapse.setAttribute("aria-expanded", options.isCollapsed ? "false" : "true");
       collapse.setAttribute("aria-controls", bodyId);
       actions.appendChild(collapse);
@@ -5037,13 +5857,12 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
 	      return button;
 	    }
 
-      function messageActionIcon(className, label) {
-        if (className === "copyAnswer" || className === "copyMarkdown") return "copy";
-        if (className === "jumpStructure") return "references";
-        if (className === "expandLong") return label === "Limit" ? "stop" : "more";
-        if (className === "collapseMessage") return label === "Expand" ? "add" : "discard";
-        return "more";
-      }
+	    function messageActionIcon(className, label) {
+	      if (className === "copyAnswer" || className === "copyMarkdown") return "copy";
+	      if (className === "jumpStructure") return "references";
+	      if (className === "collapseMessage") return label === "Expand" ? "add" : "discard";
+	      return "more";
+	    }
 
     function toggleMessageCollapse(messageKey) {
       if (collapsedMessages.has(messageKey)) collapsedMessages.delete(messageKey);
@@ -5051,39 +5870,28 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       renderMessages();
     }
 
-    function toggleLongMessage(messageKey) {
-      if (expandedLongMessages.has(messageKey)) expandedLongMessages.delete(messageKey);
-      else expandedLongMessages.add(messageKey);
-      renderMessages();
-    }
-
-    function messageStructureTargets(root) {
-      return Array.from(root.querySelectorAll(".codeBlock, .tableBlock"));
-    }
-
-    function isLargeMessage(item, body, structureTargets) {
-      if (item.role !== "assistant" && item.role !== "tool") return false;
-      const textLength = String(item.text || "").length;
-      const blockCount = body.children.length;
-      return textLength > 5200 || blockCount > 18 || structureTargets.length > 5;
-    }
+	    function messageStructureTargets(root) {
+	      return Array.from(root.querySelectorAll(".codeBlock, .diagramBlock, .tableBlock"));
+	    }
 
     function messageOutline(body, messageKey) {
       const headings = Array.from(body.querySelectorAll(".mdHeading"));
       const codeBlocks = Array.from(body.querySelectorAll(".codeBlock"));
+      const diagrams = Array.from(body.querySelectorAll(".diagramBlock"));
       const tables = Array.from(body.querySelectorAll(".tableBlock"));
-      const totalStructures = headings.length + codeBlocks.length + tables.length;
-      if (totalStructures < 3 && headings.length < 2 && (codeBlocks.length + tables.length) < 2) return undefined;
+      const totalStructures = headings.length + codeBlocks.length + diagrams.length + tables.length;
+      if (totalStructures < 3 && headings.length < 2 && (codeBlocks.length + diagrams.length + tables.length) < 2) return undefined;
       const outline = document.createElement("nav");
       outline.className = "messageOutline";
       outline.setAttribute("aria-label", "Answer outline");
       const summary = document.createElement("span");
       summary.className = "messageOutlineSummary";
-      summary.textContent = headings.length + " sections / " + codeBlocks.length + " code / " + tables.length + " table";
+      summary.textContent = headings.length + " sections / " + codeBlocks.length + " code / " + diagrams.length + " diagram / " + tables.length + " table";
       outline.appendChild(summary);
       const targets = [];
       for (const heading of headings) targets.push({ label: compactLabel(heading.textContent || "Section"), target: heading });
       for (let index = 0; index < codeBlocks.length; index += 1) targets.push({ label: "Code " + (index + 1), target: codeBlocks[index] });
+      for (let index = 0; index < diagrams.length; index += 1) targets.push({ label: "Diagram " + (index + 1), target: diagrams[index] });
       for (let index = 0; index < tables.length; index += 1) targets.push({ label: "Table " + (index + 1), target: tables[index] });
       for (const item of targets.slice(0, 8)) {
         const button = document.createElement("button");
@@ -5118,13 +5926,29 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       scrollToMessageTarget(targets[next]);
     }
 
-    function scrollToMessageTarget(target) {
-      target.scrollIntoView({ block: "nearest", inline: "nearest", behavior: "smooth" });
-      target.classList.add("structureFlash");
-      if (!target.hasAttribute("tabindex")) target.setAttribute("tabindex", "-1");
-      target.focus({ preventScroll: true });
-      window.setTimeout(() => target.classList.remove("structureFlash"), 900);
-    }
+	    function scrollToMessageTarget(target) {
+	      pauseAutoFollowForUser();
+	      scrollTargetWithinContainer(target, el("messages"));
+	      target.classList.add("structureFlash");
+	      if (!target.hasAttribute("tabindex")) target.setAttribute("tabindex", "-1");
+	      target.focus({ preventScroll: true });
+	      window.setTimeout(() => target.classList.remove("structureFlash"), 900);
+	    }
+
+	    function scrollTargetWithinContainer(target, container) {
+	      const targetRect = target.getBoundingClientRect();
+	      const containerRect = container.getBoundingClientRect();
+	      let nextTop = container.scrollTop;
+	      if (targetRect.top < containerRect.top) {
+	        nextTop += targetRect.top - containerRect.top - 8;
+	      } else if (targetRect.bottom > containerRect.bottom) {
+	        nextTop += targetRect.bottom - containerRect.bottom + 8;
+	      }
+	      const maxTop = Math.max(0, container.scrollHeight - container.clientHeight);
+	      const top = Math.max(0, Math.min(nextTop, maxTop));
+	      if (typeof container.scrollTo === "function") container.scrollTo({ top, behavior: "smooth" });
+	      else container.scrollTop = top;
+	    }
 
     function markdownToPlainText(text) {
       return String(text || "")
@@ -5138,12 +5962,14 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
         .trim();
     }
 
-    function thinkingNode() {
-      const node = document.createElement("article");
-      node.className = "timelineItem assistant thinking";
-      const avatar = document.createElement("div");
+	    function thinkingNode() {
+	      const node = document.createElement("article");
+	      node.className = "timelineItem assistant thinking";
+	      node.setAttribute("data-message-key", "__thinking");
+	      node.setAttribute("data-message-fingerprint", "thinking");
+	      const avatar = document.createElement("div");
       avatar.className = "avatar";
-      avatar.textContent = "CM";
+      setAvatarContent(avatar, "assistant");
       const card = document.createElement("div");
       card.className = "messageCard";
       const meta = document.createElement("div");
@@ -5164,23 +5990,104 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
 
     function renderPartCards(root, item) {
       const parts = item.parts || [];
-      for (const part of parts) {
-        if (part.type !== "tool" && part.type !== "serverToolWarning" && part.type !== "reasoning") continue;
-        const details = document.createElement("details");
-        details.className = "toolCard"
-          + (part.type === "serverToolWarning" ? " serverWarning" : "")
-          + (part.type === "reasoning" ? " reasoning" : "");
-        const summary = document.createElement("summary");
-        summary.textContent = part.type === "reasoning"
-          ? "Thinking"
-          : part.type === "serverToolWarning"
-            ? "Warning: workspace filesystem tool used"
-            : "Tool: " + (part.title || "tool") + (part.status ? " - " + part.status : "");
-        const body = document.createElement("pre");
-        body.textContent = part.detail || part.text || "";
-        details.append(summary, body);
-        root.appendChild(details);
+      const reasoningParts = parts.filter((part) => part.type === "reasoning");
+      const toolParts = parts.filter((part) => part.type === "tool");
+      const warningParts = parts.filter((part) => part.type === "serverToolWarning");
+      for (const part of reasoningParts) {
+        root.appendChild(partCard(part, "Thinking", "reasoning"));
       }
+      if (toolParts.length > 0) {
+        root.appendChild(toolGroupCard(toolParts));
+      }
+      for (const part of warningParts) {
+        root.appendChild(partCard(part, "Warning: workspace filesystem tool used", "serverWarning"));
+      }
+    }
+
+    function partCard(part, summaryText, className) {
+      const details = document.createElement("details");
+      details.className = "toolCard"
+        + (className ? " " + className : "")
+        + (part.status === "running" ? " is-running" : "");
+      const summary = document.createElement("summary");
+      appendPartSummary(summary, part, summaryText, className);
+      const body = document.createElement("pre");
+      body.textContent = part.detail || part.text || "";
+      details.append(summary, body);
+      return details;
+    }
+
+    function appendPartSummary(summary, part, summaryText, className) {
+      if (className !== "reasoning" || part.status !== "running") {
+        summary.textContent = summaryText;
+        return;
+      }
+      const label = document.createElement("span");
+      label.className = "reasoningSummaryLabel";
+      label.textContent = "Thinking...";
+      summary.appendChild(label);
+      if (part.preview) {
+        const preview = document.createElement("span");
+        preview.className = "reasoningPreview";
+        preview.textContent = part.preview;
+        preview.title = part.preview;
+        summary.appendChild(preview);
+      }
+      const dots = document.createElement("span");
+      dots.className = "dots";
+      dots.setAttribute("aria-hidden", "true");
+      dots.append(document.createElement("span"), document.createElement("span"), document.createElement("span"));
+      summary.appendChild(dots);
+    }
+
+    function toolGroupCard(parts) {
+      const details = document.createElement("details");
+      details.className = "toolCard toolGroup";
+      const summary = document.createElement("summary");
+      summary.textContent = toolGroupSummary(parts);
+      const body = document.createElement("pre");
+      body.textContent = toolGroupDetail(parts);
+      details.append(summary, body);
+      return details;
+    }
+
+    function toolGroupSummary(parts) {
+      if (parts.length === 1) return toolSummaryLabel(parts[0]);
+      const names = toolNameCounts(parts).map((item) => item.name + " x" + item.count).join(", ");
+      const status = toolStatusSummary(parts);
+      return "Tools: " + parts.length + " calls" + (names ? " · " + names : "") + (status ? " · " + status : "");
+    }
+
+    function toolNameCounts(parts) {
+      const counts = new Map();
+      for (const part of parts) {
+        const name = part.title || "tool";
+        counts.set(name, (counts.get(name) || 0) + 1);
+      }
+      return Array.from(counts.entries()).map(([name, count]) => ({ name, count }));
+    }
+
+    function toolStatusSummary(parts) {
+      const counts = new Map();
+      for (const part of parts) {
+        const status = part.status || "called";
+        counts.set(status, (counts.get(status) || 0) + 1);
+      }
+      const items = Array.from(counts.entries());
+      if (items.length === 0) return "";
+      if (items.length === 1) return items[0][0];
+      return items.map(([status, count]) => status + " x" + count).join(", ");
+    }
+
+    function toolGroupDetail(parts) {
+      return parts.map((part, index) => {
+        const detail = part.detail || part.text || "";
+        return String(index + 1) + ". " + toolSummaryLabel(part) + (detail ? "\\n" + detail : "");
+      }).join("\\n\\n");
+    }
+
+    function toolSummaryLabel(part) {
+      return "Tool: " + (part.title || "tool") + (part.status ? " - " + part.status : "");
     }
 
     function renderMarkdownInto(root, text) {
@@ -5200,6 +6107,13 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
         codeLines = [];
         language = "";
       };
+      const flushPendingCode = () => {
+        root.appendChild(isMermaidLanguage(language)
+          ? pendingMermaidSourceBlock(language, codeLines.join("\\n"))
+          : codeBlock(language, codeLines.join("\\n")));
+        codeLines = [];
+        language = "";
+      };
       for (const line of lines) {
         if (line.startsWith("\`\`\`")) {
           if (inCode) {
@@ -5215,7 +6129,7 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
         if (inCode) codeLines.push(line);
         else textLines.push(line);
       }
-      if (inCode) flushCode();
+      if (inCode) flushPendingCode();
       flushText();
     }
 
@@ -5731,7 +6645,21 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       return -1;
     }
 
+    function isMermaidLanguage(language) {
+      const value = String(language || "").trim().toLowerCase().split(/\\s+/)[0];
+      return value === "mermaid" || value === "mmd";
+    }
+
     function codeBlock(language, codeText) {
+      if (isMermaidLanguage(language)) return diagramBlock(language, codeText);
+      return sourceCodeBlock(language, codeText);
+    }
+
+    function pendingMermaidSourceBlock(language, codeText) {
+      return sourceCodeBlock((language || "mermaid") + " source pending", codeText);
+    }
+
+    function sourceCodeBlock(language, codeText) {
       const block = document.createElement("div");
       block.className = "codeBlock";
       const head = document.createElement("div");
@@ -5751,6 +6679,125 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       pre.appendChild(code);
       block.append(head, pre);
       return block;
+    }
+
+    function diagramBlock(language, codeText) {
+      const block = document.createElement("section");
+      block.className = "diagramBlock";
+      block.setAttribute("role", "region");
+      block.setAttribute("aria-label", "Mermaid diagram");
+      block.setAttribute("data-diagram-kind", "mermaid");
+      block.setAttribute("tabindex", "-1");
+      const head = document.createElement("div");
+      head.className = "codeHead";
+      const label = document.createElement("span");
+      label.className = "codeLanguage";
+      label.textContent = language || "mermaid";
+      const actions = document.createElement("span");
+      actions.className = "diagramActions";
+      const source = document.createElement("button");
+      source.className = "toggleDiagramSource oc-icon-btn oc-liquid-btn";
+      source.type = "button";
+      source.setAttribute("aria-pressed", "false");
+      setIconOnlyButton(source, "references", "Show Mermaid source");
+      const copy = document.createElement("button");
+      copy.className = "copyCode oc-icon-btn oc-liquid-btn";
+      copy.type = "button";
+      setIconOnlyButton(copy, "copy", "Copy Mermaid source");
+      copy.addEventListener("click", () => copyCode(codeText, copy));
+      actions.append(source, copy);
+      head.append(label, actions);
+      const canvas = document.createElement("div");
+      canvas.className = "diagramCanvas";
+      canvas.appendChild(diagramStatus("Rendering Mermaid diagram...", false));
+      const sourcePre = document.createElement("pre");
+      sourcePre.className = "diagramSource";
+      const sourceCode = document.createElement("code");
+      sourceCode.textContent = codeText;
+      sourcePre.appendChild(sourceCode);
+      source.addEventListener("click", () => {
+        const visible = !block.classList.contains("show-source");
+        block.classList.toggle("show-source", visible);
+        source.setAttribute("aria-pressed", visible ? "true" : "false");
+        setIconOnlyButton(source, visible ? "discard" : "references", visible ? "Hide Mermaid source" : "Show Mermaid source");
+      });
+      block.append(head, canvas, sourcePre);
+      renderMermaidDiagram(block, canvas, codeText);
+      return block;
+    }
+
+    function diagramStatus(text, isError) {
+      const status = document.createElement("div");
+      status.className = "diagramStatus" + (isError ? " error" : "");
+      status.textContent = text;
+      return status;
+    }
+
+    async function renderMermaidDiagram(block, canvas, codeText) {
+      const source = String(codeText || "");
+      if (!source.trim()) {
+        renderMermaidFallback(block, canvas, "Empty Mermaid diagram.");
+        return;
+      }
+      if (textByteLength(source) > MERMAID_MAX_SOURCE_BYTES) {
+        renderMermaidFallback(block, canvas, "Mermaid source is too large to render. Source view is available.");
+        return;
+      }
+      const mermaid = initializeMermaid();
+      if (!mermaid) {
+        renderMermaidFallback(block, canvas, "Mermaid renderer is not available. Source view is available.");
+        return;
+      }
+      const renderId = "chipmate-mermaid-" + (++mermaidRenderSerial);
+      try {
+        const result = await mermaid.render(renderId, source);
+        if (!canvas.isConnected) return;
+        canvas.innerHTML = result && result.svg ? result.svg : "";
+        if (!canvas.firstChild) canvas.appendChild(diagramStatus("Mermaid produced an empty diagram.", true));
+      } catch (error) {
+        renderMermaidFallback(block, canvas, "Mermaid render failed: " + diagramErrorMessage(error));
+      }
+    }
+
+    function initializeMermaid() {
+      const mermaid = globalThis.mermaid;
+      if (!mermaid || typeof mermaid.initialize !== "function" || typeof mermaid.render !== "function") return undefined;
+      if (!mermaidInitialized) {
+        mermaid.initialize({
+          startOnLoad: false,
+          securityLevel: "strict",
+          theme: mermaidTheme(),
+          htmlLabels: false,
+          flowchart: { htmlLabels: false }
+        });
+        mermaidInitialized = true;
+      }
+      return mermaid;
+    }
+
+    function mermaidTheme() {
+      const root = document.documentElement;
+      const body = document.body;
+      return root.classList.contains("vscode-dark") || body.classList.contains("vscode-dark") ? "dark" : "default";
+    }
+
+    function renderMermaidFallback(block, canvas, message) {
+      if (!canvas.isConnected) return;
+      canvas.replaceChildren(diagramStatus(message, true));
+      block.classList.add("show-source");
+    }
+
+    function diagramErrorMessage(error) {
+      const message = error instanceof Error ? error.message : String(error || "Unknown error");
+      return message.replace(/\\s+/g, " ").trim().slice(0, 220) || "Unknown error";
+    }
+
+    function textByteLength(value) {
+      try {
+        return new TextEncoder().encode(String(value || "")).length;
+      } catch {
+        return String(value || "").length;
+      }
     }
 
     function appendHighlightedCode(root, codeText, language) {
@@ -6961,7 +8008,30 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce()) {
       if (role === "user") return "You";
       if (role === "error") return "!";
       if (role === "tool") return "T";
-      return "CM";
+      return "Message";
+    }
+
+    function setAvatarContent(avatar, role) {
+      if (role === "assistant") {
+        appendBrandAvatar(avatar);
+        return;
+      }
+      avatar.textContent = avatarText(role);
+    }
+
+    function appendBrandAvatar(root) {
+      root.classList.add("brandAvatar");
+      root.setAttribute("aria-hidden", "true");
+      if (BRAND_ICON_URI) {
+        const img = document.createElement("img");
+        img.className = "brandIconImage";
+        img.src = BRAND_ICON_URI;
+        img.alt = "";
+        img.draggable = false;
+        root.appendChild(img);
+        return;
+      }
+      appendLiquidIcon(root, "chip");
     }
 
     function formatTime(value) {

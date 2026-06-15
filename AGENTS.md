@@ -14,6 +14,8 @@
   `ssh://git@ssh.github.com:443/caizh1/opencode.git`。
 - 优先通过 `~/.ssh/config` 将 `Host github.com` 映射到 `ssh.github.com` 的
   `443` 端口，这样普通 `git push origin <branch>` 也会自动走 443。
+- 上面的仓库地址只是当前 Git remote，不代表插件或产品名；
+  用户可见的插件身份应保持为 ChipMate。
 
 ## 项目目标
 
@@ -85,7 +87,7 @@ bun run vsix
 
 This runs the package step first, then creates the `.vsix` artifact.
 
-Before creating a local `.vsix`, check whether an `opencode-remote-*.vsix`
+Before creating a local `.vsix`, check whether a `chipmate-*.vsix`
 artifact already exists in the repository root. If a packaged `.vsix` already
 exists locally, increment the patch version in `package.json` by 1 before
 running `bun run vsix`, so the newly generated package has a fresh version
@@ -93,6 +95,6 @@ number.
 
 After completing any bug fix or behavior change that should be tested in VS
 Code, create a fresh local extension package before handing off the work. Follow
-the same versioning rule above: if an `opencode-remote-*.vsix` already exists,
+the same versioning rule above: if a `chipmate-*.vsix` already exists,
 increment the patch version first, then run `bun run vsix` and report the new
 `.vsix` filename.

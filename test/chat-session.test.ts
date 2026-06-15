@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { CHAT_SESSION_TITLE, isPluginChatMessage, isPluginChatSession } from "../src/chat-session"
+import { CHAT_SESSION_TITLE, extractPluginChatQuestionText, isPluginChatMessage, isPluginChatSession } from "../src/chat-session"
 import type { ChipMateMessage, ChipMatePart, ChipMateSession } from "../src/types"
 
 describe("plugin chat session detection", () => {
@@ -24,6 +24,21 @@ describe("plugin chat session detection", () => {
 
   test("does not treat assistant messages as plugin chat prompts", () => {
     expect(isPluginChatMessage(message("assistant", [{ type: "text", text: "User question:\nExplain this file" }]))).toBe(false)
+  })
+
+  test("extracts the original question from a packed plugin prompt", () => {
+    expect(
+      extractPluginChatQuestionText([
+        "User question:",
+        "继续讲上一个问题",
+        "",
+        "Local workspace context:",
+        "old file context",
+        "",
+        "Local code graph evidence:",
+        "old graph evidence",
+      ].join("\n")),
+    ).toBe("继续讲上一个问题")
   })
 })
 

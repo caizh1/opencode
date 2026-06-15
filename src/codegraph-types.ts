@@ -150,6 +150,51 @@ export type CodeGraphFile = {
   astSummary?: CodeGraphAstSummary
 }
 
+export type CodeGraphStoredFileArrayField =
+  | "includes"
+  | "macros"
+  | "functions"
+  | "types"
+  | "globals"
+  | "callSites"
+  | "initializers"
+  | "errorLabels"
+  | "registerMacroFamilies"
+  | "tokens"
+  | "astSummary.controls"
+
+export type CodeGraphStoredFileBase = Omit<
+  CodeGraphFile,
+  | "includes"
+  | "macros"
+  | "functions"
+  | "types"
+  | "globals"
+  | "callSites"
+  | "initializers"
+  | "errorLabels"
+  | "registerMacroFamilies"
+  | "tokens"
+  | "astSummary"
+> & {
+  astSummary?: Omit<CodeGraphAstSummary, "controls">
+  optionalArrayFields?: CodeGraphStoredFileArrayField[]
+}
+
+export type CodeGraphStoredFilePart =
+  | {
+      kind: "base"
+      path: string
+      file: CodeGraphStoredFileBase
+    }
+  | {
+      kind: "array"
+      path: string
+      field: CodeGraphStoredFileArrayField
+      offset: number
+      items: unknown[]
+    }
+
 export type CodeGraphDirectoryStats = {
   files: number
   functions: number
@@ -216,8 +261,22 @@ export type CodeGraphDerivedIndex = {
   moduleStats: Record<string, CodeGraphModuleStats>
 }
 
+export type CodeGraphDerivedSidecarField = keyof CodeGraphDerivedIndex
+
+export type CodeGraphDerivedSidecarShard = {
+  key: string
+  path: string
+  entries: number
+  estimatedBytes: number
+}
+
+export type CodeGraphDerivedSidecarManifest = {
+  version: 7
+  fields: Record<CodeGraphDerivedSidecarField, CodeGraphDerivedSidecarShard[]>
+}
+
 export type CodeGraphIndex = {
-  version: 1 | 2 | 3 | 4
+  version: 1 | 2 | 3 | 4 | 5 | 6 | 7
   rootPath: string
   rootName: string
   updatedAt: number
@@ -230,30 +289,38 @@ export type CodeGraphIndex = {
 }
 
 export type CodeGraphShardManifest = {
-  version: 2 | 3 | 4
+  version: 7
   rootPath: string
   rootName: string
   updatedAt: number
   truncated: boolean
-  derived: CodeGraphDerivedIndex
+  derived: CodeGraphDerivedSidecarManifest
   stats: CodeGraphIndexStats
   schema?: CodeGraphStorageSchemaManifest
   shards: CodeGraphShardInfo[]
 }
 
-export type CodeGraphShardInfo = {
+export type CodeGraphShardPartInfo = {
   key: string
   path: string
+  entries: number
+  estimatedBytes: number
+}
+
+export type CodeGraphShardInfo = {
+  key: string
   files: number
   functions: number
   macros: number
   bytes: number
+  parts: CodeGraphShardPartInfo[]
 }
 
 export type CodeGraphShardData = {
-  version: 2 | 3 | 4
+  version: 7
   key: string
-  files: Record<string, CodeGraphFile>
+  part: string
+  fileParts: CodeGraphStoredFilePart[]
 }
 
 export type CodeGraphQueryMode = "overview" | "callers" | "callees" | "call-chain" | "impact" | "explain"

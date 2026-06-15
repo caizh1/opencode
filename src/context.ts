@@ -12,7 +12,6 @@ import {
 } from "./completion-context"
 import type { CompletionPlan, RetrievedCompletionSnippet } from "./completion-types"
 import type { ChatContextOptions, RemoteSettings } from "./types"
-import { retrieveRepositoryEvidenceForIntent } from "./repository-evidence"
 
 type FileContext = {
   uri: vscode.Uri
@@ -104,7 +103,7 @@ export async function buildChatPrompt(input: {
     editorContext: input.editorContext,
   }) : undefined
 
-  if (input.settings.context.localOnlyMode) chunks.push(localContextContract())
+  if (input.settings.context.localOnlyMode) chunks.push(localContextContract(input.settings.tools.enabled))
 
   const hasLocalContext = hasUsableFileContext(context.summary) || Boolean(codeGraph?.text) || Boolean(analysisEvidence?.evidencePack.evidence.length)
 
@@ -130,16 +129,12 @@ async function retrieveChatAnalysisEvidence(input: {
 }): Promise<QueryEvidenceResult | undefined> {
   if (!input.codeGraph) return undefined
   const currentFile = input.editorContext?.uri ? relativePath(input.editorContext.uri) : input.relatedPaths[0] ?? ""
-  const shared = await retrieveRepositoryEvidenceForIntent({
-    codeGraph: input.codeGraph,
-    mode: "qa",
-    task: "body-statement",
-    question: input.question,
-    currentFile,
-    maxEvidence: input.settings.analysis.maxEvidenceItems,
-    maxBytes: input.settings.analysis.maxEvidenceBytes,
+  const relatedPaths = [...new Set([currentFile, ...input.relatedPaths].filter(Boolean))]
+  return input.codeGraph.queryEvidence(input.question, {
+    relatedPaths,
+    maxEvidenceItems: input.settings.analysis.maxEvidenceItems,
+    maxEvidenceBytes: input.settings.analysis.maxEvidenceBytes,
   })
-  return shared.retrievalResult ?? input.codeGraph.queryEvidence(input.question)
 }
 
 export async function addActiveFileToContext(store: LocalContextStore) {
@@ -599,15 +594,19 @@ function workspaceInfo() {
   return `<workspace>\n${rows}\n</workspace>`
 }
 
-function localContextContract() {
+function localContextContract(toolsEnabled: boolean) {
   return [
     "Local Context Contract:",
     "The following files are local VS Code context supplied by the extension.",
     "Use only the supplied <file>, <diagnostics>, <git-diff>, and <local-code-graph> evidence blocks when answering questions about local code.",
     "Use the <local-analysis-pack> answer policy, query trace, summaries, state machines, and evidence refs when present.",
     "When local code graph evidence is present, cite paths and line ranges from the evidence; if evidence is insufficient, say what is missing instead of guessing.",
-    "Use ChipMate workspace-host tools only under the active permission mode; do not invent remote server filesystem access.",
-    "If the needed local file content is missing, ask the user to open the file in VS Code or reference it with @file.",
+    toolsEnabled
+      ? "Only the read-only chipmate_read tool is available for workspace evidence; do not request writes, commands, network calls, or remote server filesystem access."
+      : "ChipMate workspace-host tools are disabled for this chat turn; do not request, simulate, or emit tool calls.",
+    toolsEnabled
+      ? "If evidence points to a workspace-relative path but the needed content is missing, use chipmate_read to read that file before asking the user to open or @mention it."
+      : "If evidence points to a workspace-relative path but the needed content is missing, say what is missing and ask the user to open, attach, or @mention the file.",
   ].join("\n")
 }
 

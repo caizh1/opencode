@@ -15,6 +15,7 @@ export type ChatStreamApplyResult = {
   refreshSessions: boolean
   error?: string
   retry?: ChipMateSessionStatus
+  interruption?: ChipMateSessionStatus
 }
 
 export function normalizeChipMateEvent(input: unknown): ChipMateEvent | undefined {
@@ -123,6 +124,7 @@ export function applyChipMateEventToMessages(
         ...result,
         idle: type === "idle",
         retry: type === "retry" ? normalizedStatus : undefined,
+        interruption: type === "error" && status.interrupted === true ? normalizedStatus : undefined,
       }
     }
     case "session.error":

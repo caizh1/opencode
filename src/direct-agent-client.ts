@@ -1,8 +1,9 @@
 import * as vscode from "vscode"
 import { CHIPMATE_LOCAL_AGENT_ID, CHIPMATE_SESSION_TITLE } from "./chipmate-constants"
+import { extractPluginChatQuestionText } from "./chat-session"
 import { chatCompletionsUrl } from "./completion-model-client"
 import { renderSkillsForPrompt, skillSystemCatalog, SkillRegistry } from "./skills"
-import { ToolRuntime } from "./tool-runtime"
+import type { ToolRuntime, ToolRuntimeResult } from "./tool-runtime"
 import type {
   HealthResponse,
   ChipMateAgentInfo,
@@ -51,6 +52,8 @@ type ChatMessage = {
   tool_call_id?: string
   tool_calls?: ChatToolCall[]
 }
+
+type ChatToolDefinition = ReturnType<ToolRuntime["toolDefinitions"]>[number]
 
 const MAX_AGENT_STEPS = 8
 const MAX_STREAM_TOOL_ARGUMENT_BYTES = 128 * 1024
@@ -158,7 +161,10 @@ export class DirectAgentClient {
     const abort = () => controller.abort()
     input.signal?.addEventListener("abort", abort, { once: true })
     void this.runTurn(input.sessionID, input.text, controller.signal)
-      .catch((error) => this.recordSessionError(input.sessionID, error))
+      .catch((error) => {
+        if (controller.signal.aborted || input.signal?.aborted) return
+        return this.recordSessionError(input.sessionID, error)
+      })
       .finally(() => {
         input.signal?.removeEventListener("abort", abort)
         this.activeControllers.delete(input.sessionID)
@@ -170,6 +176,20 @@ export class DirectAgentClient {
     controller?.abort()
     this.statuses.set(sessionID, { type: "idle" })
     this.emit("session.status", { sessionID, status: { type: "idle" } })
+    return true
+  }
+
+  async deleteSession(sessionID: string, signal?: AbortSignal) {
+    signal?.throwIfAborted()
+    const session = (await this.readSessionEvents(sessionID))
+      .find((event): event is Extract<SessionEvent, { type: "session" }> => event.type === "session")
+      ?.session
+    const controller = this.activeControllers.get(sessionID)
+    controller?.abort()
+    this.activeControllers.delete(sessionID)
+    this.statuses.delete(sessionID)
+    await vscode.workspace.fs.delete(await this.sessionUri(sessionID), { useTrash: false })
+    this.emit("session.deleted", { info: session ?? { id: sessionID } })
     return true
   }
 
@@ -188,6 +208,8 @@ export class DirectAgentClient {
   }
 
   private async runTurn(sessionID: string, userText: string, signal?: AbortSignal) {
+    const settings = this.deps.getSettings()
+    const historyMessages = await this.recentChatHistoryMessages(sessionID, settings)
     const userMessage = createMessage(sessionID, "user", userText)
     await this.appendMessage(sessionID, userMessage)
     this.statuses.set(sessionID, { type: "busy" })
@@ -203,15 +225,21 @@ export class DirectAgentClient {
     })
     this.emit("session.status", { sessionID, status: { type: "busy" } })
 
-    const settings = this.deps.getSettings()
     const enabledSkillMetadata = await this.deps.skills.enabledSkills()
     const loadedSkills = (await Promise.all(enabledSkillMetadata.map((skill) => this.deps.skills.loadSkill(skill.id))))
       .filter((skill): skill is NonNullable<typeof skill> => Boolean(skill))
+    const exposedTools = settings.tools.enabled ? this.deps.tools.toolDefinitions() : []
+    const exposedToolNames = toolDefinitionNames(exposedTools)
     const messages: ChatMessage[] = [
       {
         role: "system",
-        content: systemPrompt(settings, skillSystemCatalog(enabledSkillMetadata), renderSkillsForPrompt(loadedSkills)),
+        content: systemPrompt(
+          settings,
+          skillSystemCatalog(enabledSkillMetadata),
+          renderSkillsForPrompt(loadedSkills, { toolsEnabled: settings.tools.enabled, exposedToolNames: [...exposedToolNames] }),
+        ),
       },
+      ...historyMessages,
       { role: "user", content: userText },
     ]
 
@@ -219,57 +247,87 @@ export class DirectAgentClient {
     let assistantText = ""
     let toolCalls: ChatToolCall[] = []
 
-    for (let step = 0; step < MAX_AGENT_STEPS; step += 1) {
-      signal?.throwIfAborted()
-      const result = await this.streamChatCompletion({
-        messages,
-        sessionID,
-        assistant,
-        signal,
-      })
-      assistant = result.assistant
-      assistantText = result.text
-      toolCalls = result.toolCalls
-      if (toolCalls.length === 0) break
-
-      messages.push({
-        role: "assistant",
-        content: assistantText,
-        tool_calls: toolCalls,
-      })
-      for (const call of toolCalls) {
-        const args = parseToolArguments(call.function.arguments)
-        const toolResult = await this.deps.tools.execute({
+    try {
+      for (let step = 0; step < MAX_AGENT_STEPS; step += 1) {
+        signal?.throwIfAborted()
+        const result = await this.streamChatCompletion({
+          messages,
           sessionID,
-          mode: settings.permissions.mode,
-          name: call.function.name,
-          arguments: args,
+          assistant,
+          exposedTools,
           signal,
         })
-        const part = {
-          id: call.id,
-          sessionID,
-          messageID: assistant.info.id,
-          type: "tool",
-          tool: call.function.name,
-          state: {
-            status: toolResult.approved ? "completed" : toolResult.requiresApproval ? "approval-required" : "blocked",
-            input: args,
-            output: toolResult.output,
-            metadata: {
-              risk: toolResult.risk,
-              title: toolResult.title,
+        assistant = result.assistant
+        assistantText = result.text
+        toolCalls = result.toolCalls
+        if (toolCalls.length === 0) break
+        if (!settings.tools.enabled) {
+          this.deps.output.appendLine(`[tool] ignored ${toolCalls.length} tool_call(s) because chipmate.tools.enabled=false`)
+          assistantText = appendAssistantText(
+            assistant,
+            sessionID,
+            `${assistantText ? "\n\n" : ""}工具调用已关闭，未执行模型返回的工具请求。`,
+          )
+          this.emit("message.part.updated", {
+            part: {
+              id: `${assistant.info.id}-text`,
+              sessionID,
+              messageID: assistant.info.id,
+              type: "text",
+              text: assistantText,
             },
-          },
+          })
+          break
         }
-        assistant.parts = upsertPart(assistant.parts, part)
-        this.emit("message.part.updated", { part })
+
         messages.push({
-          role: "tool",
-          tool_call_id: call.id,
-          content: toolResult.output,
+          role: "assistant",
+          content: assistantText,
+          tool_calls: toolCalls,
         })
+        for (const call of toolCalls) {
+          const args = parseToolArguments(call.function.arguments)
+          const isExposedTool = exposedToolNames.has(call.function.name)
+          const toolResult = isExposedTool
+            ? await this.deps.tools.execute({
+                sessionID,
+                mode: settings.permissions.mode,
+                name: call.function.name,
+                arguments: args,
+                signal,
+              })
+            : blockedUnexposedTool(call.function.name)
+          if (!isExposedTool) {
+            this.deps.output.appendLine(`[tool] blocked unexposed tool_call name=${call.function.name}`)
+          }
+          const part = {
+            id: call.id,
+            sessionID,
+            messageID: assistant.info.id,
+            type: "tool",
+            tool: call.function.name,
+            state: {
+              status: toolResult.approved ? "completed" : toolResult.requiresApproval ? "approval-required" : "blocked",
+              input: args,
+              output: toolResult.output,
+              metadata: {
+                risk: toolResult.risk,
+                title: toolResult.title,
+              },
+            },
+          }
+          assistant.parts = upsertPart(assistant.parts, part)
+          this.emit("message.part.updated", { part })
+          messages.push({
+            role: "tool",
+            tool_call_id: call.id,
+            content: toolResult.output,
+          })
+        }
       }
+    } catch (error) {
+      if (!signal?.aborted) await this.persistPartialAssistant(sessionID, assistant)
+      throw error
     }
 
     assistant.info.time = { ...assistant.info.time, completed: Date.now() }
@@ -281,27 +339,52 @@ export class DirectAgentClient {
     return { user: userMessage, assistant }
   }
 
+  private async recentChatHistoryMessages(sessionID: string, settings: RemoteSettings): Promise<ChatMessage[]> {
+    const maxTurns = Math.max(0, Math.min(20, Math.floor(settings.context.maxHistoryTurns)))
+    const maxBytes = Math.max(0, Math.min(200000, Math.floor(settings.context.maxHistoryBytes)))
+    if (maxTurns === 0 || maxBytes === 0) return []
+
+    const events = await this.readSessionEvents(sessionID)
+    const messages = events
+      .flatMap((event) => event.type === "message" ? [event.message] : [])
+      .flatMap(historyMessageFromSessionMessage)
+    const recent = recentHistoryTurns(messages, maxTurns)
+    return fitHistoryMessagesToBudget(recent, maxBytes)
+  }
+
+  private async persistPartialAssistant(sessionID: string, assistant: ChipMateMessage) {
+    const text = textParts(assistant).trim()
+    if (!text) return
+    assistant.info.time = { ...assistant.info.time, completed: Date.now() }
+    await this.appendMessage(sessionID, assistant).catch(() => undefined)
+    this.emit("message.updated", { info: assistant.info })
+  }
+
   private async streamChatCompletion(input: {
     messages: ChatMessage[]
     sessionID: string
     assistant: ChipMateMessage
+    exposedTools: ChatToolDefinition[]
     signal?: AbortSignal
   }) {
     const settings = this.deps.getSettings()
+    const body: Record<string, unknown> = {
+      model: settings.provider.chatModel,
+      messages: input.messages,
+      stream: true,
+      max_tokens: settings.provider.maxTokens,
+      temperature: settings.provider.temperature,
+      top_p: settings.provider.topP,
+    }
+    if (settings.tools.enabled && input.exposedTools.length > 0) {
+      body.tools = input.exposedTools
+      body.tool_choice = "auto"
+    }
     const response = await fetch(chatCompletionsUrl(settings.provider.apiBaseUrl), {
       method: "POST",
       headers: await this.headers(true),
       signal: input.signal,
-      body: JSON.stringify({
-        model: settings.provider.chatModel,
-        messages: input.messages,
-        tools: this.deps.tools.toolDefinitions(),
-        tool_choice: "auto",
-        stream: true,
-        max_tokens: settings.provider.maxTokens,
-        temperature: settings.provider.temperature,
-        top_p: settings.provider.topP,
-      }),
+      body: JSON.stringify(body),
     })
     if (!response.ok) {
       const text = await response.text().catch(() => "")
@@ -317,56 +400,73 @@ export class DirectAgentClient {
     const reader = response.body.getReader()
     const decoder = new TextDecoder()
     let buffer = ""
+    let completed = false
+    const processSseBlock = (raw: string) => {
+      for (const data of parseSseData(raw)) {
+        if (data === "[DONE]") {
+          completed = true
+          continue
+        }
+        const delta = parseDelta(data)
+        if (delta.error) throw new Error(`Chat completion stream failed: ${delta.error}`)
+        if (delta.finishReason) completed = true
+        if (delta.content) {
+          text += delta.content
+          const part = {
+            id: partID,
+            sessionID: input.sessionID,
+            messageID,
+            type: "text",
+            text,
+          }
+          input.assistant.parts = upsertPart(input.assistant.parts, part)
+          this.emit("message.part.delta", {
+            sessionID: input.sessionID,
+            messageID,
+            partID,
+            type: "text",
+            delta: delta.content,
+          })
+        }
+        for (const call of delta.toolCalls) {
+          const existing = toolCalls.get(call.index) ?? {
+            id: call.id || `tool-${messageID}-${call.index}`,
+            type: "function" as const,
+            function: {
+              name: "",
+              arguments: "",
+            },
+          }
+          if (call.id) existing.id = call.id
+          if (call.name) existing.function.name += call.name
+          if (call.arguments) {
+            existing.function.arguments = truncateString(existing.function.arguments + call.arguments, MAX_STREAM_TOOL_ARGUMENT_BYTES)
+          }
+          toolCalls.set(call.index, existing)
+        }
+      }
+    }
     while (true) {
       input.signal?.throwIfAborted()
-      const chunk = await reader.read()
+      let chunk: Awaited<ReturnType<typeof reader.read>>
+      try {
+        chunk = await reader.read()
+      } catch (error) {
+        if (input.signal?.aborted) throw error
+        throw new Error(`Chat completion stream read failed: ${formatErrorMessage(error)}`)
+      }
       if (chunk.done) break
       buffer += decoder.decode(chunk.value, { stream: true })
       let boundary = buffer.indexOf("\n\n")
       while (boundary !== -1) {
         const raw = buffer.slice(0, boundary)
         buffer = buffer.slice(boundary + 2)
-        for (const data of parseSseData(raw)) {
-          if (data === "[DONE]") continue
-          const delta = parseDelta(data)
-          if (delta.content) {
-            text += delta.content
-            const part = {
-              id: partID,
-              sessionID: input.sessionID,
-              messageID,
-              type: "text",
-              text,
-            }
-            input.assistant.parts = upsertPart(input.assistant.parts, part)
-            this.emit("message.part.delta", {
-              sessionID: input.sessionID,
-              messageID,
-              partID,
-              type: "text",
-              delta: delta.content,
-            })
-          }
-          for (const call of delta.toolCalls) {
-            const existing = toolCalls.get(call.index) ?? {
-              id: call.id || `tool-${messageID}-${call.index}`,
-              type: "function" as const,
-              function: {
-                name: "",
-                arguments: "",
-              },
-            }
-            if (call.id) existing.id = call.id
-            if (call.name) existing.function.name += call.name
-            if (call.arguments) {
-              existing.function.arguments = truncateString(existing.function.arguments + call.arguments, MAX_STREAM_TOOL_ARGUMENT_BYTES)
-            }
-            toolCalls.set(call.index, existing)
-          }
-        }
+        processSseBlock(raw)
         boundary = buffer.indexOf("\n\n")
       }
     }
+    if (buffer.trim()) processSseBlock(buffer)
+    if (!completed) throw new Error("Chat completion stream closed before completion marker.")
 
     return {
       assistant: input.assistant,
@@ -376,7 +476,8 @@ export class DirectAgentClient {
   }
 
   private async recordSessionError(sessionID: string, error: unknown) {
-    const message = error instanceof Error ? error.message : String(error)
+    const reason = formatErrorMessage(error)
+    const message = chatInterruptedMessage(reason)
     const errorMessage: ChipMateMessage = {
       info: {
         id: `error-${Date.now().toString(36)}`,
@@ -388,9 +489,11 @@ export class DirectAgentClient {
       parts: [{ type: "text", text: message }],
     }
     await this.appendMessage(sessionID, errorMessage).catch(() => undefined)
-    this.statuses.set(sessionID, { type: "idle" })
-    this.emit("session.error", { sessionID, error: { message } })
-    this.emit("session.status", { sessionID, status: { type: "idle" } })
+    const status: ChipMateSessionStatus = { type: "error", interrupted: true, message: reason }
+    this.deps.output.appendLine(`[send] interrupted ${sessionID}: ${reason}`)
+    this.statuses.set(sessionID, status)
+    this.emit("session.error", { sessionID, error: { message: reason } })
+    this.emit("session.status", { sessionID, status })
   }
 
   private async headers(hasBody: boolean) {
@@ -467,15 +570,108 @@ export class DirectAgentClient {
   }
 }
 
+function toolDefinitionNames(definitions: ChatToolDefinition[]) {
+  const names = definitions
+    .map((definition) => definition.function.name)
+    .filter((name) => typeof name === "string" && name.length > 0)
+  return new Set<string>(names)
+}
+
+function blockedUnexposedTool(toolName: string): ToolRuntimeResult {
+  return {
+    title: "Tool blocked",
+    output: `Tool is not exposed to the model in this chat mode: ${toolName}`,
+    approved: false,
+    risk: "blocked",
+  }
+}
+
 function systemPrompt(settings: RemoteSettings, skillCatalog: string, loadedSkills: string) {
+  const toolsEnabled = settings.tools.enabled
   return [
     "You are ChipMate, a direct model coding agent running inside the VS Code workspace extension host.",
-    "Use only the context and tools provided by ChipMate for workspace operations.",
-    "Tool calls execute on the current workspace host, which may be a local machine or a Remote SSH Linux host.",
-    `Permission mode: ${settings.permissions.mode}. Obey blocked tool results and summarize what approval is needed.`,
+    toolsEnabled
+      ? "Use only the context and the read-only file tool provided by ChipMate for workspace operations."
+      : "Use only the context provided by ChipMate for workspace operations.",
+    toolsEnabled
+      ? "Only chipmate_read is available; use it only to read workspace files when local evidence is incomplete."
+      : "ChipMate tool calling is disabled. Do not request, simulate, or emit tool calls; explain missing local information instead.",
+    toolsEnabled
+      ? `Permission mode: ${settings.permissions.mode}. Obey blocked tool results; if non-read operations are needed, explain the missing capability instead of calling another tool.`
+      : "Permission mode settings are inactive while tool calling is disabled.",
     skillCatalog,
     loadedSkills,
   ].filter(Boolean).join("\n\n")
+}
+
+function historyMessageFromSessionMessage(message: ChipMateMessage): ChatMessage[] {
+  const role = message.info.role
+  if (role !== "user" && role !== "assistant") return []
+  if (role === "assistant" && message.info.error) return []
+  const text = textParts(message).trim()
+  if (!text) return []
+  if (role === "user") {
+    const question = extractPluginChatQuestionText(text)
+    return question ? [{ role: "user", content: question }] : []
+  }
+  return [{ role: "assistant", content: text }]
+}
+
+function recentHistoryTurns(messages: ChatMessage[], maxTurns: number) {
+  const selected: ChatMessage[] = []
+  let turns = 0
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index]
+    if (!message || message.role === "system" || message.role === "tool") continue
+    selected.unshift(message)
+    if (message.role === "user") {
+      turns += 1
+      if (turns >= maxTurns) break
+    }
+  }
+  return selected
+}
+
+function fitHistoryMessagesToBudget(messages: ChatMessage[], maxBytes: number) {
+  const selected: ChatMessage[] = []
+  let remaining = maxBytes
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index]
+    const content = message?.content ?? ""
+    if (!message || !content) continue
+    const cost = textByteLength(content)
+    if (cost <= remaining) {
+      selected.unshift(message)
+      remaining -= cost
+      continue
+    }
+    if (message.role === "assistant" && remaining > 0) {
+      const contentTail = textTailByBytes(content, remaining)
+      if (contentTail.trim()) selected.unshift({ role: "assistant", content: contentTail })
+    }
+    break
+  }
+  return selected
+}
+
+function textParts(message: ChipMateMessage) {
+  return message.parts
+    .flatMap((part) => part.type === "text" && "text" in part && typeof part.text === "string" ? [part.text] : [])
+    .join("")
+}
+
+function appendAssistantText(assistant: ChipMateMessage, sessionID: string, text: string) {
+  const partID = `${assistant.info.id}-text`
+  const existing = assistant.parts.find((part) => "id" in part && part.id === partID && part.type === "text")
+  const nextText = `${existing && "text" in existing ? existing.text : ""}${text}`
+  assistant.parts = upsertPart(assistant.parts, {
+    id: partID,
+    sessionID,
+    messageID: assistant.info.id,
+    type: "text",
+    text: nextText,
+  })
+  return nextText
 }
 
 function createMessage(sessionID: string, role: "user" | "assistant", text: string): ChipMateMessage {
@@ -535,13 +731,31 @@ function parseSseData(raw: string) {
 }
 
 function parseDelta(data: string) {
-  const result: { content: string; toolCalls: Array<{ index: number; id?: string; name?: string; arguments?: string }> } = {
+  const result: {
+    content: string
+    toolCalls: Array<{ index: number; id?: string; name?: string; arguments?: string }>
+    finishReason?: string
+    error?: string
+  } = {
     content: "",
     toolCalls: [],
   }
   try {
-    const body = JSON.parse(data) as { choices?: Array<{ delta?: Record<string, unknown> }> }
-    const delta = body.choices?.[0]?.delta ?? {}
+    const body = JSON.parse(data) as {
+      error?: { message?: string } | string
+      choices?: Array<{ delta?: Record<string, unknown>; finish_reason?: unknown }>
+    }
+    if (typeof body.error === "string") {
+      result.error = body.error
+      return result
+    }
+    if (body.error && typeof body.error.message === "string") {
+      result.error = body.error.message
+      return result
+    }
+    const choice = body.choices?.[0]
+    if (typeof choice?.finish_reason === "string" && choice.finish_reason) result.finishReason = choice.finish_reason
+    const delta = choice?.delta ?? {}
     if (typeof delta.content === "string") result.content = delta.content
     const toolCalls = Array.isArray(delta.tool_calls) ? delta.tool_calls : []
     for (const rawCall of toolCalls) {
@@ -555,8 +769,8 @@ function parseDelta(data: string) {
         arguments: typeof fn.arguments === "string" ? fn.arguments : undefined,
       })
     }
-  } catch {
-    return result
+  } catch (error) {
+    throw new Error(`Malformed chat completion stream chunk: ${formatErrorMessage(error)}`)
   }
   return result
 }
@@ -589,4 +803,24 @@ async function readText(uri: vscode.Uri) {
 function truncateString(input: string, max: number) {
   if (input.length <= max) return input
   return input.slice(0, max)
+}
+
+function formatErrorMessage(error: unknown) {
+  return error instanceof Error ? error.message : String(error)
+}
+
+function chatInterruptedMessage(reason: string) {
+  return `对话已中断：${reason}`
+}
+
+function textByteLength(input: string) {
+  return new TextEncoder().encode(input).length
+}
+
+function textTailByBytes(input: string, maxBytes: number) {
+  if (maxBytes <= 0) return ""
+  if (textByteLength(input) <= maxBytes) return input
+  let tail = input.slice(Math.max(0, input.length - maxBytes))
+  while (tail && textByteLength(tail) > maxBytes) tail = tail.slice(1)
+  return tail
 }

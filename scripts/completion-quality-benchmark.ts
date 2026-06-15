@@ -2655,6 +2655,9 @@ function benchmarkSettings(options: CompletionQualityBenchmarkOptions): RemoteSe
     permissions: {
       mode: "ask",
     },
+    tools: {
+      enabled: false,
+    },
     skills: {
       enabled: [],
     },

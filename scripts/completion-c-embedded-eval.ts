@@ -588,6 +588,25 @@ function settings(): RemoteSettings {
       localOnlyMode: true,
       strictLocalOnlyAgent: true,
     },
+    provider: {
+      apiBaseUrl: "http://localhost:8000/v1",
+      chatModel: "qwen",
+      maxTokens: 4096,
+      temperature: 0.2,
+      topP: 1,
+    },
+    permissions: {
+      mode: "ask",
+    },
+    tools: {
+      enabled: false,
+    },
+    skills: {
+      enabled: [],
+    },
+    mcp: {
+      enabled: false,
+    },
     completion: {
       enabled: true,
       provider: "openai-compatible",

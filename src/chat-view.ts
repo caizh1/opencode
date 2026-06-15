@@ -12,7 +12,7 @@ import {
   type ExportScope,
 } from "./chat-export"
 import { createChatViewHtml } from "./chat-html"
-import { CHAT_SESSION_TITLE, isPluginChatMessage, isPluginChatSession } from "./chat-session"
+import { CHAT_SESSION_TITLE, extractPluginChatQuestionText, isPluginChatMessage, isPluginChatSession } from "./chat-session"
 import { applyChipMateEventToMessages, normalizeChipMateEvent, chipMateEventSessionID } from "./chat-stream"
 import type { CodeGraphContextProvider } from "./codegraph-types"
 import type { CodeIntelligenceSnapshot } from "./analysis-types"
@@ -52,7 +52,7 @@ import type {
   RenderedUsage,
   RemoteSettings,
 } from "./types"
-import { connectionInputHasPassword, ragSettingsInputChangesEmbeddingIdentity, ragSettingsInputMatchesCurrent, saveCompletionSettings, savePermissionMode, saveRagSettings, saveSkillsSettings, type CompletionSettingsInput, type ConnectionSettingsInput, type RagSettingsInput } from "./settings"
+import { connectionInputHasPassword, ragSettingsInputChangesEmbeddingIdentity, ragSettingsInputMatchesCurrent, saveCompletionSettings, savePermissionMode, saveRagSettings, saveSkillsSettings, saveToolsEnabled, type CompletionSettingsInput, type ConnectionSettingsInput, type RagSettingsInput } from "./settings"
 
 const SESSION_MESSAGE_LIMIT = 100
 const MODEL_REFRESH_TIMEOUT_MS = 8000
@@ -90,6 +90,7 @@ type ChatViewMessage =
   | { type: "clearContext" }
   | { type: "exportMarkdown"; scope?: ExportScope; filenameHint?: string }
   | { type: "selectSession"; sessionID: string }
+  | { type: "deleteSession"; sessionID: string }
   | { type: "refreshModels" }
   | { type: "selectModel"; model: string }
   | { type: "searchFilesForMention"; query?: string; requestId?: number }
@@ -122,6 +123,7 @@ type ChatViewMessage =
   | { type: "setRagApiKey" }
   | { type: "saveSkillsSettings"; enabled: string[] }
   | { type: "savePermissionMode"; mode: PermissionMode }
+  | { type: "saveToolsEnabled"; enabled: boolean }
   | {
       type: "sendMessage"
       text: string
@@ -143,6 +145,7 @@ type RenderedPart = {
   text?: string
   status?: string
   detail?: string
+  preview?: string
 }
 
 type RenderedMessage = {
@@ -170,6 +173,7 @@ type ActiveSend = {
 
 type RemoteChatViewProviderDeps = {
   output: vscode.OutputChannel
+  extensionUri: vscode.Uri
   contextStore: LocalContextStore
   codeGraph?: CodeGraphContextProvider
   getClient: () => DirectAgentClient | undefined
@@ -253,8 +257,11 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
     this.deps.output.appendLine(`[view] ChipMate using ${CHIPMATE_CHAT_VIEW_ID}`)
     webviewView.webview.options = {
       enableScripts: true,
+      localResourceRoots: [vscode.Uri.joinPath(this.deps.extensionUri, "media")],
     }
-    webviewView.webview.html = createChatViewHtml(webviewView.webview.cspSource)
+    const brandIconUri = webviewView.webview.asWebviewUri(vscode.Uri.joinPath(this.deps.extensionUri, "media", "chipmate-icon.png")).toString()
+    const mermaidScriptUri = webviewView.webview.asWebviewUri(vscode.Uri.joinPath(this.deps.extensionUri, "media", "vendor", "mermaid", "mermaid.min.js")).toString()
+    webviewView.webview.html = createChatViewHtml(webviewView.webview.cspSource, undefined, brandIconUri, mermaidScriptUri)
     webviewView.webview.onDidReceiveMessage((message: ChatViewMessage) => {
       void this.handleMessage(message)
     })
@@ -562,6 +569,10 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
         await this.failActiveSendWithRetry(client, sessionID, status, generation)
         return
       }
+      if (status?.type === "error") {
+        await this.failActiveSendWithInterruption(client, sessionID, sessionInterruptionReason(status), generation)
+        return
+      }
     } catch (error) {
       if (this.isActiveSend(client, sessionID, generation)) this.logEventError("session status poll failed", error)
     }
@@ -628,6 +639,37 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
     this.postState()
   }
 
+  private async failActiveSendWithInterruption(
+    client: DirectAgentClient,
+    sessionID: string,
+    reason: string,
+    generation = this.activeSend?.generation,
+  ) {
+    if (generation === undefined || !this.isActiveSend(client, sessionID, generation)) return
+
+    this.stopSendStatusWatchdog()
+    this.stopMessagePollingFallback()
+    const message = chatInterruptedMessage(reason)
+    this.deps.output.appendLine(`[send] interrupted ${sessionID}: ${reason}`)
+    try {
+      await this.refreshSessionList(client)
+      if (this.sessionID === sessionID) await this.loadSessionMessages(client, sessionID)
+    } catch (error) {
+      this.logEventError("interrupted message refresh failed", error)
+    }
+    if (!this.isActiveSend(client, sessionID, generation)) return
+
+    this.pendingLocalUserMessageIDs.clear()
+    this.pendingLocalUserTexts.clear()
+    if (!this.messages.some((item) => item.role === "error" && item.text === message)) {
+      this.messages = [...this.messages, localMessage("error", message)]
+    }
+    this.sending = false
+    this.activeSend = undefined
+    this.postState()
+    this.showChatInterruptedWarning(reason)
+  }
+
   private handleRemoteEvent(client: DirectAgentClient, rawEvent: unknown) {
     if (this.deps.getClient() !== client) return
     const event = normalizeChipMateEvent(rawEvent)
@@ -652,15 +694,17 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
       this.syncRenderedMessages()
       this.postState()
     }
-    if (result.error) {
-      this.clearActiveSendState()
-      this.messages = [...this.messages, localMessage("error", `ChipMate session error: ${result.error}`)]
-      this.postState()
-    }
-
     const sessionID = this.sessionID
+    if (sessionID && result.error) {
+      void this.failActiveSendWithInterruption(client, sessionID, result.error)
+      return
+    }
     if (sessionID && result.retry) {
       void this.failActiveSendWithRetry(client, sessionID, result.retry)
+      return
+    }
+    if (sessionID && result.interruption) {
+      void this.failActiveSendWithInterruption(client, sessionID, sessionInterruptionReason(result.interruption))
       return
     }
     if (sessionID && this.suppressedStreamingSessionID === sessionID && (result.idle || result.completed)) {
@@ -673,6 +717,13 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
     if (sessionID && (result.idle || result.completed)) {
       void this.finishStreamingSession(client, sessionID)
     }
+  }
+
+  private showChatInterruptedWarning(reason: string) {
+    const message = `ChipMate 对话已中断：${truncate(reason, 180)}`
+    void vscode.window.showWarningMessage(message, "查看 Output").then((picked) => {
+      if (picked === "查看 Output") this.deps.openOutput()
+    })
   }
 
   private logRemoteEventType(type: string) {
@@ -834,6 +885,9 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
         case "selectSession":
           await this.selectSession(message.sessionID)
           break
+        case "deleteSession":
+          await this.deleteSession(message.sessionID)
+          break
         case "refreshModels":
           await this.refreshModels()
           break
@@ -911,6 +965,9 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
           break
         case "savePermissionMode":
           await this.savePermissionMode(message.mode)
+          break
+        case "saveToolsEnabled":
+          await this.saveToolsEnabled(message.enabled)
           break
         case "sendMessage":
           await this.handleSendMessage(
@@ -1171,6 +1228,17 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
     }
   }
 
+  private async saveToolsEnabled(enabled: boolean) {
+    try {
+      await saveToolsEnabled(enabled)
+      this.postState()
+    } catch (error) {
+      const message = formatErrorMessage(error)
+      this.deps.output.appendLine(`[tools-settings] save failed: ${message}`)
+      vscode.window.showErrorMessage(`ChipMate tools setting save failed: ${message}`)
+    }
+  }
+
   private async addFile() {
     const count = await addPickedFilesToContext(this.deps.contextStore)
     this.postState()
@@ -1198,6 +1266,46 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
         return
       }
       this.reportRemoteConnectionFailure(client, "Failed to load ChipMate session", error)
+    } finally {
+      this.loadingMessages = false
+      this.postState()
+    }
+  }
+
+  private async deleteSession(sessionID: string) {
+    const client = this.connectedClient("Connect before deleting a session.")
+    if (!client || !sessionID) return
+
+    const session = this.sessions.find((item) => item.id === sessionID)
+    const title = session?.title || "Untitled chat"
+    const confirmed = await vscode.window.showWarningMessage(
+      `Delete chat history "${truncate(title, 80)}"? This removes the locally saved session.`,
+      { modal: true },
+      "Delete",
+    )
+    if (confirmed !== "Delete") return
+
+    const wasCurrent = this.sessionID === sessionID
+    if (this.activeSend?.sessionID === sessionID) await this.cancelActiveSend()
+
+    if (wasCurrent) {
+      this.loadingMessages = true
+      this.postState()
+    }
+
+    try {
+      await withRequestTimeout("delete session", SESSION_REFRESH_TIMEOUT_MS, (signal) =>
+        client.deleteSession(sessionID, signal),
+      )
+      this.sessions = this.sessions.filter((item) => item.id !== sessionID)
+      if (wasCurrent) {
+        this.clearMissingSession(sessionID)
+      }
+      await this.refreshSessionList(client)
+      if (wasCurrent) {
+        this.reconcileSessionSelection()
+        await this.loadSelectedSessionMessages(client)
+      }
     } finally {
       this.loadingMessages = false
       this.postState()
@@ -1808,6 +1916,7 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
         username: settings.provider.chatModel,
         provider: settings.provider,
         permissions: settings.permissions,
+        tools: settings.tools,
         defaults: {
           includeDiagnostics: settings.context.includeDiagnostics,
           includeGitDiff: settings.context.includeGitDiff,
@@ -2067,6 +2176,17 @@ function remoteRetryMessage(status: ChipMateSessionStatus) {
   return `远端 ChipMate 正在重试模型请求${attempt}${detail}。当前会话可能过大，可以新建会话后重试。`
 }
 
+function sessionInterruptionReason(status: ChipMateSessionStatus) {
+  if ("message" in status && typeof status.message === "string" && status.message.trim()) {
+    return status.message.trim()
+  }
+  return "模型流式响应提前中断，未返回可用原因。"
+}
+
+function chatInterruptedMessage(reason: string) {
+  return `对话已中断：${reason}`
+}
+
 function renderMessage(message: ChipMateMessage): RenderedMessage {
   const error = message.info.error?.message
   if (error) {
@@ -2086,11 +2206,13 @@ function renderMessage(message: ChipMateMessage): RenderedMessage {
     .filter((part) => part.type !== "text" && part.type !== "reasoning")
     .map(renderPart)
     .filter((part) => part.text || part.detail || part.status)
-  if (split.reasoning) {
+  if (split.reasoning || split.openThinking) {
     parts.unshift({
       type: "reasoning",
       title: "Thinking",
+      status: split.openThinking ? "running" : undefined,
       detail: split.reasoning,
+      preview: split.preview,
     })
   }
   const serverToolWarnings = parts
@@ -2131,7 +2253,7 @@ function renderPart(part: ChipMatePart): RenderedPart {
   if (part.type === "tool") {
     return {
       type: "tool",
-      title: "tool" in part && typeof part.tool === "string" ? part.tool : "tool",
+      title: displayToolName("tool" in part && typeof part.tool === "string" ? part.tool : "tool"),
       status: toolStatus(part),
       detail: toolDetail(part),
     }
@@ -2144,16 +2266,7 @@ function renderPart(part: ChipMatePart): RenderedPart {
 
 function displayText(role: string, text: string) {
   if (role !== "user") return text
-  const questionPrefix = "User question:\n"
-  if (!text.startsWith(questionPrefix)) return text
-  const body = text.slice(questionPrefix.length)
-  const markers = ["\n\nLocal Context Contract:", "\n\nImportant local-context rule:", "\n\nLocal workspace context:"]
-  const markerIndex = markers
-    .map((marker) => body.indexOf(marker))
-    .filter((index) => index !== -1)
-    .sort((left, right) => left - right)[0]
-  const question = markerIndex === undefined ? body : body.slice(0, markerIndex)
-  return question.trim()
+  return extractPluginChatQuestionText(text)
 }
 
 function localMessage(role: string, text: string): RenderedMessage {
@@ -2164,6 +2277,10 @@ function localMessage(role: string, text: string): RenderedMessage {
     timeCreated: Date.now(),
     parts: [{ type: "text", text }],
   }
+}
+
+function displayToolName(tool: string) {
+  return tool === "chipmate_read_file" ? "chipmate_read" : tool
 }
 
 function toolStatus(part: ChipMatePart) {

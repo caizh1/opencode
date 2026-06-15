@@ -10,10 +10,27 @@ import {
   CURRENT_CODE_GRAPH_INDEX_VERSION,
   groupFilesByShard,
   hydrateCodeGraphIndexAsync,
+  isCurrentCodeGraphIndexVersion,
   moduleKey,
-  shardInfo,
+  shardFileName,
   shardKeyForPath,
 } from "./codegraph-index"
+import {
+  CODEGRAPH_DERIVED_SIDECAR_FIELDS,
+  mergeCodeGraphDerivedSidecar,
+  splitCodeGraphDerivedIndex,
+  type CodeGraphDerivedSidecarData,
+  type CodeGraphDerivedSidecarPartData,
+} from "./codegraph-derived-storage"
+import {
+  CODEGRAPH_JSON_HARD_PART_BYTES,
+  CODEGRAPH_JSON_TARGET_PART_BYTES,
+  encodeBoundedJson,
+} from "./codegraph-bounded-json"
+import {
+  mergeCodeGraphFileStorageParts,
+  splitCodeGraphFilesForStorage,
+} from "./codegraph-file-storage"
 import { buildHybridCodeGraphContext, searchCodeGraphSymbols } from "./codegraph-query"
 import { CodeGraphHotCache, planShardKeysForQuery } from "./codegraph-shard-planner"
 import { buildCodeIntelligenceSnapshot, queryEvidenceAsync, runAnalysisTool } from "./codegraph-analysis"
@@ -53,6 +70,7 @@ import type {
   CodeGraphPromptContext,
   CodeGraphQueryMetrics,
   CodeGraphShardData,
+  CodeGraphShardInfo,
   CodeGraphShardManifest,
 } from "./codegraph-types"
 import type {
@@ -1016,40 +1034,20 @@ export class LocalCodeGraphService implements vscode.Disposable {
           : "Loaded local C/C++ code graph.",
       )
       this.schedulePendingRagWorkAfterCodeGraphReady("code graph loaded")
-    } catch {
-      try {
-        const checkpoint = await this.readJobCheckpoint(root)
-        const bytes = await vscode.workspace.fs.readFile(this.legacyIndexUri(root))
-        const parsed = JSON.parse(new TextDecoder().decode(bytes)) as CodeGraphIndex
-        if (parsed.rootPath !== root.uri.fsPath) return
-        this.index = await hydrateCodeGraphIndexAsync({ ...parsed, storageMode: "sharded" }, parsed.stats?.skippedFiles ?? 0, () =>
-          budget.yieldIfNeeded(),
-        )
-        this.index.schema = createCodeGraphStorageManifest(this.index)
-        await this.saveIndex(budget)
-        await this.loadRagIndex(root)
-        this.jobs.recordRecovery(Date.now() - started)
-        this.output.appendLine(`[codegraph] migrated legacy index in ${Date.now() - started}ms`)
-        await this.clearJobCheckpoint(root)
-        this.setReadyStatus(
-          checkpoint
-            ? `Migrated local C/C++ code graph after recovering ${checkpoint.kind} checkpoint.`
-            : "Migrated local C/C++ code graph to sharded storage.",
-        )
-        this.schedulePendingRagWorkAfterCodeGraphReady("code graph loaded")
-      } catch {
-        this.index = emptyIndex(root)
-        await this.clearJobCheckpoint(root)
-        this.setStatus({
-          state: "degraded",
-          enabled: this.getSettings().codeGraph.enabled,
-          detail: "No local code graph index exists yet.",
-          indexedFiles: 0,
-          indexedFunctions: 0,
-          indexedMacros: 0,
-          truncated: false,
-        })
-      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      this.output.appendLine(`[codegraph] stored index unavailable; rebuild required: ${message}`)
+      this.index = emptyIndex(root)
+      await this.clearJobCheckpoint(root)
+      this.setStatus({
+        state: "degraded",
+        enabled: this.getSettings().codeGraph.enabled,
+        detail: "No current local code graph index exists yet. Rebuild the local code graph.",
+        indexedFiles: 0,
+        indexedFunctions: 0,
+        indexedMacros: 0,
+        truncated: false,
+      })
     }
   }
 
@@ -1064,71 +1062,112 @@ export class LocalCodeGraphService implements vscode.Disposable {
   private async saveIndex(budget = new WorkBudget()) {
     const root = workspaceRoot()
     if (!root || !this.index) return
+    const saveStarted = Date.now()
     this.setStatus({
       ...this.statusValue,
       state: this.statusValue.state === "indexingIncremental" ? "indexingIncremental" : "indexingFull",
       enabled: true,
       detail: "Saving local C/C++ code graph index.",
     })
+    const hydrateStarted = Date.now()
+    this.output.appendLine(`[codegraph] building derived index`)
     this.index =
       this.index.derived && this.index.stats
         ? { ...this.index, storageMode: "sharded" }
         : await hydrateCodeGraphIndexAsync({ ...this.index, storageMode: "sharded" }, this.index.stats?.skippedFiles ?? 0, () =>
             budget.yieldIfNeeded(),
           )
+    this.output.appendLine(`[codegraph] building derived index done elapsedMs=${Date.now() - hydrateStarted}`)
     const dir = this.indexDir(root)
     const shardsDir = vscode.Uri.joinPath(dir, "shards")
     await vscode.workspace.fs.createDirectory(shardsDir)
 
     const groups = groupFilesByShard(this.index.files)
-    const manifestShards = [...groups.entries()].map(([key, files]) => shardInfo(key, files))
-    const nextShardNames = new Set(manifestShards.map((shard) => shard.path.replace(/^shards\//, "")))
-    await this.cleanupOldShards(shardsDir, nextShardNames)
-
-    for (const shard of manifestShards) {
-      const files = groups.get(shard.key) ?? {}
-      const payload: CodeGraphShardData = { version: INDEX_VERSION, key: shard.key, files }
-      this.setStatus({
-        ...this.statusValue,
-        detail: `Saving shard ${shard.key}.`,
-        currentShard: shard.key,
+    const shardGeneration = this.shardGenerationName(this.index.updatedAt)
+    const manifestShards: CodeGraphShardInfo[] = []
+    let filePartCount = 0
+    let maxFilePartBytes = 0
+    const fileSaveStarted = Date.now()
+    this.output.appendLine(`[codegraph] saving file shard parts logicalShards=${groups.size} targetPartBytes=${CODEGRAPH_JSON_TARGET_PART_BYTES} hardPartBytes=${CODEGRAPH_JSON_HARD_PART_BYTES}`)
+    for (const [key, files] of [...groups.entries()].sort(([left], [right]) => left.localeCompare(right))) {
+      const stats = buildIndexStats(files)
+      const parts = splitCodeGraphFilesForStorage(files, {
+        shardKey: key,
+        label: `file shard ${key}`,
+        basePath: `shards/${shardGeneration}/${this.shardDirectoryName(key)}`,
+        targetPartBytes: CODEGRAPH_JSON_TARGET_PART_BYTES,
+        hardPartBytes: CODEGRAPH_JSON_HARD_PART_BYTES,
       })
-      await vscode.workspace.fs.writeFile(vscode.Uri.joinPath(dir, ...shard.path.split("/")), encodeJson(payload))
-      await budget.yieldIfNeeded()
+      manifestShards.push({
+        key,
+        files: stats.files,
+        functions: stats.functions,
+        macros: stats.macros,
+        bytes: stats.bytes,
+        parts: parts.map((part) => ({
+          key: part.key,
+          path: part.path,
+          entries: part.entries,
+          estimatedBytes: part.estimatedBytes,
+        })),
+      })
+      for (const part of parts) {
+        this.setStatus({
+          ...this.statusValue,
+          detail: `Saving shard ${key} part ${part.key}.`,
+          currentShard: key,
+        })
+        await writeJsonRelative(dir, part.path, part.payload, `file shard ${key}`, part.key)
+        filePartCount += 1
+        maxFilePartBytes = Math.max(maxFilePartBytes, part.estimatedBytes)
+        await budget.yieldIfNeeded()
+      }
     }
+    this.output.appendLine(`[codegraph] saving file shard parts done logicalShards=${manifestShards.length} parts=${filePartCount} maxPartBytes=${maxFilePartBytes} elapsedMs=${Date.now() - fileSaveStarted}`)
 
+    const derived = this.index.derived ?? emptyDerivedIndex()
+    const derivedGeneration = this.derivedGenerationName(this.index.updatedAt)
+    const derivedSaveStarted = Date.now()
+    const derivedSidecar = splitCodeGraphDerivedIndex(derived, {
+      basePath: `derived/${derivedGeneration}`,
+      targetPartBytes: CODEGRAPH_JSON_TARGET_PART_BYTES,
+      hardPartBytes: CODEGRAPH_JSON_HARD_PART_BYTES,
+    })
+    this.output.appendLine(`[codegraph] saving derived sidecar parts parts=${derivedSidecar.parts.length} targetPartBytes=${CODEGRAPH_JSON_TARGET_PART_BYTES} hardPartBytes=${CODEGRAPH_JSON_HARD_PART_BYTES}`)
+    await this.saveDerivedSidecar(dir, derivedSidecar, budget)
+    const maxDerivedPartBytes = derivedSidecar.parts.reduce((max, part) => Math.max(max, part.estimatedBytes), 0)
+    this.output.appendLine(`[codegraph] saving derived sidecar parts done parts=${derivedSidecar.parts.length} maxPartBytes=${maxDerivedPartBytes} elapsedMs=${Date.now() - derivedSaveStarted}`)
+
+    const manifestSaveStarted = Date.now()
+    this.output.appendLine(`[codegraph] saving manifest`)
     const manifest: CodeGraphShardManifest = {
       version: INDEX_VERSION,
       rootPath: this.index.rootPath,
       rootName: this.index.rootName,
       updatedAt: this.index.updatedAt,
       truncated: this.index.truncated,
-      derived: this.index.derived ?? {
-        functionIdsByName: {},
-        callerIdsByCallee: {},
-        includeTargetsByFile: {},
-        filePathsByInclude: {},
-        directoryStats: {},
-        symbolsByName: {},
-        symbolsByPath: {},
-        postingsByTerm: {},
-        moduleStats: {},
-      },
+      derived: derivedSidecar.manifest,
       stats: this.index.stats ?? buildIndexStats(this.index.files),
       schema: createCodeGraphStorageManifest(this.index),
       shards: manifestShards,
     }
-    await vscode.workspace.fs.writeFile(this.manifestUri(root), encodeJson(manifest))
+    await vscode.workspace.fs.writeFile(this.manifestUri(root), encodeJson(manifest, "code graph manifest"))
     this.shardedManifest = manifest
+    this.shardCache.clear()
+    this.output.appendLine(`[codegraph] saving manifest done shards=${manifestShards.length} fileParts=${filePartCount} derivedParts=${derivedSidecar.parts.length} elapsedMs=${Date.now() - manifestSaveStarted} totalElapsedMs=${Date.now() - saveStarted}`)
+    await this.cleanupOldShardGenerations(shardsDir, shardGeneration)
+    await this.cleanupOldDerivedSidecars(vscode.Uri.joinPath(dir, "derived"), derivedGeneration)
   }
 
   private async loadShardedIndex(root: vscode.WorkspaceFolder, budget = new WorkBudget()): Promise<CodeGraphIndex> {
     const manifestBytes = await vscode.workspace.fs.readFile(this.manifestUri(root))
     const manifest = JSON.parse(new TextDecoder().decode(manifestBytes)) as CodeGraphShardManifest
-    if (!isSupportedStoredIndexVersion(manifest.version) || manifest.rootPath !== root.uri.fsPath) {
+    if (!isCurrentCodeGraphIndexVersion(manifest.version) || manifest.rootPath !== root.uri.fsPath) {
       throw new Error("Code graph manifest does not match this workspace.")
     }
     this.shardedManifest = manifest
+    const dir = this.indexDir(root)
+    const derived = await this.loadDerivedSidecar(dir, manifest.derived, budget)
 
     if (manifest.stats.files >= LARGE_INDEX_LAZY_FILE_THRESHOLD && manifest.schema) {
       return {
@@ -1138,7 +1177,7 @@ export class LocalCodeGraphService implements vscode.Disposable {
         updatedAt: manifest.updatedAt,
         truncated: manifest.truncated,
         files: {},
-        derived: manifest.derived,
+        derived,
         stats: manifest.stats,
         storageMode: "sharded",
         schema: manifest.schema,
@@ -1146,20 +1185,20 @@ export class LocalCodeGraphService implements vscode.Disposable {
     }
 
     const files: Record<string, CodeGraphFile> = {}
-    const dir = this.indexDir(root)
+    const totalParts = manifest.shards.reduce((count, shard) => count + shard.parts.length, 0)
+    let loadedParts = 0
     for (let index = 0; index < manifest.shards.length; index++) {
       const shard = manifest.shards[index]
-      const shardBytes = await vscode.workspace.fs.readFile(vscode.Uri.joinPath(dir, ...shard.path.split("/")))
-      const payload = JSON.parse(new TextDecoder().decode(shardBytes)) as CodeGraphShardData
-      if (!isSupportedStoredIndexVersion(payload.version) || payload.key !== shard.key) continue
-      Object.assign(files, payload.files)
+      const shardFiles = await this.readShardFiles(dir, shard)
+      loadedParts += shard.parts.length
+      Object.assign(files, shardFiles)
       if (budget.shouldYield()) {
         this.setStatus({
           ...this.statusValue,
           state: "recovering",
           enabled: true,
-          detail: `Loaded ${index + 1}/${manifest.shards.length} code graph shard(s).`,
-          progress: { completed: index + 1, total: manifest.shards.length },
+          detail: `Loaded ${loadedParts}/${totalParts} code graph shard part(s).`,
+          progress: { completed: loadedParts, total: totalParts },
           currentShard: shard.key,
         })
         await budget.yieldNow()
@@ -1173,7 +1212,7 @@ export class LocalCodeGraphService implements vscode.Disposable {
       updatedAt: manifest.updatedAt,
       truncated: manifest.truncated,
       files,
-      derived: manifest.derived,
+      derived,
       stats: manifest.stats,
       storageMode: "sharded",
       schema: manifest.schema,
@@ -1207,7 +1246,7 @@ export class LocalCodeGraphService implements vscode.Disposable {
     return {
       ...this.index,
       files,
-      derived: this.shardedManifest.derived,
+      derived: this.index.derived,
       stats: this.shardedManifest.stats,
       storageMode: "sharded",
       schema: this.shardedManifest.schema ?? this.index.schema,
@@ -1221,18 +1260,29 @@ export class LocalCodeGraphService implements vscode.Disposable {
     const manifest = this.shardedManifest
     if (!root || !manifest) return {}
     const shard = manifest.shards.find((item) => item.key === key)
-    if (!shard) return {}
+    if (!shard) throw new Error(`Code graph shard ${key} is missing from the manifest. Rebuild the local code graph index.`)
     try {
       const dir = this.indexDir(root)
-      const bytes = await vscode.workspace.fs.readFile(vscode.Uri.joinPath(dir, ...shard.path.split("/")))
-      const payload = JSON.parse(new TextDecoder().decode(bytes)) as CodeGraphShardData
-      if (!isSupportedStoredIndexVersion(payload.version) || payload.key !== shard.key) return {}
-      this.shardCache.set(key, payload.files)
-      return payload.files
+      const files = await this.readShardFiles(dir, shard)
+      this.shardCache.set(key, files)
+      return files
     } catch (error) {
-      this.output.appendLine(`[codegraph] failed to load shard ${key}: ${error instanceof Error ? error.message : String(error)}`)
-      return {}
+      const message = error instanceof Error ? error.message : String(error)
+      this.output.appendLine(`[codegraph] failed to load shard ${key}: ${message}`)
+      throw new Error(`Code graph shard ${key} is incomplete: ${message}. Rebuild the local code graph index.`)
     }
+  }
+
+  private async readShardFiles(indexDir: vscode.Uri, shard: CodeGraphShardInfo) {
+    const parts: CodeGraphShardData[] = []
+    for (const part of shard.parts) {
+      const payload = await readJsonRelative<CodeGraphShardData>(indexDir, part.path)
+      if (!isCurrentCodeGraphIndexVersion(payload.version) || payload.key !== shard.key || payload.part !== part.key) {
+        throw new Error(`Code graph shard ${shard.key} part ${part.key} does not match the current storage version.`)
+      }
+      parts.push(payload)
+    }
+    return mergeCodeGraphFileStorageParts(parts)
   }
 
   private hybridOptions(): HybridRetrievalOptions {
@@ -2319,10 +2369,10 @@ export class LocalCodeGraphService implements vscode.Disposable {
         dimension: savedIndex.dimension,
         chunks: shard.chunks,
       }
-      await vscode.workspace.fs.writeFile(vscode.Uri.joinPath(shardsDir, `${shard.key}.json`), encodeJson(shardMetadata))
+      await vscode.workspace.fs.writeFile(vscode.Uri.joinPath(shardsDir, `${shard.key}.json`), encodeJson(shardMetadata, `rag shard metadata ${shard.key}`))
       await vscode.workspace.fs.writeFile(vscode.Uri.joinPath(shardsDir, `${shard.key}.f32`), encodeRaw(encodeRagShardVectors(shard.vectors, savedIndex.dimension)))
     }
-    await vscode.workspace.fs.writeFile(this.ragManifestUri(root), encodeJson(manifest))
+    await vscode.workspace.fs.writeFile(this.ragManifestUri(root), encodeJson(manifest, "rag manifest"))
     return savedIndex
   }
 
@@ -2560,7 +2610,7 @@ export class LocalCodeGraphService implements vscode.Disposable {
     this.index = {
       ...this.index,
       files: {},
-      derived: this.shardedManifest.derived,
+      derived: this.index.derived,
       stats: this.shardedManifest.stats,
       storageMode: "sharded",
       schema: this.shardedManifest.schema ?? this.index.schema,
@@ -2568,17 +2618,97 @@ export class LocalCodeGraphService implements vscode.Disposable {
     this.shardCache.clear()
   }
 
-  private async cleanupOldShards(shardsDir: vscode.Uri, nextShardNames: Set<string>) {
+  private async cleanupOldShardGenerations(shardsDir: vscode.Uri, currentGeneration: string) {
     try {
       const entries = await vscode.workspace.fs.readDirectory(shardsDir)
       await Promise.all(
         entries
-          .filter(([name, type]) => type === vscode.FileType.File && !nextShardNames.has(name))
-          .map(([name]) => vscode.workspace.fs.delete(vscode.Uri.joinPath(shardsDir, name))),
+          .filter(([name]) => name !== currentGeneration)
+          .map(([name]) => vscode.workspace.fs.delete(vscode.Uri.joinPath(shardsDir, name), { recursive: true })),
       )
     } catch {
-      // Directory may not exist on first save.
+      // Cleanup is best-effort; the manifest already points at the current shard generation.
     }
+  }
+
+  private async saveDerivedSidecar(indexDir: vscode.Uri, sidecar: CodeGraphDerivedSidecarData, budget = new WorkBudget()) {
+    for (const part of sidecar.parts) {
+      this.setStatus({
+        ...this.statusValue,
+        detail: `Saving derived ${part.payload.field} part ${part.key}.`,
+        currentShard: part.payload.field,
+      })
+      await writeJsonRelative(indexDir, part.path, part.payload, `derived ${part.payload.field}`, part.key)
+      await budget.yieldIfNeeded()
+    }
+  }
+
+  private async loadDerivedSidecar(
+    indexDir: vscode.Uri,
+    manifest: CodeGraphShardManifest["derived"],
+    budget = new WorkBudget(),
+  ) {
+    try {
+      const parts: CodeGraphDerivedSidecarData["parts"] = []
+      const total = CODEGRAPH_DERIVED_SIDECAR_FIELDS.reduce((count, field) => count + (manifest.fields[field]?.length ?? 0), 0)
+      let completed = 0
+      for (const field of CODEGRAPH_DERIVED_SIDECAR_FIELDS) {
+        for (const shard of manifest.fields[field] ?? []) {
+          const payload = await readJsonRelative<CodeGraphDerivedSidecarPartData>(indexDir, shard.path)
+          parts.push({
+            key: shard.key,
+            path: shard.path,
+            entries: shard.entries,
+            estimatedBytes: shard.estimatedBytes,
+            payload,
+          })
+          completed += 1
+          if (budget.shouldYield()) {
+            this.setStatus({
+              ...this.statusValue,
+              state: "recovering",
+              enabled: true,
+              detail: `Loaded ${completed}/${total} code graph derived sidecar part(s).`,
+              progress: { completed, total },
+              currentShard: field,
+            })
+            await budget.yieldNow()
+          }
+        }
+      }
+      return mergeCodeGraphDerivedSidecar({
+        manifest,
+        parts,
+      })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      throw new Error(`Stored code graph derived sidecar is incomplete: ${message}. Rebuild the local code graph index.`)
+    }
+  }
+
+  private async cleanupOldDerivedSidecars(derivedDir: vscode.Uri, currentGeneration: string) {
+    try {
+      const entries = await vscode.workspace.fs.readDirectory(derivedDir)
+      await Promise.all(
+        entries
+          .filter(([name]) => name !== currentGeneration)
+          .map(([name]) => vscode.workspace.fs.delete(vscode.Uri.joinPath(derivedDir, name), { recursive: true })),
+      )
+    } catch {
+      // Cleanup is best-effort; the manifest already points at the current generation.
+    }
+  }
+
+  private derivedGenerationName(updatedAt: number) {
+    return `v${INDEX_VERSION}-${Math.max(0, Math.floor(updatedAt)).toString(36)}`
+  }
+
+  private shardGenerationName(updatedAt: number) {
+    return `v${INDEX_VERSION}-${Math.max(0, Math.floor(updatedAt)).toString(36)}`
+  }
+
+  private shardDirectoryName(key: string) {
+    return shardFileName(key).replace(/\.json$/i, "") || "root"
   }
 
   private indexDir(root: vscode.WorkspaceFolder) {
@@ -2587,10 +2717,6 @@ export class LocalCodeGraphService implements vscode.Disposable {
 
   private manifestUri(root: vscode.WorkspaceFolder) {
     return vscode.Uri.joinPath(this.indexDir(root), "manifest.json")
-  }
-
-  private legacyIndexUri(root: vscode.WorkspaceFolder) {
-    return vscode.Uri.joinPath(this.context.globalStorageUri, "codegraph", `${workspaceRootKey(root)}.json`)
   }
 
   private checkpointUri(root: vscode.WorkspaceFolder) {
@@ -2622,7 +2748,7 @@ export class LocalCodeGraphService implements vscode.Disposable {
     }
     try {
       await vscode.workspace.fs.createDirectory(this.indexDir(root))
-      await vscode.workspace.fs.writeFile(this.checkpointUri(root), encodeJson(checkpoint))
+      await vscode.workspace.fs.writeFile(this.checkpointUri(root), encodeJson(checkpoint, "code graph job checkpoint"))
     } catch {
       // Checkpointing should never fail the active index job.
     }
@@ -2824,17 +2950,7 @@ function emptyIndex(root: vscode.WorkspaceFolder): CodeGraphIndex {
     updatedAt: Date.now(),
     truncated: false,
     files: {},
-    derived: {
-      functionIdsByName: {},
-      callerIdsByCallee: {},
-      includeTargetsByFile: {},
-      filePathsByInclude: {},
-      directoryStats: {},
-      symbolsByName: {},
-      symbolsByPath: {},
-      postingsByTerm: {},
-      moduleStats: {},
-    },
+    derived: emptyDerivedIndex(),
     stats: {
       files: 0,
       functions: 0,
@@ -2849,6 +2965,20 @@ function emptyIndex(root: vscode.WorkspaceFolder): CodeGraphIndex {
   }
   index.schema = createCodeGraphStorageManifest(index)
   return index
+}
+
+function emptyDerivedIndex() {
+  return {
+    functionIdsByName: {},
+    callerIdsByCallee: {},
+    includeTargetsByFile: {},
+    filePathsByInclude: {},
+    directoryStats: {},
+    symbolsByName: {},
+    symbolsByPath: {},
+    postingsByTerm: {},
+    moduleStats: {},
+  }
 }
 
 function workspaceRoot() {
@@ -3247,12 +3377,30 @@ function currentHeapUsed() {
   return typeof process !== "undefined" && typeof process.memoryUsage === "function" ? process.memoryUsage().heapUsed : 0
 }
 
-function isSupportedStoredIndexVersion(version: number) {
-  return version === 2 || version === INDEX_VERSION
+function encodeJson(value: unknown, label = "code graph JSON", part?: string) {
+  return encodeBoundedJson(value, { label, part, hardPartBytes: CODEGRAPH_JSON_HARD_PART_BYTES })
 }
 
-function encodeJson(value: unknown) {
-  return new TextEncoder().encode(JSON.stringify(value))
+async function writeJsonRelative(root: vscode.Uri, relativePath: string, value: unknown, label = "code graph JSON", part?: string) {
+  const uri = relativeUri(root, relativePath)
+  await vscode.workspace.fs.createDirectory(parentUri(uri))
+  await vscode.workspace.fs.writeFile(uri, encodeJson(value, label, part))
+}
+
+async function readJsonRelative<T>(root: vscode.Uri, relativePath: string): Promise<T> {
+  const bytes = await vscode.workspace.fs.readFile(relativeUri(root, relativePath))
+  return JSON.parse(new TextDecoder().decode(bytes)) as T
+}
+
+function relativeUri(root: vscode.Uri, relativePath: string) {
+  const parts = relativePath.replace(/\\/g, "/").split("/").filter(Boolean)
+  if (parts.length === 0 || parts.includes("..")) throw new Error(`Invalid relative storage path: ${relativePath}`)
+  return vscode.Uri.joinPath(root, ...parts)
+}
+
+function parentUri(uri: vscode.Uri) {
+  const path = uri.path.replace(/\/+$/, "").replace(/\/[^/]*$/, "") || "/"
+  return uri.with({ path })
 }
 
 function encodeRaw(value: Uint8Array) {

@@ -274,6 +274,18 @@ function settings(baseUrl: string, input: { completionModel?: string; defaultMod
       localOnlyMode: true,
       strictLocalOnlyAgent: true,
     },
+    permissions: {
+      mode: "ask",
+    },
+    tools: {
+      enabled: false,
+    },
+    skills: {
+      enabled: [],
+    },
+    mcp: {
+      enabled: false,
+    },
     completion: {
       enabled: true,
       provider: "openai-compatible",

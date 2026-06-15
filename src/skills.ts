@@ -117,16 +117,23 @@ export function parseSkillMarkdown(content: string, path = SKILL_FILE): { frontm
   }
 }
 
-export function renderSkillsForPrompt(skills: LoadedSkill[]) {
+export function renderSkillsForPrompt(skills: LoadedSkill[], options: { toolsEnabled?: boolean; exposedToolNames?: readonly string[] } = {}) {
   if (skills.length === 0) return ""
+  const toolsEnabled = options.toolsEnabled === true
+  const exposedToolNames = options.exposedToolNames ? new Set(options.exposedToolNames) : undefined
   return [
     "Enabled ChipMate skills:",
-    ...skills.map((skill) => [
-      `<skill name="${escapeAttribute(skill.name)}" path="${escapeAttribute(skill.path)}">`,
-      skill.body.trim(),
-      skill.allowedTools.length > 0 ? `\nAllowed tools requested by skill metadata: ${skill.allowedTools.join(", ")}` : "",
-      "</skill>",
-    ].join("\n")),
+    ...skills.map((skill) => {
+      const allowedTools = exposedToolNames
+        ? skill.allowedTools.filter((tool) => exposedToolNames.has(tool))
+        : skill.allowedTools
+      return [
+        `<skill name="${escapeAttribute(skill.name)}" path="${escapeAttribute(skill.path)}">`,
+        skill.body.trim(),
+        toolsEnabled && allowedTools.length > 0 ? `\nAllowed tools requested by skill metadata: ${allowedTools.join(", ")}` : "",
+        "</skill>",
+      ].join("\n")
+    }),
   ].join("\n\n")
 }
 

@@ -131,6 +131,7 @@ const {
   ragSettingsUpdates,
   readRemoteSettings,
   saveConnectionSettings,
+  saveToolsEnabled,
   saveRagSettings,
   validateRagEmbeddingBatchSize,
 } = await import("../src/settings")
@@ -183,6 +184,24 @@ describe("completion settings", () => {
   })
 })
 
+describe("tool settings", () => {
+  test("disables model tool calling by default and reads explicit enablement", () => {
+    expect(readRemoteSettings().tools.enabled).toBe(false)
+
+    configValues = new Map<string, unknown>([
+      ["tools.enabled", true],
+    ])
+
+    expect(readRemoteSettings().tools.enabled).toBe(true)
+  })
+
+  test("saves the model tool calling switch", async () => {
+    await saveToolsEnabled(true)
+
+    expect(configUpdates).toEqual([{ key: "tools.enabled", value: true }])
+  })
+})
+
 describe("RAG settings validation", () => {
   test("uses 128 as the default embedding batch size", () => {
     const settings = readRemoteSettings()
@@ -203,6 +222,7 @@ describe("RAG settings validation", () => {
   })
 
   test("derives embedding timeout from the configured batch size", () => {
+    expect(RAG_EMBEDDING_TIMEOUT_DEFAULT_MS).toBe(60000)
     for (const batchSize of [1, 5, 10, 32, 64, 128, 256]) {
       configValues = new Map<string, unknown>([
         ["rag.embedding.batchSize", batchSize],

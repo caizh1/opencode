@@ -116,6 +116,9 @@ function settings(input: { localOnlyMode: boolean; defaultAgent?: string }): Rem
     permissions: {
       mode: "ask",
     },
+    tools: {
+      enabled: false,
+    },
     skills: {
       enabled: [],
     },

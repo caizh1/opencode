@@ -2,7 +2,7 @@
   "name": "chipmate",
   "displayName": "ChipMate",
   "description": "Direct OpenAI-compatible coding agent with workspace skills for VS Code",
-  "version": "0.0.177",
+  "version": "0.0.207",
   "icon": "media/chipmate-icon.png",
   "publisher": "local",
   "license": "MIT",
@@ -197,6 +197,20 @@
           "default": true,
           "description": "Compatibility guard setting for local workspace context. ChipMate direct agent runs on the workspace extension host."
         },
+        "chipmate.context.maxHistoryTurns": {
+          "type": "number",
+          "default": 3,
+          "minimum": 0,
+          "maximum": 20,
+          "description": "Maximum recent chat turns to include before the current ChipMate chat request. Set to 0 to disable chat history context."
+        },
+        "chipmate.context.maxHistoryBytes": {
+          "type": "number",
+          "default": 12000,
+          "minimum": 0,
+          "maximum": 200000,
+          "description": "Maximum bytes of recent chat history to include before the current ChipMate chat request."
+        },
         "chipmate.permissions.mode": {
           "type": "string",
           "enum": [
@@ -211,6 +225,11 @@
           ],
           "default": "ask",
           "description": "ChipMate tool permission mode shown beside the composer."
+        },
+        "chipmate.tools.enabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "Allow the direct chat runtime to expose ChipMate workspace tools to the model. When disabled, no tool schemas are sent and returned tool calls are ignored."
         },
         "chipmate.skills.enabled": {
           "type": "array",
@@ -325,14 +344,14 @@
           "type": "number",
           "default": 50000,
           "minimum": 100,
-          "maximum": 1000000,
+          "maximum": 1e6,
           "description": "Maximum number of C/C++ files to index in the local code graph."
         },
         "chipmate.codeGraph.maxContextBytes": {
           "type": "number",
           "default": 24000,
           "minimum": 2000,
-          "maximum": 100000,
+          "maximum": 1e5,
           "description": "Maximum bytes of local code graph context to include in one direct prompt."
         },
         "chipmate.codeGraph.maxEvidenceBytes": {
@@ -374,7 +393,7 @@
           "type": "number",
           "default": 750,
           "minimum": 25,
-          "maximum": 10000,
+          "maximum": 1e4,
           "description": "Number of queued file watcher events that switches incremental indexing to one scheduled full rescan."
         },
         "chipmate.codeGraph.workerConcurrency": {
@@ -439,7 +458,7 @@
           "type": "number",
           "default": 16000,
           "minimum": 1000,
-          "maximum": 100000,
+          "maximum": 1e5,
           "description": "Maximum bytes returned from one local file slice analysis call."
         },
         "chipmate.analysis.maxGraphEdges": {
@@ -487,7 +506,7 @@
           "type": "number",
           "default": 65536,
           "minimum": 1,
-          "maximum": 1000000,
+          "maximum": 1e6,
           "description": "Estimated maximum embedding tokens sent in one RAG embedding HTTP request. This is a lightweight safety cap for large chunks."
         },
         "chipmate.rag.embedding.concurrentRequests": {
@@ -501,7 +520,7 @@
           "type": "number",
           "default": 360000,
           "minimum": 32768,
-          "maximum": 1000000,
+          "maximum": 1e6,
           "description": "Approximate maximum embedding input tokens across in-flight RAG embedding requests."
         },
         "chipmate.rag.embedding.encodingFormat": {
@@ -528,7 +547,7 @@
           "type": "number",
           "default": 8192,
           "minimum": 0,
-          "maximum": 1000000,
+          "maximum": 1e6,
           "description": "Number of newly embedded chunks between partial RAG checkpoint saves when checkpoint mode is interval. Set to 0 to disable chunk-based checkpoints."
         },
         "chipmate.rag.embedding.checkpointIntervalMs": {
@@ -540,11 +559,11 @@
         },
         "chipmate.rag.embedding.timeoutMs": {
           "type": "number",
-          "default": 30000,
+          "default": 60000,
           "minimum": 250,
           "maximum": 120000,
           "description": "Timeout for one embedding HTTP request. This value is managed automatically from chipmate.rag.embedding.batchSize.",
-          "deprecationMessage": "RAG embedding timeout is managed automatically from batch size: 32/64/128/256 use 30000ms, 512 uses 90000ms."
+          "deprecationMessage": "RAG embedding timeout is managed automatically from batch size: 1-256 use 60000ms, 512 uses 90000ms."
         },
         "chipmate.rag.embedding.requestDelayMs": {
           "type": "number",
@@ -557,7 +576,7 @@
           "type": "number",
           "default": 100,
           "minimum": 0,
-          "maximum": 100000,
+          "maximum": 1e5,
           "description": "Maximum embedding HTTP requests used by one RAG index run. Set to 0 for unlimited requests."
         },
         "chipmate.rag.embedding.maxRetries": {
@@ -689,6 +708,7 @@
     "@vscode/vsce": "^3.2.2",
     "eslint": "^9.25.1",
     "lucide": "^1.17.0",
+    "mermaid": "^11.15.0",
     "typescript": "^5.8.3"
   }
 }

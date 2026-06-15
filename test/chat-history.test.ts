@@ -20,6 +20,19 @@ describe("chat history flow", () => {
     expect(chatViewSource).toContain("client.getMessages(sessionID, SESSION_MESSAGE_LIMIT, signal)")
   })
 
+  test("deletes chat history sessions after confirmation", () => {
+    expect(chatViewSource).toContain('{ type: "deleteSession"; sessionID: string }')
+    expect(chatViewSource).toContain("private async deleteSession")
+    expect(chatViewSource).toContain('await this.deleteSession(message.sessionID)')
+    expect(chatViewSource).toContain("vscode.window.showWarningMessage")
+    expect(chatViewSource).toContain('client.deleteSession(sessionID, signal)')
+    expect(chatViewSource).toContain("await this.refreshSessionList(client)")
+    expect(chatViewSource).toContain("this.reconcileSessionSelection()")
+    expect(chatHtmlSource).toContain('deleteButton.title = "Delete chat history"')
+    expect(chatHtmlSource).toContain('deleteButton.setAttribute("aria-label", "Delete chat history")')
+    expect(chatHtmlSource).toContain('vscode.postMessage({ type: "deleteSession", sessionID: session.id })')
+  })
+
   test("refreshes session history after session-changing actions", () => {
     expect(chatViewSource).toContain("private async refreshSessionList")
     expect(chatViewSource).toContain("await this.refreshSessionList(client)")
@@ -161,6 +174,17 @@ describe("chat history flow", () => {
     expect(chatStreamSource).toContain('retry: type === "retry" ? normalizedStatus : undefined')
   })
 
+  test("surfaces interrupted active sends from stream errors and status polling", () => {
+    expect(chatViewSource).toContain("failActiveSendWithInterruption")
+    expect(chatViewSource).toContain('status?.type === "error"')
+    expect(chatViewSource).toContain("result.interruption")
+    expect(chatViewSource).toContain("[send] interrupted")
+    expect(chatViewSource).toContain("vscode.window.showWarningMessage")
+    expect(chatViewSource).toContain("对话已中断")
+    expect(chatStreamSource).toContain("interruption?: ChipMateSessionStatus")
+    expect(chatStreamSource).toContain('type === "error" && status.interrupted === true')
+  })
+
   test("renders markdown, code copy, and thinking state in the webview", () => {
     expect(chatHtmlSource).toContain("function renderMarkdownInto")
     expect(chatHtmlSource).toContain("function renderTextMarkdown")
@@ -207,19 +231,19 @@ describe("chat history flow", () => {
     expect(chatHtmlSource).toContain("hasAssistantContentAfterLastUser")
   })
 
-  test("renders message actions, outline, and large-answer controls", () => {
+  test("renders message actions and outline controls without nested long-answer scrolling", () => {
     expect(chatHtmlSource).toContain("function messageActions")
     expect(chatHtmlSource).toContain("copyAnswer")
     expect(chatHtmlSource).toContain("copyMarkdown")
     expect(chatHtmlSource).toContain("collapseMessage")
     expect(chatHtmlSource).toContain("jumpStructure")
     expect(chatHtmlSource).toContain("function toggleMessageCollapse")
-    expect(chatHtmlSource).toContain("function toggleLongMessage")
     expect(chatHtmlSource).toContain("function messageOutline")
     expect(chatHtmlSource).toContain("messageOutlineSummary")
-    expect(chatHtmlSource).toContain("messageLongHint")
-    expect(chatHtmlSource).toContain("longAnswer")
-    expect(chatHtmlSource).toContain("longExpanded")
+    expect(chatHtmlSource).not.toContain("function toggleLongMessage")
+    expect(chatHtmlSource).not.toContain("messageLongHint")
+    expect(chatHtmlSource).not.toContain("longAnswer")
+    expect(chatHtmlSource).not.toContain("longExpanded")
     expect(chatHtmlSource).toContain("function scrollToNextMessageStructure")
     expect(chatHtmlSource).toContain("function markdownToPlainText")
     expect(chatHtmlSource).toContain('aria-expanded", options.isCollapsed ? "false" : "true"')
@@ -358,10 +382,18 @@ describe("chat history flow", () => {
 
   test("collapses reasoning content into a details card", () => {
     expect(chatViewSource).toContain("splitThinkingFromParts(message.parts)")
+    expect(chatViewSource).toContain("if (split.reasoning || split.openThinking)")
     expect(chatViewSource).toContain('type: "reasoning"')
     expect(chatViewSource).toContain('title: "Thinking"')
-    expect(chatHtmlSource).toContain('part.type !== "reasoning"')
-    expect(chatHtmlSource).toContain('part.type === "reasoning" ? " reasoning" : ""')
+    expect(chatViewSource).toContain('status: split.openThinking ? "running" : undefined')
+    expect(chatViewSource).toContain("preview: split.preview")
+    expect(chatViewSource).toContain("const rawText = split.text")
+    expect(chatHtmlSource).toContain('const reasoningParts = parts.filter((part) => part.type === "reasoning");')
+    expect(chatHtmlSource).toContain('root.appendChild(partCard(part, "Thinking", "reasoning"));')
+    expect(chatHtmlSource).toContain('label.textContent = "Thinking...";')
+    expect(chatHtmlSource).toContain('preview.className = "reasoningPreview";')
+    expect(chatHtmlSource).toContain('details.className = "toolCard"')
+    expect(chatHtmlSource).toContain('+ (part.status === "running" ? " is-running" : "");')
   })
 
   test("marks workspace filesystem tool usage", () => {
@@ -369,5 +401,11 @@ describe("chat history flow", () => {
     expect(chatViewSource).toContain("serverToolWarning")
     expect(chatViewSource).toContain("flaggedSessions")
     expect(chatHtmlSource).toContain("Workspace tools used")
+  })
+
+  test("normalizes legacy read tool names before rendering chat history", () => {
+    expect(chatViewSource).toContain("function displayToolName(tool: string)")
+    expect(chatViewSource).toContain('return tool === "chipmate_read_file" ? "chipmate_read" : tool')
+    expect(chatViewSource).toContain('title: displayToolName("tool" in part && typeof part.tool === "string" ? part.tool : "tool")')
   })
 })

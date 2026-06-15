@@ -9,7 +9,7 @@
 | `src/editor-context.ts` | 跟踪当前 `file` scheme 编辑器、选区和光标位置。 |
 | `src/chat-view.ts` | 聊天 webview、快捷提问命令、上下文开关、model/permission/skills 状态和发送流程。 |
 | `src/context.ts` | 构造 QA prompt、本地文件上下文、diagnostics、git diff、code graph 和 analysis evidence。 |
-| `src/direct-agent-client.ts` | 本地 agent loop、OpenAI-compatible SSE streaming、tool calls、session JSONL。 |
+| `src/direct-agent-client.ts` | 本地 agent loop、OpenAI-compatible SSE streaming、工具熔断、session JSONL。 |
 | `src/tool-runtime.ts` | workspace-host file/command/network 工具执行、审批和审计。 |
 | `src/skills.ts` | 发现 `.agents/skills/*/SKILL.md` 并按需把 enabled skills 注入 prompt。 |
 
@@ -27,7 +27,7 @@ EditorContextTracker
   -> optional retrieveChatAnalysisEvidence()
   -> DirectAgentClient.sendMessageAsync()
   -> OpenAI-compatible /chat/completions SSE
-  -> optional serial tool loop
+  -> optional serial tool loop when chipmate.tools.enabled=true
   -> globalStorage/sessions/*.jsonl
   -> globalStorage/audit/*.jsonl
 ```
@@ -39,7 +39,7 @@ EditorContextTracker
 - 等待 code graph 到达可用于聊天的状态。
 - 收集当前 selection、current file、mentions、attachments、diagnostics、git diff 和 repository evidence。
 - 加载 workspace `.agents/skills/*/SKILL.md` 中已启用的 skills。
-- 使用当前 `chipmate.permissions.mode` 决定工具是否需要逐次审批。
+- 使用 `chipmate.tools.enabled` 决定是否向模型暴露 workspace tools；工具开启后再用当前 `chipmate.permissions.mode` 决定是否需要逐次审批。
 
 ## Prompt 组成
 
@@ -72,22 +72,24 @@ Enabled ChipMate skills:
 ChipMate v1 只自动发现 workspace 内的 `.agents/skills/*/SKILL.md`。解析范围是 Agent Skills、Codex skills 与 Claude Code skills 的核心交集：
 
 - `name` / `description` frontmatter。
-- `allowed-tools` 作为提示和审计信息，不绕过用户权限模式。
+- `allowed-tools` 只在 `chipmate.tools.enabled=true` 时作为提示和审计信息，不绕过用户权限模式；direct chat 渲染 prompt 时还会按本轮实际暴露工具过滤，目前只会保留 `chipmate_read`。
 - 渐进加载：列表只展示元信息，启用后才把正文注入 prompt。
 - 保留 `scripts/`、`references/`、`assets/` 目录结构，模型需要执行脚本时仍通过工具审批路径。
 - 动态 `!command` 只作为 skill 文本中的运行提示，实际执行仍进入 command tool 权限判断。
 
 ## Tools 与权限
 
-v1 暴露三类工具：
+QA 默认 evidence 先行：首轮请求仍由 `buildChatPrompt()` 发送本地上下文、code graph evidence 和 analysis evidence pack。工具只用于模型发现证据不完整时补充读取 workspace 文件。
 
-- file：读取和写入 workspace host 文件。
-- command：使用平台默认 shell 运行命令。
-- network：从 workspace host 发起 HTTP 请求。
+当前 direct chat 只向模型暴露一个工具：
+
+- `chipmate_read`：读取 workspace host 上的 UTF-8 文本文件，用于补齐本地代码证据。
+
+写文件、命令执行和 HTTP 请求的 runtime 实现可能仍作为内部/未来扩展点存在，但不会作为 chat tool definition 发给模型。`chipmate.tools.enabled` 默认 `false`。关闭时，模型请求不包含 `tools` 和 `tool_choice`，即使 provider 返回 `tool_calls` 也不会执行、不会追加 `role: "tool"` 消息、不会进入下一轮工具循环。开启后，请求体也只包含 `chipmate_read`；如果 provider 返回未暴露的工具调用，direct chat 会返回 blocked tool result，不进入真实执行。
 
 权限模式：
 
-- `请求批准`：低风险 workspace 读文件自动放行；写文件、命令、网络逐次审批。
+- `请求批准`：当前暴露的低风险 workspace 读文件自动放行；未暴露的写文件、命令、网络不会从 direct chat 进入真实执行。
 - `替我审批`：低风险操作自动放行，高风险操作仍逐次审批。
 - `完全访问权限`：不拦截、不询问，只写审计日志。
 
@@ -113,7 +115,9 @@ v1 暴露三类工具：
 
 当 `chipmate.codeGraph.enabled` 开启时，QA prompt 会尝试加入 `Local code graph evidence`。当 RAG embedding/rerank 可用时，analysis evidence 还可能来自 exact/path/symbol、BM25/postings、graph evidence、vector candidates 和 rerank trace。
 
-这些 evidence 只作为 prompt 中的本地证据文本发送给模型。模型不应绕过工具权限读取文件；如果需要额外文件、命令或网络访问，必须通过标准 tool call 进入权限审批和审计流程。
+QA analysis evidence 使用用户原始问题和本次本地上下文里的 related paths 发起检索，不套用 inline completion 的 `body-statement`、comment-guided 或 symbol-prefix 查询语义。模块级、文件级和状态机问题应按 QA 的问题类型检索证据，而不是按“当前光标要插入什么代码”检索。
+
+这些 evidence 只作为 prompt 中的本地证据文本发送给模型。模型不应绕过工具权限读取文件；如果工具关闭且证据不足，应说明缺失内容并要求用户打开、附加或 `@mention` 文件。工具开启后，模型只能通过 `chipmate_read` 补读 workspace 文件；需要写文件、命令、网络或其他外部动作时，应说明需要用户或后续模式提供额外能力。
 
 ## 与 Inline Completion 的差异
 
