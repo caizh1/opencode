@@ -17,6 +17,11 @@ describe("extension manifest", () => {
     expect(JSON.stringify(manifest)).not.toContain("opencode.openTerminal")
   })
 
+  test("supports VS Code 1.93 and later 1.x releases", () => {
+    expect(manifest.engines?.vscode).toBe("^1.93.0")
+    expect(manifest.devDependencies?.["@types/vscode"]).toBe("1.93.0")
+  })
+
   test("runs as a workspace extension for local and Remote SSH workspace hosts", () => {
     expect(manifest.extensionKind).toEqual(["workspace"])
     expect(manifest.activationEvents).toContain("onStartupFinished")
@@ -75,17 +80,19 @@ describe("extension manifest", () => {
     })
     expect(properties["chipmate.completion.provider"]).toBeUndefined()
     expect(properties["chipmate.completion.apiBaseUrl"]).toBeUndefined()
-    expect(properties["chipmate.completion.model"]?.default).toBe("")
+    expect(properties["chipmate.completion.model"]?.default).toBe("qwen-coder-30b0")
     expect(properties["chipmate.completion.logLevel"]?.enum).toEqual(["off", "info", "debug"])
     expect(properties["chipmate.codeGraph.enabled"]?.default).toBe(true)
     expect(properties["chipmate.codeGraph.analysisMode"]?.enum).toEqual(["auto", "fast", "ast", "semantic"])
     expect(properties["chipmate.analysis.bridge.enabled"]).toBeUndefined()
     expect(properties["chipmate.analysis.maxEvidenceItems"]?.default).toBe(40)
     expect(properties["chipmate.rag.embedding.endpoint"]?.type).toBe("string")
+    expect(properties["chipmate.rag.embedding.model"]?.default).toBe("qwen3-embedding-8b")
     expect(properties["chipmate.rag.embedding.batchSize"]?.enum).toEqual([1, 5, 10, 32, 64, 128, 256, 512])
     expect(properties["chipmate.rag.embedding.timeoutMs"]?.default).toBe(60000)
     expect(properties["chipmate.rag.embedding.timeoutMs"]?.deprecationMessage).toContain("1-256 use 60000ms")
     expect(properties["chipmate.rag.allowedHosts"]?.type).toBe("array")
+    expect(properties["chipmate.rag.rerank.model"]?.default).toBe("qwen3-rerank-8b")
   })
 
   test("contributes the ChipMate activity bar container and chip-related assets", () => {

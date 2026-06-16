@@ -115,12 +115,10 @@ type ChatViewMessage =
       type: "saveCompletionSettings" | "testCompletionApi"
       settings: CompletionSettingsInput
     }
-  | { type: "setCompletionApiKey" }
   | {
       type: "saveRagSettings" | "testRagSettings"
       settings: RagSettingsInput
     }
-  | { type: "setRagApiKey" }
   | { type: "saveSkillsSettings"; enabled: string[] }
   | { type: "savePermissionMode"; mode: PermissionMode }
   | { type: "saveToolsEnabled"; enabled: boolean }
@@ -178,9 +176,7 @@ type RemoteChatViewProviderDeps = {
   codeGraph?: CodeGraphContextProvider
   getClient: () => DirectAgentClient | undefined
   getSettings: () => RemoteSettings
-  getCompletionApiKey: () => Promise<string | undefined>
-  promptCompletionApiKey: () => Promise<boolean>
-  promptRagApiKey: () => Promise<boolean>
+  getProviderApiKey: () => Promise<string | undefined>
   getEditorContext: () => TrackedEditorContext | undefined
   connectWithSettings: (input: ConnectionSettingsInput) => Promise<void>
   testWithSettings: (input: ConnectionSettingsInput) => Promise<void>
@@ -945,9 +941,6 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
         case "saveCompletionSettings":
           await this.saveCompletionSettings(message.settings)
           break
-        case "setCompletionApiKey":
-          await this.setCompletionApiKey()
-          break
         case "testCompletionApi":
           await this.testCompletionApi(message.settings)
           break
@@ -956,9 +949,6 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
           break
         case "testRagSettings":
           await this.testRagSettings(message.settings)
-          break
-        case "setRagApiKey":
-          await this.setRagApiKey()
           break
         case "saveSkillsSettings":
           await this.saveSkillsSettings(message.enabled)
@@ -1070,12 +1060,6 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
     }
   }
 
-  private async setCompletionApiKey() {
-    const saved = await this.deps.promptCompletionApiKey()
-    this.postCompletionStatus(saved ? "Inline completion API key saved." : "Inline completion API key unchanged.")
-    this.postState()
-  }
-
   private async testCompletionApi(input: CompletionSettingsInput) {
     await saveCompletionSettings(input)
     const settings = this.deps.getSettings()
@@ -1087,7 +1071,7 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
     }
 
     try {
-      const client = new CompletionModelClient(settings, await this.deps.getCompletionApiKey())
+      const client = new CompletionModelClient(settings, await this.deps.getProviderApiKey())
       const prompt = settings.completion.profile === "qwen-coder-fim"
         ? [
             "<|repo_name|>chipmate-test",
@@ -1197,12 +1181,6 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
     } finally {
       this.postState()
     }
-  }
-
-  private async setRagApiKey() {
-    const saved = await this.deps.promptRagApiKey()
-    this.postRagStatus(saved ? "RAG API key saved." : "RAG API key unchanged.")
-    this.postState()
   }
 
   private async saveSkillsSettings(enabled: string[]) {

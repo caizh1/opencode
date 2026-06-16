@@ -13,10 +13,10 @@ import { addPickedFilesToContext, LocalContextStore } from "./context"
 import { DirectAgentClient } from "./direct-agent-client"
 import { EditorContextTracker } from "./editor-context"
 import {
-  promptAndSaveCompletionApiKey,
-  promptAndSaveRagApiKey,
-  readCompletionApiKey,
-  readRagApiKey,
+  connectionInputHasPassword,
+  migrateLegacyRagApiKey,
+  promptAndSaveProviderApiKey,
+  readProviderApiKey,
   readRemoteSettings,
   saveConnectionSettings,
   settingsFromConnectionInput,
@@ -47,6 +47,13 @@ export async function activate(context: vscode.ExtensionContext) {
   status.command = CHIPMATE_COMMANDS.openChat
   context.subscriptions.push(output, status, editorContextTracker)
   registerExtensionUpdateReloadPrompt(context, output)
+  try {
+    const migrated = await migrateLegacyRagApiKey(context)
+    if (migrated) output.appendLine("[provider] migrated legacy RAG credential to provider API key")
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    output.appendLine(`[provider] legacy RAG credential migration failed: ${message}`)
+  }
 
   const getSettings = () => readRemoteSettings()
   const audit = new AuditLog(context)
@@ -56,7 +63,7 @@ export async function activate(context: vscode.ExtensionContext) {
     context,
     output,
     getSettings,
-    getApiKey: () => readCompletionApiKey(context),
+    getApiKey: () => readProviderApiKey(context),
     skills,
     tools,
   })
@@ -79,7 +86,9 @@ export async function activate(context: vscode.ExtensionContext) {
     return health.healthy
   }
   const connectWithSettings = async (input: ConnectionSettingsInput) => {
+    const providerKeyTouched = connectionInputHasPassword(input)
     await saveConnectionSettings(context, input)
+    if (providerKeyTouched) await refreshRagProvidersAfterProviderKeyChange()
     await refreshProviderState()
   }
   const testWithSettings = async (input: ConnectionSettingsInput) => {
@@ -88,12 +97,22 @@ export async function activate(context: vscode.ExtensionContext) {
       setConnectionState("error", "Provider API base URL and chat model are required.")
       return
     }
+    const providerKeyTouched = connectionInputHasPassword(input)
     await saveConnectionSettings(context, input)
+    if (providerKeyTouched) await refreshRagProvidersAfterProviderKeyChange()
     await refreshProviderState()
   }
 
-  const codeGraph = new LocalCodeGraphService(context, output, getSettings, () => readRagApiKey(context), () => chatProvider?.refreshCodeGraphStatus())
+  const codeGraph = new LocalCodeGraphService(context, output, getSettings, () => readProviderApiKey(context), () => chatProvider?.refreshCodeGraphStatus())
   context.subscriptions.push(codeGraph)
+  async function refreshRagProvidersAfterProviderKeyChange() {
+    try {
+      await codeGraph.applyRagConfiguration()
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      output.appendLine(`[rag] provider API key refresh failed: ${message}`)
+    }
+  }
   let ragConfigurationApplyTimer: ReturnType<typeof setTimeout> | undefined
   let ignoreRagConfigurationChangesUntil = 0
   const suppressNextRagConfigurationApply = () => {
@@ -126,18 +145,7 @@ export async function activate(context: vscode.ExtensionContext) {
     getClient: () => client,
     getSettings,
     getEditorContext: () => editorContextTracker.snapshot(),
-    getCompletionApiKey: () => readCompletionApiKey(context),
-    promptCompletionApiKey: async () => {
-      const saved = await promptAndSaveCompletionApiKey(context)
-      if (saved) vscode.window.setStatusBarMessage("ChipMate provider API key saved", 2000)
-      return saved
-    },
-    promptRagApiKey: async () => {
-      const saved = await promptAndSaveRagApiKey(context)
-      if (saved) vscode.window.setStatusBarMessage("RAG API key saved", 2000)
-      if (saved) await codeGraph.applyRagConfiguration()
-      return saved
-    },
+    getProviderApiKey: () => readProviderApiKey(context),
     connectWithSettings,
     testWithSettings,
     setConnectionState,
@@ -211,13 +219,14 @@ export async function activate(context: vscode.ExtensionContext) {
       vscode.window.setStatusBarMessage("Cleared ChipMate context", 2000)
     }),
     vscode.commands.registerCommand(CHIPMATE_COMMANDS.openOutput, () => output.show(false)),
-    vscode.commands.registerCommand(CHIPMATE_COMMANDS.setProviderApiKey, async () => {
-      const saved = await promptAndSaveCompletionApiKey(context)
-      if (saved) {
-        vscode.window.setStatusBarMessage("ChipMate provider API key saved", 2000)
-        chatProvider.refreshState()
-      }
-    }),
+	    vscode.commands.registerCommand(CHIPMATE_COMMANDS.setProviderApiKey, async () => {
+	      const saved = await promptAndSaveProviderApiKey(context)
+	      if (saved) {
+	        vscode.window.setStatusBarMessage("ChipMate provider API key saved", 2000)
+	        await refreshRagProvidersAfterProviderKeyChange()
+	        chatProvider.refreshState()
+	      }
+	    }),
     vscode.commands.registerCommand(CHIPMATE_COMMANDS.completionRunDirectAblation, async () => {
       await runDirectQwenAblationCommand(context, output)
     }),
@@ -264,7 +273,7 @@ export async function activate(context: vscode.ExtensionContext) {
     context.subscriptions.push(
       vscode.languages.registerInlineCompletionItemProvider(
         { scheme: "file" },
-        new RemoteCompletionProvider({ getClient: () => client, getCompletionApiKey: () => readCompletionApiKey(context), getSettings, codeGraph, output, extensionVersion }),
+	        new RemoteCompletionProvider({ getClient: () => client, getProviderApiKey: () => readProviderApiKey(context), getSettings, codeGraph, output, extensionVersion }),
       ),
     )
   } catch (error) {
@@ -373,7 +382,7 @@ function readPackageJsonVersion(packageJSON: unknown) {
 
 async function runDirectQwenAblationCommand(context: vscode.ExtensionContext, output: vscode.OutputChannel) {
   const settings = readRemoteSettings()
-  const apiKey = await readCompletionApiKey(context)
+  const apiKey = await readProviderApiKey(context)
   const apiBaseUrl = settings.provider.apiBaseUrl.trim()
   const model = settings.completion.model.trim() || settings.provider.chatModel.trim()
   if (!apiBaseUrl || !model) {

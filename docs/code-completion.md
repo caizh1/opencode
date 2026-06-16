@@ -24,7 +24,7 @@ src/extension.ts
   -> InlineCompletionItem + structured telemetry
 ```
 
-模型请求只走 OpenAI-compatible provider。补全和聊天共享 `chipmate.provider.apiBaseUrl` 与 SecretStorage 中的 provider API key；补全模型由 `chipmate.completion.model` 指定，未设置时回退到 `chipmate.provider.chatModel`。
+模型请求只走 OpenAI-compatible provider。补全、聊天和 RAG 共享 `chipmate.provider.apiBaseUrl` 与 SecretStorage 中的 provider API key；用户只需要在 Provider/Chat 设置中保存一次 key。补全模型由 `chipmate.completion.model` 指定，未设置时默认使用 `qwen-coder-30b0`。
 
 ## 核心原则
 
@@ -64,7 +64,7 @@ src/extension.ts
 | --- | --- |
 | `chipmate.completion.enabled` | 是否启用 inline completion。 |
 | `chipmate.completion.profile` | 补全文本协议：`generic-chat` 或 `qwen-coder-fim`。 |
-| `chipmate.completion.model` | completion 模型名；为空时回退聊天模型。 |
+| `chipmate.completion.model` | completion 模型名；为空时使用 `qwen-coder-30b0`。 |
 | `chipmate.completion.maxTokens` | completion 最大输出 token。 |
 | `chipmate.completion.temperature` | completion temperature。 |
 | `chipmate.completion.topP` | completion top-p。 |
@@ -74,9 +74,9 @@ src/extension.ts
 | `chipmate.completion.debugExpectedSymbol` | debug probe 中检查目标 symbol 是否进入各阶段。 |
 | `chipmate.completion.commentGuidedRetrievalMode` | comment-guided C code 的 retrieval shape。 |
 | `chipmate.provider.apiBaseUrl` | OpenAI-compatible base URL。 |
-| `chipmate.provider.chatModel` | 聊天模型，也是 completion model 的 fallback。 |
+| `chipmate.provider.chatModel` | 聊天模型。 |
 
-API key 通过 `ChipMate: Set Provider API Key` 保存到 VS Code SecretStorage，key 不写入 settings JSON。
+API key 通过 Provider 设置面板或 `ChipMate: Set Provider API Key` 保存到 VS Code SecretStorage，key 不写入 settings JSON，并同时供 chat、inline completion、RAG embedding 和 RAG rerank 使用。
 
 ## 请求生命周期
 

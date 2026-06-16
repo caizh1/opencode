@@ -4,7 +4,7 @@ ChipMate 是一个运行在 VS Code `workspace` extension host 内的直连 Open
 
 ## 核心能力
 
-- OpenAI-compatible provider：共享 `chipmate.provider.apiBaseUrl` 和 SecretStorage 中的 provider API key，聊天使用 `chipmate.provider.chatModel`，补全可单独设置 `chipmate.completion.model`。
+- OpenAI-compatible provider：聊天、inline completion、RAG embedding 和 RAG rerank 共享 `chipmate.provider.apiBaseUrl` 和 SecretStorage 中的 provider API key；API key 只需要在 Provider/Chat 设置里填写一次。聊天使用 `chipmate.provider.chatModel`，补全可单独设置 `chipmate.completion.model`。
 - Direct chat runtime：使用 `/chat/completions` SSE streaming，支持停止生成、recent chat history、Mermaid fenced diagram 本地渲染、JSONL session 落盘，以及在 `chipmate.tools.enabled=true` 时启用标准 `tool_calls` 和串行工具循环。
 - Workspace sessions：聊天历史写入 VS Code global storage 的 `sessions/*.jsonl`，工具审计写入 `audit/*.jsonl`。
 - Skills：只发现当前 workspace 下 `.agents/skills/*/SKILL.md`，支持 `name`、`description`、`allowed-tools` 等核心 frontmatter、渐进加载、`scripts/`、`references/`、`assets/` 和动态 `!command` 指令说明。
@@ -23,11 +23,11 @@ ChipMate 是一个运行在 VS Code `workspace` extension host 内的直连 Open
   "chipmate.provider.chatModel": "qwen-coder",
   "chipmate.completion.enabled": true,
   "chipmate.completion.profile": "qwen-coder-fim",
-  "chipmate.completion.model": "qwen-coder-fim"
+  "chipmate.completion.model": "qwen-coder-30b0"
 }
 ```
 
-Provider API key 通过命令 `ChipMate: Set ChipMate Provider API Key` 或设置面板保存到 VS Code SecretStorage，不写入 `settings.json`。`/models` 发现失败时，ChipMate 会继续使用手填的 chat/completion model。
+Provider API key 通过命令 `ChipMate: Set ChipMate Provider API Key` 或 Provider 设置面板保存到 VS Code SecretStorage，不写入 `settings.json`。同一个 key 会用于 chat、inline completion、RAG embedding 和 RAG rerank。`/models` 发现失败时，ChipMate 会继续使用手填的 chat/completion model。
 
 ## Context
 
@@ -91,10 +91,10 @@ Codegraph 和 RAG 配置前缀均为 `chipmate.*`：
   "chipmate.codeGraph.enabled": true,
   "chipmate.codeGraph.indexTests": false,
   "chipmate.rag.embedding.endpoint": "http://127.0.0.1:8000/v1/embeddings",
-  "chipmate.rag.embedding.model": "local-embedding-model",
+  "chipmate.rag.embedding.model": "qwen3-embedding-8b",
   "chipmate.rag.indexTests": false,
   "chipmate.rag.rerank.endpoint": "http://127.0.0.1:8000/rerank",
-  "chipmate.rag.rerank.model": "local-rerank-model"
+  "chipmate.rag.rerank.model": "qwen3-rerank-8b"
 }
 ```
 

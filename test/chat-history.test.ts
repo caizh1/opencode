@@ -87,12 +87,12 @@ describe("chat history flow", () => {
     expect(chatViewSource).toContain("[codegraph] blocked send")
   })
 
-  test("handles RAG settings and API key actions from the webview", () => {
+  test("handles RAG settings actions from the webview without a separate API key path", () => {
     expect(chatViewSource).toContain('type: "saveRagSettings" | "testRagSettings"')
-    expect(chatViewSource).toContain('type: "setRagApiKey"')
+    expect(chatViewSource).not.toContain('type: "setRag' + 'ApiKey"')
     expect(chatViewSource).toContain("private async saveRagSettings")
     expect(chatViewSource).toContain("private async testRagSettings")
-    expect(chatViewSource).toContain("private async setRagApiKey")
+    expect(chatViewSource).not.toContain("private async setRag" + "ApiKey")
     expect(chatViewSource).toContain("await saveRagSettings(input)")
     expect(chatViewSource).toContain("ragSettingsInputChangesEmbeddingIdentity")
     expect(chatViewSource).toContain("ragSettingsInputMatchesCurrent(input")
@@ -107,7 +107,7 @@ describe("chat history flow", () => {
     expect(chatViewSource).toContain("this.deps.codeGraph?.testRagConfiguration()")
     expect(chatViewSource).toContain("[rag-test] testing RAG configuration")
     expect(chatViewSource).toContain("[rag-test] result:")
-    expect(chatViewSource).toContain("this.deps.promptRagApiKey()")
+    expect(chatViewSource).not.toContain("this.deps.promptRag" + "ApiKey()")
     expect(chatViewSource).toContain('type: "ragStatus"')
     expect(chatViewSource).toContain('type: "pauseRagIndexing"')
     expect(chatViewSource).toContain('type: "resumeRagIndexing"')

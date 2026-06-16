@@ -2367,20 +2367,6 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce(), bra
       bottom: 0;
       padding: 8px 0 0;
     }
-    #setRagApiKey {
-      color: var(--vscode-foreground);
-      border-color: color-mix(in srgb, var(--vscode-focusBorder) 38%, transparent);
-      background: var(--oc-soft-bg);
-    }
-    #setRagApiKey:hover,
-    #setRagApiKey:focus-visible {
-      border-color: color-mix(in srgb, var(--vscode-focusBorder) 70%, transparent);
-      background: var(--oc-hover-bg);
-    }
-    #setRagApiKey .oc-liquid-icon {
-      width: 18px;
-      height: 18px;
-    }
     .messages {
       padding: 14px 10px;
       gap: 12px;
@@ -3373,7 +3359,7 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce(), bra
               <option value="qwen-coder-fim">Qwen Coder FIM</option>
             </select></label>
             <input id="completionApiBaseUrl" type="hidden">
-            <label class="field">Model<input id="completionModel" type="text" spellcheck="false" placeholder="Qwen/Qwen3.6-27B-FP8"></label>
+            <label class="field">Model<input id="completionModel" type="text" spellcheck="false" placeholder="qwen-coder-30b0"></label>
             <label class="field">Max tokens<input id="completionMaxTokens" type="number" min="1" max="4096" step="1"></label>
             <label class="field">Temperature<input id="completionTemperature" type="number" min="0" max="2" step="0.1"></label>
             <label class="field">Top P<input id="completionTopP" type="number" min="0" max="1" step="0.05"></label>
@@ -3384,7 +3370,6 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce(), bra
             <button id="saveCompletionSettings" class="oc-icon-btn oc-liquid-btn" type="button" title="Save inline completion settings" aria-label="Save inline completion settings">${liquidIcons.save}<span class="srOnly">Save inline completion settings</span></button>
             <button id="testCompletionApi" class="oc-icon-btn oc-liquid-btn" type="button" title="Test completion API" aria-label="Test completion API">${liquidIcons.beaker}<span class="srOnly">Test completion API</span></button>
           </div>
-          <button id="setCompletionApiKey" class="oc-icon-btn oc-liquid-btn" type="button" title="Set inline completion API key" aria-label="Set inline completion API key">${liquidIcons.key}<span class="srOnly">Set inline completion API key</span></button>
         </div>
         <div id="completionDetail" class="detail" aria-live="polite"></div>
       </div>
@@ -3406,9 +3391,9 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce(), bra
         </div>
         <div class="settingsGrid">
           <label class="field">Embedding endpoint<input id="ragEmbeddingEndpoint" type="url" spellcheck="false" placeholder="http://127.0.0.1:8000/v1/embeddings"></label>
-          <label class="field">Embedding model<input id="ragEmbeddingModel" type="text" spellcheck="false" placeholder="local-embedding-model"></label>
+          <label class="field">Embedding model<input id="ragEmbeddingModel" type="text" spellcheck="false" placeholder="qwen3-embedding-8b"></label>
           <label class="field">Rerank endpoint<input id="ragRerankEndpoint" type="url" spellcheck="false" placeholder="http://127.0.0.1:8000/rerank"></label>
-          <label class="field">Rerank model<input id="ragRerankModel" type="text" spellcheck="false" placeholder="local-rerank-model"></label>
+          <label class="field">Rerank model<input id="ragRerankModel" type="text" spellcheck="false" placeholder="qwen3-rerank-8b"></label>
         </div>
         <details class="ragAdvanced">
           <summary>Advanced</summary>
@@ -3438,7 +3423,6 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce(), bra
           <button id="saveRagSettings" class="oc-icon-btn oc-liquid-btn" type="button" title="Save RAG settings" aria-label="Save RAG settings">${liquidIcons.save}<span class="srOnly">Save RAG settings</span></button>
           <button id="testRagSettings" class="oc-icon-btn oc-liquid-btn" type="button" title="Test RAG configuration" aria-label="Test RAG configuration">${liquidIcons.beaker}<span class="srOnly">Test RAG configuration</span></button>
           <button id="toggleRagIndexing" class="oc-icon-btn oc-liquid-btn" type="button" title="RAG indexing is not running" aria-label="RAG indexing is not running" disabled>${liquidIcons.pause}<span class="srOnly">RAG indexing is not running</span></button>
-          <button id="setRagApiKey" class="oc-icon-btn oc-liquid-btn" type="button" title="Set RAG API key" aria-label="Set RAG API key">${liquidIcons.key}<span class="srOnly">Set RAG API key</span></button>
           <button id="discardRagSettings" class="oc-icon-btn oc-liquid-btn" type="button" title="Reset RAG edits" aria-label="Reset RAG edits">${liquidIcons.discard}<span class="srOnly">Reset RAG edits</span></button>
         </div>
       </div>
@@ -3697,13 +3681,11 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce(), bra
 		    el("connect").addEventListener("click", () => connectOrTest("connectWithSettings"));
 		    el("test").addEventListener("click", () => connectOrTest("testWithSettings"));
 		    el("saveCompletionSettings").addEventListener("click", saveCompletionSettings);
-		    el("setCompletionApiKey").addEventListener("click", () => vscode.postMessage({ type: "setCompletionApiKey" }));
 		    el("testCompletionApi").addEventListener("click", testCompletionApi);
         el("saveSkillsSettings").addEventListener("click", saveSkillsSettings);
 			    el("saveRagSettings").addEventListener("click", saveRagSettings);
 			    el("testRagSettings").addEventListener("click", testRagSettings);
 			    el("toggleRagIndexing").addEventListener("click", toggleRagIndexing);
-			    el("setRagApiKey").addEventListener("click", () => vscode.postMessage({ type: "setRagApiKey" }));
     el("discardRagSettings").addEventListener("click", discardRagSettings);
 	    el("refresh").addEventListener("click", () => vscode.postMessage({ type: "refresh" }));
     el("syncState").addEventListener("click", () => vscode.postMessage({ type: "refresh" }));
@@ -4332,7 +4314,7 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce(), bra
 	        el("completionProvider").value = completion.provider || "openai-compatible";
 	        el("completionProfile").value = completion.profile || "qwen-coder-fim";
 	        el("completionApiBaseUrl").value = (state.provider && state.provider.apiBaseUrl) || completion.apiBaseUrl || "";
-	        el("completionModel").value = completion.model || "";
+	        el("completionModel").value = completion.model || "qwen-coder-30b0";
 	        el("completionMaxTokens").value = String(completion.maxTokens || 128);
 	        el("completionTemperature").value = String(completion.temperature ?? 0);
 	        el("completionTopP").value = String(completion.topP ?? 1);
@@ -4398,7 +4380,7 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce(), bra
 	      const rerank = rag.rerank || {};
 	      if (!userEditedRagSettings) {
 	        el("ragEmbeddingEndpoint").value = embedding.endpoint || "";
-	        el("ragEmbeddingModel").value = embedding.model || "";
+	        el("ragEmbeddingModel").value = embedding.model || "qwen3-embedding-8b";
 	        el("ragEmbeddingBatchSize").value = String(ragEmbeddingBatchSizeSelectValue(embedding.batchSize));
 	        el("ragEmbeddingMaxTokensPerRequest").value = String(embedding.maxTokensPerRequest ?? RAG_EMBEDDING_MAX_TOKENS_PER_REQUEST_DEFAULT);
 	        el("ragEmbeddingConcurrentRequests").value = String(embedding.concurrentRequests ?? RAG_EMBEDDING_CONCURRENT_REQUESTS_DEFAULT);
@@ -4415,7 +4397,7 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce(), bra
 	        el("ragIndexTests").checked = rag.indexTests === true;
 	        el("ragEmbeddingResumeDelayMs").value = String(embedding.resumeDelayMs ?? 60000);
 	        el("ragRerankEndpoint").value = rerank.endpoint || "";
-	        el("ragRerankModel").value = rerank.model || "";
+	        el("ragRerankModel").value = rerank.model || "qwen3-rerank-8b";
 	        el("ragAllowedHosts").value = (rag.allowedHosts || []).join(", ");
 	        el("ragVectorTopK").value = String(rag.vectorTopK ?? 24);
 	        el("ragRerankTopK").value = String(rag.rerankTopK ?? 16);

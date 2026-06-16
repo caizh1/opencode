@@ -2,12 +2,12 @@
   "name": "chipmate",
   "displayName": "ChipMate",
   "description": "Direct OpenAI-compatible coding agent with workspace skills for VS Code",
-  "version": "0.0.211",
+  "version": "0.0.214",
   "icon": "media/chipmate-icon.png",
   "publisher": "local",
   "license": "MIT",
   "engines": {
-    "vscode": "^1.94.0"
+    "vscode": "^1.93.0"
   },
   "categories": [
     "AI",
@@ -260,8 +260,8 @@
         },
         "chipmate.completion.model": {
           "type": "string",
-          "default": "",
-          "description": "Optional inline completion model. Falls back to chipmate.provider.chatModel when empty."
+          "default": "qwen-coder-30b0",
+          "description": "Inline completion model used for Qwen FIM requests. Uses qwen-coder-30b0 when empty."
         },
         "chipmate.completion.maxTokens": {
           "type": "number",
@@ -487,8 +487,8 @@
         },
         "chipmate.rag.embedding.model": {
           "type": "string",
-          "default": "",
-          "description": "Embedding model name sent to the local or intranet embedding endpoint."
+          "default": "qwen3-embedding-8b",
+          "description": "Embedding model name sent to the local or intranet embedding endpoint. Uses qwen3-embedding-8b when empty."
         },
         "chipmate.rag.embedding.batchSize": {
           "type": "number",
@@ -617,8 +617,8 @@
         },
         "chipmate.rag.rerank.model": {
           "type": "string",
-          "default": "",
-          "description": "Rerank model name sent to the local or intranet rerank endpoint."
+          "default": "qwen3-rerank-8b",
+          "description": "Rerank model name sent to the local or intranet rerank endpoint. Uses qwen3-rerank-8b when empty."
         },
         "chipmate.rag.allowedHosts": {
           "type": "array",
@@ -711,7 +711,7 @@
   "devDependencies": {
     "@types/mocha": "^10.0.10",
     "@types/node": "20.x",
-    "@types/vscode": "^1.94.0",
+    "@types/vscode": "1.93.0",
     "@typescript-eslint/eslint-plugin": "^8.31.1",
     "@typescript-eslint/parser": "^8.31.1",
     "@vscode/test-electron": "^2.5.2",

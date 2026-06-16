@@ -34,7 +34,7 @@ EditorContextTracker
 
 发送前 `sendMessage()` 会做这些准备：
 
-- 读取 `chipmate.provider.*` 和 SecretStorage 中的 provider API key。
+- 读取 `chipmate.provider.*` 和 SecretStorage 中的 provider API key；同一个 key 也供 inline completion、RAG embedding 和 RAG rerank 使用。
 - 选择当前聊天模型。
 - 等待 code graph 到达可用于聊天的状态。
 - 收集当前 selection、current file、mentions、attachments、diagnostics、git diff 和 repository evidence。

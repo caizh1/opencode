@@ -4,7 +4,10 @@ import { RAG_EMBEDDING_MAX_TOKENS_PER_REQUEST_DEFAULT } from "./rag-token"
 import type { CodeGraphAnalysisMode, CompletionCommentGuidedRetrievalMode, CompletionLogLevel, CompletionProfile, CompletionProvider, PermissionMode, RagEmbeddingCheckpointMode, RagEmbeddingEncodingFormat, RemoteSettings } from "./types"
 
 export const PASSWORD_SECRET_KEY = "chipmate.provider.legacyPassword"
-export const COMPLETION_API_KEY_SECRET_KEY = PROVIDER_API_KEY_SECRET_KEY
+export const LEGACY_RAG_API_KEY_SECRET_KEY = RAG_API_KEY_SECRET_KEY
+export const DEFAULT_COMPLETION_MODEL = "qwen-coder-30b0"
+export const DEFAULT_RAG_EMBEDDING_MODEL = "qwen3-embedding-8b"
+export const DEFAULT_RAG_RERANK_MODEL = "qwen3-rerank-8b"
 export const RAG_EMBEDDING_BATCH_SIZE_DEFAULT = 128
 export const RAG_EMBEDDING_BATCH_SIZE_OPTIONS = [1, 5, 10, 32, 64, 128, 256, 512] as const
 export const RAG_EMBEDDING_BATCH_SIZE_MIN = 1
@@ -151,12 +154,12 @@ export function readRemoteSettings(): RemoteSettings {
     mcp: {
       enabled: false,
     },
-    completion: {
-      enabled: config.get<boolean>("completion.enabled", false),
-      provider: readCompletionProvider(config.get<string>("completion.provider", "openai-compatible")),
-      profile: readCompletionProfile(config.get<string>("completion.profile", "qwen-coder-fim")),
-      apiBaseUrl: providerApiBaseUrl,
-      model: config.get<string>("completion.model", "").trim(),
+	    completion: {
+	      enabled: config.get<boolean>("completion.enabled", false),
+	      provider: readCompletionProvider(config.get<string>("completion.provider", "openai-compatible")),
+	      profile: readCompletionProfile(config.get<string>("completion.profile", "qwen-coder-fim")),
+	      apiBaseUrl: providerApiBaseUrl,
+	      model: readDefaultedString(config.get<string>("completion.model", DEFAULT_COMPLETION_MODEL), DEFAULT_COMPLETION_MODEL),
       maxTokens: Math.max(1, Math.min(4096, config.get<number>("completion.maxTokens", 128))),
       temperature: Math.max(0, Math.min(2, config.get<number>("completion.temperature", 0))),
       topP: Math.max(0, Math.min(1, config.get<number>("completion.topP", 1))),
@@ -197,11 +200,11 @@ export function readRemoteSettings(): RemoteSettings {
       maxGraphEdges: Math.max(10, Math.min(1000, config.get<number>("analysis.maxGraphEdges", 120))),
       maxPaths: Math.max(1, Math.min(50, config.get<number>("analysis.maxPaths", 10))),
     },
-    rag: {
-      embedding: {
-        enabled: Boolean(ragEmbeddingEndpoint) && !ragEmbeddingBatchSize.configError,
-        endpoint: ragEmbeddingEndpoint,
-        model: config.get<string>("rag.embedding.model", "").trim(),
+	    rag: {
+	      embedding: {
+	        enabled: Boolean(ragEmbeddingEndpoint) && !ragEmbeddingBatchSize.configError,
+	        endpoint: ragEmbeddingEndpoint,
+	        model: readDefaultedString(config.get<string>("rag.embedding.model", DEFAULT_RAG_EMBEDDING_MODEL), DEFAULT_RAG_EMBEDDING_MODEL),
         batchSize: ragEmbeddingBatchSize.batchSize,
         maxTokensPerRequest: clampInteger(config.get<number>("rag.embedding.maxTokensPerRequest", RAG_EMBEDDING_MAX_TOKENS_PER_REQUEST_DEFAULT), 1, 1_000_000, RAG_EMBEDDING_MAX_TOKENS_PER_REQUEST_DEFAULT),
         concurrentRequests: clampInteger(config.get<number>("rag.embedding.concurrentRequests", RAG_EMBEDDING_CONCURRENT_REQUESTS_DEFAULT), RAG_EMBEDDING_CONCURRENT_REQUESTS_MIN, RAG_EMBEDDING_CONCURRENT_REQUESTS_MAX, RAG_EMBEDDING_CONCURRENT_REQUESTS_DEFAULT),
@@ -219,10 +222,10 @@ export function readRemoteSettings(): RemoteSettings {
         resumeAutomatically: config.get<boolean>("rag.embedding.resumeAutomatically", true),
         resumeDelayMs: Math.max(0, Math.min(3600000, config.get<number>("rag.embedding.resumeDelayMs", 60000))),
       },
-      rerank: {
-        enabled: Boolean(ragRerankEndpoint),
-        endpoint: ragRerankEndpoint,
-        model: config.get<string>("rag.rerank.model", "").trim(),
+	      rerank: {
+	        enabled: Boolean(ragRerankEndpoint),
+	        endpoint: ragRerankEndpoint,
+	        model: readDefaultedString(config.get<string>("rag.rerank.model", DEFAULT_RAG_RERANK_MODEL), DEFAULT_RAG_RERANK_MODEL),
       },
       allowedHosts: readStringArray(config.get<unknown>("rag.allowedHosts", [])),
       indexTests: config.get<boolean>("rag.indexTests", false),
@@ -250,33 +253,34 @@ export async function writeRemotePassword(context: vscode.ExtensionContext, pass
   await context.secrets.delete(PASSWORD_SECRET_KEY)
 }
 
-export async function readCompletionApiKey(context: vscode.ExtensionContext) {
-  return context.secrets.get(COMPLETION_API_KEY_SECRET_KEY)
+export async function readProviderApiKey(context: vscode.ExtensionContext) {
+  return context.secrets.get(PROVIDER_API_KEY_SECRET_KEY)
 }
 
-export async function readRagApiKey(context: vscode.ExtensionContext) {
-  return context.secrets.get(RAG_API_KEY_SECRET_KEY)
-}
-
-export async function writeCompletionApiKey(context: vscode.ExtensionContext, apiKey: string | undefined) {
+export async function writeProviderApiKey(context: vscode.ExtensionContext, apiKey: string | undefined) {
   const value = apiKey?.trim()
   if (value) {
-    await context.secrets.store(COMPLETION_API_KEY_SECRET_KEY, value)
+    await context.secrets.store(PROVIDER_API_KEY_SECRET_KEY, value)
     return
   }
-  await context.secrets.delete(COMPLETION_API_KEY_SECRET_KEY)
+  await context.secrets.delete(PROVIDER_API_KEY_SECRET_KEY)
 }
 
-export async function writeRagApiKey(context: vscode.ExtensionContext, apiKey: string | undefined) {
-  const value = apiKey?.trim()
-  if (value) {
-    await context.secrets.store(RAG_API_KEY_SECRET_KEY, value)
-    return
+export async function migrateLegacyRagApiKey(context: vscode.ExtensionContext) {
+  const [providerKey, legacyRagKey] = await Promise.all([
+    context.secrets.get(PROVIDER_API_KEY_SECRET_KEY),
+    context.secrets.get(LEGACY_RAG_API_KEY_SECRET_KEY),
+  ])
+  const providerValue = providerKey?.trim()
+  const legacyValue = legacyRagKey?.trim()
+  if (legacyValue && !providerValue) {
+    await context.secrets.store(PROVIDER_API_KEY_SECRET_KEY, legacyValue)
   }
-  await context.secrets.delete(RAG_API_KEY_SECRET_KEY)
+  if (legacyRagKey !== undefined) await context.secrets.delete(LEGACY_RAG_API_KEY_SECRET_KEY)
+  return Boolean(legacyValue && !providerValue)
 }
 
-export async function promptAndSaveCompletionApiKey(context: vscode.ExtensionContext) {
+export async function promptAndSaveProviderApiKey(context: vscode.ExtensionContext) {
   const apiKey = await vscode.window.showInputBox({
     title: "ChipMate provider API key",
     prompt: "Bearer token for the OpenAI-compatible provider. Leave empty to clear it.",
@@ -284,19 +288,7 @@ export async function promptAndSaveCompletionApiKey(context: vscode.ExtensionCon
     ignoreFocusOut: true,
   })
   if (apiKey === undefined) return false
-  await writeCompletionApiKey(context, apiKey || undefined)
-  return true
-}
-
-export async function promptAndSaveRagApiKey(context: vscode.ExtensionContext) {
-  const apiKey = await vscode.window.showInputBox({
-    title: "RAG API key",
-    prompt: "Bearer token for the embedding and rerank HTTP services. Leave empty to clear it.",
-    password: true,
-    ignoreFocusOut: true,
-  })
-  if (apiKey === undefined) return false
-  await writeRagApiKey(context, apiKey || undefined)
+  await writeProviderApiKey(context, apiKey || undefined)
   return true
 }
 
@@ -342,7 +334,7 @@ export async function saveConnectionSettings(context: vscode.ExtensionContext, i
   const config = vscode.workspace.getConfiguration(CHIPMATE_CONFIG_SECTION)
   await config.update("provider.apiBaseUrl", settings.serverUrl, vscode.ConfigurationTarget.Global)
   await config.update("provider.chatModel", settings.defaultModel, vscode.ConfigurationTarget.Global)
-  if (connectionInputHasPassword(input)) await writeCompletionApiKey(context, input.password?.trim() || undefined)
+  if (connectionInputHasPassword(input)) await writeProviderApiKey(context, input.password?.trim() || undefined)
 }
 
 export function connectionInputHasPassword(input: ConnectionSettingsInput) {
@@ -354,7 +346,7 @@ export async function saveCompletionSettings(input: CompletionSettingsInput) {
   await config.update("completion.enabled", input.enabled, vscode.ConfigurationTarget.Global)
   await config.update("completion.profile", readCompletionProfile(input.profile), vscode.ConfigurationTarget.Global)
   if (input.apiBaseUrl !== undefined) await config.update("provider.apiBaseUrl", normalizeServerUrl(input.apiBaseUrl), vscode.ConfigurationTarget.Global)
-  await config.update("completion.model", input.model.trim(), vscode.ConfigurationTarget.Global)
+  await config.update("completion.model", readDefaultedString(input.model, DEFAULT_COMPLETION_MODEL), vscode.ConfigurationTarget.Global)
   await config.update("completion.maxTokens", Math.max(1, Math.min(4096, Math.floor(input.maxTokens))), vscode.ConfigurationTarget.Global)
   await config.update("completion.temperature", Math.max(0, Math.min(2, input.temperature)), vscode.ConfigurationTarget.Global)
   await config.update("completion.topP", Math.max(0, Math.min(1, input.topP)), vscode.ConfigurationTarget.Global)
@@ -430,7 +422,7 @@ export function normalizeRagSettingsInput(input: RagSettingsInput): NormalizedRa
   const embeddingBatchSize = validateRagEmbeddingBatchSize(input.embeddingBatchSize)
   return {
     embeddingEndpoint: normalizeServerUrl(input.embeddingEndpoint),
-    embeddingModel: input.embeddingModel.trim(),
+    embeddingModel: readDefaultedString(input.embeddingModel, DEFAULT_RAG_EMBEDDING_MODEL),
     embeddingBatchSize,
     embeddingMaxTokensPerRequest: clampInteger(input.embeddingMaxTokensPerRequest, 1, 1_000_000, RAG_EMBEDDING_MAX_TOKENS_PER_REQUEST_DEFAULT),
     embeddingConcurrentRequests: clampInteger(input.embeddingConcurrentRequests, RAG_EMBEDDING_CONCURRENT_REQUESTS_MIN, RAG_EMBEDDING_CONCURRENT_REQUESTS_MAX, RAG_EMBEDDING_CONCURRENT_REQUESTS_DEFAULT),
@@ -447,7 +439,7 @@ export function normalizeRagSettingsInput(input: RagSettingsInput): NormalizedRa
     embeddingResumeAutomatically: Boolean(input.embeddingResumeAutomatically),
     embeddingResumeDelayMs: clampInteger(input.embeddingResumeDelayMs, 0, 3600000, 60000),
     rerankEndpoint: normalizeServerUrl(input.rerankEndpoint),
-    rerankModel: input.rerankModel.trim(),
+    rerankModel: readDefaultedString(input.rerankModel, DEFAULT_RAG_RERANK_MODEL),
     allowedHosts: cleanStringArray(input.allowedHosts),
     indexTests: Boolean(input.indexTests),
     vectorTopK: clampInteger(input.vectorTopK, 0, 200, 24),
@@ -517,6 +509,11 @@ export function normalizeServerUrl(input: string) {
   const value = input.trim()
   if (!value) return ""
   return value.replace(/\/+$/, "")
+}
+
+function readDefaultedString(input: string | undefined, fallback: string) {
+  const value = input?.trim() ?? ""
+  return value || fallback
 }
 
 function readCompletionLogLevel(input: string): CompletionLogLevel {

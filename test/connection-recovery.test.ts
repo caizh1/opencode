@@ -15,7 +15,7 @@ describe("ChipMate direct runtime wiring", () => {
     expect(extensionSource).toContain("new SkillRegistry")
     expect(extensionSource).toContain("new ToolRuntime")
     expect(extensionSource).toContain("new AuditLog")
-    expect(extensionSource).toContain("getApiKey: () => readCompletionApiKey(context)")
+    expect(extensionSource).toContain("getApiKey: () => readProviderApiKey(context)")
     expect(extensionSource).not.toContain("RemoteChipMateClient")
     expect(extensionSource).not.toContain("LocalAnalysisBridge")
   })
@@ -35,7 +35,7 @@ describe("ChipMate direct runtime wiring", () => {
   test("webview provider save maps the legacy form shape onto direct provider settings and API key storage", () => {
     expect(settingsSource).toContain('await config.update("provider.apiBaseUrl"')
     expect(settingsSource).toContain('await config.update("provider.chatModel"')
-    expect(settingsSource).toContain("if (connectionInputHasPassword(input)) await writeCompletionApiKey")
+    expect(settingsSource).toContain("if (connectionInputHasPassword(input)) await writeProviderApiKey")
     expect(settingsSource).toContain('export const PASSWORD_SECRET_KEY = "chipmate.provider.legacyPassword"')
     expect(chatViewSource).toContain("function connectionSettingsFromMessage")
     expect(chatViewSource).toContain('Object.prototype.hasOwnProperty.call(message, "password")')
@@ -74,13 +74,14 @@ describe("ChipMate direct runtime wiring", () => {
     expect(extensionSource).not.toContain("codeGraph.refreshRagConfiguration()")
   })
 
-  test("RAG API key saves apply the active configuration", () => {
-    const start = extensionSource.indexOf("promptRagApiKey: async")
-    const end = extensionSource.indexOf("connectWithSettings,", start)
+  test("provider API key saves apply the active RAG configuration", () => {
+    const start = extensionSource.indexOf("vscode.commands.registerCommand(CHIPMATE_COMMANDS.setProviderApiKey")
+    const end = extensionSource.indexOf("vscode.commands.registerCommand(CHIPMATE_COMMANDS.completionRunDirectAblation", start)
     const body = extensionSource.slice(start, end)
 
-    expect(body).toContain("promptAndSaveRagApiKey(context)")
-    expect(body).toContain("if (saved) await codeGraph.applyRagConfiguration()")
+    expect(body).toContain("promptAndSaveProviderApiKey(context)")
+    expect(body).toContain("await refreshRagProvidersAfterProviderKeyChange()")
+    expect(extensionSource).toContain("await codeGraph.applyRagConfiguration()")
     expect(body).not.toContain("refreshRagConfiguration")
   })
 

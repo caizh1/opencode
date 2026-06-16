@@ -148,7 +148,7 @@ export class LocalCodeGraphService implements vscode.Disposable {
   private ragRerankProvider?: RerankProvider
   private ragEmbeddingProviderError?: string
   private ragRerankProviderError?: string
-  private ragApiKey?: string
+  private providerApiKey?: string
   private ragProbeInFlight?: Promise<RagStatus>
   private ragIndexInFlight?: Promise<void>
   private ragIndexController?: AbortController
@@ -175,7 +175,7 @@ export class LocalCodeGraphService implements vscode.Disposable {
     private readonly context: vscode.ExtensionContext,
     private readonly output: vscode.OutputChannel,
     private readonly getSettings: () => RemoteSettings,
-    private readonly getRagApiKey: () => Promise<string | undefined>,
+    private readonly getProviderApiKey: () => Promise<string | undefined>,
     private readonly onStatusChanged: () => void,
   ) {}
 
@@ -413,7 +413,7 @@ export class LocalCodeGraphService implements vscode.Disposable {
   }
 
   async applyRagConfiguration(options: RagConfigurationApplyOptions = {}): Promise<RagConfigurationApplyResult> {
-    await this.refreshRagApiKey()
+    await this.refreshProviderApiKey()
     this.queryCache.clear()
     if (!this.getSettings().codeGraph.enabled) {
       this.ragIndex = undefined
@@ -504,7 +504,7 @@ export class LocalCodeGraphService implements vscode.Disposable {
   }
 
   private async probeRagConfiguration(): Promise<RagStatus> {
-    await this.refreshRagApiKey()
+    await this.refreshProviderApiKey()
     this.queryCache.clear()
     if (!this.getSettings().codeGraph.enabled) {
       this.ragIndex = undefined
@@ -517,8 +517,8 @@ export class LocalCodeGraphService implements vscode.Disposable {
     return status
   }
 
-  private async refreshRagApiKey() {
-    this.ragApiKey = await this.getRagApiKey()
+  private async refreshProviderApiKey() {
+    this.providerApiKey = await this.getProviderApiKey()
   }
 
   async buildContext(input: {
@@ -1338,7 +1338,7 @@ export class LocalCodeGraphService implements vscode.Disposable {
       this.ragEmbeddingProviderError = settings.embedding.configError
     } else if (settings.embedding.endpoint) {
       try {
-        this.ragEmbeddingProvider = createHttpEmbeddingProvider(settings, this.ragApiKey, this.ragHttpDiagnostics())
+        this.ragEmbeddingProvider = createHttpEmbeddingProvider(settings, this.providerApiKey, this.ragHttpDiagnostics())
       } catch (error) {
         this.ragEmbeddingProviderError = error instanceof Error ? error.message : String(error)
         this.setRagStatus({
@@ -1353,7 +1353,7 @@ export class LocalCodeGraphService implements vscode.Disposable {
     }
     if (settings.rerank.endpoint) {
       try {
-        this.ragRerankProvider = createHttpRerankProvider(settings, this.ragApiKey, this.ragHttpDiagnostics())
+        this.ragRerankProvider = createHttpRerankProvider(settings, this.providerApiKey, this.ragHttpDiagnostics())
       } catch (error) {
         this.ragRerankProviderError = error instanceof Error ? error.message : String(error)
         this.setRagStatus({
@@ -2210,7 +2210,7 @@ export class LocalCodeGraphService implements vscode.Disposable {
   private async rebuildRagIndex(changedPaths?: string[], signal?: AbortSignal, options: { continuePreviousElapsed?: boolean; ignorePrevious?: boolean } = {}) {
     const root = workspaceRoot()
     const settings = this.getSettings().rag
-    await this.refreshRagApiKey()
+    await this.refreshProviderApiKey()
     this.queryCache.clear()
     if (!root || !this.index) return
     if (settings.embedding.configError) {
@@ -2464,7 +2464,7 @@ export class LocalCodeGraphService implements vscode.Disposable {
 
   private async loadRagIndex(root: vscode.WorkspaceFolder) {
     const settings = this.getSettings().rag
-    await this.refreshRagApiKey()
+    await this.refreshProviderApiKey()
     if (settings.embedding.configError) {
       this.clearRagIndexResume()
       this.ragIndex = undefined

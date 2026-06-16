@@ -10,6 +10,7 @@ type ConfigUpdate = {
 let configValues = new Map<string, unknown>()
 let configUpdates: ConfigUpdate[] = []
 let updateFailures = new Map<string, Error>()
+let secretValues = new Map<string, string>()
 let secretStores: ConfigUpdate[] = []
 let secretDeletes: string[] = []
 
@@ -110,6 +111,10 @@ mock.module("vscode", () => ({
 }))
 
 const {
+  DEFAULT_COMPLETION_MODEL,
+  DEFAULT_RAG_EMBEDDING_MODEL,
+  DEFAULT_RAG_RERANK_MODEL,
+  LEGACY_RAG_API_KEY_SECRET_KEY,
   RAG_EMBEDDING_BATCH_SIZE_DEFAULT,
   RAG_EMBEDDING_BATCH_SIZE_ERROR,
   RAG_EMBEDDING_BATCH_SIZE_MAX,
@@ -123,8 +128,8 @@ const {
   RAG_EMBEDDING_REQUEST_DELAY_DEFAULT_MS,
   RAG_EMBEDDING_TIMEOUT_DEFAULT_MS,
   RAG_EMBEDDING_TIMEOUT_LARGE_BATCH_MS,
-  COMPLETION_API_KEY_SECRET_KEY,
   connectionInputHasPassword,
+  migrateLegacyRagApiKey,
   ragEmbeddingTimeoutMsForBatchSize,
   ragSettingsInputChangesEmbeddingIdentity,
   ragSettingsInputMatchesCurrent,
@@ -135,11 +140,13 @@ const {
   saveRagSettings,
   validateRagEmbeddingBatchSize,
 } = await import("../src/settings")
+const { PROVIDER_API_KEY_SECRET_KEY } = await import("../src/chipmate-constants")
 
 beforeEach(() => {
   configValues = new Map<string, unknown>()
   configUpdates = []
   updateFailures = new Map<string, Error>()
+  secretValues = new Map<string, string>()
   secretStores = []
   secretDeletes = []
 })
@@ -163,7 +170,7 @@ describe("connection settings", () => {
     await saveConnectionSettings(secretContext(), { serverUrl: "http://localhost:4096", username: "opencode", password: " secret " })
 
     expect(connectionInputHasPassword({ serverUrl: "http://localhost:4096", username: "opencode", password: undefined })).toBe(true)
-    expect(secretStores).toEqual([{ key: COMPLETION_API_KEY_SECRET_KEY, value: "secret" }])
+    expect(secretStores).toEqual([{ key: PROVIDER_API_KEY_SECRET_KEY, value: "secret" }])
     expect(secretDeletes).toEqual([])
 
     secretStores = []
@@ -172,7 +179,26 @@ describe("connection settings", () => {
     await saveConnectionSettings(secretContext(), { serverUrl: "http://localhost:4096", username: "opencode", password: "" })
 
     expect(secretStores).toEqual([])
-    expect(secretDeletes).toEqual([COMPLETION_API_KEY_SECRET_KEY])
+    expect(secretDeletes).toEqual([PROVIDER_API_KEY_SECRET_KEY])
+  })
+
+  test("migrates the legacy RAG credential into the provider API key once", async () => {
+    secretValues.set(LEGACY_RAG_API_KEY_SECRET_KEY, " rag-secret ")
+
+    await expect(migrateLegacyRagApiKey(secretContext())).resolves.toBe(true)
+
+    expect(secretStores).toEqual([{ key: PROVIDER_API_KEY_SECRET_KEY, value: "rag-secret" }])
+    expect(secretDeletes).toEqual([LEGACY_RAG_API_KEY_SECRET_KEY])
+  })
+
+  test("deletes the legacy RAG credential without overwriting an existing provider key", async () => {
+    secretValues.set(PROVIDER_API_KEY_SECRET_KEY, "provider-secret")
+    secretValues.set(LEGACY_RAG_API_KEY_SECRET_KEY, "rag-secret")
+
+    await expect(migrateLegacyRagApiKey(secretContext())).resolves.toBe(false)
+
+    expect(secretStores).toEqual([])
+    expect(secretDeletes).toEqual([LEGACY_RAG_API_KEY_SECRET_KEY])
   })
 })
 
@@ -181,6 +207,7 @@ describe("completion settings", () => {
     const settings = readRemoteSettings()
 
     expect(settings.completion.provider).toBe("openai-compatible")
+    expect(settings.completion.model).toBe(DEFAULT_COMPLETION_MODEL)
   })
 })
 
@@ -219,6 +246,8 @@ describe("RAG settings validation", () => {
     expect(settings.rag.embedding.timeoutMs).toBe(RAG_EMBEDDING_TIMEOUT_DEFAULT_MS)
     expect(settings.rag.embedding.requestDelayMs).toBe(RAG_EMBEDDING_REQUEST_DELAY_DEFAULT_MS)
     expect(settings.rag.embedding.configError).toBeUndefined()
+    expect(settings.rag.embedding.model).toBe(DEFAULT_RAG_EMBEDDING_MODEL)
+    expect(settings.rag.rerank.model).toBe(DEFAULT_RAG_RERANK_MODEL)
     expect(settings.rag.indexTests).toBe(false)
     expect(settings.codeGraph.indexTests).toBe(false)
   })
@@ -434,10 +463,13 @@ function ragInput(overrides: Partial<Parameters<typeof saveRagSettings>[0]> = {}
 function secretContext() {
   return {
     secrets: {
+      get: async (key: string) => secretValues.get(key),
       store: async (key: string, value: string) => {
+        secretValues.set(key, value)
         secretStores.push({ key, value })
       },
       delete: async (key: string) => {
+        secretValues.delete(key)
         secretDeletes.push(key)
       },
     },

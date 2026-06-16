@@ -97,7 +97,7 @@ describe("offline RAG HTTP provider policy", () => {
     expect(body).not.toHaveProperty("dimensions")
   })
 
-  test("omits authorization when RAG API key is empty", async () => {
+  test("omits authorization when provider key is empty", async () => {
     let auth: string | undefined
     const baseUrl = await listen((request, response) => {
       auth = request.headers.authorization

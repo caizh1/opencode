@@ -32,7 +32,7 @@ import type { CompletionProfile, ChipMateMessage, RemoteSettings } from "./types
 
 type CompletionDeps = {
   getClient: () => DirectAgentClient | undefined
-  getCompletionApiKey?: () => Promise<string | undefined>
+  getProviderApiKey?: () => Promise<string | undefined>
   getSettings: () => RemoteSettings
   codeGraph?: CodeGraphContextProvider
   output: vscode.OutputChannel
@@ -307,7 +307,7 @@ export class RemoteCompletionProvider implements vscode.InlineCompletionItemProv
         telemetry: input.telemetry,
       })
       input.telemetry.latencyMs.context = elapsedMs(contextStarted)
-      const apiKey = await this.deps.getCompletionApiKey?.()
+	      const apiKey = await this.deps.getProviderApiKey?.()
       const client = new CompletionModelClient(input.settings, apiKey)
       return await this.completionOutcomeWithRetry({
         prompt: prompt.prompt,
