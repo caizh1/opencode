@@ -4,7 +4,7 @@ import { existsSync } from "node:fs"
 import { join } from "node:path"
 import { AuditLog } from "./audit-log"
 import { RemoteChatViewProvider } from "./chat-view"
-import { CHIPMATE_COMMANDS, CHIPMATE_OUTPUT_CHANNEL } from "./chipmate-constants"
+import { CHIPMATE_COMMANDS, CHIPMATE_OUTPUT_CHANNEL, PROVIDER_API_KEY_SECRET_KEY } from "./chipmate-constants"
 import { LocalCodeGraphService } from "./codegraph-service"
 import { RemoteCompletionProvider } from "./completion"
 import { COMPLETION_PLANNER_REVISION } from "./completion-telemetry"
@@ -81,14 +81,17 @@ export async function activate(context: vscode.ExtensionContext) {
       return false
     }
     const health = await directClient.health()
-    setConnectionState(health.healthy ? "connected" : "error", health.version ? `provider ${health.version}` : "")
+    setConnectionState(health.state, health.detail ?? (health.version ? `provider ${health.version}` : ""))
     await chatProvider.refresh()
     return health.healthy
   }
   const connectWithSettings = async (input: ConnectionSettingsInput) => {
     const providerKeyTouched = connectionInputHasPassword(input)
     await saveConnectionSettings(context, input)
-    if (providerKeyTouched) await refreshRagProvidersAfterProviderKeyChange()
+    if (providerKeyTouched) {
+      await refreshAfterProviderCredentialChange("connect-settings")
+      return
+    }
     await refreshProviderState()
   }
   const testWithSettings = async (input: ConnectionSettingsInput) => {
@@ -99,7 +102,10 @@ export async function activate(context: vscode.ExtensionContext) {
     }
     const providerKeyTouched = connectionInputHasPassword(input)
     await saveConnectionSettings(context, input)
-    if (providerKeyTouched) await refreshRagProvidersAfterProviderKeyChange()
+    if (providerKeyTouched) {
+      await refreshAfterProviderCredentialChange("test-settings")
+      return
+    }
     await refreshProviderState()
   }
 
@@ -112,6 +118,18 @@ export async function activate(context: vscode.ExtensionContext) {
       const message = error instanceof Error ? error.message : String(error)
       output.appendLine(`[rag] provider API key refresh failed: ${message}`)
     }
+  }
+  let providerCredentialRefreshInFlight: Promise<void> | undefined
+  function refreshAfterProviderCredentialChange(reason: string) {
+    if (providerCredentialRefreshInFlight) return providerCredentialRefreshInFlight
+    providerCredentialRefreshInFlight = (async () => {
+      output.appendLine(`[provider] provider API key changed; refreshing provider and RAG state reason=${reason}`)
+      await refreshRagProvidersAfterProviderKeyChange()
+      await refreshProviderState()
+    })().finally(() => {
+      providerCredentialRefreshInFlight = undefined
+    })
+    return providerCredentialRefreshInFlight
   }
   let ragConfigurationApplyTimer: ReturnType<typeof setTimeout> | undefined
   let ignoreRagConfigurationChangesUntil = 0
@@ -160,6 +178,14 @@ export async function activate(context: vscode.ExtensionContext) {
   context.subscriptions.push(chatProvider)
 
   context.subscriptions.push(
+    context.secrets.onDidChange((event) => {
+      if (event.key !== PROVIDER_API_KEY_SECRET_KEY) return
+      void refreshAfterProviderCredentialChange("secret-storage").catch((error) => {
+        const message = error instanceof Error ? error.message : String(error)
+        output.appendLine(`[provider] provider API key refresh after secret change failed: ${message}`)
+        setConnectionState("error", message)
+      })
+    }),
     vscode.workspace.onDidChangeConfiguration((event) => {
       if (event.affectsConfiguration("chipmate.skills")) {
         skills.invalidate()
@@ -175,7 +201,14 @@ export async function activate(context: vscode.ExtensionContext) {
           output.appendLine(`[codegraph] rebuild after test indexing setting change failed: ${message}`)
         })
       }
-      if (event.affectsConfiguration("chipmate.provider") || event.affectsConfiguration("chipmate.permissions") || event.affectsConfiguration("chipmate.tools")) {
+      if (event.affectsConfiguration("chipmate.provider")) {
+        void refreshProviderState().catch((error) => {
+          const message = error instanceof Error ? error.message : String(error)
+          output.appendLine(`[provider] refresh failed: ${message}`)
+          setConnectionState("error", message)
+        })
+      }
+      if (event.affectsConfiguration("chipmate.permissions") || event.affectsConfiguration("chipmate.tools")) {
         chatProvider.refreshState()
       }
     }),
@@ -219,14 +252,13 @@ export async function activate(context: vscode.ExtensionContext) {
       vscode.window.setStatusBarMessage("Cleared ChipMate context", 2000)
     }),
     vscode.commands.registerCommand(CHIPMATE_COMMANDS.openOutput, () => output.show(false)),
-	    vscode.commands.registerCommand(CHIPMATE_COMMANDS.setProviderApiKey, async () => {
-	      const saved = await promptAndSaveProviderApiKey(context)
-	      if (saved) {
-	        vscode.window.setStatusBarMessage("ChipMate provider API key saved", 2000)
-	        await refreshRagProvidersAfterProviderKeyChange()
-	        chatProvider.refreshState()
-	      }
-	    }),
+    vscode.commands.registerCommand(CHIPMATE_COMMANDS.setProviderApiKey, async () => {
+      const saved = await promptAndSaveProviderApiKey(context)
+      if (saved) {
+        vscode.window.setStatusBarMessage("ChipMate provider API key saved", 2000)
+        await refreshAfterProviderCredentialChange("command")
+      }
+    }),
     vscode.commands.registerCommand(CHIPMATE_COMMANDS.completionRunDirectAblation, async () => {
       await runDirectQwenAblationCommand(context, output)
     }),

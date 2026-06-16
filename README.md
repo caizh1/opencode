@@ -94,7 +94,7 @@ Codegraph 和 RAG 配置前缀均为 `chipmate.*`：
   "chipmate.rag.embedding.model": "qwen3-embedding-8b",
   "chipmate.rag.indexTests": false,
   "chipmate.rag.rerank.endpoint": "http://127.0.0.1:8000/rerank",
-  "chipmate.rag.rerank.model": "qwen3-rerank-8b"
+  "chipmate.rag.rerank.model": "qwen3-reranker-8b"
 }
 ```
 

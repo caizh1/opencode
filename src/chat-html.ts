@@ -3393,7 +3393,7 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce(), bra
           <label class="field">Embedding endpoint<input id="ragEmbeddingEndpoint" type="url" spellcheck="false" placeholder="http://127.0.0.1:8000/v1/embeddings"></label>
           <label class="field">Embedding model<input id="ragEmbeddingModel" type="text" spellcheck="false" placeholder="qwen3-embedding-8b"></label>
           <label class="field">Rerank endpoint<input id="ragRerankEndpoint" type="url" spellcheck="false" placeholder="http://127.0.0.1:8000/rerank"></label>
-          <label class="field">Rerank model<input id="ragRerankModel" type="text" spellcheck="false" placeholder="qwen3-rerank-8b"></label>
+          <label class="field">Rerank model<input id="ragRerankModel" type="text" spellcheck="false" placeholder="qwen3-reranker-8b"></label>
         </div>
         <details class="ragAdvanced">
           <summary>Advanced</summary>
@@ -3565,9 +3565,11 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce(), bra
     const RAG_EMBEDDING_CHECKPOINT_MODES = ["off", "interval", "safe"];
     const RAG_EMBEDDING_CHECKPOINT_CHUNK_INTERVAL_DEFAULT = 8192;
     const RAG_EMBEDDING_CHECKPOINT_INTERVAL_DEFAULT_MS = 120000;
-    let state = {};
-		    let pendingAction = "";
-		    let settingsOpen = false;
+	    let state = {};
+			    let pendingAction = "";
+	        let connectionRequestId = 0;
+	        let pendingConnectionRequestId = 0;
+			    let settingsOpen = false;
         let activeSettingsSection = "connect";
 	    let lastConnectionState = "";
 	    let userEditedConnection = false;
@@ -3795,18 +3797,27 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce(), bra
       bindContextToggle(item[0], item[1], item[2]);
     }
 
-    window.addEventListener("message", (event) => {
-      if (event.data.type === "state") {
-        const nextState = event.data.state || {};
-        const nextConnectionState = nextState.connectionState || "disconnected";
-        const wasPendingConnect = pendingAction === "connect";
-        state = nextState;
-        pendingAction = "";
-        if (nextConnectionState === "connected" && (lastConnectionState !== "connected" || wasPendingConnect)) settingsOpen = false;
-        lastConnectionState = nextConnectionState;
-        render();
-        return;
-      }
+	    window.addEventListener("message", (event) => {
+	      if (event.data.type === "state") {
+	        const nextState = event.data.state || {};
+	        const nextConnectionState = nextState.connectionState || "disconnected";
+	        const shouldCloseSettings = !pendingAction && nextConnectionState === "connected" && lastConnectionState !== "connected";
+	        state = nextState;
+	        if (shouldCloseSettings) settingsOpen = false;
+	        lastConnectionState = nextConnectionState;
+	        render();
+	        return;
+	      }
+	      if (event.data.type === "connectionStatus") {
+	        if (!event.data.requestId || event.data.requestId !== pendingConnectionRequestId) return;
+	        const wasPendingConnect = pendingAction === "connect";
+	        pendingAction = "";
+	        pendingConnectionRequestId = 0;
+	        const connectionState = event.data.connectionState || (state.connectionState || "disconnected");
+	        if (connectionState === "connected" && wasPendingConnect) settingsOpen = false;
+	        render();
+	        return;
+	      }
       if (event.data.type === "mentionResults") {
         if (event.data.requestId && event.data.requestId !== activeMentionRequestId) return;
         mentionResults = event.data.files || [];
@@ -3839,14 +3850,18 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce(), bra
 	      }
 	    });
 
-	    function connectOrTest(type) {
-	      pendingAction = type === "testWithSettings" ? "test" : "connect";
-	      renderConnectionButtons();
-	      const payload = {
-	        type,
-        serverUrl: el("serverUrl").value,
-        username: el("username").value
-	      };
+		    function connectOrTest(type) {
+		      if (pendingAction) return;
+	        const requestId = ++connectionRequestId;
+	        pendingConnectionRequestId = requestId;
+		      pendingAction = type === "testWithSettings" ? "test" : "connect";
+		      renderConnectionButtons();
+		      const payload = {
+		        type,
+	        requestId,
+	        serverUrl: el("serverUrl").value,
+	        username: el("username").value
+		      };
 	      const password = el("password").value;
 	      if (password) payload.password = password;
 	      vscode.postMessage(payload);
@@ -4397,7 +4412,7 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce(), bra
 	        el("ragIndexTests").checked = rag.indexTests === true;
 	        el("ragEmbeddingResumeDelayMs").value = String(embedding.resumeDelayMs ?? 60000);
 	        el("ragRerankEndpoint").value = rerank.endpoint || "";
-	        el("ragRerankModel").value = rerank.model || "qwen3-rerank-8b";
+	        el("ragRerankModel").value = rerank.model || "qwen3-reranker-8b";
 	        el("ragAllowedHosts").value = (rag.allowedHosts || []).join(", ");
 	        el("ragVectorTopK").value = String(rag.vectorTopK ?? 24);
 	        el("ragRerankTopK").value = String(rag.rerankTopK ?? 16);
@@ -4440,17 +4455,26 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce(), bra
         }
 	    }
 
-	    function renderConnectionButtons() {
-	      const pending = Boolean(pendingAction) || state.connectionState === "connecting";
-	      const connectPending = pendingAction === "connect" || (!pendingAction && state.connectionState === "connecting");
-	      const testPending = pendingAction === "test";
-	      el("connect").disabled = pending;
-	      el("test").disabled = pending;
-        el("connect").classList.toggle("is-active", connectPending);
-        el("test").classList.toggle("is-spinning", testPending);
-        setChipLabel(el("connect"), "chip", connectPending ? "Saving" : "Save");
-        setIconOnlyButton(el("test"), "beaker", testPending ? "Testing provider" : "Test provider connection");
-	    }
+		    function renderConnectionButtons() {
+		      const pending = Boolean(pendingAction) || state.connectionState === "connecting";
+		      const connectPending = pendingAction === "connect" || (!pendingAction && state.connectionState === "connecting");
+		      const testPending = pendingAction === "test";
+          const pendingLabel = testPending
+            ? "Testing provider connection. Wait for the current test to finish."
+            : "Saving and verifying provider settings. Wait for the current save to finish.";
+		      el("connect").disabled = pending;
+		      el("test").disabled = pending;
+	        el("connect").classList.toggle("is-active", connectPending);
+	        el("test").classList.toggle("is-spinning", testPending);
+	        setChipLabel(el("connect"), "chip", connectPending ? "Saving" : "Save");
+	        setIconOnlyButton(el("test"), "beaker", testPending ? "Testing provider" : "Test provider connection");
+          if (pending) {
+            el("connect").title = pendingLabel;
+            el("connect").setAttribute("aria-label", pendingLabel);
+            el("test").title = pendingLabel;
+            el("test").setAttribute("aria-label", pendingLabel);
+          }
+		    }
 
       function renderComposerToggles() {
         const configs = [

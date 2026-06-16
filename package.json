@@ -2,7 +2,7 @@
   "name": "chipmate",
   "displayName": "ChipMate",
   "description": "Direct OpenAI-compatible coding agent with workspace skills for VS Code",
-  "version": "0.0.214",
+  "version": "0.0.216",
   "icon": "media/chipmate-icon.png",
   "publisher": "local",
   "license": "MIT",
@@ -617,8 +617,8 @@
         },
         "chipmate.rag.rerank.model": {
           "type": "string",
-          "default": "qwen3-rerank-8b",
-          "description": "Rerank model name sent to the local or intranet rerank endpoint. Uses qwen3-rerank-8b when empty."
+          "default": "qwen3-reranker-8b",
+          "description": "Rerank model name sent to the local or intranet rerank endpoint. Uses qwen3-reranker-8b when empty."
         },
         "chipmate.rag.allowedHosts": {
           "type": "array",

@@ -143,6 +143,8 @@ describe("DirectAgentClient", () => {
 
     await expect(client.health()).resolves.toEqual({
       healthy: true,
+      state: "connected",
+      detail: "provider /models",
       version: "direct-openai-compatible",
     })
     await expect(client.listModels()).resolves.toEqual([
@@ -151,6 +153,111 @@ describe("DirectAgentClient", () => {
       expect.objectContaining({ id: "gpt-chip", providerID: "openai-compatible" }),
       expect.objectContaining({ id: "qwen-fim", providerName: "OpenAI Compatible" }),
     ])
+  })
+
+  test("health reports disconnected when provider settings are incomplete", async () => {
+    const client = directClient("")
+
+    await expect(client.health()).resolves.toEqual({
+      healthy: false,
+      state: "disconnected",
+      detail: "Ready. Configure an OpenAI-compatible provider to start ChipMate.",
+      version: "direct-openai-compatible",
+    })
+  })
+
+  test("health reports authFailed for invalid provider credentials", async () => {
+    const requests: string[] = []
+    const baseUrl = await listen((request, response) => {
+      requests.push(request.url ?? "")
+      if (request.url === "/v1/models") {
+        json(response, 401, { error: { message: "invalid token" } })
+        return
+      }
+      response.writeHead(404).end()
+    })
+    const client = directClient(baseUrl, { apiKey: "" })
+
+    await expect(client.health()).resolves.toEqual({
+      healthy: false,
+      state: "authFailed",
+      detail: "Provider authentication failed. Set a valid ChipMate provider API key.",
+      version: "direct-openai-compatible",
+    })
+    expect(requests).toEqual(["/v1/models"])
+  })
+
+  test("health falls back from unsupported /models to a minimal chat probe", async () => {
+    const requests: Array<{ url?: string; body?: Record<string, unknown> }> = []
+    const baseUrl = await listen(async (request, response) => {
+      requests.push({ url: request.url })
+      if (request.url === "/v1/models") {
+        response.writeHead(404).end()
+        return
+      }
+      if (request.url === "/v1/chat/completions") {
+        const body = await collectJson(request)
+        requests[requests.length - 1].body = body
+        json(response, 200, { choices: [{ message: { role: "assistant", content: "ok" } }] })
+        return
+      }
+      response.writeHead(404).end()
+    })
+    const client = directClient(baseUrl)
+
+    await expect(client.health()).resolves.toEqual({
+      healthy: true,
+      state: "connected",
+      detail: "provider direct-openai-compatible",
+      version: "direct-openai-compatible",
+    })
+    expect(requests.map((request) => request.url)).toEqual(["/v1/models", "/v1/chat/completions"])
+    expect(requests[1]?.body).toMatchObject({
+      model: "chat-model",
+      stream: false,
+      max_tokens: 1,
+    })
+  })
+
+  test("health reports authFailed when the chat probe rejects credentials", async () => {
+    const baseUrl = await listen(async (request, response) => {
+      if (request.url === "/v1/models") {
+        response.writeHead(404).end()
+        return
+      }
+      if (request.url === "/v1/chat/completions") {
+        await collectJson(request)
+        json(response, 403, { error: { message: "Unauthorized API key" } })
+        return
+      }
+      response.writeHead(404).end()
+    })
+    const client = directClient(baseUrl, { apiKey: "bad-token" })
+
+    await expect(client.health()).resolves.toEqual({
+      healthy: false,
+      state: "authFailed",
+      detail: "Provider authentication failed. Set a valid ChipMate provider API key.",
+      version: "direct-openai-compatible",
+    })
+  })
+
+  test("health reports provider probe errors without entering connected state", async () => {
+    const baseUrl = await listen((request, response) => {
+      if (request.url === "/v1/models") {
+        response.writeHead(200, { "content-type": "text/html" }).end("<html>not json</html>")
+        return
+      }
+      response.writeHead(404).end()
+    })
+    const client = directClient(baseUrl)
+
+    await expect(client.health()).resolves.toEqual({
+      healthy: false,
+      state: "error",
+      detail: "Provider /models probe returned malformed JSON.",
+      version: "direct-openai-compatible",
+    })
   })
 
   test("does not expose or execute tool calls when tools are disabled", async () => {
@@ -767,6 +874,7 @@ function directClient(baseUrl: string, overrides: Partial<{
   toolsEnabled: boolean
   historyTurns: number
   historyBytes: number
+  apiKey: string | undefined
 }> = {}) {
   const settings = directSettings(baseUrl)
   settings.tools.enabled = overrides.toolsEnabled === true
@@ -780,7 +888,7 @@ function directClient(baseUrl: string, overrides: Partial<{
       appendLine: (line: string) => overrides.outputLines?.push(line),
     },
     getSettings: () => settings,
-    getApiKey: async () => "secret",
+    getApiKey: async () => Object.prototype.hasOwnProperty.call(overrides, "apiKey") ? overrides.apiKey : "secret",
     skills: {
       enabledSkills: async () => [],
       loadSkill: async () => undefined,

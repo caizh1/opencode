@@ -5,6 +5,7 @@ import { chatCompletionsUrl } from "./completion-model-client"
 import { renderSkillsForPrompt, skillSystemCatalog, SkillRegistry } from "./skills"
 import type { ToolRuntime, ToolRuntimeResult } from "./tool-runtime"
 import type {
+  ConnectionState,
   HealthResponse,
   ChipMateAgentInfo,
   ChipMateEvent,
@@ -57,6 +58,7 @@ type ChatToolDefinition = ReturnType<ToolRuntime["toolDefinitions"]>[number]
 
 const MAX_AGENT_STEPS = 8
 const MAX_STREAM_TOOL_ARGUMENT_BYTES = 128 * 1024
+const DIRECT_PROVIDER_VERSION = "direct-openai-compatible"
 
 export class DirectAgentClient {
   readonly baseUrl = "chipmate://workspace"
@@ -66,12 +68,91 @@ export class DirectAgentClient {
 
   constructor(private readonly deps: DirectAgentClientInput) {}
 
-  async health(_signal?: AbortSignal): Promise<HealthResponse> {
+  async health(signal?: AbortSignal): Promise<HealthResponse> {
     const settings = this.deps.getSettings()
-    return {
-      healthy: Boolean(settings.provider.apiBaseUrl && settings.provider.chatModel),
-      version: "direct-openai-compatible",
+    if (!settings.provider.apiBaseUrl || !settings.provider.chatModel) {
+      return {
+        healthy: false,
+        state: "disconnected",
+        detail: "Ready. Configure an OpenAI-compatible provider to start ChipMate.",
+        version: DIRECT_PROVIDER_VERSION,
+      }
     }
+    const modelsProbe = await this.probeModels(settings, signal)
+    if (modelsProbe.state !== "error" || !modelsProbe.fallbackToChat) return modelsProbe
+    return this.probeChatCompletion(settings, signal)
+  }
+
+  private async probeModels(settings: RemoteSettings, signal?: AbortSignal): Promise<HealthResponse & { fallbackToChat?: boolean }> {
+    let response: Response
+    try {
+      response = await fetch(modelsUrl(settings.provider.apiBaseUrl), {
+        headers: await this.headers(false),
+        signal,
+      })
+    } catch (error) {
+      return this.probeError("Provider /models probe failed", error)
+    }
+    const text = await response.text().catch(() => "")
+    if (isProviderAuthFailure(response.status, text)) return providerAuthFailed()
+    if (response.ok) {
+      try {
+        const body = text ? JSON.parse(text) as { data?: unknown } : {}
+        if (!Array.isArray(body.data)) {
+          return providerProbeFailed("Provider /models probe returned an unexpected response.")
+        }
+      } catch {
+        return providerProbeFailed("Provider /models probe returned malformed JSON.")
+      }
+      return providerConnected("provider /models")
+    }
+    if (isModelsEndpointUnsupported(response.status)) {
+      return {
+        ...providerProbeFailed(`Provider /models is unavailable (${response.status}); probing chat completions.`),
+        fallbackToChat: true,
+      }
+    }
+    return providerProbeFailed(`Provider /models probe failed: ${response.status} ${response.statusText || "HTTP error"}.`)
+  }
+
+  private async probeChatCompletion(settings: RemoteSettings, signal?: AbortSignal): Promise<HealthResponse> {
+    const body = {
+      model: settings.provider.chatModel,
+      messages: [{ role: "user", content: "ping" }],
+      stream: false,
+      max_tokens: 1,
+      temperature: 0,
+    }
+    let response: Response
+    try {
+      response = await fetch(chatCompletionsUrl(settings.provider.apiBaseUrl), {
+        method: "POST",
+        headers: await this.headers(true),
+        signal,
+        body: JSON.stringify(body),
+      })
+    } catch (error) {
+      return this.probeError("Provider chat probe failed", error)
+    }
+    const text = await response.text().catch(() => "")
+    if (isProviderAuthFailure(response.status, text)) return providerAuthFailed()
+    if (!response.ok) return providerProbeFailed(`Provider chat probe failed: ${response.status} ${response.statusText || "HTTP error"}.`)
+    try {
+      const body = text ? JSON.parse(text) as { choices?: unknown } : {}
+      if (!Array.isArray(body.choices)) return providerProbeFailed("Provider chat probe returned an unexpected response.")
+    } catch {
+      return providerProbeFailed("Provider chat probe returned malformed JSON.")
+    }
+    return {
+      healthy: true,
+      state: "connected",
+      detail: `provider ${DIRECT_PROVIDER_VERSION}`,
+      version: DIRECT_PROVIDER_VERSION,
+    }
+  }
+
+  private probeError(prefix: string, error: unknown): HealthResponse {
+    return providerProbeFailed(`${prefix}: ${formatErrorMessage(error)}`)
   }
 
   async listModels(signal?: AbortSignal): Promise<ChipMateModelInfo[]> {
@@ -763,6 +844,42 @@ function modelsUrl(baseUrl: string) {
   if (/\/models$/i.test(trimmed)) return trimmed
   if (/\/chat\/completions$/i.test(trimmed)) return trimmed.replace(/\/chat\/completions$/i, "/models")
   return `${trimmed}/models`
+}
+
+function providerConnected(detail: string): HealthResponse {
+  return {
+    healthy: true,
+    state: "connected",
+    detail,
+    version: DIRECT_PROVIDER_VERSION,
+  }
+}
+
+function providerAuthFailed(): HealthResponse {
+  return {
+    healthy: false,
+    state: "authFailed",
+    detail: "Provider authentication failed. Set a valid ChipMate provider API key.",
+    version: DIRECT_PROVIDER_VERSION,
+  }
+}
+
+function providerProbeFailed(detail: string): HealthResponse {
+  return {
+    healthy: false,
+    state: "error",
+    detail,
+    version: DIRECT_PROVIDER_VERSION,
+  }
+}
+
+function isModelsEndpointUnsupported(status: number) {
+  return status === 404 || status === 405 || status === 501
+}
+
+function isProviderAuthFailure(status: number, body = "") {
+  if (status === 401 || status === 403) return true
+  return /\b(?:invalid[_ -]?token|invalid[_ -]?api[_ -]?key|unauthorized|forbidden|authentication|permission denied|api key|apikey|bearer)\b/i.test(body)
 }
 
 function parseSseData(raw: string) {

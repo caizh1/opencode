@@ -216,6 +216,8 @@ export type RemoteSettings = {
 
 export type HealthResponse = {
   healthy: boolean
+  state: ConnectionState
+  detail?: string
   version?: string
 }
 

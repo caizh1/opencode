@@ -91,6 +91,7 @@ describe("code graph query observability", () => {
     expect(serviceSource).toContain("await this.ragIndexInFlight")
     expect(serviceSource).toContain("private async clearStoredRagIndex")
     expect(serviceSource).toContain("vscode.workspace.fs.delete(this.ragDir(root), { recursive: true, useTrash: false })")
+    expect(serviceSource).toContain("nonexistent file")
     expect(serviceSource).toContain("failed to clear stored RAG vector index ${reason}")
     expect(serviceSource).toContain("private clearPendingRagWorkTimer")
     expect(serviceSource).toContain("this.ragIndex.sourceIndexUpdatedAt === this.index?.updatedAt")

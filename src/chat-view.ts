@@ -107,6 +107,7 @@ type ChatViewMessage =
   | { type: "openEvidence"; path: string; line?: number }
   | {
       type: "connectWithSettings" | "testWithSettings"
+      requestId?: number
       serverUrl: string
       username: string
       password?: string
@@ -933,10 +934,10 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
           await this.openEvidence(message.path, message.line)
           break
         case "connectWithSettings":
-          await this.connectWithSettings(connectionSettingsFromMessage(message))
+          await this.connectWithSettings(connectionSettingsFromMessage(message), message.requestId)
           break
         case "testWithSettings":
-          await this.testWithSettings(connectionSettingsFromMessage(message))
+          await this.testWithSettings(connectionSettingsFromMessage(message), message.requestId)
           break
         case "saveCompletionSettings":
           await this.saveCompletionSettings(message.settings)
@@ -1037,14 +1038,36 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
     editor.revealRange(new vscode.Range(position, position), vscode.TextEditorRevealType.InCenter)
   }
 
-  private async connectWithSettings(input: ConnectionSettingsInput) {
+  private async connectWithSettings(input: ConnectionSettingsInput, requestId?: number) {
     this.deps.output.appendLine(`[connect] requested URL: ${input.serverUrl}`)
-    await this.deps.connectWithSettings(connectionSettingsForDeps(input))
+    try {
+      await this.deps.connectWithSettings(connectionSettingsForDeps(input))
+    } catch (error) {
+      this.reportError("ChipMate action failed: connectWithSettings", error)
+    } finally {
+      this.postConnectionStatus(requestId)
+    }
   }
 
-  private async testWithSettings(input: ConnectionSettingsInput) {
+  private async testWithSettings(input: ConnectionSettingsInput, requestId?: number) {
     this.deps.output.appendLine(`[test] requested URL: ${input.serverUrl}`)
-    await this.deps.testWithSettings(connectionSettingsForDeps(input))
+    try {
+      await this.deps.testWithSettings(connectionSettingsForDeps(input))
+    } catch (error) {
+      this.reportError("ChipMate action failed: testWithSettings", error)
+    } finally {
+      this.postConnectionStatus(requestId)
+    }
+  }
+
+  private postConnectionStatus(requestId?: number) {
+    if (requestId === undefined) return
+    this.view?.webview.postMessage({
+      type: "connectionStatus",
+      requestId,
+      connectionState: this.connectionState,
+      connectionDetail: this.connectionDetail,
+    })
   }
 
   private async saveCompletionSettings(input: CompletionSettingsInput) {

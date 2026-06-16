@@ -28,7 +28,7 @@ describe("ChipMate direct runtime wiring", () => {
     expect(body).toContain("settings.provider.apiBaseUrl")
     expect(body).toContain("settings.provider.chatModel")
     expect(body).toContain("directClient.health()")
-    expect(body).toContain("setConnectionState(health.healthy ? \"connected\" : \"error\"")
+    expect(body).toContain("setConnectionState(health.state, health.detail")
     expect(body).toContain("await chatProvider.refresh()")
   })
 
@@ -39,6 +39,10 @@ describe("ChipMate direct runtime wiring", () => {
     expect(settingsSource).toContain('export const PASSWORD_SECRET_KEY = "chipmate.provider.legacyPassword"')
     expect(chatViewSource).toContain("function connectionSettingsFromMessage")
     expect(chatViewSource).toContain('Object.prototype.hasOwnProperty.call(message, "password")')
+    expect(chatViewSource).toContain("requestId?: number")
+    expect(chatViewSource).toContain("this.connectWithSettings(connectionSettingsFromMessage(message), message.requestId)")
+    expect(chatViewSource).toContain('type: "connectionStatus"')
+    expect(chatViewSource).toContain("connectionState: this.connectionState")
   })
 
   test("prompts for a full window reload after extension upgrades", () => {
@@ -80,9 +84,21 @@ describe("ChipMate direct runtime wiring", () => {
     const body = extensionSource.slice(start, end)
 
     expect(body).toContain("promptAndSaveProviderApiKey(context)")
-    expect(body).toContain("await refreshRagProvidersAfterProviderKeyChange()")
+    expect(body).toContain('await refreshAfterProviderCredentialChange("command")')
     expect(extensionSource).toContain("await codeGraph.applyRagConfiguration()")
+    expect(body).not.toContain("chatProvider.refreshState()")
     expect(body).not.toContain("refreshRagConfiguration")
+  })
+
+  test("provider API key secret changes refresh RAG and provider state across windows", () => {
+    expect(extensionSource).toContain("PROVIDER_API_KEY_SECRET_KEY")
+    expect(extensionSource).toContain("context.secrets.onDidChange")
+    expect(extensionSource).toContain("if (event.key !== PROVIDER_API_KEY_SECRET_KEY) return")
+    expect(extensionSource).toContain('refreshAfterProviderCredentialChange("secret-storage")')
+    expect(extensionSource).toContain("let providerCredentialRefreshInFlight")
+    expect(extensionSource).toContain("if (providerCredentialRefreshInFlight) return providerCredentialRefreshInFlight")
+    expect(extensionSource).toContain('refreshAfterProviderCredentialChange("connect-settings")')
+    expect(extensionSource).toContain('refreshAfterProviderCredentialChange("test-settings")')
   })
 
   test("skills and permission settings refresh lightweight state without rebuilding the webview layout", () => {
@@ -91,6 +107,8 @@ describe("ChipMate direct runtime wiring", () => {
     expect(extensionSource).toContain('event.affectsConfiguration("chipmate.permissions")')
     expect(extensionSource).toContain('event.affectsConfiguration("chipmate.tools")')
     expect(extensionSource).toContain("chatProvider.refreshState()")
+    expect(extensionSource).toContain('event.affectsConfiguration("chipmate.provider")')
+    expect(extensionSource).toContain("void refreshProviderState().catch")
     expect(chatViewSource).toContain("savePermissionMode")
     expect(chatViewSource).toContain("saveToolsEnabled")
     expect(chatViewSource).toContain("tools: settings.tools")

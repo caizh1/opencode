@@ -92,7 +92,7 @@ describe("extension manifest", () => {
     expect(properties["chipmate.rag.embedding.timeoutMs"]?.default).toBe(60000)
     expect(properties["chipmate.rag.embedding.timeoutMs"]?.deprecationMessage).toContain("1-256 use 60000ms")
     expect(properties["chipmate.rag.allowedHosts"]?.type).toBe("array")
-    expect(properties["chipmate.rag.rerank.model"]?.default).toBe("qwen3-rerank-8b")
+    expect(properties["chipmate.rag.rerank.model"]?.default).toBe("qwen3-reranker-8b")
   })
 
   test("contributes the ChipMate activity bar container and chip-related assets", () => {

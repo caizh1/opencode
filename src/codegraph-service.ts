@@ -2423,7 +2423,7 @@ export class LocalCodeGraphService implements vscode.Disposable {
       return true
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
-      if (/FileNotFound|ENOENT|does not exist|no such file/i.test(message)) return true
+      if (/FileNotFound|ENOENT|does not exist|nonexistent file|no such file/i.test(message)) return true
       this.output.appendLine(`[rag-index] failed to clear stored RAG vector index ${reason}: ${message}`)
       return false
     }

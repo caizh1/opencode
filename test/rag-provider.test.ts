@@ -109,6 +109,27 @@ describe("offline RAG HTTP provider policy", () => {
     expect(auth).toBeUndefined()
   })
 
+  test("reports unauthorized embedding probes when provider key is empty", async () => {
+    let auth: string | undefined
+    const events: RagHttpDiagnosticEvent[] = []
+    const baseUrl = await listen((request, response) => {
+      auth = request.headers.authorization
+      json(response, 401, { error: { message: "Invalid token" } })
+    })
+    const provider = createHttpEmbeddingProvider(ragSettings(`${baseUrl}/v1/embeddings`), "", (event) => events.push(event))
+
+    await expect(provider!.embed(["query"])).rejects.toThrow(/401 Unauthorized:.*Invalid token/)
+
+    expect(auth).toBeUndefined()
+    expect(events.find((event) => event.phase === "response")).toMatchObject({
+      phase: "response",
+      kind: "embedding",
+      status: 401,
+      ok: false,
+      errorPreview: '{"error":{"message":"Invalid token"}}',
+    })
+  })
+
   test("decodes base64 embedding responses when requested", async () => {
     let body: Record<string, unknown> | undefined
     const baseUrl = await listen((request, response) => {
