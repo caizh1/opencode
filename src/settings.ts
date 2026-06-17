@@ -8,14 +8,14 @@ export const LEGACY_RAG_API_KEY_SECRET_KEY = RAG_API_KEY_SECRET_KEY
 export const DEFAULT_COMPLETION_MODEL = "qwen-coder-30b0"
 export const DEFAULT_RAG_EMBEDDING_MODEL = "qwen3-embedding-8b"
 export const DEFAULT_RAG_RERANK_MODEL = "qwen3-reranker-8b"
-export const RAG_EMBEDDING_BATCH_SIZE_DEFAULT = 128
+export const RAG_EMBEDDING_BATCH_SIZE_DEFAULT = 64
 export const RAG_EMBEDDING_BATCH_SIZE_OPTIONS = [1, 5, 10, 32, 64, 128, 256, 512] as const
 export const RAG_EMBEDDING_BATCH_SIZE_MIN = 1
 export const RAG_EMBEDDING_BATCH_SIZE_MAX = 512
 export const RAG_EMBEDDING_BATCH_SIZE_ERROR = "Embedding batch size must be one of 1, 5, 10, 32, 64, 128, 256, or 512."
 export const RAG_EMBEDDING_TIMEOUT_DEFAULT_MS = 60000
 export const RAG_EMBEDDING_TIMEOUT_LARGE_BATCH_MS = 90000
-export const RAG_EMBEDDING_CONCURRENT_REQUESTS_DEFAULT = 3
+export const RAG_EMBEDDING_CONCURRENT_REQUESTS_DEFAULT = 2
 export const RAG_EMBEDDING_CONCURRENT_REQUESTS_MIN = 1
 export const RAG_EMBEDDING_CONCURRENT_REQUESTS_MAX = 8
 export const RAG_EMBEDDING_MAX_IN_FLIGHT_TOKENS_DEFAULT = 360000
@@ -154,14 +154,14 @@ export function readRemoteSettings(): RemoteSettings {
     mcp: {
       enabled: false,
     },
-	    completion: {
-	      enabled: config.get<boolean>("completion.enabled", false),
-	      provider: readCompletionProvider(config.get<string>("completion.provider", "openai-compatible")),
-	      profile: readCompletionProfile(config.get<string>("completion.profile", "qwen-coder-fim")),
-	      apiBaseUrl: providerApiBaseUrl,
-	      model: readDefaultedString(config.get<string>("completion.model", DEFAULT_COMPLETION_MODEL), DEFAULT_COMPLETION_MODEL),
+    completion: {
+      enabled: config.get<boolean>("completion.enabled", false),
+      provider: readCompletionProvider(config.get<string>("completion.provider", "qwen-direct")),
+      profile: readCompletionProfile(config.get<string>("completion.profile", "qwen-coder-fim")),
+      apiBaseUrl: providerApiBaseUrl,
+      model: readDefaultedString(config.get<string>("completion.model", DEFAULT_COMPLETION_MODEL), DEFAULT_COMPLETION_MODEL),
       maxTokens: Math.max(1, Math.min(4096, config.get<number>("completion.maxTokens", 128))),
-      temperature: Math.max(0, Math.min(2, config.get<number>("completion.temperature", 0))),
+      temperature: Math.max(0, Math.min(2, config.get<number>("completion.temperature", 0.1))),
       topP: Math.max(0, Math.min(1, config.get<number>("completion.topP", 1))),
       debounceMs: Math.max(0, config.get<number>("completion.debounceMs", 350)),
       logLevel: readCompletionLogLevel(config.get<string>("completion.logLevel", "info")),
@@ -344,6 +344,7 @@ export function connectionInputHasPassword(input: ConnectionSettingsInput) {
 export async function saveCompletionSettings(input: CompletionSettingsInput) {
   const config = vscode.workspace.getConfiguration(CHIPMATE_CONFIG_SECTION)
   await config.update("completion.enabled", input.enabled, vscode.ConfigurationTarget.Global)
+  await config.update("completion.provider", readCompletionProvider(input.provider), vscode.ConfigurationTarget.Global)
   await config.update("completion.profile", readCompletionProfile(input.profile), vscode.ConfigurationTarget.Global)
   if (input.apiBaseUrl !== undefined) await config.update("provider.apiBaseUrl", normalizeServerUrl(input.apiBaseUrl), vscode.ConfigurationTarget.Global)
   await config.update("completion.model", readDefaultedString(input.model, DEFAULT_COMPLETION_MODEL), vscode.ConfigurationTarget.Global)
@@ -526,8 +527,8 @@ function readCompletionCommentGuidedRetrievalMode(input: string | undefined): Co
 }
 
 function readCompletionProvider(input: string): CompletionProvider {
-  if (input === "openai-compatible") return input
-  return "openai-compatible"
+  if (input === "openai-compatible" || input === "qwen-direct" || input === "none") return input
+  return "qwen-direct"
 }
 
 function readPermissionMode(input: string): PermissionMode {

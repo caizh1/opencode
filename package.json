@@ -2,7 +2,7 @@
   "name": "chipmate",
   "displayName": "ChipMate",
   "description": "Direct OpenAI-compatible coding agent with workspace skills for VS Code",
-  "version": "0.0.216",
+  "version": "0.0.223",
   "icon": "media/chipmate-icon.png",
   "publisher": "local",
   "license": "MIT",
@@ -23,12 +23,13 @@
     "onCommand:chipmate.newSession",
     "onCommand:chipmate.askSelection",
     "onCommand:chipmate.askCurrentFile",
+    "onCommand:chipmate.addSelectionToContext",
     "onCommand:chipmate.addFileToContext",
     "onCommand:chipmate.clearContext",
     "onCommand:chipmate.openOutput",
     "onCommand:chipmate.provider.setApiKey",
-    "onCommand:chipmate.completion.runDirectAblation",
-    "onCommand:chipmate.completion.commitInlineSuggestion",
+    "onCommand:chipmate.qwenAutocomplete.showLogs",
+    "onCommand:chipmate.qwenAutocomplete.exportDiagnostics",
     "onCommand:chipmate.codeGraph.index",
     "onCommand:chipmate.codeGraph.rebuild",
     "onCommand:chipmate.codeGraph.pause",
@@ -65,8 +66,13 @@
         "category": "ChipMate"
       },
       {
+        "command": "chipmate.addSelectionToContext",
+        "title": "Add Selection to ChipMate Context",
+        "category": "ChipMate"
+      },
+      {
         "command": "chipmate.addFileToContext",
-        "title": "Add File to ChipMate Context",
+        "title": "Add Current File to ChipMate Context",
         "category": "ChipMate"
       },
       {
@@ -85,13 +91,13 @@
         "category": "ChipMate"
       },
       {
-        "command": "chipmate.completion.runDirectAblation",
-        "title": "Run Qwen FIM Completion Ablation",
+        "command": "chipmate.qwenAutocomplete.showLogs",
+        "title": "Show Qwen Autocomplete Logs",
         "category": "ChipMate"
       },
       {
-        "command": "chipmate.completion.commitInlineSuggestion",
-        "title": "Commit Inline Suggestion",
+        "command": "chipmate.qwenAutocomplete.exportDiagnostics",
+        "title": "Export Qwen Autocomplete Diagnostics",
         "category": "ChipMate"
       },
       {
@@ -249,6 +255,16 @@
           "default": false,
           "description": "Enable ChipMate inline completions."
         },
+        "chipmate.completion.provider": {
+          "type": "string",
+          "enum": [
+            "qwen-direct",
+            "none",
+            "openai-compatible"
+          ],
+          "default": "qwen-direct",
+          "description": "Inline completion provider. Qwen Direct uses the shared ChipMate provider base URL and API key with non-streaming /v1/completions."
+        },
         "chipmate.completion.profile": {
           "type": "string",
           "enum": [
@@ -270,9 +286,37 @@
           "maximum": 4096,
           "description": "Maximum generated tokens for inline completions."
         },
+        "chipmate.completion.maxPromptTokens": {
+          "type": "number",
+          "default": 1024,
+          "minimum": 1,
+          "maximum": 200000,
+          "description": "Continue-style prompt token budget for qwen-direct inline completion context."
+        },
+        "chipmate.completion.prefixPercentage": {
+          "type": "number",
+          "default": 0.3,
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Continue-style fraction of the prompt budget reserved for prefix context."
+        },
+        "chipmate.completion.maxSuffixPercentage": {
+          "type": "number",
+          "default": 0.2,
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Continue-style maximum fraction of the prompt budget reserved for suffix context."
+        },
+        "chipmate.completion.modelTimeout": {
+          "type": "number",
+          "default": 150,
+          "minimum": 1,
+          "maximum": 600000,
+          "description": "Continue autocomplete model timeout setting retained for qwen-direct helper parity diagnostics."
+        },
         "chipmate.completion.temperature": {
           "type": "number",
-          "default": 0,
+          "default": 0.1,
           "minimum": 0,
           "maximum": 2,
           "description": "Temperature for inline completions."
@@ -290,6 +334,145 @@
           "minimum": 0,
           "description": "Debounce time before requesting inline completions."
         },
+        "chipmate.completion.cache.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable Continue-style in-memory qwen-direct autocomplete cache reuse."
+        },
+        "chipmate.completion.cache.maxEntries": {
+          "type": "number",
+          "default": 1000,
+          "minimum": 1,
+          "maximum": 1e4,
+          "description": "Maximum qwen-direct autocomplete cache entries."
+        },
+        "chipmate.completion.prefixChars": {
+          "type": "number",
+          "default": 12000,
+          "minimum": 0,
+          "maximum": 200000,
+          "description": "Legacy compatibility limit retained for qwen-direct autocomplete settings; Continue-style token budget controls default prompt pruning."
+        },
+        "chipmate.completion.suffixChars": {
+          "type": "number",
+          "default": 6000,
+          "minimum": 0,
+          "maximum": 200000,
+          "description": "Legacy compatibility limit retained for qwen-direct autocomplete settings; Continue-style token budget controls default prompt pruning."
+        },
+        "chipmate.completion.multifileContext.enabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enable Continue-style lightweight multi-file context for FIM autocomplete."
+        },
+        "chipmate.completion.contextLength": {
+          "type": "number",
+          "default": 0,
+          "minimum": 0,
+          "maximum": 1e6,
+          "description": "Explicit qwen-direct autocomplete model context length. Zero means unknown and disables snippet prompt injection."
+        },
+        "chipmate.completion.context.recentlyEdited.enabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enable opt-in qwen-direct autocomplete recently edited range context collection."
+        },
+        "chipmate.completion.context.recentlyEdited.injectIntoPrompt": {
+          "type": "boolean",
+          "default": false,
+          "description": "Inject selected recently edited snippets into the qwen-coder multifile FIM autocomplete prompt when context length is safe."
+        },
+        "chipmate.completion.context.recentlyEdited.maxRanges": {
+          "type": "number",
+          "default": 2,
+          "minimum": 1,
+          "maximum": 20,
+          "description": "Maximum recently edited ranges retained in memory for qwen-direct autocomplete."
+        },
+        "chipmate.completion.context.recentlyEdited.maxRangeLines": {
+          "type": "number",
+          "default": 20,
+          "minimum": 1,
+          "maximum": 200,
+          "description": "Maximum lines retained per recently edited range for qwen-direct autocomplete."
+        },
+        "chipmate.completion.context.recentlyOpened.enabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enable opt-in qwen-direct autocomplete recently opened file context collection."
+        },
+        "chipmate.completion.context.recentlyOpened.injectIntoPrompt": {
+          "type": "boolean",
+          "default": false,
+          "description": "Inject selected recently opened file snippets into the qwen-coder multifile FIM autocomplete prompt when context length is safe."
+        },
+        "chipmate.completion.context.recentlyOpened.maxFiles": {
+          "type": "number",
+          "default": 20,
+          "minimum": 1,
+          "maximum": 20,
+          "description": "Maximum recently opened file paths retained in memory for qwen-direct autocomplete."
+        },
+        "chipmate.completion.context.recentlyOpened.fileReadTimeoutMs": {
+          "type": "number",
+          "default": 80,
+          "minimum": 1,
+          "maximum": 5000,
+          "description": "Per-file read timeout in milliseconds for qwen-direct recently opened autocomplete context."
+        },
+        "chipmate.completion.context.importDefinitions.enabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enable opt-in qwen-direct autocomplete import definition context collection."
+        },
+        "chipmate.completion.context.importDefinitions.injectIntoPrompt": {
+          "type": "boolean",
+          "default": false,
+          "description": "Inject selected import definition snippets into the qwen-coder multifile FIM autocomplete prompt when context length is safe."
+        },
+        "chipmate.completion.context.importDefinitions.timeoutMs": {
+          "type": "number",
+          "default": 100,
+          "minimum": 1,
+          "maximum": 5000,
+          "description": "Timeout in milliseconds for qwen-direct import definition lookup and range reads."
+        },
+        "chipmate.completion.context.importDefinitions.cacheSize": {
+          "type": "number",
+          "default": 10,
+          "minimum": 1,
+          "maximum": 10,
+          "description": "Maximum import definition file-info entries retained in memory for qwen-direct autocomplete."
+        },
+        "chipmate.completion.context.rootPath.enabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enable opt-in qwen-direct autocomplete root path context collection."
+        },
+        "chipmate.completion.context.rootPath.injectIntoPrompt": {
+          "type": "boolean",
+          "default": false,
+          "description": "Inject selected root path snippets into the qwen-coder multifile FIM autocomplete prompt when context length is safe."
+        },
+        "chipmate.completion.context.rootPath.timeoutMs": {
+          "type": "number",
+          "default": 100,
+          "minimum": 1,
+          "maximum": 5000,
+          "description": "Timeout in milliseconds for qwen-direct root path definition lookup and range reads."
+        },
+        "chipmate.completion.context.rootPath.cacheSize": {
+          "type": "number",
+          "default": 100,
+          "minimum": 1,
+          "maximum": 100,
+          "description": "Maximum root path snippet entries retained in memory for qwen-direct autocomplete."
+        },
+        "chipmate.completion.trace": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enable qwen-direct autocomplete diagnostic tracing."
+        },
         "chipmate.completion.logLevel": {
           "type": "string",
           "enum": [
@@ -299,6 +482,16 @@
           ],
           "default": "info",
           "description": "Output logging level for ChipMate inline completions."
+        },
+        "chipmate.completion.logPromptPreview": {
+          "type": "boolean",
+          "default": false,
+          "description": "Include short redacted prompt previews in qwen-direct debug diagnostics."
+        },
+        "chipmate.completion.logCompletionPreview": {
+          "type": "boolean",
+          "default": true,
+          "description": "Include short redacted completion previews in qwen-direct debug diagnostics."
         },
         "chipmate.completion.debugFullRetrievalProbe": {
           "type": "boolean",
@@ -492,7 +685,7 @@
         },
         "chipmate.rag.embedding.batchSize": {
           "type": "number",
-          "default": 128,
+          "default": 64,
           "enum": [
             1,
             5,
@@ -516,7 +709,7 @@
         },
         "chipmate.rag.embedding.concurrentRequests": {
           "type": "number",
-          "default": 3,
+          "default": 2,
           "minimum": 1,
           "maximum": 8,
           "description": "Initial maximum concurrent embedding requests during RAG indexing. The indexer can temporarily lower this under provider pressure and raise it by one after stable success."
@@ -679,8 +872,13 @@
           "group": "chipmate@2"
         },
         {
-          "command": "chipmate.addFileToContext",
+          "command": "chipmate.addSelectionToContext",
+          "when": "editorHasSelection",
           "group": "chipmate@3"
+        },
+        {
+          "command": "chipmate.addFileToContext",
+          "group": "chipmate@4"
         }
       ],
       "view/title": [
@@ -705,8 +903,10 @@
     "ui:completion-c-embedded": "bun scripts/completion-c-embedded-ui.ts",
     "benchmark:completion-quality": "bun scripts/completion-quality-benchmark.ts",
     "benchmark:codegraph": "bun scripts/codegraph-benchmark.ts",
+    "verify:document-runtime": "bun scripts/verify-document-runtime.ts",
+    "verify:qwen-vsix": "bun scripts/verify-qwen-vsix.ts",
     "test:vscode": "bun run package && node ./dist/test/runTest.js",
-    "vsix": "bun run package && vsce package --no-dependencies"
+    "vsix": "bun run package && vsce package"
   },
   "devDependencies": {
     "@types/mocha": "^10.0.10",
@@ -720,5 +920,12 @@
     "lucide": "^1.17.0",
     "mermaid": "^11.15.0",
     "typescript": "^5.8.3"
+  },
+  "dependencies": {
+    "diff": "8.0.4",
+    "fastest-levenshtein": "^1.0.16",
+    "ignore": "^7.0.3",
+    "js-tiktoken": "^1.0.18",
+    "web-tree-sitter": "^0.24.7"
   }
 }

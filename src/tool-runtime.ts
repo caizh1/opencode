@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process"
 import * as vscode from "vscode"
 import { AuditLog } from "./audit-log"
+import { parseSupportedDocument } from "./document-parser"
 import { decidePermission, type PermissionDecision, type ToolRequest } from "./permissions"
 import type { PermissionMode } from "./types"
 
@@ -16,6 +17,8 @@ export type ToolRuntimeResult = {
   title: string
   output: string
   approved: boolean
+  status?: "completed" | "failed" | "blocked" | "approval-required"
+  error?: string
   requiresApproval?: boolean
   risk?: string
 }
@@ -43,6 +46,7 @@ export class ToolRuntime {
           title: input.name,
           output: `Unknown ChipMate tool: ${input.name}`,
           approved: false,
+          status: "blocked",
         }
     }
   }
@@ -53,7 +57,7 @@ export class ToolRuntime {
         type: "function",
         function: {
           name: "chipmate_read",
-          description: "Read a UTF-8 text file from the current workspace host.",
+          description: "Read a UTF-8 text file or supported Office/PDF document from the current workspace host.",
           parameters: objectSchema({
             path: { type: "string", description: "Absolute or workspace-relative path to read." },
           }, ["path"]),
@@ -62,7 +66,7 @@ export class ToolRuntime {
     ]
   }
 
-  private async readFile(input: ToolRuntimeInput) {
+  private async readFile(input: ToolRuntimeInput): Promise<ToolRuntimeResult> {
     const target = resolveWorkspacePath(stringArg(input.arguments.path))
     const request: ToolRequest = {
       id: randomId(),
@@ -73,16 +77,31 @@ export class ToolRuntime {
     }
     const decision = await this.resolvePermission(input, request, { path: target, tool: input.name })
     if (!decision.approved) return blocked("Read file", decision)
-    const text = new TextDecoder().decode(await vscode.workspace.fs.readFile(vscode.Uri.file(target)))
+    let text: string
+    try {
+      input.signal?.throwIfAborted()
+      const bytes = await vscode.workspace.fs.readFile(vscode.Uri.file(target))
+      const document = parseSupportedDocument({ path: target, bytes, maxBytes: MAX_OUTPUT_BYTES })
+      text = document?.text ?? new TextDecoder().decode(bytes)
+    } catch (error) {
+      if (input.signal?.aborted) throw error
+      if (isFileNotFoundError(error)) {
+        const output = `File not found: ${target}`
+        return failed(`Read file: ${target}`, output, output, decision.risk)
+      }
+      const message = formatErrorMessage(error)
+      return failed(`Read file: ${target}`, `Read file failed: ${target}\n${message}`, message, decision.risk)
+    }
     return {
       title: `Read file: ${target}`,
       output: truncateBytes(text, MAX_OUTPUT_BYTES),
       approved: true,
+      status: "completed",
       risk: decision.risk,
     }
   }
 
-  private async writeFile(input: ToolRuntimeInput) {
+  private async writeFile(input: ToolRuntimeInput): Promise<ToolRuntimeResult> {
     const target = resolveWorkspacePath(stringArg(input.arguments.path))
     const content = stringArg(input.arguments.content)
     const request: ToolRequest = {
@@ -99,11 +118,12 @@ export class ToolRuntime {
       title: `Wrote file: ${target}`,
       output: `Wrote ${Buffer.byteLength(content, "utf8")} byte(s).`,
       approved: true,
+      status: "completed",
       risk: decision.risk,
     }
   }
 
-  private async runCommand(input: ToolRuntimeInput) {
+  private async runCommand(input: ToolRuntimeInput): Promise<ToolRuntimeResult> {
     const command = stringArg(input.arguments.command)
     const cwd = resolveWorkspacePath(stringArg(input.arguments.cwd) || workspaceRoot())
     const request: ToolRequest = {
@@ -121,11 +141,12 @@ export class ToolRuntime {
       title: `Command: ${command}`,
       output: truncateBytes(output, MAX_OUTPUT_BYTES),
       approved: true,
+      status: "completed",
       risk: decision.risk,
     }
   }
 
-  private async httpRequest(input: ToolRuntimeInput) {
+  private async httpRequest(input: ToolRuntimeInput): Promise<ToolRuntimeResult> {
     const url = stringArg(input.arguments.url)
     const method = stringArg(input.arguments.method) || "GET"
     const body = stringArg(input.arguments.body)
@@ -149,6 +170,7 @@ export class ToolRuntime {
       title: `${method.toUpperCase()} ${url}`,
       output: truncateBytes(`HTTP ${response.status} ${response.statusText}\n${text}`, MAX_OUTPUT_BYTES),
       approved: true,
+      status: "completed",
       risk: decision.risk,
     }
   }
@@ -204,8 +226,20 @@ function blocked(title: string, decision: { reason: string; risk: string; requir
     title,
     output: `Blocked by ChipMate permissions: ${decision.reason}`,
     approved: false,
+    status: decision.requiresApproval ? "approval-required" : "blocked",
     requiresApproval: decision.requiresApproval,
     risk: decision.risk,
+  }
+}
+
+function failed(title: string, output: string, error: string, risk?: string): ToolRuntimeResult {
+  return {
+    title,
+    output,
+    approved: false,
+    status: "failed",
+    error,
+    risk,
   }
 }
 
@@ -255,6 +289,16 @@ function truncateBytes(input: string, maxBytes: number) {
   const bytes = Buffer.from(input, "utf8")
   if (bytes.length <= maxBytes) return input
   return `${bytes.subarray(0, maxBytes).toString("utf8")}\n[truncated at ${maxBytes} bytes]`
+}
+
+function isFileNotFoundError(error: unknown) {
+  const code = error && typeof error === "object" && "code" in error ? (error as { code?: unknown }).code : undefined
+  if (code === "ENOENT" || code === "FileNotFound") return true
+  return /(?:ENOENT|FileNotFound|EntryNotFound|does not exist|no such file|nonexistent file)/i.test(formatErrorMessage(error))
+}
+
+function formatErrorMessage(error: unknown) {
+  return error instanceof Error ? error.message : String(error)
 }
 
 function randomId() {

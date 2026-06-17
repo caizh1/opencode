@@ -1,7 +1,7 @@
 export type ConnectionState = "disconnected" | "connecting" | "connected" | "authFailed" | "error"
 export type CompletionLogLevel = "off" | "info" | "debug"
 export type CompletionProfile = "generic-chat" | "qwen-coder-fim"
-export type CompletionProvider = "openai-compatible"
+export type CompletionProvider = "openai-compatible" | "qwen-direct" | "none"
 export type CompletionCommentGuidedRetrievalMode = "qa-exact" | "completion"
 export type CodeGraphAnalysisMode = "auto" | "fast" | "ast" | "semantic"
 export type PermissionMode = "ask" | "auto" | "full-access"
@@ -400,6 +400,8 @@ export type ChipMateModelInfo = {
   name: string
   providerName: string
   isDefault: boolean
+  source?: "configured" | "provider"
+  providerIndex?: number
   contextLimit?: number
   outputLimit?: number
 }

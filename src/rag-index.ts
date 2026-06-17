@@ -279,7 +279,7 @@ export async function buildRagVectorIndex(input: {
   const retryBackoffMs = Math.max(0, Math.floor(input.retryBackoffMs ?? 0))
   const requestDelayMs = Math.max(0, Math.floor(input.requestDelayMs ?? 0))
   const maxTokensPerRequest = Math.max(0, Math.floor(input.maxTokensPerRequest ?? 0))
-  const configuredConcurrency = clampInteger(input.concurrentRequests ?? 3, 1, 8)
+  const configuredConcurrency = clampInteger(input.concurrentRequests ?? 2, 1, 8)
   const adaptiveCeiling = Math.min(8, configuredConcurrency + 1)
   let activeConcurrency = configuredConcurrency
   const maxInFlightTokens = Math.max(0, Math.floor(input.maxInFlightTokens ?? 0))

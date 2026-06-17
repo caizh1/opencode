@@ -15,11 +15,23 @@ describe("extension manifest", () => {
     expect(JSON.stringify(manifest)).not.toContain("opencode.remote")
     expect(JSON.stringify(manifest)).not.toContain("opencodeRemote")
     expect(JSON.stringify(manifest)).not.toContain("opencode.openTerminal")
+    expect(JSON.stringify(manifest)).not.toContain("kilo.autocomplete")
   })
 
   test("supports VS Code 1.93 and later 1.x releases", () => {
     expect(manifest.engines?.vscode).toBe("^1.93.0")
     expect(manifest.devDependencies?.["@types/vscode"]).toBe("1.93.0")
+  })
+
+  test("packages qwen autocomplete runtime dependencies in the VSIX", () => {
+    for (const dependency of ["diff", "fastest-levenshtein", "ignore", "js-tiktoken", "web-tree-sitter"]) {
+      expect(typeof manifest.dependencies?.[dependency]).toBe("string")
+      expect(manifest.devDependencies?.[dependency]).toBeUndefined()
+    }
+    expect(manifest.scripts?.vsix).toBe("bun run package && vsce package")
+    expect(manifest.scripts?.["verify:qwen-vsix"]).toBe("bun scripts/verify-qwen-vsix.ts")
+    const vscodeIgnore = readFileSync(join(import.meta.dir, "..", ".vscodeignore"), "utf8")
+    expect(vscodeIgnore).not.toMatch(/^node_modules\/\*\*$/m)
   })
 
   test("runs as a workspace extension for local and Remote SSH workspace hosts", () => {
@@ -34,12 +46,13 @@ describe("extension manifest", () => {
       "chipmate.newSession",
       "chipmate.askSelection",
       "chipmate.askCurrentFile",
+      "chipmate.addSelectionToContext",
       "chipmate.addFileToContext",
       "chipmate.clearContext",
       "chipmate.openOutput",
       "chipmate.provider.setApiKey",
-      "chipmate.completion.runDirectAblation",
-      "chipmate.completion.commitInlineSuggestion",
+      "chipmate.qwenAutocomplete.showLogs",
+      "chipmate.qwenAutocomplete.exportDiagnostics",
       "chipmate.codeGraph.index",
       "chipmate.codeGraph.rebuild",
       "chipmate.codeGraph.pause",
@@ -54,6 +67,23 @@ describe("extension manifest", () => {
     expect(commands.has("opencode.openTerminal")).toBe(false)
     expect(commands.has("opencode.remote.connect")).toBe(false)
     expect(commands.has("opencode.remote.testConnection")).toBe(false)
+    expect(commands.has("chipmate.completion.runDirectAblation")).toBe(false)
+    expect(commands.has("chipmate.completion.commitInlineSuggestion")).toBe(false)
+  })
+
+  test("separates selection and current-file context menu commands", () => {
+    expect(manifest.contributes?.commands).toContainEqual(expect.objectContaining({
+      command: "chipmate.addSelectionToContext",
+      title: "Add Selection to ChipMate Context",
+    }))
+    expect(manifest.contributes?.commands).toContainEqual(expect.objectContaining({
+      command: "chipmate.addFileToContext",
+      title: "Add Current File to ChipMate Context",
+    }))
+    expect(manifest.contributes?.menus?.["editor/context"]).toContainEqual(expect.objectContaining({
+      command: "chipmate.addSelectionToContext",
+      when: "editorHasSelection",
+    }))
   })
 
   test("contributes provider, skills, permissions, MCP, completion, RAG, and code graph settings", () => {
@@ -78,17 +108,34 @@ describe("extension manifest", () => {
       enum: ["generic-chat", "qwen-coder-fim"],
       default: "qwen-coder-fim",
     })
-    expect(properties["chipmate.completion.provider"]).toBeUndefined()
+    expect(properties["chipmate.completion.provider"]).toMatchObject({
+      type: "string",
+      enum: ["qwen-direct", "none", "openai-compatible"],
+      default: "qwen-direct",
+    })
     expect(properties["chipmate.completion.apiBaseUrl"]).toBeUndefined()
     expect(properties["chipmate.completion.model"]?.default).toBe("qwen-coder-30b0")
+    expect(properties["chipmate.completion.temperature"]?.default).toBe(0.1)
+    expect(properties["chipmate.completion.maxPromptTokens"]?.default).toBe(1024)
+    expect(properties["chipmate.completion.modelTimeout"]?.default).toBe(150)
+    expect(properties["chipmate.completion.cache.enabled"]?.default).toBe(true)
+    expect(properties["chipmate.completion.context.recentlyEdited.enabled"]?.default).toBe(false)
+    expect(properties["chipmate.completion.context.recentlyOpened.enabled"]?.default).toBe(false)
+    expect(properties["chipmate.completion.context.importDefinitions.enabled"]?.default).toBe(false)
+    expect(properties["chipmate.completion.context.rootPath.enabled"]?.default).toBe(false)
+    expect(properties["chipmate.completion.trace"]?.default).toBe(false)
     expect(properties["chipmate.completion.logLevel"]?.enum).toEqual(["off", "info", "debug"])
+    expect(properties["chipmate.completion.logPromptPreview"]?.default).toBe(false)
+    expect(properties["chipmate.completion.logCompletionPreview"]?.default).toBe(true)
     expect(properties["chipmate.codeGraph.enabled"]?.default).toBe(true)
     expect(properties["chipmate.codeGraph.analysisMode"]?.enum).toEqual(["auto", "fast", "ast", "semantic"])
     expect(properties["chipmate.analysis.bridge.enabled"]).toBeUndefined()
     expect(properties["chipmate.analysis.maxEvidenceItems"]?.default).toBe(40)
     expect(properties["chipmate.rag.embedding.endpoint"]?.type).toBe("string")
     expect(properties["chipmate.rag.embedding.model"]?.default).toBe("qwen3-embedding-8b")
+    expect(properties["chipmate.rag.embedding.batchSize"]?.default).toBe(64)
     expect(properties["chipmate.rag.embedding.batchSize"]?.enum).toEqual([1, 5, 10, 32, 64, 128, 256, 512])
+    expect(properties["chipmate.rag.embedding.concurrentRequests"]?.default).toBe(2)
     expect(properties["chipmate.rag.embedding.timeoutMs"]?.default).toBe(60000)
     expect(properties["chipmate.rag.embedding.timeoutMs"]?.deprecationMessage).toContain("1-256 use 60000ms")
     expect(properties["chipmate.rag.allowedHosts"]?.type).toBe("array")

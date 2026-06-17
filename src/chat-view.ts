@@ -13,6 +13,7 @@ import {
 } from "./chat-export"
 import { createChatViewHtml } from "./chat-html"
 import { CHAT_SESSION_TITLE, extractPluginChatQuestionText, isPluginChatMessage, isPluginChatSession } from "./chat-session"
+import { StreamingStatePostScheduler } from "./chat-state-post-scheduler"
 import { applyChipMateEventToMessages, normalizeChipMateEvent, chipMateEventSessionID } from "./chat-stream"
 import type { CodeGraphContextProvider } from "./codegraph-types"
 import type { CodeIntelligenceSnapshot } from "./analysis-types"
@@ -29,7 +30,7 @@ import {
 } from "./context"
 import type { TrackedEditorContext } from "./editor-context"
 import { MissingLocalOnlyAgentError, selectRequestAgent } from "./local-agent"
-import { buildMentionIndex, searchMentionIndex, type MentionIndexEntry } from "./mention-index"
+import { buildMentionIndex, isMentionIndexExcludedPath, searchMentionIndex, type MentionIndexEntry } from "./mention-index"
 import { DirectAgentClient } from "./direct-agent-client"
 import type { SkillMetadata } from "./skills"
 import { splitThinkingFromParts } from "./thinking"
@@ -64,10 +65,14 @@ const SESSION_ABORT_TIMEOUT_MS = 5000
 const EVENT_READY_TIMEOUT_MS = 8000
 const SEND_STATUS_POLL_INTERVAL_MS = 5000
 const MESSAGE_POLL_INTERVAL_MS = 1000
+const STREAMING_STATE_POST_THROTTLE_MS = 50
 const EXPORT_INTENT_TIMEOUT_MS = 15000
 const EXPORT_INTENT_SESSION_TITLE = "VS Code export intent"
+const MAX_QUEUED_CHAT_SENDS = 10
 const DIAGNOSTIC_CONTEXT_LIMIT = 60
 const DIAGNOSTIC_PREVIEW_LIMIT = 5
+const MENTION_INDEX_LIMIT = 20000
+const MENTION_INDEX_EXCLUDE_GLOB = "{**/node_modules/**,**/.git/**,**/dist/**,**/out/**,**/build/**,**/.vscode-test/**}"
 
 type EventStreamPath = "/event" | "/global/event"
 type RagRebuildConfirmationReason = "ready" | "incomplete" | "embedding-change"
@@ -79,6 +84,10 @@ type MentionedFileRef = {
   insertText?: string
 }
 
+type QueuedMentionedFileRef = MentionedFileRef & {
+  type: "file"
+}
+
 type ChatViewMessage =
   | { type: "ready" }
   | { type: "refresh" }
@@ -87,8 +96,13 @@ type ChatViewMessage =
   | { type: "newSession" }
   | { type: "cancelSend" }
   | { type: "addFile" }
+  | { type: "addDroppedFiles"; candidates?: string[] }
   | { type: "clearContext" }
+  | { type: "removeContextItem"; id?: string }
+  | { type: "openContextItem"; id?: string }
   | { type: "exportMarkdown"; scope?: ExportScope; filenameHint?: string }
+  | { type: "deleteQueuedSend"; id?: string }
+  | { type: "editQueuedSend"; id?: string }
   | { type: "selectSession"; sessionID: string }
   | { type: "deleteSession"; sessionID: string }
   | { type: "refreshModels" }
@@ -126,6 +140,7 @@ type ChatViewMessage =
   | {
       type: "sendMessage"
       text: string
+      clientQueueID?: string
       mentionedFiles?: MentionedFileRef[]
       options?: Partial<ChatContextOptions>
     }
@@ -162,12 +177,26 @@ type RenderedMessage = {
 type MentionIndexState = {
   entries: MentionIndexEntry[]
   truncated: boolean
+  generation: number
+}
+
+type MentionIndexBuildState = {
+  generation: number
+  promise: Promise<MentionIndexState>
 }
 
 type ActiveSend = {
   client: DirectAgentClient
   sessionID: string
   generation: number
+}
+
+type QueuedChatSend = {
+  id: string
+  text: string
+  options: ChatContextOptions
+  mentionedFiles: vscode.Uri[]
+  mentionedFileRefs: QueuedMentionedFileRef[]
 }
 
 type RemoteChatViewProviderDeps = {
@@ -221,7 +250,10 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
   private readonly hiddenExternalSessions = new Set<string>()
   private readonly hiddenExportIntentSessions = new Set<string>()
   private mentionIndex?: MentionIndexState
-  private mentionIndexBuild?: Promise<MentionIndexState>
+  private mentionIndexBuild?: MentionIndexBuildState
+  private mentionIndexGeneration = 0
+  private mentionIndexWatcher?: vscode.FileSystemWatcher
+  private mentionWorkspaceSubscription?: vscode.Disposable
   private eventSubscription?: {
     client: DirectAgentClient
     controller: AbortController
@@ -236,17 +268,67 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
   private activeSend?: ActiveSend
   private activeSendController?: AbortController
   private activeSendGeneration = 0
+  private queuedSends: QueuedChatSend[] = []
+  private drainingQueuedSends = false
   private sendStatusTimer?: ReturnType<typeof setTimeout>
   private messagePollTimer?: ReturnType<typeof setTimeout>
   private suppressedStreamingSessionID?: string
   private readonly eventTypeCounts = new Map<string, number>()
+  private readonly streamingStatePostScheduler: StreamingStatePostScheduler
 
-  constructor(private readonly deps: RemoteChatViewProviderDeps) {}
+  constructor(private readonly deps: RemoteChatViewProviderDeps) {
+    this.streamingStatePostScheduler = new StreamingStatePostScheduler(
+      () => this.postStateNow(),
+      STREAMING_STATE_POST_THROTTLE_MS,
+    )
+    this.startMentionIndexWatcher()
+    this.mentionWorkspaceSubscription = vscode.workspace.onDidChangeWorkspaceFolders(() => {
+      this.invalidateMentionIndex("workspace folders changed")
+      this.restartMentionIndexWatcher()
+    })
+  }
 
   dispose() {
+    this.mentionIndexWatcher?.dispose()
+    this.mentionIndexWatcher = undefined
+    this.mentionWorkspaceSubscription?.dispose()
+    this.mentionWorkspaceSubscription = undefined
     this.stopEventSubscription()
     this.stopSendStatusWatchdog()
     this.stopMessagePollingFallback()
+    this.streamingStatePostScheduler.clear()
+  }
+
+  private startMentionIndexWatcher() {
+    if (this.mentionIndexWatcher || !vscode.workspace.workspaceFolders?.length) return
+    const watcher = vscode.workspace.createFileSystemWatcher("**/*")
+    this.mentionIndexWatcher = watcher
+    watcher.onDidCreate((uri) => this.handleMentionIndexFileEvent(uri, "created"))
+    watcher.onDidDelete((uri) => this.handleMentionIndexFileEvent(uri, "deleted"))
+  }
+
+  private restartMentionIndexWatcher() {
+    this.mentionIndexWatcher?.dispose()
+    this.mentionIndexWatcher = undefined
+    this.startMentionIndexWatcher()
+  }
+
+  private handleMentionIndexFileEvent(uri: vscode.Uri, reason: "created" | "deleted") {
+    if (uri.scheme !== "file") return
+    if (!vscode.workspace.getWorkspaceFolder(uri)) return
+    const label = relativePath(uri)
+    if (isMentionIndexExcludedPath(label)) return
+    this.invalidateMentionIndex(`file ${reason}`, uri)
+  }
+
+  private invalidateMentionIndex(reason: string, uri?: vscode.Uri) {
+    this.mentionIndex = undefined
+    this.mentionIndexGeneration += 1
+    if (this.mentionIndexBuild && this.mentionIndexBuild.generation < this.mentionIndexGeneration) {
+      this.mentionIndexBuild = undefined
+    }
+    const target = uri ? ` ${relativePath(uri)}` : ""
+    this.deps.output.appendLine(`[mention] invalidated ${reason}${target} generation=${this.mentionIndexGeneration}`)
   }
 
   resolveWebviewView(webviewView: vscode.WebviewView) {
@@ -283,6 +365,7 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
     if (state !== "connected") {
       this.stopEventSubscription()
       this.clearActiveSendState()
+      this.clearQueuedSends()
     }
     this.postState()
   }
@@ -488,6 +571,89 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
     this.sending = false
   }
 
+  private enqueueChatSend(
+    text: string,
+    options: ChatContextOptions,
+    mentionedFiles: vscode.Uri[],
+    mentionedFileRefs = this.mentionedFileRefsFromUris(mentionedFiles),
+    clientQueueID?: string,
+  ) {
+    const trimmed = text.trim()
+    if (!trimmed && mentionedFiles.length === 0) {
+      this.postQueueRejected(clientQueueID, "Type a message or attach context.")
+      return false
+    }
+    if (this.queuedSends.length >= MAX_QUEUED_CHAT_SENDS) {
+      const message = `Chat send queue is full (${MAX_QUEUED_CHAT_SENDS}/${MAX_QUEUED_CHAT_SENDS}). Wait for the current reply to finish.`
+      this.deps.output.appendLine(`[send-queue] ${message}`)
+      this.postQueueRejected(clientQueueID, message)
+      this.postQueueUpdated(message, "warning")
+      return false
+    }
+
+    this.queuedSends = [
+      ...this.queuedSends,
+      {
+        id: this.queuedSendID(clientQueueID),
+        text,
+        options: { ...options },
+        mentionedFiles: [...mentionedFiles],
+        mentionedFileRefs: mentionedFileRefs.map((file) => ({ ...file })),
+      },
+    ]
+    const message = `Queued ${this.queuedSends.length}/${MAX_QUEUED_CHAT_SENDS}.`
+    this.deps.output.appendLine(`[send-queue] ${message}`)
+    this.postQueueUpdated(message)
+    return true
+  }
+
+  private clearQueuedSends() {
+    if (this.queuedSends.length === 0) return
+    this.queuedSends = []
+    this.postQueueUpdated("")
+  }
+
+  private deleteQueuedSend(id: string | undefined) {
+    if (!id) return
+    const before = this.queuedSends.length
+    this.queuedSends = this.queuedSends.filter((item) => item.id !== id)
+    if (this.queuedSends.length === before) return
+    this.postQueueUpdated(this.queuedSends.length > 0 ? `Queued ${this.queuedSends.length}/${MAX_QUEUED_CHAT_SENDS}.` : "")
+  }
+
+  private editQueuedSend(id: string | undefined) {
+    if (!id) return
+    const queued = this.queuedSends.find((item) => item.id === id)
+    if (!queued) return
+    this.queuedSends = this.queuedSends.filter((item) => item.id !== id)
+    this.postQueueUpdated(this.queuedSends.length > 0 ? `Queued ${this.queuedSends.length}/${MAX_QUEUED_CHAT_SENDS}.` : "")
+    this.view?.webview.postMessage({
+      type: "restoreQueuedSendDraft",
+      text: queued.text,
+      mentionedFiles: queued.mentionedFileRefs,
+      options: queued.options,
+    })
+  }
+
+  private async drainQueuedSends() {
+    if (this.drainingQueuedSends || this.sending || this.queuedSends.length === 0) return
+    if (this.connectionState !== "connected" || !this.deps.getClient()) return
+
+    this.drainingQueuedSends = true
+    try {
+      while (!this.sending && this.queuedSends.length > 0 && this.connectionState === "connected" && this.deps.getClient()) {
+        const next = this.queuedSends.shift()
+        if (!next) continue
+        this.postQueueUpdated(this.queuedSends.length > 0 ? `Queued ${this.queuedSends.length}/${MAX_QUEUED_CHAT_SENDS}.` : "")
+        const mentioned = await this.resolveExistingMentionedFiles(next.mentionedFileRefs)
+        await this.processSendMessage(next.text, next.options, mentioned.uris)
+      }
+    } finally {
+      this.drainingQueuedSends = false
+      this.postState()
+    }
+  }
+
   private async cancelActiveSend() {
     const activeSend = this.activeSend
     const sessionID = activeSend?.sessionID
@@ -500,7 +666,10 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
     this.clearActiveSendState()
     this.messages = [...this.messages, localMessage("error", "Request canceled.")]
     this.postState()
-    if (!client || !sessionID) return
+    if (!client || !sessionID) {
+      void this.drainQueuedSends()
+      return
+    }
 
     try {
       const accepted = await withRequestTimeout("session abort", SESSION_ABORT_TIMEOUT_MS, (signal) =>
@@ -523,6 +692,7 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
       ]
       this.postState()
     }
+    void this.drainQueuedSends()
   }
 
   private suppressStreamingEventsForSession(sessionID: string | undefined) {
@@ -634,6 +804,7 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
     this.sending = false
     this.activeSend = undefined
     this.postState()
+    void this.drainQueuedSends()
   }
 
   private async failActiveSendWithInterruption(
@@ -664,6 +835,7 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
     this.sending = false
     this.activeSend = undefined
     this.postState()
+    void this.drainQueuedSends()
     this.showChatInterruptedWarning(reason)
   }
 
@@ -689,22 +861,27 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
     if (result.changed) {
       this.remoteMessages = result.messages
       this.syncRenderedMessages()
-      this.postState()
+      if (isHighFrequencyStreamingMessageEvent(event.type)) this.scheduleStreamingStatePost()
+      else this.postState()
     }
     const sessionID = this.sessionID
     if (sessionID && result.error) {
+      this.flushStreamingStatePost()
       void this.failActiveSendWithInterruption(client, sessionID, result.error)
       return
     }
     if (sessionID && result.retry) {
+      this.flushStreamingStatePost()
       void this.failActiveSendWithRetry(client, sessionID, result.retry)
       return
     }
     if (sessionID && result.interruption) {
+      this.flushStreamingStatePost()
       void this.failActiveSendWithInterruption(client, sessionID, sessionInterruptionReason(result.interruption))
       return
     }
     if (sessionID && this.suppressedStreamingSessionID === sessionID && (result.idle || result.completed)) {
+      this.flushStreamingStatePost()
       this.clearStreamingEventSuppression(sessionID)
       void this.refreshSessionList(client)
         .then(() => this.postState())
@@ -712,6 +889,7 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
       return
     }
     if (sessionID && (result.idle || result.completed)) {
+      this.flushStreamingStatePost()
       void this.finishStreamingSession(client, sessionID)
     }
   }
@@ -745,6 +923,7 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
   private async finishStreamingSession(client: DirectAgentClient, sessionID: string) {
     if (this.finalizingSessions.has(sessionID)) return
     this.finalizingSessions.add(sessionID)
+    let shouldDrainQueuedSends = false
     const activeGeneration =
       this.activeSend?.client === client && this.activeSend.sessionID === sessionID ? this.activeSend.generation : undefined
     if (activeGeneration !== undefined) {
@@ -764,8 +943,10 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
         this.pendingLocalUserMessageIDs.clear()
         this.pendingLocalUserTexts.clear()
         this.sending = false
+        shouldDrainQueuedSends = this.queuedSends.length > 0
         this.postState()
       }
+      if (shouldDrainQueuedSends) void this.drainQueuedSends()
     }
   }
 
@@ -806,6 +987,7 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
     if (!client) return
 
     this.clearActiveSendState()
+    this.clearQueuedSends()
     this.clearStreamingEventSuppression()
     this.loadingMessages = true
     this.postState()
@@ -846,7 +1028,7 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
 
   async sendQuickQuestion(text: string, options: Partial<ChatContextOptions>) {
     await this.reveal()
-    await this.sendMessage(text, this.contextOptions(options), [])
+    await this.handleSendMessage(text, this.contextOptions(options), [])
   }
 
   private async handleMessage(message: ChatViewMessage) {
@@ -872,12 +1054,28 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
         case "addFile":
           await this.addFile()
           break
+        case "addDroppedFiles":
+          await this.addDroppedFiles(message.candidates ?? [])
+          break
         case "clearContext":
           this.deps.contextStore.clear()
           this.postState()
           break
+        case "removeContextItem":
+          if (message.id) this.deps.contextStore.remove(message.id)
+          this.postState()
+          break
+        case "openContextItem":
+          await this.openContextItem(message.id)
+          break
         case "exportMarkdown":
           await this.exportMarkdown(message.scope ?? "session", message.filenameHint)
+          break
+        case "deleteQueuedSend":
+          this.deleteQueuedSend(message.id)
+          break
+        case "editQueuedSend":
+          this.editQueuedSend(message.id)
           break
         case "selectSession":
           await this.selectSession(message.sessionID)
@@ -961,11 +1159,16 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
           await this.saveToolsEnabled(message.enabled)
           break
         case "sendMessage":
-          await this.handleSendMessage(
-            message.text,
-            this.contextOptions(message.options),
-            this.mentionedFileUris(message.mentionedFiles ?? []),
-          )
+          {
+            const mentionedFileRefs = await this.resolveExistingMentionedFiles(message.mentionedFiles ?? [])
+            await this.handleSendMessage(
+              message.text,
+              this.contextOptions(message.options),
+              mentionedFileRefs.uris,
+              mentionedFileRefs.refs,
+              message.clientQueueID,
+            )
+          }
           break
       }
     } catch (error) {
@@ -1040,6 +1243,7 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
 
   private async connectWithSettings(input: ConnectionSettingsInput, requestId?: number) {
     this.deps.output.appendLine(`[connect] requested URL: ${input.serverUrl}`)
+    this.clearQueuedSends()
     try {
       await this.deps.connectWithSettings(connectionSettingsForDeps(input))
     } catch (error) {
@@ -1249,11 +1453,40 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
     if (count > 0) vscode.window.setStatusBarMessage(`Attached ${count} file(s) to ChipMate context`, 2000)
   }
 
+  private async addDroppedFiles(candidates: string[]) {
+    const settings = this.deps.getSettings()
+    const resolved = await resolveDroppedFiles(candidates, settings.context.maxFiles)
+    this.view?.webview.postMessage({
+      type: "droppedFilesResolved",
+      files: resolved.files,
+      skippedCount: resolved.skippedCount,
+      notice: resolved.notice,
+    })
+  }
+
+  private async openContextItem(id: string | undefined) {
+    const item = id ? this.deps.contextStore.item(id) : undefined
+    if (!item) {
+      vscode.window.showWarningMessage("ChipMate context item is no longer available.")
+      this.postState()
+      return
+    }
+    const document = await vscode.workspace.openTextDocument(item.uri)
+    const editor = await vscode.window.showTextDocument(document, { preview: true })
+    if (item.kind !== "selection") return
+    const startLine = Math.max(0, Math.min(item.startLine - 1, document.lineCount - 1))
+    const endLine = Math.max(startLine, Math.min(item.endLine - 1, document.lineCount - 1))
+    const range = new vscode.Range(startLine, 0, endLine, document.lineAt(endLine).text.length)
+    editor.selection = new vscode.Selection(range.start, range.end)
+    editor.revealRange(range, vscode.TextEditorRevealType.InCenterIfOutsideViewport)
+  }
+
   private async selectSession(sessionID: string) {
     const client = this.connectedClient("Connect before selecting a session.")
     if (!client || !sessionID) return
 
     this.clearActiveSendState()
+    this.clearQueuedSends()
     this.clearStreamingEventSuppression()
     this.sessionID = sessionID
     this.loadingMessages = true
@@ -1291,6 +1524,7 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
 
     const wasCurrent = this.sessionID === sessionID
     if (this.activeSend?.sessionID === sessionID) await this.cancelActiveSend()
+    if (wasCurrent) this.clearQueuedSends()
 
     if (wasCurrent) {
       this.loadingMessages = true
@@ -1351,25 +1585,41 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
     }
   }
 
-  private async ensureMentionIndex() {
-    if (this.mentionIndex) return this.mentionIndex
-    if (!this.mentionIndexBuild) this.mentionIndexBuild = this.buildMentionIndex()
-    this.mentionIndex = await this.mentionIndexBuild
-    this.mentionIndexBuild = undefined
-    return this.mentionIndex
+  private async ensureMentionIndex(): Promise<MentionIndexState> {
+    if (this.mentionIndex && this.mentionIndex.generation === this.mentionIndexGeneration) {
+      return this.mentionIndex
+    }
+
+    const generation = this.mentionIndexGeneration
+    if (!this.mentionIndexBuild || this.mentionIndexBuild.generation !== generation) {
+      this.mentionIndexBuild = {
+        generation,
+        promise: this.buildMentionIndex(generation),
+      }
+    }
+
+    const build = this.mentionIndexBuild
+    const index = await build.promise.finally(() => {
+      if (this.mentionIndexBuild === build) this.mentionIndexBuild = undefined
+    })
+    if (this.mentionIndexGeneration !== build.generation) {
+      return this.ensureMentionIndex()
+    }
+    this.mentionIndex = index
+    return index
   }
 
-  private async buildMentionIndex(): Promise<MentionIndexState> {
-    if (!vscode.workspace.workspaceFolders?.length) return { entries: [], truncated: false }
+  private async buildMentionIndex(generation: number): Promise<MentionIndexState> {
+    if (!vscode.workspace.workspaceFolders?.length) return { entries: [], truncated: false, generation }
 
-    const limit = 20000
     const files = await vscode.workspace.findFiles(
       "**/*",
-      "{**/node_modules/**,**/.git/**,**/dist/**,**/out/**,**/build/**,**/.vscode-test/**}",
-      limit + 1,
+      MENTION_INDEX_EXCLUDE_GLOB,
+      MENTION_INDEX_LIMIT + 1,
     )
-    const truncated = files.length > limit
-    const sourceFiles = files.slice(0, limit).map((uri) => ({
+    const visibleFiles = files.filter((uri) => !isMentionIndexExcludedPath(relativePath(uri)))
+    const truncated = visibleFiles.length > MENTION_INDEX_LIMIT
+    const sourceFiles = visibleFiles.slice(0, MENTION_INDEX_LIMIT).map((uri) => ({
       uri: uri.toString(),
       label: relativePath(uri),
     }))
@@ -1379,13 +1629,20 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
         truncated ? " (truncated)" : ""
       }`,
     )
-    return { entries, truncated }
+    return { entries, truncated, generation }
   }
 
-  private async sendMessage(text: string, options: ChatContextOptions, mentionedFiles: vscode.Uri[]) {
+  private async sendMessage(
+    text: string,
+    options: ChatContextOptions,
+    mentionedFiles: vscode.Uri[],
+  ) {
     const trimmed = text.trim()
     if (!trimmed && mentionedFiles.length === 0) return
-    if (this.sending) return
+    if (this.sending) {
+      this.enqueueChatSend(text, options, mentionedFiles)
+      return
+    }
 
     const client = this.connectedClient("Configure a ChipMate provider before sending.")
     if (!client) return
@@ -1492,6 +1749,7 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
         this.stopMessagePollingFallback()
       }
       this.postState()
+      if (!sentStreaming && !controller.signal.aborted) void this.drainQueuedSends()
     }
   }
 
@@ -1755,8 +2013,9 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
     }
   }
 
-  private mentionedFileUris(files: MentionedFileRef[]) {
-    const result: vscode.Uri[] = []
+  private async resolveExistingMentionedFiles(files: MentionedFileRef[]) {
+    const uris: vscode.Uri[] = []
+    const refs: QueuedMentionedFileRef[] = []
     const seen = new Set<string>()
     for (const file of files) {
       try {
@@ -1767,15 +2026,54 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
         const key = uri.toString()
         if (seen.has(key)) continue
         seen.add(key)
-        result.push(uri)
+        const stat = await vscode.workspace.fs.stat(uri)
+        if (stat.type !== vscode.FileType.File) {
+          this.deps.output.appendLine(`[mention] skipped missing/stale file: ${relativePath(uri)}`)
+          continue
+        }
+        uris.push(uri)
+        refs.push({
+          uri: key,
+          label: file.label || relativePath(uri),
+          type: "file",
+          insertText: file.insertText,
+        })
       } catch {
-        this.deps.output.appendLine(`[mention] skipped invalid URI: ${file.uri}`)
+        this.deps.output.appendLine(`[mention] skipped missing/stale file: ${file.uri}`)
       }
     }
-    return result
+    return { uris, refs }
   }
 
-  private async handleSendMessage(text: string, options: ChatContextOptions, mentionedFiles: vscode.Uri[]) {
+  private mentionedFileRefsFromUris(uris: vscode.Uri[]) {
+    return uris.map((uri) => ({
+      uri: uri.toString(),
+      label: relativePath(uri),
+      type: "file" as const,
+    }))
+  }
+
+  private async handleSendMessage(
+    text: string,
+    options: ChatContextOptions,
+    mentionedFiles: vscode.Uri[],
+    mentionedFileRefs = this.mentionedFileRefsFromUris(mentionedFiles),
+    clientQueueID?: string,
+  ) {
+    const mentioned = await this.resolveExistingMentionedFiles(mentionedFileRefs)
+    if (this.sending) {
+      this.enqueueChatSend(text, options, mentioned.uris, mentioned.refs, clientQueueID)
+      return
+    }
+
+    await this.processSendMessage(text, options, mentioned.uris)
+  }
+
+  private async processSendMessage(
+    text: string,
+    options: ChatContextOptions,
+    mentionedFiles: vscode.Uri[],
+  ) {
     const explicitExport = parseExplicitExportCommand(text)
     if (explicitExport) {
       await this.exportMarkdown(explicitExport.scope, explicitExport.filenameHint)
@@ -1908,7 +2206,58 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
     })
   }
 
+  private queuedSendID(clientQueueID: string | undefined) {
+    const candidate = typeof clientQueueID === "string" ? clientQueueID.trim() : ""
+    if (candidate && !this.queuedSends.some((item) => item.id === candidate)) return candidate
+    return `queued-${Date.now()}-${Math.random().toString(36).slice(2)}`
+  }
+
+  private queuedSendSnapshot() {
+    return {
+      queuedSends: this.queuedSends.map((item) => ({
+        id: item.id,
+        text: item.text,
+        options: item.options,
+        mentionedFiles: item.mentionedFileRefs,
+      })),
+      queuedSendCount: this.queuedSends.length,
+      queuedSendLimit: MAX_QUEUED_CHAT_SENDS,
+    }
+  }
+
+  private postQueueUpdated(message = "", status = "info") {
+    this.view?.webview.postMessage({
+      type: "queueUpdated",
+      ...this.queuedSendSnapshot(),
+      message,
+      status,
+    })
+  }
+
+  private postQueueRejected(clientQueueID: string | undefined, message: string) {
+    if (!clientQueueID) return
+    this.view?.webview.postMessage({
+      type: "queueRejected",
+      clientQueueID,
+      message,
+      status: "warning",
+    })
+  }
+
   private postState() {
+    this.streamingStatePostScheduler.clear()
+    this.postStateNow()
+  }
+
+  private scheduleStreamingStatePost() {
+    this.streamingStatePostScheduler.schedule()
+  }
+
+  private flushStreamingStatePost() {
+    this.streamingStatePostScheduler.flush()
+  }
+
+  private postStateNow() {
     const settings = this.deps.getSettings()
     const agentSelection = this.agentForSettings(settings)
     this.view?.webview.postMessage({
@@ -1949,6 +2298,7 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
         historyError: this.historyError,
         localOnlyWarning: settings.context.localOnlyMode ? agentSelection.warning ?? "" : "",
         contextFiles: this.deps.contextStore.labels(),
+        contextItems: this.deps.contextStore.viewItems(),
         codeGraph: this.deps.codeGraph?.status(),
         codeGraphWaitDetail: this.codeGraphWaitDetail,
         codeIntelligence: this.codeIntelligence,
@@ -1967,6 +2317,14 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
         messages: this.messages,
         sending: this.sending,
         sendCancellable: this.sending && Boolean(this.activeSendController || this.activeSend),
+        queuedSends: this.queuedSends.map((item) => ({
+          id: item.id,
+          text: item.text,
+          options: item.options,
+          mentionedFiles: item.mentionedFileRefs,
+        })),
+        queuedSendCount: this.queuedSends.length,
+        queuedSendLimit: MAX_QUEUED_CHAT_SENDS,
         loadingMessages: this.loadingMessages,
       },
     })
@@ -1988,6 +2346,7 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
     const state = connectionFailureState(error)
     this.historyError = detail
     this.deps.output.appendLine(`[history] ${detail}`)
+    this.clearQueuedSends()
     this.deps.clearClient(client)
     this.deps.setConnectionState(state, detail)
   }
@@ -2129,6 +2488,10 @@ function formatErrorMessage(error: unknown) {
 
 function isStreamingMessageEvent(type: string) {
   return type === "message.updated" || type === "message.part.updated" || type === "message.part.delta"
+}
+
+function isHighFrequencyStreamingMessageEvent(type: string) {
+  return type === "message.part.updated" || type === "message.part.delta"
 }
 
 function connectionFailureState(error: unknown): ConnectionState {
@@ -2273,13 +2636,14 @@ function displayText(role: string, text: string) {
   return extractPluginChatQuestionText(text)
 }
 
-function localMessage(role: string, text: string): RenderedMessage {
+function localMessage(role: string, text: string, overrides: Partial<RenderedMessage> = {}): RenderedMessage {
   return {
     id: `local-${Date.now()}-${Math.random().toString(36).slice(2)}`,
     role,
     text,
     timeCreated: Date.now(),
     parts: [{ type: "text", text }],
+    ...overrides,
   }
 }
 
@@ -2449,6 +2813,113 @@ function ragResumeScheduleMessage(rag: RagStatus) {
   const remainingMs = Math.max(0, rag.resumeScheduledAt - Date.now())
   const label = rag.resumeReason === "rate-limit" ? "retry scheduled" : "resume scheduled"
   return `; ${label} in ${Math.ceil(remainingMs / 1000)}s`
+}
+
+async function resolveDroppedFiles(candidates: string[], maxFiles: number): Promise<{ files: MentionedFileRef[]; skippedCount: number; notice: string }> {
+  const files: MentionedFileRef[] = []
+  const seen = new Set<string>()
+  let skippedCount = 0
+  const limit = Math.max(1, maxFiles)
+
+  for (const uri of droppedFileUriCandidates(candidates)) {
+    if (files.length >= limit) {
+      skippedCount += 1
+      continue
+    }
+    if (uri.scheme !== "file" || !vscode.workspace.getWorkspaceFolder(uri)) {
+      skippedCount += 1
+      continue
+    }
+    const key = uri.toString()
+    if (seen.has(key)) {
+      skippedCount += 1
+      continue
+    }
+    seen.add(key)
+
+    try {
+      const stat = await vscode.workspace.fs.stat(uri)
+      if (!isRegularDroppedFile(stat)) {
+        skippedCount += 1
+        continue
+      }
+    } catch {
+      skippedCount += 1
+      continue
+    }
+
+    const label = relativePath(uri)
+    files.push({
+      uri: key,
+      label,
+      type: "file",
+      insertText: label,
+    })
+  }
+
+  if (files.length === 0) {
+    return {
+      files,
+      skippedCount,
+      notice: skippedCount > 0
+        ? "Drop workspace files from VS Code, or use Attach/@mention for other files."
+        : "No workspace file path was found in the drop. Use Attach or @mention to add files.",
+    }
+  }
+
+  const added = `Added ${files.length} dropped file${files.length === 1 ? "" : "s"} to this message.`
+  const skipped = skippedCount > 0 ? ` Skipped ${skippedCount} unsupported item${skippedCount === 1 ? "" : "s"}.` : ""
+  return { files, skippedCount, notice: `${added}${skipped}` }
+}
+
+function droppedFileUriCandidates(candidates: string[]) {
+  const result: vscode.Uri[] = []
+  const seen = new Set<string>()
+  for (const raw of candidates) {
+    for (const candidate of String(raw || "").split(/\r?\n/)) {
+      for (const uri of droppedFileUrisForCandidate(candidate)) {
+        const key = uri.toString()
+        if (seen.has(key)) continue
+        seen.add(key)
+        result.push(uri)
+      }
+    }
+  }
+  return result
+}
+
+function droppedFileUrisForCandidate(raw: string) {
+  const candidate = normalizeDroppedFileCandidate(raw)
+  if (!candidate || candidate.startsWith("#")) return []
+  if (/^file:/i.test(candidate)) {
+    try {
+      const uri = vscode.Uri.parse(candidate)
+      return uri.scheme === "file" ? [uri] : []
+    } catch {
+      return []
+    }
+  }
+  if (/^[A-Za-z][A-Za-z0-9+.-]*:/.test(candidate)) return []
+  if (path.isAbsolute(candidate)) return [vscode.Uri.file(candidate)]
+
+  return (vscode.workspace.workspaceFolders ?? [])
+    .filter((folder) => folder.uri.scheme === "file")
+    .map((folder) => vscode.Uri.file(path.resolve(folder.uri.fsPath, candidate)))
+}
+
+function normalizeDroppedFileCandidate(raw: string) {
+  const trimmed = raw.trim().replace(/\0/g, "")
+  if (
+    (trimmed.startsWith('"') && trimmed.endsWith('"')) ||
+    (trimmed.startsWith("'") && trimmed.endsWith("'"))
+  ) {
+    return trimmed.slice(1, -1).trim()
+  }
+  return trimmed
+}
+
+function isRegularDroppedFile(stat: vscode.FileStat) {
+  return Boolean(stat.type & vscode.FileType.File) && !Boolean(stat.type & vscode.FileType.Directory)
 }
 
 function connectionSettingsFromMessage(message: Extract<ChatViewMessage, { type: "connectWithSettings" | "testWithSettings" }>): ConnectionSettingsInput {

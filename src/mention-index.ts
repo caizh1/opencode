@@ -25,6 +25,7 @@ export type MentionSearchResult = {
 }
 
 const MAX_SCORE = 100000
+const MENTION_INDEX_EXCLUDED_SEGMENTS = new Set(["node_modules", ".git", "dist", "out", "build", ".vscode-test"])
 
 export function buildMentionIndex(files: MentionSourceFile[]) {
   const folderLabels = new Set<string>()
@@ -71,6 +72,12 @@ export function searchMentionIndex(entries: MentionIndexEntry[], query: string, 
 
 export function normalizeMentionQuery(input: string) {
   return cleanPath(input.replace(/^@+/, "")).toLowerCase()
+}
+
+export function isMentionIndexExcludedPath(input: string) {
+  const normalized = cleanPath(input)
+  if (!normalized) return false
+  return normalized.split("/").some((segment) => MENTION_INDEX_EXCLUDED_SEGMENTS.has(segment))
 }
 
 function entryFor(type: MentionEntryType, label: string, uri?: string): MentionIndexEntry {

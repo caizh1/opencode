@@ -80,7 +80,7 @@ describe("ChipMate direct runtime wiring", () => {
 
   test("provider API key saves apply the active RAG configuration", () => {
     const start = extensionSource.indexOf("vscode.commands.registerCommand(CHIPMATE_COMMANDS.setProviderApiKey")
-    const end = extensionSource.indexOf("vscode.commands.registerCommand(CHIPMATE_COMMANDS.completionRunDirectAblation", start)
+    const end = extensionSource.indexOf("vscode.commands.registerCommand(CHIPMATE_COMMANDS.codeGraphIndex", start)
     const body = extensionSource.slice(start, end)
 
     expect(body).toContain("promptAndSaveProviderApiKey(context)")

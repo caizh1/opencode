@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { buildMentionIndex, normalizeMentionQuery, searchMentionIndex } from "../src/mention-index"
+import { buildMentionIndex, isMentionIndexExcludedPath, normalizeMentionQuery, searchMentionIndex } from "../src/mention-index"
 
 describe("mention index", () => {
   const entries = buildMentionIndex([
@@ -26,5 +26,16 @@ describe("mention index", () => {
       label: "source/ssd_fw/be/bm/gc",
       insertText: "source/ssd_fw/be/bm/gc/",
     })
+  })
+
+  test("matches the workspace file exclusions used by mention indexing", () => {
+    expect(isMentionIndexExcludedPath("src/chat-view.ts")).toBe(false)
+    expect(isMentionIndexExcludedPath("packages/app/src/index.ts")).toBe(false)
+    expect(isMentionIndexExcludedPath("node_modules/pkg/index.js")).toBe(true)
+    expect(isMentionIndexExcludedPath("source/.git/config")).toBe(true)
+    expect(isMentionIndexExcludedPath("packages/app/dist/index.js")).toBe(true)
+    expect(isMentionIndexExcludedPath("packages/app/out/extension.js")).toBe(true)
+    expect(isMentionIndexExcludedPath("packages/app/build/generated.js")).toBe(true)
+    expect(isMentionIndexExcludedPath("tmp\\.vscode-test\\workspace\\fixture.ts")).toBe(true)
   })
 })

@@ -21,7 +21,9 @@ export type LiquidIconName =
   | "refresh"
   | "copy"
   | "retry"
+  | "edit"
   | "apply"
+  | "completion"
   | "database"
   | "searchIndex"
   | "beaker"
@@ -32,6 +34,8 @@ export type LiquidIconName =
   | "save"
   | "discard"
   | "close"
+  | "panelBottomClose"
+  | "panelBottomOpen"
   | "more"
 
 type LiquidIconPath = string | { d: string; className?: string }
@@ -144,8 +148,17 @@ const liquidIconPaths = {
     "M17.8 4.7v3.7h-3.7",
     "M12 9.4v3.1l2.4 1.4",
   ],
+  edit: [
+    "M5.1 18.9l3.9-.8 9.1-9.1c.8-.8.8-2.1 0-2.9l-.2-.2c-.8-.8-2.1-.8-2.9 0l-9.1 9.1-.8 3.9Z",
+    "M13.9 7l3.1 3.1",
+    "M8.8 18.1l-2.9-2.9",
+  ],
   apply: [
     "M5.2 12.8l4.1 4.1 9.5-10",
+  ],
+  completion: [
+    "M4.8 4c3.3 0 4.7 1.5 4.7 4.3v2.1c0 1.1.9 1.8 2.5 1.8-1.6 0-2.5.7-2.5 1.8v2.1c0 2.8-1.4 4.3-4.7 4.3",
+    "M10.5 4c3.3 0 4.7 1.5 4.7 4.3v2.1c0 1.1.9 1.8 2.5 1.8-1.6 0-2.5.7-2.5 1.8v2.1c0 2.8-1.4 4.3-4.7 4.3",
   ],
   database: [
     "M5 6.8c0-1.8 3.1-3.2 7-3.2s7 1.4 7 3.2-3.1 3.2-7 3.2-7-1.4-7-3.2Z",
@@ -194,6 +207,16 @@ const liquidIconPaths = {
   close: [
     "M6.4 6.4l11.2 11.2",
     "M17.6 6.4L6.4 17.6",
+  ],
+  panelBottomClose: [
+    "M5.4 4.9h13.2c1.1 0 2 .9 2 2v10.2c0 1.1-.9 2-2 2H5.4c-1.1 0-2-.9-2-2V6.9c0-1.1.9-2 2-2Z",
+    "M4.2 14.6h15.6",
+    "M8.5 10.3 12 13.8l3.5-3.5",
+  ],
+  panelBottomOpen: [
+    "M5.4 4.9h13.2c1.1 0 2 .9 2 2v10.2c0 1.1-.9 2-2 2H5.4c-1.1 0-2-.9-2-2V6.9c0-1.1.9-2 2-2Z",
+    "M4.2 14.6h15.6",
+    "M8.5 13.1 12 9.6l3.5 3.5",
   ],
   more: [
     "M6.5 12h.1M12 12h.1M17.5 12h.1",

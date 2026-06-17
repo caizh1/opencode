@@ -6,6 +6,7 @@ import { join } from "node:path"
 import type { SkillRegistry } from "../src/skills"
 import type { ToolRuntime as ToolRuntimeInstance, ToolRuntimeResult } from "../src/tool-runtime"
 import type { RemoteSettings } from "../src/types"
+import { docxFixture } from "./document-fixtures"
 
 let workspaceFolders: Array<{ name: string; uri: UriShim }> = []
 
@@ -127,6 +128,44 @@ describe("ToolRuntime", () => {
     expect(toolNames).not.toContain("chipmate_write_file")
     expect(toolNames).not.toContain("chipmate_run_command")
     expect(toolNames).not.toContain("chipmate_http_request")
+    expect(runtime.toolDefinitions()[0]?.function.description).toContain("Office/PDF")
+  })
+
+  test("reads supported documents through the exposed workspace read tool", async () => {
+    const root = await tempDir("chipmate-tool-document-")
+    workspaceFolders = [{ name: "repo", uri: UriShim.file(root) }]
+    await writeFile(join(root, "brief.docx"), docxFixture("Tool readable Word document"))
+    const runtime = new ToolRuntime({ append: async () => undefined } as never)
+
+    const result = await runtime.execute({
+      mode: "ask",
+      name: "chipmate_read",
+      arguments: { path: "brief.docx" },
+    })
+
+    expect(result.approved).toBe(true)
+    expect(result.output).toContain("DOCX text:")
+    expect(result.output).toContain("Tool readable Word document")
+  })
+
+  test("returns a failed result when chipmate_read targets a missing workspace file", async () => {
+    const root = await tempDir("chipmate-tool-missing-")
+    workspaceFolders = [{ name: "repo", uri: UriShim.file(root) }]
+    const runtime = new ToolRuntime({ append: async () => undefined } as never)
+    const missingPath = join(root, "hw", "ufs.c")
+
+    const result = await runtime.execute({
+      mode: "ask",
+      name: "chipmate_read",
+      arguments: { path: "hw/ufs.c" },
+    })
+
+    expect(result).toMatchObject({
+      approved: false,
+      status: "failed",
+    })
+    expect(result.output).toContain("File not found:")
+    expect(result.output).toContain(missingPath)
   })
 })
 
@@ -148,10 +187,10 @@ describe("DirectAgentClient", () => {
       version: "direct-openai-compatible",
     })
     await expect(client.listModels()).resolves.toEqual([
-      expect.objectContaining({ id: "chat-model", isDefault: true }),
-      expect.objectContaining({ id: "completion-model", isDefault: false }),
-      expect.objectContaining({ id: "gpt-chip", providerID: "openai-compatible" }),
-      expect.objectContaining({ id: "qwen-fim", providerName: "OpenAI Compatible" }),
+      expect.objectContaining({ id: "chat-model", isDefault: true, source: "configured" }),
+      expect.objectContaining({ id: "completion-model", isDefault: false, source: "configured" }),
+      expect.objectContaining({ id: "gpt-chip", providerID: "openai-compatible", providerIndex: 0, source: "provider" }),
+      expect.objectContaining({ id: "qwen-fim", providerIndex: 1, providerName: "OpenAI Compatible", source: "provider" }),
     ])
   })
 
@@ -588,6 +627,139 @@ describe("DirectAgentClient", () => {
     expect(outputLines.join("\n")).toContain("[tool] blocked unexposed tool_call name=chipmate_read_file")
   })
 
+  test("continues the chat when chipmate_read reports a missing file", async () => {
+    const requests: Array<{ url?: string; body: Record<string, unknown> }> = []
+    const baseUrl = await listen(async (request, response) => {
+      if (request.url !== "/v1/chat/completions") {
+        response.writeHead(404).end()
+        return
+      }
+      const body = await collectJson(request)
+      requests.push({ url: request.url, body })
+      response.writeHead(200, {
+        "content-type": "text/event-stream",
+      })
+      if (requests.length === 1) {
+        response.end([
+          sse({ choices: [{ delta: { content: "Checking " } }] }),
+          sse({ choices: [{ delta: { tool_calls: [{ index: 0, id: "call_missing", function: { name: "chipmate_read", arguments: "{\"path\":\"hw/ufs.c\"}" } }] } }] }),
+          "data: [DONE]\n\n",
+        ].join(""))
+        return
+      }
+      response.end([
+        sse({ choices: [{ delta: { content: "The file does not exist." } }] }),
+        "data: [DONE]\n\n",
+      ].join(""))
+    })
+    const root = await tempDir("chipmate-missing-read-workspace-")
+    const storageRoot = await tempDir("chipmate-missing-read-storage-")
+    workspaceFolders = [{ name: "repo", uri: UriShim.file(root) }]
+    const runtime = new ToolRuntime({ append: async () => undefined } as never)
+    const client = directClient(baseUrl, {
+      storageRoot,
+      toolsEnabled: true,
+      tools: runtime,
+    })
+    const session = await client.createSession()
+
+    const assistant = await client.sendMessage({ sessionID: session.id, text: "read /hw/ufs.c" })
+
+    expect(requests).toHaveLength(2)
+    expect(requests[1]?.body.messages).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        role: "tool",
+        tool_call_id: "call_missing",
+        content: expect.stringContaining("File not found:"),
+      }),
+    ]))
+    expect(JSON.stringify(requests[1]?.body.messages)).toContain(join(root, "hw", "ufs.c"))
+    expect(assistant.parts).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        type: "tool",
+        tool: "chipmate_read",
+        state: expect.objectContaining({
+          status: "failed",
+          output: expect.stringContaining("File not found:"),
+        }),
+      }),
+      expect.objectContaining({ type: "text", text: "The file does not exist." }),
+    ]))
+    expect((await client.getSessionStatuses())[session.id]?.type).toBe("idle")
+    expect((await client.getMessages(session.id)).some((message) => Boolean(message.info.error))).toBe(false)
+  })
+
+  test("converts exposed tool runtime exceptions into failed tool results", async () => {
+    const requests: Array<{ url?: string; body: Record<string, unknown> }> = []
+    const outputLines: string[] = []
+    const baseUrl = await listen(async (request, response) => {
+      if (request.url !== "/v1/chat/completions") {
+        response.writeHead(404).end()
+        return
+      }
+      const body = await collectJson(request)
+      requests.push({ url: request.url, body })
+      response.writeHead(200, {
+        "content-type": "text/event-stream",
+      })
+      if (requests.length === 1) {
+        response.end([
+          sse({ choices: [{ delta: { tool_calls: [{ index: 0, id: "call_throw", function: { name: "chipmate_read", arguments: "{\"path\":\"missing.c\"}" } }] } }] }),
+          "data: [DONE]\n\n",
+        ].join(""))
+        return
+      }
+      response.end([
+        sse({ choices: [{ delta: { content: "Handled failed tool." } }] }),
+        "data: [DONE]\n\n",
+      ].join(""))
+    })
+    const client = directClient(baseUrl, {
+      storageRoot: await tempDir("chipmate-tool-exception-storage-"),
+      outputLines,
+      toolsEnabled: true,
+      tools: {
+        toolDefinitions: () => [{
+          type: "function",
+          function: {
+            name: "chipmate_read",
+            description: "Read a file",
+            parameters: { type: "object", properties: { path: { type: "string" } }, required: ["path"] },
+          },
+        }],
+        execute: async (): Promise<ToolRuntimeResult> => {
+          throw Object.assign(new Error("ENOENT: no such file or directory, open '/missing.c'"), { code: "ENOENT" })
+        },
+      } as unknown as ToolRuntimeInstance,
+    })
+    const session = await client.createSession()
+
+    const assistant = await client.sendMessage({ sessionID: session.id, text: "read missing.c" })
+
+    expect(requests).toHaveLength(2)
+    expect(requests[1]?.body.messages).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        role: "tool",
+        tool_call_id: "call_throw",
+        content: expect.stringContaining("Tool failed: chipmate_read"),
+      }),
+    ]))
+    expect(assistant.parts).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        type: "tool",
+        tool: "chipmate_read",
+        state: expect.objectContaining({
+          status: "failed",
+          error: expect.stringContaining("ENOENT"),
+        }),
+      }),
+      expect.objectContaining({ type: "text", text: "Handled failed tool." }),
+    ]))
+    expect((await client.getSessionStatuses())[session.id]?.type).toBe("idle")
+    expect((await client.getMessages(session.id)).some((message) => message.info.error?.message?.includes("对话已中断"))).toBe(false)
+    expect(outputLines.join("\n")).toContain("[tool] chipmate_read failed: ENOENT")
+  })
+
   test("does not replay prior tool results as next-turn history", async () => {
     const requests: Array<{ url?: string; body: Record<string, unknown> }> = []
     const baseUrl = await listen(async (request, response) => {
@@ -998,9 +1170,9 @@ function directSettings(baseUrl: string): RemoteSettings {
         enabled: false,
         endpoint: "",
         model: "",
-        batchSize: 128,
+        batchSize: 64,
         maxTokensPerRequest: 65536,
-        concurrentRequests: 3,
+        concurrentRequests: 2,
         maxInFlightTokens: 360000,
         encodingFormat: "auto",
         checkpointMode: "interval",

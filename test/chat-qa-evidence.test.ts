@@ -2,9 +2,11 @@ import { beforeEach, describe, expect, mock, test } from "bun:test"
 import type { QueryEvidenceResult } from "../src/analysis-types"
 import type { CodeGraphContextProvider, CodeGraphEvidenceQueryOptions } from "../src/codegraph-types"
 import type { CodeGraphStatus, RagAvailability, RagStatus, RemoteSettings } from "../src/types"
+import { docxFixture, pdfFixture, xlsxFixture } from "./document-fixtures"
 
 let workspaceFolders: Array<{ name: string; uri: UriShim }> = []
 let textDocuments: FakeDocument[] = []
+let fileBytes = new Map<string, Uint8Array>()
 
 class UriShim {
   readonly scheme = "file"
@@ -71,7 +73,7 @@ mock.module("vscode", () => ({
     },
     openTextDocument: async (uri: UriShim) => textDocuments.find((document) => document.uri.toString() === uri.toString()),
     fs: {
-      readFile: async () => new Uint8Array(),
+      readFile: async (uri: UriShim) => fileBytes.get(uri.fsPath) ?? new Uint8Array(),
     },
   },
   window: {
@@ -89,9 +91,72 @@ const { buildChatPrompt, LocalContextStore } = await import("../src/context")
 beforeEach(() => {
   workspaceFolders = [{ name: "repo", uri: UriShim.file("/repo") }]
   textDocuments = []
+  fileBytes = new Map()
 })
 
 describe("QA chat evidence retrieval", () => {
+  test("includes Office and PDF attachments as extracted local context", async () => {
+    fileBytes.set("/repo/docs/brief.docx", docxFixture("Word project brief"))
+    fileBytes.set("/repo/docs/table.xlsx", xlsxFixture())
+    fileBytes.set("/repo/docs/spec.pdf", pdfFixture("PDF requirements text"))
+    const contextSummary: Array<{ path: string; skipped: boolean }> = []
+
+    const prompt = await buildChatPrompt({
+      question: "请总结这些文档",
+      options: {
+        includeSelection: false,
+        includeCurrentFile: false,
+        includeOpenFiles: false,
+        includeDiagnostics: false,
+        includeGitDiff: false,
+      },
+      settings: settings(),
+      contextStore: new LocalContextStore(),
+      mentionedFiles: [
+        UriShim.file("/repo/docs/brief.docx") as never,
+        UriShim.file("/repo/docs/table.xlsx") as never,
+        UriShim.file("/repo/docs/spec.pdf") as never,
+      ],
+      onContextSummary: (items) => contextSummary.push(...items),
+    })
+
+    expect(prompt).toContain("Word project brief")
+    expect(prompt).toContain('sheet "Summary" range=A1:C2')
+    expect(prompt).toContain("PDF requirements text")
+    expect(contextSummary).toEqual([
+      expect.objectContaining({ path: "docs/brief.docx", skipped: false }),
+      expect.objectContaining({ path: "docs/table.xlsx", skipped: false }),
+      expect.objectContaining({ path: "docs/spec.pdf", skipped: false }),
+    ])
+  })
+
+  test("continues to skip unsupported binary attachments", async () => {
+    fileBytes.set("/repo/bin/blob.dat", new Uint8Array([0, 1, 2, 3, 4]))
+    const contextSummary: Array<{ path: string; skipped: boolean }> = []
+    const localSettings = settings()
+    localSettings.context.localOnlyMode = false
+
+    const prompt = await buildChatPrompt({
+      question: "看这个二进制文件",
+      options: {
+        includeSelection: false,
+        includeCurrentFile: false,
+        includeOpenFiles: false,
+        includeDiagnostics: false,
+        includeGitDiff: false,
+      },
+      settings: localSettings,
+      contextStore: new LocalContextStore(),
+      mentionedFiles: [UriShim.file("/repo/bin/blob.dat") as never],
+      onContextSummary: (items) => contextSummary.push(...items),
+    })
+
+    expect(prompt).toContain("[binary file skipped]")
+    expect(contextSummary).toEqual([
+      expect.objectContaining({ path: "bin/blob.dat", skipped: true }),
+    ])
+  })
+
   test("queries analysis evidence with the raw QA question and related workspace paths", async () => {
     const document = fakeDocument("ftl/bkm/ftl_bkm.c", "int ftl_bkm_init_free_mng(void) { return 0; }\n")
     textDocuments = [document]
@@ -171,6 +236,43 @@ describe("QA chat evidence retrieval", () => {
 
     expect(calls.build[0]).toMatchObject({ retrievalMode: "hybrid", latencyBudgetMs: 2000 })
     expect(calls.query[0]?.options).toMatchObject({ retrievalMode: "hybrid", latencyBudgetMs: 2000 })
+  })
+
+  test("packs explicit attached selection before automatic current-file context", async () => {
+    const document = fakeDocument("hw/char/char-hmp-cmds.c", "int before(void) { return 0; }\nselected_call();\nint after(void) { return 1; }\n")
+    textDocuments = [document]
+    const store = new LocalContextStore()
+    store.addSelection({
+      uri: document.uri as never,
+      languageId: "c",
+      startLine: 2,
+      endLine: 2,
+      text: "selected_call();",
+      truncated: false,
+    })
+
+    const prompt = await buildChatPrompt({
+      question: "解释选中的代码",
+      options: {
+        includeSelection: false,
+        includeCurrentFile: true,
+        includeOpenFiles: false,
+        includeDiagnostics: false,
+        includeGitDiff: false,
+      },
+      settings: settings(),
+      contextStore: store,
+      editorContext: {
+        uri: document.uri as never,
+        selection: { isEmpty: true } as never,
+        position: { line: 1, character: 0 } as never,
+      },
+    })
+
+    expect(prompt).toContain('source="attached selection"')
+    expect(prompt).toContain('lines="2-2"')
+    expect(prompt).toContain("selected_call();")
+    expect(prompt).not.toContain('source="current file"')
   })
 })
 
@@ -382,9 +484,9 @@ function settings(): RemoteSettings {
         enabled: false,
         endpoint: "",
         model: "",
-        batchSize: 128,
+        batchSize: 64,
         maxTokensPerRequest: 65536,
-        concurrentRequests: 3,
+        concurrentRequests: 2,
         maxInFlightTokens: 360000,
         encodingFormat: "auto",
         checkpointMode: "interval",

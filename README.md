@@ -8,7 +8,7 @@ ChipMate 是一个运行在 VS Code `workspace` extension host 内的直连 Open
 - Direct chat runtime：使用 `/chat/completions` SSE streaming，支持停止生成、recent chat history、Mermaid fenced diagram 本地渲染、JSONL session 落盘，以及在 `chipmate.tools.enabled=true` 时启用标准 `tool_calls` 和串行工具循环。
 - Workspace sessions：聊天历史写入 VS Code global storage 的 `sessions/*.jsonl`，工具审计写入 `audit/*.jsonl`。
 - Skills：只发现当前 workspace 下 `.agents/skills/*/SKILL.md`，支持 `name`、`description`、`allowed-tools` 等核心 frontmatter、渐进加载、`scripts/`、`references/`、`assets/` 和动态 `!command` 指令说明。
-- Tools：direct chat 默认不向模型暴露工具 schema；开启后当前只暴露 `chipmate_read`，用于读取 workspace host 上的 UTF-8 文本文件。
+- Tools：direct chat 默认不向模型暴露工具 schema；开启后当前只暴露 `chipmate_read`，用于读取 workspace host 上的 UTF-8 文本文件以及 `.docx`、`.xlsx`、`.xlsm`、`.pdf` 文档文本。
 - Permissions：composer 附近提供工具总开关，以及 `请求批准`、`替我审批`、`完全访问权限` 三档模式；默认工具关闭，权限模式默认 `请求批准`。
 - Codegraph/RAG：保留本地 C/C++ code graph 和内网 RAG pipeline，composer 可查看 CodeGraph/RAG 状态；code graph 使用有界分片落盘适配大仓库，索引版本变更时会从 0 重建。
 - MCP：设置面板中预留 Coming Soon 区块；当前版本不启动 MCP server、不安装 artifact、不暴露 MCP 工具。

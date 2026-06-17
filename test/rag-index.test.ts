@@ -287,7 +287,7 @@ describe("local RAG vector index", () => {
     expect(sleeps).toContain(25)
   })
 
-  test("starts with three concurrent embedding requests by default", async () => {
+  test("starts with two concurrent embedding requests by default", async () => {
     const provider = delayedEmbeddingProvider()
 
     await buildRagVectorIndex({
@@ -297,7 +297,7 @@ describe("local RAG vector index", () => {
       requestDelayMs: 0,
     })
 
-    expect(provider.maxActive).toBe(3)
+    expect(provider.maxActive).toBe(2)
   })
 
   test("allows eight configured embedding workers without adaptive overflow", async () => {
@@ -339,18 +339,18 @@ describe("local RAG vector index", () => {
       },
     })
 
-    expect(activeConcurrency).toContain(4)
-    expect(provider.maxActive).toBe(4)
-    expect(workerChanges).toContain("upgrade:3->4:stable batches")
+    expect(activeConcurrency).toContain(3)
+    expect(provider.maxActive).toBe(3)
+    expect(workerChanges).toContain("upgrade:2->3:stable batches")
     expect(vectorIndex.workerStatus?.lastChange).toMatchObject({
       direction: "upgrade",
-      fromWorkers: 3,
-      toWorkers: 4,
+      fromWorkers: 2,
+      toWorkers: 3,
       reason: "stable batches",
     })
   })
 
-  test("falls back from three to two concurrent requests after rate limit pressure", async () => {
+  test("falls back from two to one concurrent requests after rate limit pressure", async () => {
     let attempts = 0
     const profiles: Array<{ status: string; activeConcurrency: number; change?: string }> = []
     const provider: EmbeddingProvider = {
@@ -380,8 +380,8 @@ describe("local RAG vector index", () => {
       },
     })
 
-    expect(profiles.some((event) => event.status === "retry" && event.activeConcurrency === 2)).toBe(true)
-    expect(profiles.some((event) => event.change === "degrade:3->2:retry/rate-limit")).toBe(true)
+    expect(profiles.some((event) => event.status === "retry" && event.activeConcurrency === 1)).toBe(true)
+    expect(profiles.some((event) => event.change === "degrade:2->1:retry/rate-limit")).toBe(true)
   })
 
   test("limits concurrent starts by max in-flight estimated tokens", async () => {

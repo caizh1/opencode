@@ -83,7 +83,7 @@ QA 默认 evidence 先行：首轮请求仍由 `buildChatPrompt()` 发送本地�
 
 当前 direct chat 只向模型暴露一个工具：
 
-- `chipmate_read`：读取 workspace host 上的 UTF-8 文本文件，用于补齐本地代码证据。
+- `chipmate_read`：读取 workspace host 上的 UTF-8 文本文件，或提取 `.docx`、`.xlsx`、`.xlsm`、`.pdf` 文档文本，用于补齐本地证据。
 
 写文件、命令执行和 HTTP 请求的 runtime 实现可能仍作为内部/未来扩展点存在，但不会作为 chat tool definition 发给模型。`chipmate.tools.enabled` 默认 `false`。关闭时，模型请求不包含 `tools` 和 `tool_choice`，即使 provider 返回 `tool_calls` 也不会执行、不会追加 `role: "tool"` 消息、不会进入下一轮工具循环。开启后，请求体也只包含 `chipmate_read`；如果 provider 返回未暴露的工具调用，direct chat 会返回 blocked tool result，不进入真实执行。
 
@@ -108,6 +108,16 @@ QA 默认 evidence 先行：首轮请求仍由 `buildChatPrompt()` 发送本地�
 5. `includeOpenFiles` 开启时，加入其他打开的 `file` scheme 文档。
 6. `Diagnostics` 开启时，加入最多 60 条 workspace diagnostics。
 7. `Git diff` 开启时，加入当前 workspace 的 `git diff --` 输出。
+
+`@mention` 和 `Attach` 的文件会先按受支持文档格式解析：`.docx` 提取正文文本；`.xlsx` / `.xlsm` 按工作表输出名称、范围、表头、行列、公式和值；`.pdf` 只提取已有文本层。`.xlsm` 不执行宏；图片型或扫描型 PDF 不做 OCR，会明确提示没有可提取文本层。解析后的内容仍受 `chipmate.context.maxFileBytes` 和 `chipmate.context.maxFiles` 限制。非支持二进制文件继续跳过。
+
+文档解析运行在 VS Code workspace extension host 内，使用随扩展编译进 VSIX 的 TypeScript/JavaScript 代码，不依赖目标机器安装 Poppler、Python 包、Office、外部命令或运行时 npm 下载。打包后可用：
+
+```bash
+bun run verify:document-runtime -- chipmate-<version>.vsix
+```
+
+确认 VSIX 包含 `extension/dist/document-parser.js`，且没有把整个 `node_modules` 打进去。
 
 普通 QA 会使用当前 editor 状态选择上下文，但不会把光标位置当成明确模型语义发送。如果用户要让模型围绕某个代码洞回答，最好选中目标区域、写明函数名或行号，或者用 `@file` 明确引用。
 

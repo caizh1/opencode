@@ -203,11 +203,16 @@ describe("connection settings", () => {
 })
 
 describe("completion settings", () => {
-  test("defaults inline completion to the direct model provider", () => {
+  test("defaults inline completion to qwen-direct and supports disabling it", () => {
     const settings = readRemoteSettings()
 
-    expect(settings.completion.provider).toBe("openai-compatible")
+    expect(settings.completion.provider).toBe("qwen-direct")
     expect(settings.completion.model).toBe(DEFAULT_COMPLETION_MODEL)
+
+    configValues = new Map<string, unknown>([
+      ["completion.provider", "none"],
+    ])
+    expect(readRemoteSettings().completion.provider).toBe("none")
   })
 })
 
@@ -230,11 +235,11 @@ describe("tool settings", () => {
 })
 
 describe("RAG settings validation", () => {
-  test("uses 128 as the default embedding batch size", () => {
+  test("uses 64 as the default embedding batch size", () => {
     const settings = readRemoteSettings()
 
     expect(settings.rag.embedding.batchSize).toBe(RAG_EMBEDDING_BATCH_SIZE_DEFAULT)
-    expect(settings.rag.embedding.batchSize).toBe(128)
+    expect(settings.rag.embedding.batchSize).toBe(64)
     expect(settings.rag.embedding.maxTokensPerRequest).toBe(65536)
     expect(settings.rag.embedding.concurrentRequests).toBe(RAG_EMBEDDING_CONCURRENT_REQUESTS_DEFAULT)
     expect(settings.rag.embedding.maxInFlightTokens).toBe(RAG_EMBEDDING_MAX_IN_FLIGHT_TOKENS_DEFAULT)
@@ -297,12 +302,12 @@ describe("RAG settings validation", () => {
     expect(configUpdates).toEqual([])
   })
 
-  test("falls back to 128 for non-finite saved batch size values and saves the derived timeout", async () => {
+  test("falls back to 64 for non-finite saved batch size values and saves the derived timeout", async () => {
     await saveRagSettings(ragInput({ embeddingBatchSize: Number.NaN, embeddingTimeoutMs: 90000 }))
 
-    expect(configUpdates.find((update) => update.key === "rag.embedding.batchSize")?.value).toBe(128)
+    expect(configUpdates.find((update) => update.key === "rag.embedding.batchSize")?.value).toBe(64)
     expect(configUpdates.find((update) => update.key === "rag.embedding.timeoutMs")?.value).toBe(RAG_EMBEDDING_TIMEOUT_DEFAULT_MS)
-    expect(validateRagEmbeddingBatchSize(Number.NaN)).toBe(128)
+    expect(validateRagEmbeddingBatchSize(Number.NaN)).toBe(64)
   })
 
   test("saves small embedding batch sizes for provider input limits", async () => {

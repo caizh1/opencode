@@ -168,11 +168,21 @@ export class DirectAgentClient {
       const discovered = (body.data ?? [])
         .map((model) => model.id)
         .filter((id): id is string => Boolean(id))
-      return normalizeModelInfos([...configured, ...discovered], settings.provider.chatModel)
+        .map((id, providerIndex) => ({ id, providerIndex, source: "provider" as const }))
+      return normalizeModelInfos(
+        [
+          ...configured.map((id) => ({ id, source: "configured" as const })),
+          ...discovered,
+        ],
+        settings.provider.chatModel,
+      )
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       this.deps.output.appendLine(`[provider] /models unavailable, using configured models: ${message}`)
-      return normalizeModelInfos(configured, settings.provider.chatModel)
+      return normalizeModelInfos(
+        configured.map((id) => ({ id, source: "configured" as const })),
+        settings.provider.chatModel,
+      )
     }
   }
 
@@ -370,7 +380,7 @@ export class DirectAgentClient {
           const args = parseToolArguments(call.function.arguments)
           const isExposedTool = exposedToolNames.has(call.function.name)
           const toolResult = isExposedTool
-            ? await this.deps.tools.execute({
+            ? await this.executeToolCall({
                 sessionID,
                 mode: settings.permissions.mode,
                 name: call.function.name,
@@ -388,9 +398,10 @@ export class DirectAgentClient {
             type: "tool",
             tool: call.function.name,
             state: {
-              status: toolResult.approved ? "completed" : toolResult.requiresApproval ? "approval-required" : "blocked",
+              status: toolStatusFromResult(toolResult),
               input: args,
               output: toolResult.output,
+              error: toolResult.error,
               metadata: {
                 risk: toolResult.risk,
                 title: toolResult.title,
@@ -418,6 +429,17 @@ export class DirectAgentClient {
     this.emit("session.status", { sessionID, status: { type: "idle" } })
     await this.touchSession(sessionID)
     return { user: userMessage, assistant }
+  }
+
+  private async executeToolCall(input: Parameters<ToolRuntime["execute"]>[0]): Promise<ToolRuntimeResult> {
+    try {
+      return await this.deps.tools.execute(input)
+    } catch (error) {
+      if (input.signal?.aborted) throw error
+      const result = failedToolExecution(input.name, error)
+      this.deps.output.appendLine(`[tool] ${input.name} failed: ${result.error ?? result.output}`)
+      return result
+    }
   }
 
   private async recentChatHistoryMessages(sessionID: string, settings: RemoteSettings): Promise<ChatMessage[]> {
@@ -706,8 +728,25 @@ function blockedUnexposedTool(toolName: string): ToolRuntimeResult {
     title: "Tool blocked",
     output: `Tool is not exposed to the model in this chat mode: ${toolName}`,
     approved: false,
+    status: "blocked",
     risk: "blocked",
   }
+}
+
+function failedToolExecution(toolName: string, error: unknown): ToolRuntimeResult {
+  const message = formatErrorMessage(error)
+  return {
+    title: `Tool failed: ${toolName}`,
+    output: `Tool failed: ${toolName}: ${message}`,
+    approved: false,
+    status: "failed",
+    error: message,
+    risk: "failed",
+  }
+}
+
+function toolStatusFromResult(result: ToolRuntimeResult) {
+  return result.status ?? (result.approved ? "completed" : result.requiresApproval ? "approval-required" : "blocked")
 }
 
 function systemPrompt(settings: RemoteSettings, skillCatalog: string, loadedSkills: string) {
@@ -718,7 +757,7 @@ function systemPrompt(settings: RemoteSettings, skillCatalog: string, loadedSkil
       ? "Use only the context and the read-only file tool provided by ChipMate for workspace operations."
       : "Use only the context provided by ChipMate for workspace operations.",
     toolsEnabled
-      ? "Only chipmate_read is available; use it only to read workspace files when local evidence is incomplete."
+      ? "Only chipmate_read is available; use it only to read workspace text files or supported Office/PDF documents when local evidence is incomplete."
       : "ChipMate tool calling is disabled. Do not request, simulate, or emit tool calls; explain missing local information instead.",
     toolsEnabled
       ? `Permission mode: ${settings.permissions.mode}. Obey blocked tool results; if non-read operations are needed, explain the missing capability instead of calling another tool.`
@@ -820,21 +859,40 @@ function configuredModels(settings: RemoteSettings) {
   ].map((model) => model.trim()).filter(Boolean)
 }
 
-function normalizeModelInfos(models: string[], defaultModel: string): ChipMateModelInfo[] {
-  const seen = new Set<string>()
-  return models
-    .filter((model) => {
-      if (seen.has(model)) return false
-      seen.add(model)
-      return true
-    })
+type ModelInfoInput = {
+  id: string
+  providerIndex?: number
+  source: NonNullable<ChipMateModelInfo["source"]>
+}
+
+function normalizeModelInfos(models: ModelInfoInput[], defaultModel: string): ChipMateModelInfo[] {
+  const order: string[] = []
+  const byId = new Map<string, ModelInfoInput>()
+  for (const model of models) {
+    const id = model.id.trim()
+    if (!id) continue
+    const existing = byId.get(id)
+    if (!existing) {
+      order.push(id)
+      byId.set(id, { id, providerIndex: model.providerIndex, source: model.source })
+      continue
+    }
+    if (model.source === "provider") {
+      existing.source = "provider"
+      existing.providerIndex = model.providerIndex
+    }
+  }
+  return order
+    .map((id) => byId.get(id)!)
     .map((model) => ({
-      id: model,
+      id: model.id,
       providerID: "openai-compatible",
-      modelID: model,
-      name: model,
+      modelID: model.id,
+      name: model.id,
       providerName: "OpenAI Compatible",
-      isDefault: model === defaultModel,
+      isDefault: model.id === defaultModel,
+      providerIndex: model.providerIndex,
+      source: model.source,
     }))
 }
 

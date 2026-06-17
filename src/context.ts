@@ -10,6 +10,7 @@ import {
   type CompletionOpenTabContext,
   type CompletionContextPack,
 } from "./completion-context"
+import { parseSupportedDocument } from "./document-parser"
 import type { CompletionPlan, RetrievedCompletionSnippet } from "./completion-types"
 import type { ChatContextOptions, RagStatus, RemoteSettings } from "./types"
 
@@ -24,6 +25,37 @@ type FileContext = {
   endLine: number
   truncated: boolean
   reason?: string
+}
+
+export type LocalContextFileItem = {
+  id: string
+  kind: "file"
+  uri: vscode.Uri
+}
+
+export type LocalContextSelectionItem = {
+  id: string
+  kind: "selection"
+  uri: vscode.Uri
+  languageId: string
+  startLine: number
+  endLine: number
+  text: string
+  truncated: boolean
+}
+
+export type LocalContextItem = LocalContextFileItem | LocalContextSelectionItem
+
+export type LocalContextViewItem = {
+  id: string
+  kind: LocalContextItem["kind"]
+  path: string
+  label: string
+  startLine?: number
+  endLine?: number
+  inlinePreview?: string
+  preview?: string
+  truncated?: boolean
 }
 
 export type ContextSummaryItem = {
@@ -51,23 +83,149 @@ export class MissingLocalContextError extends Error {
   }
 }
 
+function fileContextItemId(uri: vscode.Uri) {
+  return `file:${uri.toString()}`
+}
+
+function selectionContextItemId(uri: vscode.Uri, startLine: number, endLine: number, text: string) {
+  return `selection:${uri.toString()}:${startLine}:${endLine}:${stableTextHash(text)}`
+}
+
+function localContextItemLabel(item: LocalContextItem) {
+  const path = relativePath(item.uri)
+  if (item.kind === "selection") return `Selection: ${path}:${item.startLine}-${item.endLine}`
+  return `File: ${path}`
+}
+
+function localContextViewItem(item: LocalContextItem): LocalContextViewItem {
+  const path = relativePath(item.uri)
+  const label = basename(path)
+  if (item.kind === "selection") {
+    return {
+      id: item.id,
+      kind: item.kind,
+      path,
+      label,
+      startLine: item.startLine,
+      endLine: item.endLine,
+      inlinePreview: selectionInlinePreview(item.text),
+      preview: selectionDetailPreview(item.text),
+      truncated: item.truncated,
+    }
+  }
+  return {
+    id: item.id,
+    kind: item.kind,
+    path,
+    label,
+  }
+}
+
+function basename(path: string) {
+  return path.split(/[\\/]/).pop() || path
+}
+
+function selectionInlinePreview(text: string) {
+  return text
+    .replace(/\r\n/g, "\n")
+    .split("\n")
+    .map((line) => line.trim())
+    .find(Boolean)
+    ?.slice(0, 120) ?? ""
+}
+
+function selectionDetailPreview(text: string) {
+  const preview = text
+    .replace(/\r\n/g, "\n")
+    .split("\n")
+    .slice(0, 20)
+    .join("\n")
+  return limitPreviewBytes(preview, 2048)
+}
+
+function limitPreviewBytes(text: string, maxBytes: number) {
+  if (Buffer.byteLength(text, "utf8") <= maxBytes) return text
+  let result = ""
+  let used = 0
+  for (const char of text) {
+    const size = Buffer.byteLength(char, "utf8")
+    if (used + size > maxBytes) break
+    result += char
+    used += size
+  }
+  return result
+}
+
+function stableTextHash(text: string) {
+  let hash = 2166136261
+  for (let index = 0; index < text.length; index += 1) {
+    hash ^= text.charCodeAt(index)
+    hash = Math.imul(hash, 16777619)
+  }
+  return (hash >>> 0).toString(36)
+}
+
 export class LocalContextStore {
-  private readonly files = new Map<string, vscode.Uri>()
+  private readonly contextItems = new Map<string, LocalContextItem>()
 
   add(uri: vscode.Uri) {
-    this.files.set(uri.toString(), uri)
+    return this.addFile(uri)
+  }
+
+  addFile(uri: vscode.Uri) {
+    const item: LocalContextFileItem = {
+      id: fileContextItemId(uri),
+      kind: "file",
+      uri,
+    }
+    this.contextItems.set(item.id, item)
+    return item
+  }
+
+  addSelection(input: {
+    uri: vscode.Uri
+    languageId: string
+    startLine: number
+    endLine: number
+    text: string
+    truncated: boolean
+  }) {
+    const item: LocalContextSelectionItem = {
+      id: selectionContextItemId(input.uri, input.startLine, input.endLine, input.text),
+      kind: "selection",
+      uri: input.uri,
+      languageId: input.languageId,
+      startLine: input.startLine,
+      endLine: input.endLine,
+      text: input.text,
+      truncated: input.truncated,
+    }
+    this.contextItems.set(item.id, item)
+    return item
   }
 
   clear() {
-    this.files.clear()
+    this.contextItems.clear()
+  }
+
+  remove(id: string) {
+    return this.contextItems.delete(id)
+  }
+
+  item(id: string) {
+    return this.contextItems.get(id)
   }
 
   list() {
-    return [...this.files.values()]
+    return [...this.contextItems.values()]
   }
 
   labels() {
-    return this.list().map((uri) => relativePath(uri))
+    return this.list().map((item) => localContextItemLabel(item))
+  }
+
+  viewItems() {
+    return this.list().map((item) => localContextViewItem(item))
   }
 }
 
@@ -176,8 +334,33 @@ export async function addActiveFileToContext(store: LocalContextStore) {
   const editor = vscode.window.activeTextEditor
   if (!editor) return false
   if (editor.document.uri.scheme !== "file") return false
-  store.add(editor.document.uri)
+  store.addFile(editor.document.uri)
   return true
+}
+
+export async function addTrackedFileToContext(store: LocalContextStore, tracked?: TrackedEditorContext) {
+  const active = await resolveEditorContext(tracked)
+  if (!active) return undefined
+  return store.addFile(active.document.uri)
+}
+
+export async function addTrackedSelectionToContext(
+  store: LocalContextStore,
+  settings: RemoteSettings,
+  tracked?: TrackedEditorContext,
+) {
+  const active = await resolveEditorContext(tracked)
+  if (!active || active.selection.isEmpty) return undefined
+  const ctx = selectionContext(active.document, active.selection, settings, "attached selection")
+  if (!ctx) return undefined
+  return store.addSelection({
+    uri: ctx.uri,
+    languageId: ctx.language,
+    startLine: ctx.startLine,
+    endLine: ctx.endLine,
+    text: ctx.text,
+    truncated: ctx.truncated,
+  })
 }
 
 export async function addPickedFilesToContext(store: LocalContextStore) {
@@ -188,7 +371,7 @@ export async function addPickedFilesToContext(store: LocalContextStore) {
     openLabel: "Add to ChipMate context",
   })
   if (!picked) return 0
-  for (const uri of picked) store.add(uri)
+  for (const uri of picked) store.addFile(uri)
   return picked.length
 }
 
@@ -554,7 +737,21 @@ async function buildLocalContext(
   const files: FileContext[] = []
   const active = await resolveEditorContext(trackedEditorContext)
 
-  if (options.includeSelection && active && !active.selection.isEmpty) {
+  for (const item of contextStore.list()) {
+    if (files.length >= settings.context.maxFiles) break
+    if (seen.has(item.uri.toString())) continue
+    files.push(await contextForStoredItem(item, settings))
+    seen.add(item.uri.toString())
+  }
+
+  for (const uri of mentionedFiles) {
+    if (files.length >= settings.context.maxFiles) break
+    if (seen.has(uri.toString())) continue
+    files.push(await fileContext(uri, settings, "mentioned file"))
+    seen.add(uri.toString())
+  }
+
+  if (options.includeSelection && active && !active.selection.isEmpty && !seen.has(active.document.uri.toString())) {
     const ctx = selectionContext(active.document, active.selection, settings)
     if (ctx) {
       files.push(ctx)
@@ -568,20 +765,6 @@ async function buildLocalContext(
       files.push(ctx)
       seen.add(active.document.uri.toString())
     }
-  }
-
-  for (const uri of mentionedFiles) {
-    if (files.length >= settings.context.maxFiles) break
-    if (seen.has(uri.toString())) continue
-    files.push(await fileContext(uri, settings, "mentioned file"))
-    seen.add(uri.toString())
-  }
-
-  for (const uri of contextStore.list()) {
-    if (files.length >= settings.context.maxFiles) break
-    if (seen.has(uri.toString())) continue
-    files.push(await fileContext(uri, settings, "attached file"))
-    seen.add(uri.toString())
   }
 
   if (options.includeOpenFiles) {
@@ -674,6 +857,7 @@ function selectionContext(
   document: vscode.TextDocument,
   selection: vscode.Selection,
   settings: RemoteSettings,
+  reason = "selection",
 ): FileContext | undefined {
   if (document.uri.scheme !== "file") return
   const safeSelection = normalizeSelection(clampSelection(selection, document))
@@ -687,7 +871,7 @@ function selectionContext(
     startLine: safeSelection.start.line + 1,
     endLine: safeSelection.end.line + 1,
     truncated: limited.truncated,
-    reason: "selection",
+    reason,
   }
 }
 
@@ -746,6 +930,23 @@ async function fileContext(uri: vscode.Uri, settings: RemoteSettings, reason = "
 
   try {
     const bytes = await vscode.workspace.fs.readFile(uri)
+    const document = parseSupportedDocument({
+      path: uri.fsPath,
+      bytes,
+      maxBytes: settings.context.maxFileBytes,
+    })
+    if (document) {
+      return {
+        uri,
+        text: document.text,
+        path: relativePath(uri),
+        language: document.language,
+        startLine: 1,
+        endLine: document.lineCount,
+        truncated: document.truncated,
+        reason,
+      }
+    }
     if (looksBinary(bytes)) return skippedFile(uri, "binary file skipped")
     const text = new TextDecoder("utf-8", { fatal: false }).decode(bytes)
     const limited = limitText(text, settings.context.maxFileBytes)
@@ -761,6 +962,20 @@ async function fileContext(uri: vscode.Uri, settings: RemoteSettings, reason = "
     }
   } catch (error) {
     return skippedFile(uri, error instanceof Error ? error.message : String(error))
+  }
+}
+
+async function contextForStoredItem(item: LocalContextItem, settings: RemoteSettings): Promise<FileContext> {
+  if (item.kind === "file") return fileContext(item.uri, settings, "attached file")
+  return {
+    uri: item.uri,
+    text: item.text,
+    path: relativePath(item.uri),
+    language: item.languageId,
+    startLine: item.startLine,
+    endLine: item.endLine,
+    truncated: item.truncated,
+    reason: "attached selection",
   }
 }
 
