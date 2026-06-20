@@ -18,7 +18,13 @@ export type CommentGroundingConfidence = "high" | "medium" | "low" | "none"
 export type CommentOutputDirective = "encourage-1-3" | "allow-empty"
 export type CommentSelectionIntent = "functionOrBlockSummary" | "localBlock"
 export type CommentPrimaryAnchorPolicy = "required-when-supported" | "allow-when-useful"
-export type CommentReviewSource = "selection" | "currentFunction"
+export type CommentReviewSource = "selection" | "currentFunction" | "workspaceChanges"
+export type CommentWorkspaceReviewUnitKind = "function" | "block" | "fileChunk"
+
+export type CommentLineSpan = {
+  startLine: number
+  endLine: number
+}
 
 export type CommentInsertionAnchorKind = "function" | "functionLikeStart" | "selectionStart" | "controlBlock"
 
@@ -56,6 +62,10 @@ export interface CommentProposal extends RawCommentProposal {
   id: string;
   uri: string;
   source: CommentReviewSource;
+  workspaceReviewUnitId?: string;
+  workspaceReviewUnitKind?: CommentWorkspaceReviewUnitKind;
+  workspaceChangeDiffHash?: string;
+  changedLineSpans?: CommentLineSpan[];
   documentVersion: number;
   selectionStartLine: number;
   selectionEndLine: number;
@@ -79,6 +89,10 @@ export type CommentEvidenceSections = {
 export type CommentGenerationContext = {
   uri: string
   source: CommentReviewSource
+  workspaceReviewUnitId?: string
+  workspaceReviewUnitKind?: CommentWorkspaceReviewUnitKind
+  workspaceChangeDiffHash?: string
+  changedLineSpans?: CommentLineSpan[]
   filePath: string
   workspacePath: string
   languageId: string

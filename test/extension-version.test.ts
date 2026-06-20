@@ -1,0 +1,24 @@
+import { describe, expect, test } from "bun:test"
+import { compareExtensionVersions, shouldPromptReloadForInstalledVersion } from "../src/extension-version"
+
+describe("extension version comparison", () => {
+  test("orders build-number prerelease versions for reload prompts", () => {
+    expect(compareExtensionVersions("0.1.0-build.2", "0.1.0-build.1")).toBeGreaterThan(0)
+    expect(shouldPromptReloadForInstalledVersion("0.1.0-build.2", "0.1.0-build.1")).toBe(true)
+  })
+
+  test("orders stable releases above build-number prereleases", () => {
+    expect(compareExtensionVersions("0.1.0", "0.1.0-build.9")).toBeGreaterThan(0)
+    expect(shouldPromptReloadForInstalledVersion("0.1.0", "0.1.0-build.9")).toBe(true)
+  })
+
+  test("orders later core releases above older builds", () => {
+    expect(compareExtensionVersions("0.1.2-build.1", "0.1.0-build.99")).toBeGreaterThan(0)
+    expect(shouldPromptReloadForInstalledVersion("0.1.2-build.1", "0.1.0-build.99")).toBe(true)
+  })
+
+  test("does not prompt for identical versions", () => {
+    expect(compareExtensionVersions("0.1.0-build.1", "0.1.0-build.1")).toBe(0)
+    expect(shouldPromptReloadForInstalledVersion("0.1.0-build.1", "0.1.0-build.1")).toBe(false)
+  })
+})

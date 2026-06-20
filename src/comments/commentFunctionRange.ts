@@ -13,6 +13,20 @@ export function resolveCurrentFunctionSelection(editor: vscode.TextEditor): vsco
   if (document.lineCount === 0) return undefined
   const cursorLine = clamp(editor.selection.active.line, 0, document.lineCount - 1)
   const cursorCharacter = Math.max(0, editor.selection.active.character)
+  return resolveFunctionSelectionAtPosition(document, cursorLine, cursorCharacter)
+}
+
+export function resolveFunctionSelectionAtLine(document: vscode.TextDocument, line: number): vscode.Selection | undefined {
+  if (document.lineCount === 0) return undefined
+  const targetLine = clamp(line, 0, document.lineCount - 1)
+  return resolveFunctionSelectionAtPosition(document, targetLine, document.lineAt(targetLine).text.length)
+}
+
+function resolveFunctionSelectionAtPosition(
+  document: vscode.TextDocument,
+  cursorLine: number,
+  cursorCharacter: number,
+): vscode.Selection | undefined {
   const stack = openBraceStackBeforeCursor(document, cursorLine, cursorCharacter)
   const candidateOpenBraces = [
     ...stack.map((frame) => frame.line),

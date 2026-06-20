@@ -6,6 +6,8 @@ const commentReviewIcons = {
 
 export type CommentReviewWebviewProposal = {
   id: string
+  fileLabel?: string
+  source?: "selection" | "currentFunction" | "workspaceChanges"
   line: number
   kind: string
   confidence: string
@@ -76,7 +78,7 @@ export type CommentGenerationToolState = {
 export type CommentGenerationProgressState = {
   traceId: string
   uri: string
-  source?: "selection" | "currentFunction"
+  source?: "selection" | "currentFunction" | "workspaceChanges"
   fileLabel: string
   uriHash: string
   status: "running" | "succeeded" | "empty" | "failed"
@@ -91,13 +93,38 @@ export type CommentGenerationProgressState = {
   detail?: string
 }
 
+export type CommentWorkspaceChangesWebviewState = {
+  diffHash: string
+  rootLabel: string
+  changedFileCount: number
+  hunkCount: number
+  units: Array<{
+    id: string
+    fileLabel: string
+    title: string
+    unitKind: string
+    startLine: number
+    endLine: number
+    changedLineSpans: Array<{ startLine: number; endLine: number }>
+    hunkCount: number
+  }>
+  skipped: Array<{
+    relativePath: string
+    reason: string
+    detail: string
+  }>
+}
+
 export type CommentReviewWebviewState = {
-  mode: "generating" | "review" | "empty" | "failed"
+  mode: "generating" | "review" | "empty" | "failed" | "reviewChanges"
   fileLabel: string
-  source?: "selection" | "currentFunction"
+  source?: "selection" | "currentFunction" | "workspaceChanges"
   uriHash: string
   selectedProposalId?: string
   progress?: CommentGenerationProgressState
+  workspaceChanges?: CommentWorkspaceChangesWebviewState
+  selectedWorkspaceUnitIds?: string[]
+  canUndoLastBulkAccept?: boolean
   proposals: CommentReviewWebviewProposal[]
 }
 
@@ -181,6 +208,61 @@ export function createCommentReviewHtml(cspSource: string, nonce = createNonce()
       min-width: 0;
       color: var(--muted);
       font-size: 12px;
+      overflow-wrap: anywhere;
+    }
+    .workspaceChanges {
+      display: grid;
+      gap: 12px;
+      min-width: 0;
+    }
+    .workspaceSummary,
+    .workspaceSkipped {
+      display: grid;
+      gap: 8px;
+      padding: 12px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: color-mix(in srgb, var(--card) 88%, transparent);
+      box-shadow: 0 10px 26px color-mix(in srgb, #000 16%, transparent);
+    }
+    .workspaceSummaryTitle {
+      color: var(--fg);
+      font-weight: 650;
+    }
+    .workspaceUnitList,
+    .workspaceSkippedList {
+      display: grid;
+      gap: 8px;
+      margin: 0;
+      padding: 0;
+      list-style: none;
+      min-width: 0;
+    }
+    .workspaceUnit {
+      display: grid;
+      grid-template-columns: auto minmax(0, 1fr);
+      gap: 10px;
+      align-items: start;
+      padding: 10px;
+      border: 1px solid color-mix(in srgb, var(--border) 82%, transparent);
+      border-radius: 8px;
+      background:
+        linear-gradient(135deg, color-mix(in srgb, var(--accent) 7%, transparent), transparent 72%),
+        color-mix(in srgb, var(--code-bg) 84%, transparent);
+    }
+    .workspaceUnit input {
+      margin-top: 3px;
+    }
+    .workspaceUnitTitle {
+      color: var(--fg);
+      font-weight: 620;
+      overflow-wrap: anywhere;
+    }
+    .workspaceUnitMeta,
+    .workspaceSkippedItem {
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.45;
       overflow-wrap: anywhere;
     }
     .empty {
@@ -498,6 +580,14 @@ export function createCommentReviewHtml(cspSource: string, nonce = createNonce()
       background: color-mix(in srgb, var(--accent) 24%, var(--card));
       border-color: color-mix(in srgb, var(--accent) 68%, var(--border));
     }
+    button.danger {
+      border-color: color-mix(in srgb, var(--vscode-errorForeground) 54%, var(--border));
+      background: color-mix(in srgb, var(--vscode-errorForeground) 10%, var(--card));
+    }
+    button:disabled {
+      opacity: 0.55;
+      cursor: not-allowed;
+    }
     .actionButtonIcon {
       width: 14px;
       height: 14px;
@@ -597,6 +687,9 @@ export function createCommentReviewHtml(cspSource: string, nonce = createNonce()
       uriHash: "",
       selectedProposalId: undefined,
       progress: undefined,
+      workspaceChanges: undefined,
+      selectedWorkspaceUnitIds: undefined,
+      canUndoLastBulkAccept: false,
       proposals: []
     };
 
@@ -611,6 +704,7 @@ export function createCommentReviewHtml(cspSource: string, nonce = createNonce()
     window.addEventListener("message", (event) => {
       if (!event.data || event.data.type !== "state") return;
       state = event.data.state;
+      syncWorkspaceUnitSelection();
       vscode.setState(state);
       render();
     });
@@ -619,10 +713,16 @@ export function createCommentReviewHtml(cspSource: string, nonce = createNonce()
       const sourceText = reviewSourceText((state.progress && state.progress.source) || state.source);
       subtitle.textContent = state.mode === "generating" && state.progress
         ? state.fileLabel + " · " + sourceText + " · " + state.progress.currentStage
+        : state.mode === "reviewChanges" && state.workspaceChanges
+        ? "工作区改动 · " + state.workspaceChanges.changedFileCount + " 个文件 · " + state.workspaceChanges.units.length + " 个区域"
         : state.proposals.length
         ? state.fileLabel + " · " + sourceText + " · " + state.proposals.length + " 条候选"
         : state.fileLabel + " · 暂无候选";
       list.textContent = "";
+      if (state.mode === "reviewChanges" && state.workspaceChanges) {
+        list.appendChild(renderWorkspaceChanges(state.workspaceChanges));
+        return;
+      }
       if (state.progress) {
         list.appendChild(renderProgress(state.progress, state.mode));
         if (state.mode === "generating") return;
@@ -641,23 +741,160 @@ export function createCommentReviewHtml(cspSource: string, nonce = createNonce()
     }
 
     function reviewSourceText(source) {
-      return source === "currentFunction" ? "当前函数" : "选区";
+      if (source === "currentFunction") return "当前函数";
+      if (source === "workspaceChanges") return "工作区改动";
+      return "选区";
     }
 
     function renderReviewToolbar(count) {
       const toolbar = document.createElement("section");
       toolbar.className = "review-toolbar";
+      const workspaceReview = isWorkspaceReview();
       const title = document.createElement("div");
       title.className = "review-toolbar-title";
-      title.textContent = "当前文件有 " + count + " 条待处理候选";
+      title.textContent = (workspaceReview ? "工作区改动有 " : "当前文件有 ") + count + " 条待处理候选";
       toolbar.appendChild(title);
-      toolbar.appendChild(actionButton("重新生成", () => {
-        vscode.postMessage({ type: "regenerateProposals" });
-      }, "", REVIEW_ICONS.retry));
+      if (!workspaceReview) {
+        toolbar.appendChild(actionButton("重新生成", () => {
+          vscode.postMessage({ type: "regenerateProposals" });
+        }, "", REVIEW_ICONS.retry));
+      }
       toolbar.appendChild(actionButton("接受全部", () => {
         vscode.postMessage({ type: "acceptAllProposals" });
       }, "primary"));
+      if (workspaceReview) {
+        toolbar.appendChild(actionButton("重新扫描改动", () => {
+          vscode.postMessage({ type: "analyzeWorkspaceChanges" });
+        }, "", REVIEW_ICONS.retry));
+      } else {
+        toolbar.appendChild(actionButton("分析工作区改动", () => {
+          vscode.postMessage({ type: "analyzeWorkspaceChanges" });
+        }));
+      }
+      toolbar.appendChild(actionButton("撤销上次接受全部", () => {
+        vscode.postMessage({ type: "undoLastBulkAccept" });
+      }, "", undefined, !state.canUndoLastBulkAccept));
+      toolbar.appendChild(actionButton("保存全部", () => {
+        vscode.postMessage({ type: "saveAllFiles" });
+      }));
       return toolbar;
+    }
+
+    function isWorkspaceReview() {
+      return state.source === "workspaceChanges" || !!state.workspaceChanges || (state.proposals || []).some((proposal) => proposal.source === "workspaceChanges");
+    }
+
+    function renderWorkspaceChanges(workspaceChanges) {
+      const wrap = document.createElement("section");
+      wrap.className = "workspaceChanges";
+
+      const summary = document.createElement("div");
+      summary.className = "workspaceSummary";
+      const title = document.createElement("div");
+      title.className = "workspaceSummaryTitle";
+      title.textContent = "已发现 " + workspaceChanges.changedFileCount + " 个改动文件，" + workspaceChanges.units.length + " 个可分析区域";
+      summary.appendChild(title);
+      const meta = document.createElement("div");
+      meta.className = "workspaceUnitMeta";
+      meta.textContent = "根目录：" + workspaceChanges.rootLabel + " · diff " + String(workspaceChanges.diffHash || "").slice(0, 12);
+      summary.appendChild(meta);
+      const actions = document.createElement("div");
+      actions.className = "actions";
+      actions.appendChild(actionButton("重新扫描", () => {
+        vscode.postMessage({ type: "analyzeWorkspaceChanges" });
+      }, "", REVIEW_ICONS.retry));
+      actions.appendChild(actionButton("为这些改动生成注释", () => {
+        vscode.postMessage({
+          type: "generateWorkspaceChanges",
+          unitIds: selectedWorkspaceUnitIds(),
+        });
+      }, "primary", undefined, selectedWorkspaceUnitIds().length === 0));
+      summary.appendChild(actions);
+      wrap.appendChild(summary);
+
+      const units = document.createElement("ul");
+      units.className = "workspaceUnitList";
+      for (const unit of workspaceChanges.units || []) {
+        units.appendChild(renderWorkspaceUnit(unit));
+      }
+      wrap.appendChild(units);
+
+      if (workspaceChanges.skipped && workspaceChanges.skipped.length) {
+        const skipped = document.createElement("section");
+        skipped.className = "workspaceSkipped";
+        const skippedTitle = document.createElement("div");
+        skippedTitle.className = "workspaceSummaryTitle";
+        skippedTitle.textContent = "已跳过 " + workspaceChanges.skipped.length + " 项";
+        skipped.appendChild(skippedTitle);
+        const skippedList = document.createElement("ul");
+        skippedList.className = "workspaceSkippedList";
+        for (const item of workspaceChanges.skipped) {
+          const row = document.createElement("li");
+          row.className = "workspaceSkippedItem";
+          row.textContent = item.relativePath + " · " + item.detail;
+          skippedList.appendChild(row);
+        }
+        skipped.appendChild(skippedList);
+        wrap.appendChild(skipped);
+      }
+
+      return wrap;
+    }
+
+    function renderWorkspaceUnit(unit) {
+      const item = document.createElement("li");
+      item.className = "workspaceUnit";
+      const checkbox = document.createElement("input");
+      checkbox.type = "checkbox";
+      checkbox.checked = selectedWorkspaceUnitIds().includes(unit.id);
+      checkbox.addEventListener("change", () => {
+        const selected = new Set(selectedWorkspaceUnitIds());
+        if (checkbox.checked) selected.add(unit.id);
+        else selected.delete(unit.id);
+        state.selectedWorkspaceUnitIds = Array.from(selected);
+        vscode.setState(state);
+        render();
+      });
+      item.appendChild(checkbox);
+
+      const body = document.createElement("div");
+      const title = document.createElement("div");
+      title.className = "workspaceUnitTitle";
+      title.textContent = unit.fileLabel + " · " + unit.title;
+      body.appendChild(title);
+      const meta = document.createElement("div");
+      meta.className = "workspaceUnitMeta";
+      meta.textContent = "第 " + (unit.startLine + 1) + "-" + (unit.endLine + 1) + " 行 · " + unit.unitKind + " · " + changedSpanText(unit.changedLineSpans);
+      body.appendChild(meta);
+      item.appendChild(body);
+      return item;
+    }
+
+    function syncWorkspaceUnitSelection() {
+      if (!state.workspaceChanges || state.mode !== "reviewChanges") return;
+      const ids = (state.workspaceChanges.units || []).map((unit) => unit.id);
+      if (!Array.isArray(state.selectedWorkspaceUnitIds)) {
+        state.selectedWorkspaceUnitIds = ids;
+        return;
+      }
+      state.selectedWorkspaceUnitIds = state.selectedWorkspaceUnitIds.filter((id) => ids.includes(id));
+    }
+
+    function selectedWorkspaceUnitIds() {
+      if (!state.workspaceChanges) return [];
+      if (!Array.isArray(state.selectedWorkspaceUnitIds)) {
+        return (state.workspaceChanges.units || []).map((unit) => unit.id);
+      }
+      return state.selectedWorkspaceUnitIds;
+    }
+
+    function changedSpanText(spans) {
+      if (!Array.isArray(spans) || !spans.length) return "无改动行";
+      return spans.map((span) => {
+        const start = span.startLine + 1;
+        const end = span.endLine + 1;
+        return start === end ? "第 " + start + " 行" : "第 " + start + "-" + end + " 行";
+      }).join("、");
     }
 
     function renderProgress(progress, mode) {
@@ -700,9 +937,15 @@ export function createCommentReviewHtml(cspSource: string, nonce = createNonce()
       if (mode === "failed" || mode === "empty") {
         const actions = document.createElement("div");
         actions.className = "progress-actions";
-        actions.appendChild(actionButton("重新生成", () => {
-          vscode.postMessage({ type: "regenerateProposals" });
-        }, "", REVIEW_ICONS.retry));
+        if (progress.source === "workspaceChanges") {
+          actions.appendChild(actionButton("重新扫描改动", () => {
+            vscode.postMessage({ type: "analyzeWorkspaceChanges" });
+          }, "", REVIEW_ICONS.retry));
+        } else {
+          actions.appendChild(actionButton("重新生成", () => {
+            vscode.postMessage({ type: "regenerateProposals" });
+          }, "", REVIEW_ICONS.retry));
+        }
         panel.appendChild(actions);
       }
 
@@ -982,10 +1225,11 @@ export function createCommentReviewHtml(cspSource: string, nonce = createNonce()
       return range;
     }
 
-    function actionButton(label, onClick, className, iconMarkup) {
+    function actionButton(label, onClick, className, iconMarkup, disabled) {
       const button = document.createElement("button");
       button.type = "button";
       if (className) button.className = className;
+      button.disabled = !!disabled;
       if (iconMarkup) {
         const icon = document.createElement("span");
         icon.className = "actionButtonIcon";
@@ -997,7 +1241,7 @@ export function createCommentReviewHtml(cspSource: string, nonce = createNonce()
       text.className = "actionButtonLabel";
       text.textContent = label;
       button.appendChild(text);
-      button.addEventListener("click", onClick);
+      if (!disabled) button.addEventListener("click", onClick);
       return button;
     }
 

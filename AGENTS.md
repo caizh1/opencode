@@ -79,22 +79,54 @@ is handed off.
 
 ## Local Packaging
 
+### Versioning policy
+
+For all future local VSIX packaging in this repository, use build-number
+prerelease versions:
+
+```text
+<release-version>-build.<build-number>
+```
+
+Example sequence on the same release line:
+
+```text
+0.1.0-build.1 -> 0.1.0-build.2 -> 0.1.0-build.3
+```
+
+The `x.y.z` release version is user-controlled. Do not change `0.1.0` to
+`0.1.1`, `0.1.2`, or any other release version just because another package is
+needed after a code change. Only change the release version when the user
+explicitly says that a new release version is allowed.
+
+Routine packaging must only increment the build number on the current release
+line. If the user asks to start or switch to a specific release line, use
+`--release <x.y.z>` and let the build number start at `1` unless the user gives
+a specific build number.
+
 To produce a local VS Code extension package, run:
 
 ```bash
 bun run vsix
 ```
 
-This runs the package step first, then creates the `.vsix` artifact.
+This updates the build-number prerelease in `package.json`, then delegates to
+`vsce package`; `vsce` runs the package step through `vscode:prepublish`
+before creating the `.vsix` artifact.
 
-Before creating a local `.vsix`, check whether a `chipmate-*.vsix`
-artifact already exists in the repository root. If a packaged `.vsix` already
-exists locally, increment the patch version in `package.json` by 1 before
-running `bun run vsix`, so the newly generated package has a fresh version
-number.
+To package a user-approved new release line, run:
+
+```bash
+bun run vsix -- --release 0.1.2
+```
+
+To package an exact build requested by the user, run:
+
+```bash
+bun run vsix -- --release 0.1.2 --build 1
+```
 
 After completing any bug fix or behavior change that should be tested in VS
-Code, create a fresh local extension package before handing off the work. Follow
-the same versioning rule above: if a `chipmate-*.vsix` already exists,
-increment the patch version first, then run `bun run vsix` and report the new
-`.vsix` filename.
+Code, create a fresh local extension package before handing off the work. Use
+`bun run vsix` to advance the build number on the current release line, then
+report the new `.vsix` filename.

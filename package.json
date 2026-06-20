@@ -2,7 +2,7 @@
   "name": "chipmate",
   "displayName": "ChipMate",
   "description": "Direct OpenAI-compatible coding agent with workspace skills for VS Code",
-  "version": "0.0.245",
+  "version": "0.1.0-build.4",
   "icon": "media/chipmate-icon.png",
   "publisher": "local",
   "license": "MIT",
@@ -44,6 +44,7 @@
     "onCommand:chipmate.documentRag.status",
     "onCommand:chipmate.comments.generateForSelection",
     "onCommand:chipmate.comments.generateForCurrentFunction",
+    "onCommand:chipmate.comments.generateForWorkspaceChanges",
     "onCommand:chipmate.comments.accept",
     "onCommand:chipmate.comments.acceptAll",
     "onCommand:chipmate.comments.reject",
@@ -179,6 +180,11 @@
       {
         "command": "chipmate.comments.generateForCurrentFunction",
         "title": "ChipMate: 为当前函数生成 AI 注释",
+        "category": "ChipMate"
+      },
+      {
+        "command": "chipmate.comments.generateForWorkspaceChanges",
+        "title": "ChipMate: 为工作区改动生成 AI 注释",
         "category": "ChipMate"
       },
       {
@@ -421,7 +427,7 @@
           "type": "number",
           "default": 1000,
           "minimum": 1,
-          "maximum": 1e4,
+          "maximum": 10000,
           "description": "Maximum qwen-direct autocomplete cache entries."
         },
         "chipmate.completion.prefixChars": {
@@ -447,7 +453,7 @@
           "type": "number",
           "default": 200000,
           "minimum": 0,
-          "maximum": 1e6,
+          "maximum": 1000000,
           "description": "Maximum qwen-direct autocomplete model context window. Defaults to 200000. Set to 0 to auto-detect from the current provider's read-only /models metadata and fall back to 200000 when unavailable."
         },
         "chipmate.completion.context.recentlyEdited.enabled": {
@@ -615,14 +621,14 @@
           "type": "number",
           "default": 50000,
           "minimum": 100,
-          "maximum": 1e6,
+          "maximum": 1000000,
           "description": "Maximum number of C/C++ files to index in the local code graph."
         },
         "chipmate.codeGraph.maxContextBytes": {
           "type": "number",
           "default": 24000,
           "minimum": 2000,
-          "maximum": 1e5,
+          "maximum": 100000,
           "description": "Maximum bytes of local code graph context to include in one direct prompt."
         },
         "chipmate.codeGraph.maxEvidenceBytes": {
@@ -664,7 +670,7 @@
           "type": "number",
           "default": 750,
           "minimum": 25,
-          "maximum": 1e4,
+          "maximum": 10000,
           "description": "Number of queued file watcher events that switches incremental indexing to one scheduled full rescan."
         },
         "chipmate.codeGraph.workerConcurrency": {
@@ -734,7 +740,7 @@
           "type": "number",
           "default": 16000,
           "minimum": 1000,
-          "maximum": 1e5,
+          "maximum": 100000,
           "description": "Maximum bytes returned from one local file slice analysis call."
         },
         "chipmate.analysis.maxGraphEdges": {
@@ -782,7 +788,7 @@
           "type": "number",
           "default": 65536,
           "minimum": 1,
-          "maximum": 1e6,
+          "maximum": 1000000,
           "description": "Estimated maximum embedding tokens sent in one RAG embedding HTTP request. This is a lightweight safety cap for large chunks."
         },
         "chipmate.rag.embedding.concurrentRequests": {
@@ -796,7 +802,7 @@
           "type": "number",
           "default": 360000,
           "minimum": 32768,
-          "maximum": 1e6,
+          "maximum": 1000000,
           "description": "Approximate maximum embedding input tokens across in-flight RAG embedding requests."
         },
         "chipmate.rag.embedding.encodingFormat": {
@@ -823,7 +829,7 @@
           "type": "number",
           "default": 8192,
           "minimum": 0,
-          "maximum": 1e6,
+          "maximum": 1000000,
           "description": "Number of newly embedded chunks between partial RAG checkpoint saves when checkpoint mode is interval. Set to 0 to disable chunk-based checkpoints."
         },
         "chipmate.rag.embedding.checkpointIntervalMs": {
@@ -852,7 +858,7 @@
           "type": "number",
           "default": 100,
           "minimum": 0,
-          "maximum": 1e5,
+          "maximum": 100000,
           "description": "Maximum embedding HTTP requests used by one RAG index run. Set to 0 for unlimited requests."
         },
         "chipmate.rag.embedding.maxRetries": {
@@ -927,7 +933,7 @@
           "type": "number",
           "default": 5000,
           "minimum": 1,
-          "maximum": 1e5,
+          "maximum": 100000,
           "description": "Maximum number of workspace documents considered by Document RAG."
         },
         "chipmate.documentRag.maxFileBytes": {
@@ -948,7 +954,7 @@
           "type": "number",
           "default": 50000,
           "minimum": 1,
-          "maximum": 1e6,
+          "maximum": 1000000,
           "description": "Maximum number of document chunks embedded by Document RAG."
         },
         "chipmate.documentRag.excludeGlobs": {
@@ -1011,6 +1017,10 @@
           "group": "chipmate@2.1"
         },
         {
+          "command": "chipmate.comments.generateForWorkspaceChanges",
+          "group": "chipmate@2.2"
+        },
+        {
           "command": "chipmate.askCurrentFile",
           "group": "chipmate@3"
         },
@@ -1044,6 +1054,11 @@
           "command": "chipmate.newSession",
           "when": "view == chipmate.sidebar",
           "group": "navigation@1"
+        },
+        {
+          "command": "chipmate.comments.generateForWorkspaceChanges",
+          "when": "view == workbench.scm",
+          "group": "navigation@10"
         }
       ]
     }
@@ -1064,7 +1079,7 @@
     "verify:document-runtime": "bun scripts/verify-document-runtime.ts",
     "verify:qwen-vsix": "bun scripts/verify-qwen-vsix.ts",
     "test:vscode": "bun run package && node ./dist/test/runTest.js",
-    "vsix": "bun run package && vsce package"
+    "vsix": "bun scripts/package-vsix.ts"
   },
   "devDependencies": {
     "@types/mocha": "^10.0.10",

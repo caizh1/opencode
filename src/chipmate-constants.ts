@@ -37,6 +37,7 @@ export const CHIPMATE_COMMANDS = {
   documentRagStatus: "chipmate.documentRag.status",
   commentsGenerateForSelection: "chipmate.comments.generateForSelection",
   commentsGenerateForCurrentFunction: "chipmate.comments.generateForCurrentFunction",
+  commentsGenerateForWorkspaceChanges: "chipmate.comments.generateForWorkspaceChanges",
   commentsPreview: "chipmate.comments.preview",
   commentsAccept: "chipmate.comments.accept",
   commentsAcceptAll: "chipmate.comments.acceptAll",

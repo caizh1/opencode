@@ -2,7 +2,7 @@ import * as vscode from "vscode"
 import { CHIPMATE_COMMANDS } from "../chipmate-constants"
 import type { CodeGraphContextProvider } from "../codegraph-types"
 import type { RemoteSettings } from "../types"
-import { applyCommentProposal, applyCommentProposals } from "./commentApplyService"
+import { applyCommentProposal, applyCommentProposals, commentInsertIndent, commentInsertText } from "./commentApplyService"
 import { buildCommentGenerationContext, commentPrimaryAnchorPolicy, isSupportedCommentLanguage } from "./commentContext"
 import { CommentCodeLensProvider } from "./commentCodeLensProvider"
 import { CommentDecorations } from "./commentDecorations"
@@ -29,14 +29,34 @@ import { commentPreviewDetail } from "./commentPreview"
 import { resolveCurrentFunctionSelection } from "./commentFunctionRange"
 import { CommentReviewPanel, type CommentReviewRegenerateTarget } from "./commentReviewPanel"
 import type { CommentGenerationProgressState, CommentGenerationProgressStep, CommentGenerationStreamState, CommentGenerationTokenUsage, CommentGenerationToolState } from "./commentReviewHtml"
-import type { CommentGenerationContext, CommentProposal, CommentReviewSource, RawCommentProposal } from "./commentTypes"
+import type { CommentGenerationContext, CommentLineSpan, CommentProposal, CommentReviewSource, CommentWorkspaceReviewUnitKind, RawCommentProposal } from "./commentTypes"
 import { CommentToolAgentClient, type CommentToolRuntime, type CommentToolEvidenceResult } from "./commentToolAgentClient"
+import { scanCommentWorkspaceChanges, type CommentWorkspaceChangesScanResult, type CommentWorkspaceReviewUnit } from "./commentWorkspaceChanges"
 
 export const COMMENT_LOG_PREFIX = "[ChipMate Comment]"
 const COMMENT_CONTEXT_SUPPORTED_EDITOR = "chipmate.comments.supportedEditor"
 const COMMENT_CONTEXT_HAS_PENDING_FILE = "chipmate.comments.fileHasPendingSuggestions"
 const COMMENT_CONTEXT_HAS_PENDING_CURSOR = "chipmate.comments.cursorHasPendingSuggestion"
 type CommentProgressPanel = { updateGeneration?: (progress: CommentGenerationProgressState) => void }
+type CommentWorkspaceScanCache = { value?: CommentWorkspaceChangesScanResult }
+
+type CommentBulkAcceptRecord = {
+  proposalId: string
+  uri: string
+  startLine: number
+  lineCount: number
+  text: string
+}
+
+type CommentBulkAcceptBatch = {
+  id: string
+  createdAt: number
+  records: CommentBulkAcceptRecord[]
+}
+
+type CommentBulkAcceptState = {
+  lastBatch?: CommentBulkAcceptBatch
+}
 
 export type RegisterCommentReviewInput = {
   context: vscode.ExtensionContext
@@ -65,6 +85,8 @@ export function registerCommentReview(input: RegisterCommentReviewInput) {
   })
   const codeLensProvider = new CommentCodeLensProvider(store)
   const decorations = new CommentDecorations(store)
+  const workspaceScanCache: CommentWorkspaceScanCache = {}
+  const bulkAcceptState: CommentBulkAcceptState = {}
   let reviewPanel: CommentReviewPanel
   const generateSelectionComments = (
     forceRegenerate = false,
@@ -99,6 +121,29 @@ export function registerCommentReview(input: RegisterCommentReviewInput) {
       reviewPanel,
       extensionVersion: input.extensionVersion,
     })
+  const generateWorkspaceChangeComments = () =>
+    generateForWorkspaceChanges({
+      output: input.output,
+      llmClient,
+      evidenceService,
+      toolAgent,
+      store,
+      reviewPanel,
+      extensionVersion: input.extensionVersion,
+      scanCache: workspaceScanCache,
+    })
+  const generateSelectedWorkspaceChangeComments = (unitIds?: string[]) =>
+    generateForWorkspaceChanges({
+      output: input.output,
+      llmClient,
+      evidenceService,
+      toolAgent,
+      store,
+      reviewPanel,
+      extensionVersion: input.extensionVersion,
+      scanCache: workspaceScanCache,
+      unitIds,
+    })
   const regenerateSelectionComments = (target: CommentReviewRegenerateTarget) =>
     regenerateFromProposal({
       output: input.output,
@@ -115,9 +160,15 @@ export function registerCommentReview(input: RegisterCommentReviewInput) {
     store,
     onAccept: (proposalId) => acceptProposal({ output: input.output, store, proposalId }),
     onAcceptAll: (uri) => acceptAllPendingForCurrentReviewFile({ output: input.output, store, uri }),
+    onAcceptAllWorkspace: () => acceptAllPendingWorkspaceChanges({ output: input.output, store, bulkAcceptState, diffHash: workspaceScanCache.value?.ok ? workspaceScanCache.value.diffHash : undefined }),
     onReject: (proposalId) => rejectProposal({ output: input.output, store, proposalId }),
     onReveal: (proposalId) => revealProposal({ output: input.output, store, proposalId }),
     onRegenerate: regenerateSelectionComments,
+    onAnalyzeWorkspaceChanges: generateWorkspaceChangeComments,
+    onGenerateWorkspaceChanges: generateSelectedWorkspaceChangeComments,
+    onUndoLastBulkAccept: () => undoLastBulkAccept({ output: input.output, bulkAcceptState }),
+    onSaveAll: () => saveAllCommentFiles(),
+    canUndoLastBulkAccept: () => !!bulkAcceptState.lastBatch,
   })
   const refreshCommentContexts = () => {
     void updateCommentContexts(store)
@@ -139,6 +190,7 @@ export function registerCommentReview(input: RegisterCommentReviewInput) {
     ),
     vscode.commands.registerCommand(CHIPMATE_COMMANDS.commentsGenerateForSelection, () => generateSelectionComments()),
     vscode.commands.registerCommand(CHIPMATE_COMMANDS.commentsGenerateForCurrentFunction, () => generateCurrentFunctionComments()),
+    vscode.commands.registerCommand(CHIPMATE_COMMANDS.commentsGenerateForWorkspaceChanges, () => generateWorkspaceChangeComments()),
     vscode.commands.registerCommand(CHIPMATE_COMMANDS.commentsPreview, (proposalId: string) =>
       previewProposal({ output: input.output, store, reviewPanel, proposalId }),
     ),
@@ -157,6 +209,208 @@ export function registerCommentReview(input: RegisterCommentReviewInput) {
   )
 
   refreshCommentContexts()
+}
+
+export async function generateForWorkspaceChanges(input: {
+  output: vscode.OutputChannel
+  llmClient: Pick<CommentLLMClient, "generate">
+  evidenceService?: Pick<CommentEvidenceService, "collect">
+  toolAgent?: Pick<CommentToolAgentClient, "collectEvidence">
+  store: CommentProposalStore
+  reviewPanel?: Partial<Pick<CommentReviewPanel, "openForWorkspaceChanges" | "openForGeneration" | "updateGeneration" | "clearGeneration" | "refresh">>
+  extensionVersion?: string
+  scanCache?: CommentWorkspaceScanCache
+  unitIds?: string[]
+}) {
+  const trace = createCommentTraceContext(input.extensionVersion)
+  logCommentStage(input.output, trace, "command.start", { source: "workspaceChanges" })
+
+  if (!input.unitIds) {
+    const previousScan = input.scanCache?.value
+    const previousDiffHash = previousScan?.ok ? previousScan.diffHash : undefined
+    const progress = createWorkspaceScanProgress(trace.traceId, previousScan)
+    const stagePrefix = previousDiffHash ? "workspaceChanges.rescan" : "workspaceChanges.scan"
+    input.reviewPanel?.openForGeneration?.(progress)
+    logCommentStage(input.output, trace, `${stagePrefix}.start`, {
+      previousDiffHash: previousDiffHash ? shortHash(previousDiffHash) : undefined,
+    })
+    if (previousDiffHash) {
+      const clearedPendingCount = input.store.clearPendingWorkspaceChanges(previousDiffHash)
+      logCommentStage(input.output, trace, "workspaceChanges.rescan.clearPrevious", {
+        clearedPendingCount,
+        diffHash: shortHash(previousDiffHash),
+      })
+    }
+    updateProgress(input.reviewPanel, progress, "scan", "扫描工作区改动", "running", {
+      detail: "正在读取 Git 工作区改动",
+    })
+    const scan = await scanCommentWorkspaceChanges()
+    input.scanCache && (input.scanCache.value = scan)
+    if (!scan.ok) {
+      updateProgress(input.reviewPanel, progress, "scan", "扫描工作区改动", "failed", {
+        detail: scan.message,
+      })
+      finishProgress(input.reviewPanel, progress, "failed", "workspace-changes-scan-failed", scan.message)
+      logCommentOutcome(input.output, trace, "workspace-changes-scan-failed", scan.message, {
+        reason: scan.reason,
+        skippedCount: scan.skipped.length,
+      })
+      void vscode.window.showInformationMessage(scan.message)
+      return
+    }
+    updateProgress(input.reviewPanel, progress, "scan", "扫描工作区改动", "done", {
+      detail: `${scan.changedFileCount} 个改动文件 · ${scan.units.length} 个可分析区域`,
+    })
+    logCommentStage(input.output, trace, `${stagePrefix}.done`, {
+      changedFileCount: scan.changedFileCount,
+      hunkCount: scan.hunkCount,
+      reviewUnitCount: scan.units.length,
+      skippedCount: scan.skipped.length,
+      diffHash: shortHash(scan.diffHash),
+    })
+    input.reviewPanel?.openForWorkspaceChanges?.(scan)
+    if (scan.units.length === 0) {
+      vscode.window.setStatusBarMessage("没有发现可分析的 C/C++ 工作区改动。", 3500)
+    }
+    return
+  }
+
+  let scan = input.scanCache?.value
+  if (!scan?.ok) {
+    scan = await scanCommentWorkspaceChanges()
+    input.scanCache && (input.scanCache.value = scan)
+  }
+  if (!scan.ok) {
+    logCommentOutcome(input.output, trace, "workspace-changes-scan-failed", scan.message, {
+      reason: scan.reason,
+      skippedCount: scan.skipped.length,
+    })
+    void vscode.window.showInformationMessage(scan.message)
+    return
+  }
+
+  const selected = new Set(input.unitIds)
+  const units = scan.units.filter((unit) => selected.has(unit.id))
+  logCommentStage(input.output, trace, "workspaceChanges.generate.start", {
+    source: "workspaceChanges",
+    selectedUnitCount: units.length,
+    totalUnitCount: scan.units.length,
+    diffHash: shortHash(scan.diffHash),
+  })
+  if (!units.length) {
+    vscode.window.setStatusBarMessage("没有选择可生成 AI 注释的工作区改动区域。", 2500)
+    return
+  }
+
+  const clearedPendingCount = input.store.clearPendingWorkspaceChanges(scan.diffHash)
+  logCommentStage(input.output, trace, "workspaceChanges.clearPrevious", {
+    clearedPendingCount,
+    diffHash: shortHash(scan.diffHash),
+  })
+
+  let completed = 0
+  let failed = 0
+  for (const unit of units) {
+    const generated = await generateForWorkspaceReviewUnit(input, unit, scan.diffHash, trace, units.length, completed + 1)
+    completed += 1
+    if (!generated) failed += 1
+  }
+  input.reviewPanel?.refresh?.()
+  const pendingCount = input.store.pendingWorkspaceChanges(scan.diffHash).length
+  logCommentStage(input.output, trace, "workspaceChanges.generate.done", {
+    selectedUnitCount: units.length,
+    failedUnitCount: failed,
+    pendingProposalCount: pendingCount,
+    diffHash: shortHash(scan.diffHash),
+  })
+  if (pendingCount > 0) {
+    vscode.window.setStatusBarMessage(`已为工作区改动生成 ${pendingCount} 条 AI 注释候选。`, 3500)
+  } else {
+    vscode.window.setStatusBarMessage("工作区改动没有生成可用 AI 注释候选。", 3500)
+  }
+}
+
+async function generateForWorkspaceReviewUnit(
+  input: {
+    output: vscode.OutputChannel
+    llmClient: Pick<CommentLLMClient, "generate">
+    evidenceService?: Pick<CommentEvidenceService, "collect">
+    toolAgent?: Pick<CommentToolAgentClient, "collectEvidence">
+    store: CommentProposalStore
+    reviewPanel?: Partial<Pick<CommentReviewPanel, "openForGeneration" | "updateGeneration" | "clearGeneration">>
+    extensionVersion?: string
+  },
+  unit: CommentWorkspaceReviewUnit,
+  workspaceDiffHash: string,
+  parentTrace: CommentGenerationTraceContext,
+  totalUnitCount: number,
+  unitIndex: number,
+) {
+  try {
+    const document = await vscode.workspace.openTextDocument(vscode.Uri.parse(unit.uri))
+    const selection = new vscode.Selection(
+      unit.range.startLine,
+      unit.range.startCharacter,
+      unit.range.endLine,
+      unit.range.endCharacter,
+    )
+    const editor = await vscode.window.showTextDocument(document, {
+      preview: false,
+      preserveFocus: true,
+      selection,
+    })
+    editor.selection = selection
+    logCommentStage(input.output, parentTrace, "workspaceChanges.unit.start", {
+      unitIdHash: shortHash(unit.id),
+      uriHash: shortHash(unit.uri),
+      unitKind: unit.unitKind,
+      unitIndex,
+      totalUnitCount,
+      selectionStartLine: unit.range.startLine,
+      selectionEndLine: unit.range.endLine,
+      changedLineSpans: unit.changedLineSpans,
+    })
+    await generateForSelection({
+      output: input.output,
+      llmClient: input.llmClient,
+      evidenceService: input.evidenceService,
+      toolAgent: input.toolAgent,
+      store: input.store,
+      reviewPanel: input.reviewPanel,
+      extensionVersion: input.extensionVersion,
+      editor,
+      selection,
+      source: "workspaceChanges",
+      workspaceReviewUnitId: unit.id,
+      workspaceReviewUnitKind: unit.unitKind,
+      workspaceChangeDiffHash: workspaceDiffHash,
+      changedLineSpans: unit.changedLineSpans,
+      forceRegenerate: true,
+      suppressReviewOpen: true,
+      trace: parentTrace,
+      skipCommandStart: true,
+    })
+    logCommentStage(input.output, parentTrace, "workspaceChanges.unit.done", {
+      unitIdHash: shortHash(unit.id),
+      uriHash: shortHash(unit.uri),
+      unitKind: unit.unitKind,
+      unitIndex,
+      totalUnitCount,
+      pendingProposalCount: input.store.pendingWorkspaceChanges(workspaceDiffHash).length,
+    })
+    return true
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    logCommentStage(input.output, parentTrace, "workspaceChanges.unit.failed", {
+      unitIdHash: shortHash(unit.id),
+      uriHash: shortHash(unit.uri),
+      unitKind: unit.unitKind,
+      unitIndex,
+      totalUnitCount,
+      message,
+    })
+    return false
+  }
 }
 
 export async function generateForCurrentFunction(input: {
@@ -224,6 +478,11 @@ export async function generateForSelection(input: {
   editor?: vscode.TextEditor
   selection?: vscode.Selection
   source?: CommentReviewSource
+  workspaceReviewUnitId?: string
+  workspaceReviewUnitKind?: CommentWorkspaceReviewUnitKind
+  workspaceChangeDiffHash?: string
+  changedLineSpans?: CommentLineSpan[]
+  suppressReviewOpen?: boolean
   trace?: CommentGenerationTraceContext
   skipCommandStart?: boolean
 }) {
@@ -254,7 +513,14 @@ export async function generateForSelection(input: {
     return
   }
 
-  const context = buildCommentGenerationContext(editor, { selection, source })
+  const context = buildCommentGenerationContext(editor, {
+    selection,
+    source,
+    workspaceReviewUnitId: input.workspaceReviewUnitId,
+    workspaceReviewUnitKind: input.workspaceReviewUnitKind,
+    workspaceChangeDiffHash: input.workspaceChangeDiffHash,
+    changedLineSpans: input.changedLineSpans,
+  })
   const requestTrace = enrichCommentTraceContext(trace, context)
   logCommentStage(input.output, requestTrace, "selection.ready", commentContextLogFields(context))
   if (!context.selectedCode.trim()) {
@@ -553,6 +819,7 @@ export async function generateForSelection(input: {
     allowedInsertBeforeLines: generationContext.allowedInsertionAnchors.map((anchor) => anchor.line),
     allowedAnchors: generationContext.allowedInsertionAnchors,
     maxProposals: generationContext.proposalBudget,
+    changedLineSpans: generationContext.changedLineSpans,
   })
   const discardHistogram = discardReasonHistogram(validated.discarded)
   const evidenceCounts = proposalEvidenceCounts(validated.proposals)
@@ -637,7 +904,11 @@ export async function generateForSelection(input: {
     void vscode.window.showInformationMessage("没有生成 AI 注释候选。详细诊断请查看 ChipMate Comment 输出。")
     return
   }
-  input.store.replacePendingForDocument(generationContext.uri, proposals)
+  if (generationContext.source === "workspaceChanges" && generationContext.workspaceReviewUnitId) {
+    input.store.replacePendingForWorkspaceUnit(generationContext.uri, generationContext.workspaceReviewUnitId, proposals)
+  } else {
+    input.store.replacePendingForDocument(generationContext.uri, proposals)
+  }
   logCommentStage(input.output, requestTrace, "store.done", {
     pendingCount: input.store.pendingForDocument(generationContext.uri).length,
     source: generationContext.source,
@@ -666,7 +937,7 @@ export async function generateForSelection(input: {
     primaryProposalMissing,
     primaryDiscardReason,
   })
-  input.reviewPanel?.openForDocument?.(generationContext.uri, proposals[0]?.id)
+  if (!input.suppressReviewOpen) input.reviewPanel?.openForDocument?.(generationContext.uri, proposals[0]?.id)
   vscode.window.setStatusBarMessage(`已生成 ${proposals.length} 条 AI 注释候选。`, 2500)
 }
 
@@ -836,6 +1107,128 @@ export async function acceptAllPendingForCurrentReviewFile(input: {
   vscode.window.setStatusBarMessage(`已接受 ${result.accepted.length} 条，${result.skipped.length} 条已跳过。`, 3500)
 }
 
+export async function acceptAllPendingWorkspaceChanges(input: {
+  output: vscode.OutputChannel
+  store: CommentProposalStore
+  bulkAcceptState: CommentBulkAcceptState
+  diffHash?: string
+}) {
+  const proposals = input.store.pendingWorkspaceChanges(input.diffHash)
+  log(input.output, `workspaceAcceptAll.start pendingCount=${proposals.length} diffHash=${input.diffHash ? shortHash(input.diffHash) : "any"}`)
+  if (!proposals.length) {
+    vscode.window.setStatusBarMessage("当前工作区没有待接受的 AI 注释候选。", 2500)
+    return
+  }
+  const fileCount = new Set(proposals.map((proposal) => proposal.uri)).size
+  const confirmed = await vscode.window.showInformationMessage(
+    `将向 ${fileCount} 个文件插入 ${proposals.length} 条 AI 注释。不会自动保存，可撤销本次批量接受。`,
+    { modal: true },
+    "接受全部",
+    "取消",
+  )
+  if (confirmed !== "接受全部") {
+    log(input.output, `workspaceAcceptAll.cancelled pendingCount=${proposals.length}`)
+    return
+  }
+
+  const records: CommentBulkAcceptRecord[] = []
+  let acceptedCount = 0
+  let skippedCount = 0
+  for (const [uri, group] of groupProposalsByUri(proposals)) {
+    const document = await documentForProposal(group[0]!)
+    if (!document) {
+      skippedCount += group.length
+      log(input.output, `workspaceAcceptAll.file.skipped uriHash=${shortHash(uri)} reason=document-open-failed count=${group.length}`)
+      continue
+    }
+    const insertTextById = new Map(group.map((proposal) => [
+      proposal.id,
+      commentInsertText(proposal, commentInsertIndent(proposal, document)),
+    ]))
+    const result = await applyCommentProposals(group, document)
+    for (const proposal of result.accepted) {
+      input.store.updateStatus(proposal.id, "accepted")
+      acceptedCount += 1
+      log(input.output, `workspaceAcceptAll.item.done proposalIdHash=${shortHash(proposal.id)} uriHash=${shortHash(uri)} line=${proposal.insertBeforeLine}`)
+    }
+    for (const skipped of result.skipped) {
+      if (skipped.status === "stale") input.store.updateStatus(skipped.proposal.id, "stale")
+      skippedCount += 1
+      log(input.output, `workspaceAcceptAll.item.skipped proposalIdHash=${shortHash(skipped.proposal.id)} uriHash=${shortHash(uri)} reason=${skipped.reason}`)
+    }
+    records.push(...bulkAcceptRecordsForAccepted(result.accepted, uri, insertTextById))
+  }
+
+  input.bulkAcceptState.lastBatch = records.length > 0
+    ? {
+      id: `comment-bulk-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+      createdAt: Date.now(),
+      records,
+    }
+    : undefined
+  log(input.output, `workspaceAcceptAll.done acceptedCount=${acceptedCount} skippedCount=${skippedCount} fileCount=${fileCount}`)
+  vscode.window.setStatusBarMessage(`已接受 ${acceptedCount} 条，${skippedCount} 条已跳过。文件尚未保存。`, 4500)
+}
+
+export async function undoLastBulkAccept(input: {
+  output: vscode.OutputChannel
+  bulkAcceptState: CommentBulkAcceptState
+}) {
+  const batch = input.bulkAcceptState.lastBatch
+  if (!batch || batch.records.length === 0) {
+    vscode.window.setStatusBarMessage("没有可撤销的上次接受全部操作。", 2500)
+    return
+  }
+
+  const workspaceEdit = new vscode.WorkspaceEdit()
+  let matchedCount = 0
+  let skippedCount = 0
+  for (const [uri, records] of groupRecordsByUri(batch.records)) {
+    let document: vscode.TextDocument
+    try {
+      document = await vscode.workspace.openTextDocument(vscode.Uri.parse(uri))
+    } catch {
+      skippedCount += records.length
+      continue
+    }
+    for (const record of [...records].sort((left, right) => right.startLine - left.startLine)) {
+      const endLine = record.startLine + record.lineCount
+      if (record.startLine < 0 || endLine >= document.lineCount) {
+        skippedCount += 1
+        continue
+      }
+      const range = new vscode.Range(record.startLine, 0, endLine, 0)
+      if (document.getText(range) !== record.text) {
+        skippedCount += 1
+        continue
+      }
+      workspaceEdit.delete(vscode.Uri.parse(uri), range)
+      matchedCount += 1
+    }
+  }
+
+  if (matchedCount === 0) {
+    log(input.output, `workspaceAcceptAll.undo.skipped batchId=${batch.id} skippedCount=${skippedCount}`)
+    void vscode.window.showWarningMessage("未找到可安全撤销的 AI 注释文本，可能已被修改。")
+    return
+  }
+
+  const applied = await vscode.workspace.applyEdit(workspaceEdit)
+  if (!applied) {
+    log(input.output, `workspaceAcceptAll.undo.failed batchId=${batch.id} matchedCount=${matchedCount} skippedCount=${skippedCount}`)
+    void vscode.window.showErrorMessage("撤销上次接受全部失败。")
+    return
+  }
+  input.bulkAcceptState.lastBatch = undefined
+  log(input.output, `workspaceAcceptAll.undo.done batchId=${batch.id} undoneCount=${matchedCount} skippedCount=${skippedCount}`)
+  vscode.window.setStatusBarMessage(`已撤销 ${matchedCount} 条 AI 注释，跳过 ${skippedCount} 条。文件尚未保存。`, 4500)
+}
+
+export async function saveAllCommentFiles() {
+  await vscode.commands.executeCommand("workbench.action.files.saveAll")
+  vscode.window.setStatusBarMessage("已执行保存全部。", 2500)
+}
+
 export function rejectProposal(input: {
   output: vscode.OutputChannel
   store: CommentProposalStore
@@ -905,7 +1298,29 @@ function createGenerationProgress(traceId: string, context: CommentGenerationCon
   }
 }
 
+function createWorkspaceScanProgress(
+  traceId: string,
+  previousScan: CommentWorkspaceChangesScanResult | undefined,
+): CommentGenerationProgressState {
+  const uri = previousScan?.ok ? previousScan.units[0]?.uri ?? "" : ""
+  const label = previousScan?.ok ? "重新扫描工作区改动" : "扫描工作区改动"
+  return {
+    traceId,
+    uri,
+    source: "workspaceChanges",
+    fileLabel: "工作区改动",
+    uriHash: uri ? shortHash(uri) : "",
+    status: "running",
+    currentStage: label,
+    startedAt: Date.now(),
+    steps: [
+      { id: "scan", label, status: "pending" },
+    ],
+  }
+}
+
 function reviewSourceLabel(source: CommentReviewSource) {
+  if (source === "workspaceChanges") return "工作区改动"
   return source === "currentFunction" ? "当前函数" : "选区"
 }
 
@@ -1447,6 +1862,10 @@ function buildStoredProposals(raw: RawCommentProposal[], context: CommentGenerat
     id: `comment-${Date.now().toString(36)}-${index}-${Math.random().toString(36).slice(2, 8)}`,
     uri: context.uri,
     source: context.source,
+    workspaceReviewUnitId: context.workspaceReviewUnitId,
+    workspaceReviewUnitKind: context.workspaceReviewUnitKind,
+    workspaceChangeDiffHash: context.workspaceChangeDiffHash,
+    changedLineSpans: context.changedLineSpans,
     documentVersion: context.documentVersion,
     selectionStartLine: context.selectionStartLine,
     selectionEndLine: context.selectionEndLine,
@@ -1478,6 +1897,57 @@ function proposalAnchorLines(proposals: RawCommentProposal[]) {
     .map((proposal) => proposal.insertBeforeLine)
     .filter((line): line is number => Number.isInteger(line)))]
     .sort((left, right) => left - right)
+}
+
+function groupProposalsByUri(proposals: CommentProposal[]) {
+  const groups = new Map<string, CommentProposal[]>()
+  for (const proposal of proposals) {
+    const items = groups.get(proposal.uri) ?? []
+    items.push(proposal)
+    groups.set(proposal.uri, items)
+  }
+  return groups
+}
+
+function groupRecordsByUri(records: CommentBulkAcceptRecord[]) {
+  const groups = new Map<string, CommentBulkAcceptRecord[]>()
+  for (const record of records) {
+    const items = groups.get(record.uri) ?? []
+    items.push(record)
+    groups.set(record.uri, items)
+  }
+  return groups
+}
+
+function bulkAcceptRecordsForAccepted(
+  accepted: CommentProposal[],
+  uri: string,
+  insertTextById: Map<string, string>,
+): CommentBulkAcceptRecord[] {
+  const records: CommentBulkAcceptRecord[] = []
+  let insertedLinesBefore = 0
+  for (const proposal of [...accepted].sort((left, right) =>
+    left.insertBeforeLine - right.insertBeforeLine || left.id.localeCompare(right.id)
+  )) {
+    const text = insertTextById.get(proposal.id)
+    if (!text) continue
+    const lineCount = insertedLineCount(text)
+    records.push({
+      proposalId: proposal.id,
+      uri,
+      startLine: proposal.insertBeforeLine + insertedLinesBefore,
+      lineCount,
+      text,
+    })
+    insertedLinesBefore += lineCount
+  }
+  return records
+}
+
+function insertedLineCount(text: string) {
+  return text.endsWith("\n")
+    ? text.split("\n").length - 1
+    : Math.max(1, text.split("\n").length)
 }
 
 function hasProposalAtLine(proposals: RawCommentProposal[], line: number | undefined) {

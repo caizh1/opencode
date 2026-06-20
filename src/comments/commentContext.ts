@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto"
 import * as vscode from "vscode"
 import { collectCommentInsertionAnchors } from "./commentAnchors"
-import type { CommentGenerationContext, CommentGroundingConfidence, CommentInsertionAnchor, CommentPrimaryAnchorPolicy, CommentProposal, CommentReviewSource, CommentSelectionIntent } from "./commentTypes"
+import type { CommentGenerationContext, CommentGroundingConfidence, CommentInsertionAnchor, CommentLineSpan, CommentPrimaryAnchorPolicy, CommentProposal, CommentReviewSource, CommentSelectionIntent, CommentWorkspaceReviewUnitKind } from "./commentTypes"
 
 export const SUPPORTED_COMMENT_LANGUAGE_IDS = new Set([
   "c",
@@ -24,7 +24,14 @@ export function isSupportedCommentLanguage(languageId: string) {
 
 export function buildCommentGenerationContext(
   editor: vscode.TextEditor,
-  options: { selection?: vscode.Selection; source?: CommentReviewSource } = {},
+  options: {
+    selection?: vscode.Selection
+    source?: CommentReviewSource
+    workspaceReviewUnitId?: string
+    workspaceReviewUnitKind?: CommentWorkspaceReviewUnitKind
+    workspaceChangeDiffHash?: string
+    changedLineSpans?: CommentLineSpan[]
+  } = {},
 ): CommentGenerationContext {
   const document = editor.document
   const selection = options.selection ?? editor.selection
@@ -42,6 +49,10 @@ export function buildCommentGenerationContext(
   const selectionPolicy = commentSelectionPolicy(selectionRange.startLine, selectionRange.endLine, allowedInsertionAnchors, source)
   const hashInput = {
     source,
+    workspaceReviewUnitId: options.workspaceReviewUnitId,
+    workspaceReviewUnitKind: options.workspaceReviewUnitKind,
+    workspaceChangeDiffHash: options.workspaceChangeDiffHash,
+    changedLineSpans: options.changedLineSpans,
     languageId: document.languageId,
     selectionStartLine: selectionRange.startLine,
     selectionEndLine: selectionRange.endLine,
@@ -57,6 +68,10 @@ export function buildCommentGenerationContext(
   return {
     uri: document.uri.toString(),
     source,
+    workspaceReviewUnitId: options.workspaceReviewUnitId,
+    workspaceReviewUnitKind: options.workspaceReviewUnitKind,
+    workspaceChangeDiffHash: options.workspaceChangeDiffHash,
+    changedLineSpans: options.changedLineSpans,
     filePath: document.uri.fsPath || document.uri.toString(),
     workspacePath: document.uri.scheme === "file" ? vscode.workspace.asRelativePath(document.uri, false) : document.uri.toString(),
     languageId: document.languageId,
@@ -143,6 +158,10 @@ export function currentContextHashForProposal(document: vscode.TextDocument, pro
   )
   return commentContextHash({
     source: proposal.source,
+    workspaceReviewUnitId: proposal.workspaceReviewUnitId,
+    workspaceReviewUnitKind: proposal.workspaceReviewUnitKind,
+    workspaceChangeDiffHash: proposal.workspaceChangeDiffHash,
+    changedLineSpans: proposal.changedLineSpans,
     languageId: document.languageId,
     selectionStartLine: proposal.selectionStartLine,
     selectionEndLine: proposal.selectionEndLine,
@@ -163,6 +182,10 @@ export function normalizedSelectionLineRange(selection: vscode.Selection) {
 
 export function commentContextHash(input: {
   source?: CommentReviewSource
+  workspaceReviewUnitId?: string
+  workspaceReviewUnitKind?: CommentWorkspaceReviewUnitKind
+  workspaceChangeDiffHash?: string
+  changedLineSpans?: CommentLineSpan[]
   languageId: string
   selectionStartLine: number
   selectionEndLine: number
@@ -176,6 +199,10 @@ export function commentContextHash(input: {
     .update(JSON.stringify({
       languageId: input.languageId,
       source: input.source ?? "selection",
+      workspaceReviewUnitId: input.workspaceReviewUnitId,
+      workspaceReviewUnitKind: input.workspaceReviewUnitKind,
+      workspaceChangeDiffHash: input.workspaceChangeDiffHash,
+      changedLineSpans: input.changedLineSpans,
       selectionStartLine: input.selectionStartLine,
       selectionEndLine: input.selectionEndLine,
       selectionStartCharacter: input.selectionStartCharacter,

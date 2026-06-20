@@ -36,6 +36,20 @@ mock.module("vscode", () => ({
   },
   Selection: class Selection {},
   Position: class Position {},
+  WorkspaceEdit: class WorkspaceEdit {
+    readonly inserts: unknown[] = []
+    readonly replaces: unknown[] = []
+    readonly deletes: unknown[] = []
+    insert(...args: unknown[]) {
+      this.inserts.push(args)
+    }
+    replace(...args: unknown[]) {
+      this.replaces.push(args)
+    }
+    delete(...args: unknown[]) {
+      this.deletes.push(args)
+    }
+  },
 }))
 
 describe("completion context packer", () => {

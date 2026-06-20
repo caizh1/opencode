@@ -3,6 +3,7 @@ import {
   COMMENT_PROPOSAL_KINDS,
   type CommentConfidence,
   type CommentInsertionAnchor,
+  type CommentLineSpan,
   type CommentProposalKind,
   type RawCommentEvidence,
   type RawCommentProposal,
@@ -14,6 +15,7 @@ export type CommentProposalValidationContext = {
   allowedInsertBeforeLines: number[]
   allowedAnchors?: Pick<CommentInsertionAnchor, "line" | "targetLineText">[]
   maxProposals?: number
+  changedLineSpans?: CommentLineSpan[]
 }
 
 export type CommentProposalDiscard = {
@@ -124,12 +126,22 @@ export function validateCodeEvidence(input: unknown, context: CommentProposalVal
   if (input.length === 0) return "codeEvidence 必须是非空数组"
   if (input.length > MAX_CODE_EVIDENCE) return "codeEvidence 数量超过上限"
   let hasSelectionEvidence = false
+  let hasChangedLineEvidence = false
   for (const item of input) {
     const reason = validateCodeEvidenceItem(item, context)
     if (reason) return reason
-    if ((item as RawCommentEvidence).source === "selection") hasSelectionEvidence = true
+    const evidence = item as RawCommentEvidence
+    if (evidence.source === "selection") {
+      hasSelectionEvidence = true
+      if (lineRangeOverlapsAny({ startLine: evidence.startLine, endLine: evidence.endLine }, context.changedLineSpans ?? [])) {
+        hasChangedLineEvidence = true
+      }
+    }
   }
   if (!hasSelectionEvidence) return "codeEvidence 必须包含选区代码证据"
+  if ((context.changedLineSpans?.length ?? 0) > 0 && !hasChangedLineEvidence) {
+    return "codeEvidence 必须绑定本次改动行"
+  }
   return undefined
 }
 
@@ -169,6 +181,10 @@ function looksLikeCodeStatement(input: string) {
 
 function nonEmptyString(input: unknown) {
   return typeof input === "string" && input.trim().length > 0
+}
+
+function lineRangeOverlapsAny(range: { startLine: number; endLine: number }, spans: CommentLineSpan[]) {
+  return spans.some((span) => range.startLine <= span.endLine && range.endLine >= span.startLine)
 }
 
 function repairProposalAnchorLine(

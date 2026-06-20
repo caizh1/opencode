@@ -118,6 +118,7 @@ mock.module("vscode", () => ({
   WorkspaceEdit: WorkspaceEditShim,
   Uri: Object.assign(UriShim, {
     parse: (value: string) => new UriShim(value, value.replace(/^file:\/\//, "")),
+    file: (value: string) => new UriShim(`file://${value}`, value),
   }),
   ViewColumn: {
     Beside: 2,
@@ -146,7 +147,17 @@ mock.module("vscode", () => ({
   languages: {
     registerCodeLensProvider: () => ({ dispose: () => undefined }),
   },
+  commands: {
+    executeCommand: async (command: string) => {
+      statusMessages.push(`command:${command}`)
+    },
+  },
   workspace: {
+    workspaceFolders: [{
+      uri: new UriShim("file:///repo", "/repo"),
+      name: "repo",
+      index: 0,
+    }],
     asRelativePath: (value: { fsPath?: string; toString(): string }) => {
       const fsPath = value.fsPath ?? value.toString()
       return fsPath.replace(/^\/repo\//, "")
@@ -213,13 +224,14 @@ mock.module("vscode", () => ({
 }))
 
 const { applyCommentProposal, commentInsertIndent, commentInsertText } = await import("../src/comments/commentApplyService")
-const { acceptAllPendingForCurrentReviewFile, generateForCurrentFunction, generateForSelection, previewProposal, regenerateFromProposal, rejectProposal } = await import("../src/comments/commentCommands")
+const { acceptAllPendingForCurrentReviewFile, acceptAllPendingWorkspaceChanges, generateForCurrentFunction, generateForSelection, previewProposal, regenerateFromProposal, rejectProposal, saveAllCommentFiles, undoLastBulkAccept } = await import("../src/comments/commentCommands")
 const { resolveCurrentFunctionSelection } = await import("../src/comments/commentFunctionRange")
 const { CommentProposalStore } = await import("../src/comments/commentProposalStore")
 const { commentContextHash } = await import("../src/comments/commentContext")
 const { CommentReviewPanel } = await import("../src/comments/commentReviewPanel")
 const { createCommentReviewHtml } = await import("../src/comments/commentReviewHtml")
 const { CommentToolAgentClient } = await import("../src/comments/commentToolAgentClient")
+const { parseCommentWorkspaceUnifiedDiff, parseCommentWorkspaceUntrackedFiles } = await import("../src/comments/commentWorkspaceChanges")
 
 beforeEach(() => {
   activeTextEditor = undefined
@@ -328,6 +340,44 @@ describe("AI comment apply service", () => {
   })
 })
 
+describe("AI comment workspace changes scanner helpers", () => {
+  test("maps unified diff hunks to current workspace changed line spans", () => {
+    const changes = parseCommentWorkspaceUnifiedDiff([
+      "diff --git a/src/main.c b/src/main.c",
+      "index 111..222 100644",
+      "--- a/src/main.c",
+      "+++ b/src/main.c",
+      "@@ -10,6 +10,8 @@ static void main_loop(void)",
+      "     before();",
+      "+    added_one();",
+      "+    added_two();",
+      "     after();",
+      "@@ -30,4 +32,5 @@ static void other(void)",
+      "     old();",
+      "-    replaced_old();",
+      "+    replaced_new();",
+      " }",
+      "",
+    ].join("\n"))
+
+    expect(changes).toEqual([expect.objectContaining({
+      relativePath: "src/main.c",
+      hunkCount: 2,
+      changedLineSpans: [
+        { startLine: 10, endLine: 11 },
+        { startLine: 32, endLine: 32 },
+      ],
+    })])
+  })
+
+  test("reads untracked files from porcelain status output", () => {
+    expect(parseCommentWorkspaceUntrackedFiles("?? src/new.c\0 M src/main.c\0?? include/new.h\0")).toEqual([
+      "src/new.c",
+      "include/new.h",
+    ])
+  })
+})
+
 describe("AI comment commands", () => {
   test("wires Chinese preview, accept, and reject CodeLens actions without a duplicate label", () => {
     const source = readFileSync(join(import.meta.dir, "..", "src", "comments", "commentCodeLensProvider.ts"), "utf8")
@@ -361,6 +411,10 @@ describe("AI comment commands", () => {
     expect(html).toContain("oc-liquid-icon")
     expect(html).toContain("接受")
     expect(html).toContain("接受全部")
+    expect(html).toContain("分析工作区改动")
+    expect(html).toContain("为这些改动生成注释")
+    expect(html).toContain("撤销上次接受全部")
+    expect(html).toContain("保存全部")
     expect(html).toContain("拒绝")
     expect(html).toContain("定位")
     expect(html).toContain("正在生成 AI 注释")
@@ -380,14 +434,22 @@ describe("AI comment commands", () => {
     expect(html).toContain('step.id === "model"')
     expect(html).toContain("Token 用量")
     expect(html).toContain("renderProgress")
+    expect(html).toContain("isWorkspaceReview")
+    expect(html).toContain("重新扫描改动")
+    expect(html).toContain('progress.source === "workspaceChanges"')
     expect(html).not.toContain("renderStream")
     expect(html).not.toContain("renderOutputStream")
     expect(html).not.toContain("stream-grid")
     expect(html).not.toContain("stream-card")
     expect(html).toContain("summary.textContent = proposal.summary")
     expect(html).toContain("comment.textContent = proposal.commentText")
+    expect(html).toContain("if (!workspaceReview)")
     expect(html).toContain('vscode.postMessage({ type: "regenerateProposals" })')
     expect(html).toContain('vscode.postMessage({ type: "acceptAllProposals" })')
+    expect(html).toContain('type: "analyzeWorkspaceChanges"')
+    expect(html).toContain('type: "generateWorkspaceChanges"')
+    expect(html).toContain('type: "undoLastBulkAccept"')
+    expect(html).toContain('type: "saveAllFiles"')
     expect(html).toContain("代码证据")
     expect(html).toContain("综合原因")
     expect(html).toContain("renderCodeEvidence")
@@ -427,6 +489,8 @@ describe("AI comment commands", () => {
       onRegenerate: async (target) => {
         regenerated.push(target)
       },
+      onAnalyzeWorkspaceChanges: async () => undefined,
+      onGenerateWorkspaceChanges: async () => undefined,
     })
 
     panel.openForProposal(proposal.id)
@@ -477,6 +541,8 @@ describe("AI comment commands", () => {
       onReject: () => undefined,
       onReveal: async () => undefined,
       onRegenerate: async () => undefined,
+      onAnalyzeWorkspaceChanges: async () => undefined,
+      onGenerateWorkspaceChanges: async () => undefined,
     })
     panel.openForDocument(proposal.uri, proposal.id)
     const progress = {
@@ -520,6 +586,8 @@ describe("AI comment commands", () => {
       onRegenerate: async (target) => {
         regenerated.push(target)
       },
+      onAnalyzeWorkspaceChanges: async () => undefined,
+      onGenerateWorkspaceChanges: async () => undefined,
     })
 
     panel.openForProposal(proposal.id)
@@ -543,6 +611,8 @@ describe("AI comment commands", () => {
       onReject: () => undefined,
       onReveal: async () => undefined,
       onRegenerate: async () => undefined,
+      onAnalyzeWorkspaceChanges: async () => undefined,
+      onGenerateWorkspaceChanges: async () => undefined,
     })
     const progress = {
       traceId: "comment-progress-test",
@@ -568,6 +638,61 @@ describe("AI comment commands", () => {
     expect(stateMessage.state.progress.currentStage).toBe("正在请求模型")
     expect(stateMessage.state.progress.tokenUsage).toEqual({ usageAvailable: false })
     expect(stateMessage.state.proposals).toEqual([])
+    panel.dispose()
+  })
+
+  test("comment review panel shows workspace changes before generation and posts selected unit ids", async () => {
+    const store = new CommentProposalStore()
+    const analyzed: string[] = []
+    const generated: unknown[] = []
+    const panel = new CommentReviewPanel({
+      extensionUri: new UriShim("file:///ext", "/ext") as never,
+      output: outputShim(outputLines),
+      store,
+      onAccept: async () => undefined,
+      onAcceptAll: async () => undefined,
+      onReject: () => undefined,
+      onReveal: async () => undefined,
+      onRegenerate: async () => undefined,
+      onAnalyzeWorkspaceChanges: async () => {
+        analyzed.push("analyze")
+      },
+      onGenerateWorkspaceChanges: async (unitIds) => {
+        generated.push(unitIds)
+      },
+    })
+
+    panel.openForWorkspaceChanges({
+      ok: true,
+      rootPath: "/repo",
+      diffHash: "workspace-diff",
+      changedFileCount: 1,
+      hunkCount: 1,
+      skipped: [],
+      units: [{
+        id: "unit-1",
+        uri: "file:///repo/main.c",
+        fsPath: "/repo/main.c",
+        relativePath: "main.c",
+        languageId: "c",
+        unitKind: "function",
+        title: "函数 · 第 1-3 行 · main",
+        range: { startLine: 0, endLine: 2, startCharacter: 0, endCharacter: 1 },
+        changedLineSpans: [{ startLine: 1, endLine: 1 }],
+        hunkCount: 1,
+        diffHash: "unit-diff",
+      }],
+    })
+
+    const stateMessage = panelMessages.at(-1) as { type: string; state: { mode: string; workspaceChanges?: { units: unknown[] } } }
+    expect(stateMessage.state.mode).toBe("reviewChanges")
+    expect(stateMessage.state.workspaceChanges?.units).toHaveLength(1)
+
+    await createdPanels[0].emitMessage({ type: "analyzeWorkspaceChanges" })
+    await createdPanels[0].emitMessage({ type: "generateWorkspaceChanges", unitIds: ["unit-1"] })
+
+    expect(analyzed).toEqual(["analyze"])
+    expect(generated).toEqual([["unit-1"]])
     panel.dispose()
   })
 
@@ -629,6 +754,70 @@ describe("AI comment commands", () => {
     expect(outputLines.some((line) => line.includes("acceptAll.item.done"))).toBe(false)
     expect(outputLines.some((line) => line.includes("acceptAll.item.skipped"))).toBe(true)
     expect(outputLines.some((line) => line.includes("acceptAll.done") && line.includes("acceptedCount=0"))).toBe(true)
+  })
+
+  test("workspace accept all confirms, inserts pending workspace proposals, and records an undo batch", async () => {
+    const store = new CommentProposalStore()
+    const document = documentShim(["int main(void) {", "    do_work();", "}"])
+    const proposal = workspaceProposalForDocument(document, {
+      id: "workspace-proposal-1",
+      workspaceReviewUnitId: "unit-1",
+      workspaceChangeDiffHash: "diff-1",
+    })
+    store.replacePendingForWorkspaceUnit(proposal.uri, "unit-1", [proposal])
+    openDocuments.set(document.uri.toString(), document)
+    informationMessageSelection = "接受全部"
+    const bulkAcceptState = {}
+
+    await acceptAllPendingWorkspaceChanges({
+      output: outputShim(outputLines),
+      store,
+      bulkAcceptState: bulkAcceptState as never,
+      diffHash: "diff-1",
+    })
+
+    expect(informationMessageItems[0]).toEqual(["接受全部", "取消"])
+    expect(lastWorkspaceEdit?.inserts).toHaveLength(1)
+    expect(lastWorkspaceEdit?.replaces).toHaveLength(0)
+    expect(lastWorkspaceEdit?.deletes).toHaveLength(0)
+    expect(store.get(proposal.id)?.status).toBe("accepted")
+    expect((bulkAcceptState as { lastBatch?: { records: unknown[] } }).lastBatch?.records).toHaveLength(1)
+    expect(statusMessages.some((message) => message.includes("文件尚未保存"))).toBe(true)
+  })
+
+  test("undo last workspace accept all only deletes the recorded matching comment text", async () => {
+    const document = documentShim(["// 说明 work handoff 的原因。", "    do_work();", "}"])
+    openDocuments.set(document.uri.toString(), document)
+    const bulkAcceptState = {
+      lastBatch: {
+        id: "batch-1",
+        createdAt: Date.now(),
+        records: [{
+          proposalId: "workspace-proposal-1",
+          uri: document.uri.toString(),
+          startLine: 0,
+          lineCount: 1,
+          text: "// 说明 work handoff 的原因。\n",
+        }],
+      },
+    }
+
+    await undoLastBulkAccept({
+      output: outputShim(outputLines),
+      bulkAcceptState,
+    })
+
+    expect(lastWorkspaceEdit?.deletes).toHaveLength(1)
+    expect(lastWorkspaceEdit?.inserts).toHaveLength(0)
+    expect(bulkAcceptState.lastBatch).toBeUndefined()
+    expect(statusMessages.some((message) => message.includes("已撤销 1 条 AI 注释"))).toBe(true)
+  })
+
+  test("save all comment files delegates to VS Code save all", async () => {
+    await saveAllCommentFiles()
+
+    expect(statusMessages).toContain("command:workbench.action.files.saveAll")
+    expect(statusMessages).toContain("已执行保存全部。")
   })
 
   test("preview shows the full comment and closes without modifying files", async () => {
@@ -2135,6 +2324,35 @@ function proposalForDocument(document: ReturnType<typeof documentShim>, override
     status: "pending",
     ...overrides,
   }
+}
+
+function workspaceProposalForDocument(document: ReturnType<typeof documentShim>, overrides: Partial<CommentProposal> = {}): CommentProposal {
+  const changedLineSpans = overrides.changedLineSpans ?? [{ startLine: 1, endLine: 1 }]
+  const workspaceChangeDiffHash = overrides.workspaceChangeDiffHash ?? "diff"
+  const workspaceReviewUnitId = overrides.workspaceReviewUnitId ?? "unit"
+  return proposalForDocument(document, {
+    source: "workspaceChanges",
+    workspaceChangeDiffHash,
+    workspaceReviewUnitId,
+    workspaceReviewUnitKind: "function",
+    changedLineSpans,
+    contextHash: commentContextHash({
+      source: "workspaceChanges",
+      workspaceChangeDiffHash,
+      workspaceReviewUnitId,
+      workspaceReviewUnitKind: "function",
+      changedLineSpans,
+      languageId: document.languageId,
+      selectionStartLine: 1,
+      selectionEndLine: 1,
+      selectionStartCharacter: 0,
+      selectionEndCharacter: document.lineAt(1).text.length,
+      selectedCode: document.getText(new RangeShim(1, 0, 1, document.lineAt(1).text.length)),
+      contextBefore: document.lineAt(0).text,
+      contextAfter: document.lineCount > 2 ? document.lineAt(2).text : "",
+    }),
+    ...overrides,
+  })
 }
 
 function proposalForRange(

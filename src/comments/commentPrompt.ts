@@ -2,7 +2,11 @@ import { formatAllowedInsertionAnchors } from "./commentAnchors"
 import type { CommentGenerationContext } from "./commentTypes"
 
 export function buildCommentPrompt(context: CommentGenerationContext) {
-  const reviewScopeLabel = context.source === "currentFunction" ? "当前函数" : "用户选区"
+  const reviewScopeLabel = context.source === "currentFunction"
+    ? "当前函数"
+    : context.source === "workspaceChanges"
+      ? "工作区改动"
+      : "用户选区"
   const modeSpecificInstructions = context.retrievalMode === "tool-driven"
     ? [
       "你已经拥有由模型主动调用本地只读 ChipMate 工具得到的仓库证据。",
@@ -54,6 +58,12 @@ export function buildCommentPrompt(context: CommentGenerationContext) {
           "当前函数模式只是把光标所在函数解析成内部 selected range；不要扩展到 current file、相邻函数或目录级范围。",
           "优先函数入口注释，同时覆盖内部高价值逻辑，不逐行解释。",
         ]
+        : context.source === "workspaceChanges"
+          ? [
+            "工作区改动模式只是把 git diff 中的改动行映射成内部 selected range；不要扩展到 current file、相邻函数或目录级范围。",
+            "优先解释本次改动带来的非显然行为变化，而不是给旧代码补历史注释。",
+            "如果函数入口注释由本次改动引起，必须用 codeEvidence 绑定 changed lines 证明原因。",
+          ]
         : []),
       `primaryAnchorPolicy=${context.primaryAnchorPolicy}`,
       `proposalBudget=${context.proposalBudget}`,
@@ -159,6 +169,12 @@ export function buildCommentPrompt(context: CommentGenerationContext) {
     `- 全部模式最多返回 ${context.proposalBudget} 条 proposals。`,
     "- 每条 proposal 的 codeEvidence 必须是非空数组，最多 3 条。",
     "- 每条 proposal 必须至少包含 1 条 source=\"selection\" 的 codeEvidence，且 startLine/endLine 必须落在 selected range 内。",
+    ...(context.source === "workspaceChanges"
+      ? [
+        "- 工作区改动模式下，每条 proposal 的 source=\"selection\" codeEvidence 必须覆盖或重叠 Changed lines 中的行段。",
+        "- 不允许只引用未改动旧代码作为生成注释的依据；旧代码只能作为上下文解释，不能成为唯一 evidence。",
+      ]
+      : []),
     "- repository codeEvidence 只能作为补充，不能替代 selection codeEvidence。",
     "- codeEvidence.startLine 和 codeEvidence.endLine 都是 0-based inclusive 行号。",
     "- codeEvidence.anchorLabel 应是结构标签，例如 function、if、switch、error path、rollback path、state transition、ownership guard。",
@@ -185,6 +201,18 @@ export function buildCommentPrompt(context: CommentGenerationContext) {
     "",
     "Review scope:",
     context.source,
+    ...(context.source === "workspaceChanges"
+      ? [
+        "",
+        "Workspace changed lines（0-based inclusive，本 review unit 内本次真正新增或修改的行段）：",
+        JSON.stringify(context.changedLineSpans ?? [], null, 2),
+        "",
+        "Workspace review unit:",
+        `unitId=${context.workspaceReviewUnitId ?? "none"}`,
+        `unitKind=${context.workspaceReviewUnitKind ?? "none"}`,
+        `diffHash=${context.workspaceChangeDiffHash ?? "none"}`,
+      ]
+      : []),
     "",
     "已有注释风格样例：",
     context.existingCommentExamples,

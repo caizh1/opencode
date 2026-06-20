@@ -47,11 +47,20 @@ describe("ChipMate direct runtime wiring", () => {
 
   test("prompts for a full window reload after extension upgrades", () => {
     const start = extensionSource.indexOf("function registerExtensionUpdateReloadPrompt")
-    const end = extensionSource.indexOf("function shouldPromptReloadForInstalledVersion", start)
+    const end = extensionSource.indexOf("function readPackageJsonVersion", start)
     const body = extensionSource.slice(start, end)
 
     expect(body).toContain("vscode.extensions.onDidChange")
-    expect(body).toContain("void checkForInstalledUpdate().catch")
+    expect(body).toContain("scheduleReloadPromptCheck")
+    expect(body).toContain("EXTENSION_UPDATE_RELOAD_RETRY_DELAYS_MS")
+    expect(body).toContain("retry-${delayMs}ms")
+    expect(body).toContain("[update-reload]")
+    expect(body).toContain("event=registered")
+    expect(body).toContain("event=extensions-changed")
+    expect(body).toContain("event=check-start")
+    expect(body).toContain("event=check-result")
+    expect(body).toContain("decision=${decision}")
+    expect(body).toContain("skipReason=${updateReloadLogValue(skipReason)}")
     expect(body).toContain("EXTENSION_UPDATE_RELOAD_PROMPT_KEY")
     expect(body).toContain("EXTENSION_UPDATE_RELOAD_ACCEPTED_KEY")
     expect(body).toContain("EXTENSION_UPDATE_LAST_ACTIVATED_KEY")

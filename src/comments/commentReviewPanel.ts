@@ -2,12 +2,17 @@ import * as vscode from "vscode"
 import { shortHash } from "./commentDiagnostics"
 import { commentPreviewText } from "./commentPreview"
 import type { CommentProposalStore } from "./commentProposalStore"
-import { createCommentReviewHtml, type CommentGenerationProgressState, type CommentReviewWebviewState } from "./commentReviewHtml"
+import { createCommentReviewHtml, type CommentGenerationProgressState, type CommentReviewWebviewState, type CommentWorkspaceChangesWebviewState } from "./commentReviewHtml"
 import type { CommentProposal, CommentReviewSource } from "./commentTypes"
+import type { CommentWorkspaceChangesScanResult } from "./commentWorkspaceChanges"
 
 type CommentReviewPanelMessage =
   | { type: "acceptProposal"; proposalId: string }
   | { type: "acceptAllProposals" }
+  | { type: "analyzeWorkspaceChanges" }
+  | { type: "generateWorkspaceChanges"; unitIds?: string[] }
+  | { type: "undoLastBulkAccept" }
+  | { type: "saveAllFiles" }
   | { type: "regenerateProposals" }
   | { type: "rejectProposal"; proposalId: string }
   | { type: "revealProposal"; proposalId: string }
@@ -31,9 +36,15 @@ export type CommentReviewPanelInput = {
   store: CommentProposalStore
   onAccept: (proposalId: string) => Promise<void>
   onAcceptAll: (uri: string) => Promise<void>
+  onAcceptAllWorkspace?: () => Promise<void>
   onReject: (proposalId: string) => void
   onReveal: (proposalId: string) => Promise<void>
   onRegenerate: (target: CommentReviewRegenerateTarget) => Promise<void>
+  onAnalyzeWorkspaceChanges: () => Promise<void>
+  onGenerateWorkspaceChanges: (unitIds?: string[]) => Promise<void>
+  onUndoLastBulkAccept?: () => Promise<void>
+  onSaveAll?: () => Promise<void>
+  canUndoLastBulkAccept?: () => boolean
 }
 
 export class CommentReviewPanel implements vscode.Disposable {
@@ -43,6 +54,8 @@ export class CommentReviewPanel implements vscode.Disposable {
   private selectedProposalId?: string
   private lastRegenerateTarget?: CommentReviewRegenerateTarget
   private generationProgress?: CommentGenerationProgressState
+  private workspaceChanges?: CommentWorkspaceChangesWebviewState
+  private workspaceDiffHash?: string
   private readonly storeSubscription: { dispose(): void }
 
   constructor(private readonly input: CommentReviewPanelInput) {
@@ -53,6 +66,11 @@ export class CommentReviewPanel implements vscode.Disposable {
     this.currentUri = uri
     if (selectedProposalId) this.selectedProposalId = selectedProposalId
     if (selectedProposalId) this.generationProgress = undefined
+    const selectedProposal = selectedProposalId ? this.input.store.get(selectedProposalId) : undefined
+    if (selectedProposal?.source !== "workspaceChanges") {
+      this.workspaceChanges = undefined
+      this.workspaceDiffHash = undefined
+    }
     this.ensurePanel()
     this.panel?.reveal(reviewPanelColumn(), true)
     this.refresh()
@@ -62,6 +80,35 @@ export class CommentReviewPanel implements vscode.Disposable {
     this.currentUri = progress.uri
     this.selectedProposalId = undefined
     this.generationProgress = progress
+    if (progress.source !== "workspaceChanges") this.workspaceChanges = undefined
+    this.ensurePanel()
+    this.panel?.reveal(reviewPanelColumn(), true)
+    this.refresh()
+  }
+
+  openForWorkspaceChanges(scan: CommentWorkspaceChangesScanResult) {
+    if (!scan.ok) return
+    this.currentUri = scan.units[0]?.uri
+    this.selectedProposalId = undefined
+    this.generationProgress = undefined
+    this.workspaceDiffHash = scan.diffHash
+    this.workspaceChanges = {
+      diffHash: scan.diffHash,
+      rootLabel: scan.rootPath,
+      changedFileCount: scan.changedFileCount,
+      hunkCount: scan.hunkCount,
+      units: scan.units.map((unit) => ({
+        id: unit.id,
+        fileLabel: unit.relativePath,
+        title: unit.title,
+        unitKind: unit.unitKind,
+        startLine: unit.range.startLine,
+        endLine: unit.range.endLine,
+        changedLineSpans: unit.changedLineSpans,
+        hunkCount: unit.hunkCount,
+      })),
+      skipped: scan.skipped,
+    }
     this.ensurePanel()
     this.panel?.reveal(reviewPanelColumn(), true)
     this.refresh()
@@ -122,12 +169,17 @@ export class CommentReviewPanel implements vscode.Disposable {
 
   private buildState(): CommentReviewWebviewState {
     const uri = this.currentReviewUri()
-    const proposals = uri ? this.input.store.pendingForDocument(uri) : []
+    const isWorkspaceReview = !!this.workspaceChanges || this.generationProgress?.source === "workspaceChanges"
+    const proposals = isWorkspaceReview
+      ? this.input.store.pendingWorkspaceChanges(this.workspaceDiffHash)
+      : uri ? this.input.store.pendingForDocument(uri) : []
     if (this.selectedProposalId && !proposals.some((proposal) => proposal.id === this.selectedProposalId)) {
       this.selectedProposalId = proposals[0]?.id
     }
     const progress = this.generationProgress?.uri === uri ? this.generationProgress : undefined
-    const mode = progress?.status === "running"
+    const mode = this.workspaceChanges && !progress && proposals.length === 0
+      ? "reviewChanges"
+      : progress?.status === "running"
       ? "generating"
       : proposals.length > 0
       ? "review"
@@ -146,8 +198,12 @@ export class CommentReviewPanel implements vscode.Disposable {
       uriHash: uri ? shortHash(uri) : "",
       selectedProposalId: this.selectedProposalId,
       progress,
+      workspaceChanges: this.workspaceChanges,
+      canUndoLastBulkAccept: this.input.canUndoLastBulkAccept?.() ?? false,
       proposals: proposals.map((proposal) => ({
         id: proposal.id,
+        fileLabel: fileLabel(proposal.uri),
+        source: proposal.source,
         line: proposal.insertBeforeLine,
         kind: proposal.kind,
         confidence: proposal.confidence,
@@ -167,12 +223,32 @@ export class CommentReviewPanel implements vscode.Disposable {
       return
     }
     if (message.type === "acceptAllProposals") {
+      if (this.workspaceChanges) {
+        await this.input.onAcceptAllWorkspace?.()
+        return
+      }
       const uri = this.currentReviewUri()
       if (!uri) {
         vscode.window.setStatusBarMessage("未找到当前文件的 AI 注释候选。", 2500)
         return
       }
       await this.input.onAcceptAll(uri)
+      return
+    }
+    if (message.type === "analyzeWorkspaceChanges") {
+      await this.input.onAnalyzeWorkspaceChanges()
+      return
+    }
+    if (message.type === "generateWorkspaceChanges") {
+      await this.input.onGenerateWorkspaceChanges(Array.isArray(message.unitIds) ? message.unitIds : undefined)
+      return
+    }
+    if (message.type === "undoLastBulkAccept") {
+      await this.input.onUndoLastBulkAccept?.()
+      return
+    }
+    if (message.type === "saveAllFiles") {
+      await this.input.onSaveAll?.()
       return
     }
     if (message.type === "regenerateProposals") {

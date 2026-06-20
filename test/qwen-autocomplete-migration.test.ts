@@ -114,6 +114,20 @@ mock.module("vscode", () => ({
     Invoke: 0,
     Automatic: 1,
   },
+  WorkspaceEdit: class WorkspaceEdit {
+    readonly inserts: unknown[] = []
+    readonly replaces: unknown[] = []
+    readonly deletes: unknown[] = []
+    insert(...args: unknown[]) {
+      this.inserts.push(args)
+    }
+    replace(...args: unknown[]) {
+      this.replaces.push(args)
+    }
+    delete(...args: unknown[]) {
+      this.deletes.push(args)
+    }
+  },
   ConfigurationTarget: {
     Global: "global",
   },

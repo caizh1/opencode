@@ -11,6 +11,7 @@ import { addPickedFilesToContext, addTrackedFileToContext, addTrackedSelectionTo
 import { DirectAgentClient } from "./direct-agent-client"
 import { DocumentRagService, isCodeGraphBusyForDocumentRag } from "./document-rag"
 import { EditorContextTracker } from "./editor-context"
+import { shouldPromptReloadForInstalledVersion } from "./extension-version"
 import { registerQwenAutocompleteProvider } from "./qwen-autocomplete"
 import {
   connectionInputHasPassword,
@@ -32,6 +33,7 @@ const INTERNAL_RAG_CONFIG_CHANGE_SUPPRESSION_MS = 5000
 const EXTENSION_UPDATE_RELOAD_PROMPT_KEY = "chipmate.updateReloadPrompt.version"
 const EXTENSION_UPDATE_RELOAD_ACCEPTED_KEY = "chipmate.updateReloadAccepted.version"
 const EXTENSION_UPDATE_LAST_ACTIVATED_KEY = "chipmate.updateLastActivated.version"
+const EXTENSION_UPDATE_RELOAD_RETRY_DELAYS_MS = [1000, 3000] as const
 const RELOAD_WINDOW_ACTION = "Reload Window"
 
 export async function activate(context: vscode.ExtensionContext) {
@@ -63,7 +65,7 @@ export async function activate(context: vscode.ExtensionContext) {
   logActivationPhase("bootstrap", activationStartedAt)
 
   let phaseStartedAt = activationNow()
-  registerExtensionUpdateReloadPrompt(context, output)
+  registerExtensionUpdateReloadPrompt(context, output, activationStartedAt)
   logActivationPhase("update-reload-prompt", phaseStartedAt)
 
   phaseStartedAt = activationNow()
@@ -434,86 +436,120 @@ function formatActivationTimingMs(value: number | undefined) {
   return value === undefined ? "unknown" : String(value)
 }
 
-function registerExtensionUpdateReloadPrompt(context: vscode.ExtensionContext, output: vscode.OutputChannel) {
+function registerExtensionUpdateReloadPrompt(context: vscode.ExtensionContext, output: vscode.OutputChannel, activationStartedAt: number) {
   const extensionId = context.extension.id || "local.chipmate"
   const runningVersion = readPackageJsonVersion(context.extension.packageJSON)
-  if (!runningVersion) return
+  const updateReloadLogValue = (value: string | undefined) => value ?? "unknown"
+  const updateReloadSinceActivationMs = () => activationMs(activationNow() - activationStartedAt)
+  const appendUpdateReloadLog = (message: string) => {
+    output.appendLine(`[update-reload] ${message} sinceActivationMs=${updateReloadSinceActivationMs()}`)
+  }
+  if (!runningVersion) {
+    appendUpdateReloadLog(`event=disabled extensionId=${updateReloadLogValue(extensionId)} skipReason=no-running-version`)
+    return
+  }
 
   let promptInFlightVersion: string | undefined
   const promptedVersionsThisActivation = new Set<string>()
+  const retryTimers = new Map<string, ReturnType<typeof setTimeout>>()
   const previousActivatedVersion = context.globalState.get<string>(EXTENSION_UPDATE_LAST_ACTIVATED_KEY)
   const rememberActivatedVersion = () => context.globalState.update(EXTENSION_UPDATE_LAST_ACTIVATED_KEY, runningVersion)
-  const reloadPromptTargetVersion = (acceptedVersion?: string) => {
-    const installedVersion = readPackageJsonVersion(vscode.extensions.getExtension(extensionId)?.packageJSON)
+  const reloadPromptTargetVersion = (acceptedVersion: string | undefined, installedVersion: string | undefined) => {
     if (installedVersion && shouldPromptReloadForInstalledVersion(installedVersion, runningVersion)) return installedVersion
     if (previousActivatedVersion && shouldPromptReloadForInstalledVersion(runningVersion, previousActivatedVersion)) return runningVersion
     if (acceptedVersion !== runningVersion) return runningVersion
     return undefined
   }
-  const checkForInstalledUpdate = async () => {
+  const reloadPromptSkipReason = (acceptedVersion: string | undefined, installedVersion: string | undefined) => {
+    if (!installedVersion) return "metadata-unavailable"
+    if (acceptedVersion === runningVersion && installedVersion === runningVersion) return "same-version"
+    if (!shouldPromptReloadForInstalledVersion(installedVersion, runningVersion)) return "not-newer"
+    return "not-newer"
+  }
+  const logCheckResult = (reason: string, decision: "prompt" | "skip" | "retry", installedVersion: string | undefined, acceptedVersion: string | undefined, reloadVersion: string | undefined, skipReason?: string) => {
+    appendUpdateReloadLog(
+      `event=check-result reason=${reason} decision=${decision} extensionId=${updateReloadLogValue(extensionId)} runningVersion=${updateReloadLogValue(runningVersion)} installedVersion=${updateReloadLogValue(installedVersion)} previousActivatedVersion=${updateReloadLogValue(previousActivatedVersion)} acceptedVersion=${updateReloadLogValue(acceptedVersion)} reloadVersion=${updateReloadLogValue(reloadVersion)} skipReason=${updateReloadLogValue(skipReason)}`,
+    )
+  }
+  const checkForInstalledUpdate = async (reason: string) => {
     const acceptedVersion = context.globalState.get<string>(EXTENSION_UPDATE_RELOAD_ACCEPTED_KEY)
-    const reloadVersion = reloadPromptTargetVersion(acceptedVersion)
+    const installedVersion = readPackageJsonVersion(vscode.extensions.getExtension(extensionId)?.packageJSON)
+    appendUpdateReloadLog(
+      `event=check-start reason=${reason} extensionId=${updateReloadLogValue(extensionId)} runningVersion=${updateReloadLogValue(runningVersion)} installedVersion=${updateReloadLogValue(installedVersion)} previousActivatedVersion=${updateReloadLogValue(previousActivatedVersion)} acceptedVersion=${updateReloadLogValue(acceptedVersion)}`,
+    )
+    const reloadVersion = reloadPromptTargetVersion(acceptedVersion, installedVersion)
     if (!reloadVersion) {
+      const skipReason = reloadPromptSkipReason(acceptedVersion, installedVersion)
+      logCheckResult(reason, skipReason === "metadata-unavailable" ? "retry" : "skip", installedVersion, acceptedVersion, undefined, skipReason)
       await rememberActivatedVersion()
       return
     }
 
     if (acceptedVersion === reloadVersion) {
+      logCheckResult(reason, "skip", installedVersion, acceptedVersion, reloadVersion, "accepted")
       await rememberActivatedVersion()
       return
     }
-    if (promptedVersionsThisActivation.has(reloadVersion) || promptInFlightVersion === reloadVersion) return
+    if (promptedVersionsThisActivation.has(reloadVersion) || promptInFlightVersion === reloadVersion) {
+      logCheckResult(reason, "skip", installedVersion, acceptedVersion, reloadVersion, "already-prompted")
+      return
+    }
 
     promptInFlightVersion = reloadVersion
     promptedVersionsThisActivation.add(reloadVersion)
     try {
+      logCheckResult(reason, "prompt", installedVersion, acceptedVersion, reloadVersion)
       await context.globalState.update(EXTENSION_UPDATE_RELOAD_PROMPT_KEY, reloadVersion)
       const selected = await vscode.window.showInformationMessage(
         `ChipMate 已更新到 ${reloadVersion}，重新加载窗口后新版本会生效。`,
         RELOAD_WINDOW_ACTION,
       )
       if (selected === RELOAD_WINDOW_ACTION) {
+        appendUpdateReloadLog(`event=prompt-selection reason=${reason} reloadVersion=${reloadVersion} selected=reload`)
         await context.globalState.update(EXTENSION_UPDATE_RELOAD_ACCEPTED_KEY, reloadVersion)
         await rememberActivatedVersion()
+        appendUpdateReloadLog(`event=reload-command reason=${reason} reloadVersion=${reloadVersion}`)
         await vscode.commands.executeCommand("workbench.action.reloadWindow")
+      } else {
+        appendUpdateReloadLog(`event=prompt-selection reason=${reason} reloadVersion=${reloadVersion} selected=dismissed`)
       }
     } finally {
       if (promptInFlightVersion === reloadVersion) promptInFlightVersion = undefined
     }
   }
-
-  context.subscriptions.push(vscode.extensions.onDidChange(() => {
-    void checkForInstalledUpdate().catch((error) => {
+  const runScheduledReloadPromptCheck = (reason: string) => {
+    void checkForInstalledUpdate(reason).catch((error) => {
       const message = error instanceof Error ? error.message : String(error)
-      output.appendLine(`[update] reload prompt failed: ${message}`)
+      output.appendLine(`[update-reload] event=check-failed reason=${reason} message=${message}`)
     })
-  }))
-  void checkForInstalledUpdate().catch((error) => {
-    const message = error instanceof Error ? error.message : String(error)
-    output.appendLine(`[update] activation reload prompt failed: ${message}`)
-  })
-}
-
-function shouldPromptReloadForInstalledVersion(installedVersion: string, runningVersion: string) {
-  if (installedVersion === runningVersion) return false
-  return compareExtensionVersions(installedVersion, runningVersion) > 0
-}
-
-function compareExtensionVersions(left: string, right: string) {
-  const leftParts = readSemverCoreParts(left)
-  const rightParts = readSemverCoreParts(right)
-  if (!leftParts || !rightParts) return left === right ? 0 : 1
-  for (let index = 0; index < leftParts.length; index += 1) {
-    const delta = leftParts[index] - rightParts[index]
-    if (delta !== 0) return delta
   }
-  return 0
-}
+  const scheduleDelayedReloadPromptCheck = (reason: string, delayMs: number) => {
+    const existing = retryTimers.get(reason)
+    if (existing) clearTimeout(existing)
+    const timer = setTimeout(() => {
+      retryTimers.delete(reason)
+      runScheduledReloadPromptCheck(reason)
+    }, delayMs)
+    retryTimers.set(reason, timer)
+  }
+  const scheduleReloadPromptCheck = (reason: string) => {
+    runScheduledReloadPromptCheck(reason)
+    if (reason !== "extensions-changed") return
+    for (const delayMs of EXTENSION_UPDATE_RELOAD_RETRY_DELAYS_MS) {
+      scheduleDelayedReloadPromptCheck(`retry-${delayMs}ms`, delayMs)
+    }
+  }
 
-function readSemverCoreParts(version: string): [number, number, number] | undefined {
-  const match = version.match(/^(\d+)\.(\d+)\.(\d+)/)
-  if (!match) return undefined
-  return [Number(match[1]), Number(match[2]), Number(match[3])]
+  appendUpdateReloadLog(`event=registered extensionId=${updateReloadLogValue(extensionId)} runningVersion=${updateReloadLogValue(runningVersion)} previousActivatedVersion=${updateReloadLogValue(previousActivatedVersion)}`)
+  context.subscriptions.push(vscode.extensions.onDidChange(() => {
+    appendUpdateReloadLog(`event=extensions-changed extensionId=${updateReloadLogValue(extensionId)} runningVersion=${updateReloadLogValue(runningVersion)}`)
+    scheduleReloadPromptCheck("extensions-changed")
+  }))
+  context.subscriptions.push(new vscode.Disposable(() => {
+    for (const timer of retryTimers.values()) clearTimeout(timer)
+    retryTimers.clear()
+  }))
+  scheduleReloadPromptCheck("activation")
 }
 
 function readPackageJsonVersion(packageJSON: unknown) {

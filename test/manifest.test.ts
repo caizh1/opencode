@@ -28,7 +28,8 @@ describe("extension manifest", () => {
       expect(typeof manifest.dependencies?.[dependency]).toBe("string")
       expect(manifest.devDependencies?.[dependency]).toBeUndefined()
     }
-    expect(manifest.scripts?.vsix).toBe("bun run package && vsce package")
+    expect(manifest.version).toMatch(/^0\.1\.0-build\.\d+$/)
+    expect(manifest.scripts?.vsix).toBe("bun scripts/package-vsix.ts")
     expect(manifest.scripts?.["verify:qwen-vsix"]).toBe("bun scripts/verify-qwen-vsix.ts")
     const vscodeIgnore = readFileSync(join(import.meta.dir, "..", ".vscodeignore"), "utf8")
     expect(vscodeIgnore).not.toMatch(/^node_modules\/\*\*$/m)
@@ -121,6 +122,10 @@ describe("extension manifest", () => {
       command: "chipmate.comments.generateForCurrentFunction",
       title: "ChipMate: 为当前函数生成 AI 注释",
     }))
+    expect(manifest.contributes?.commands).toContainEqual(expect.objectContaining({
+      command: "chipmate.comments.generateForWorkspaceChanges",
+      title: "ChipMate: 为工作区改动生成 AI 注释",
+    }))
     expect(manifest.contributes?.commands).not.toContainEqual(expect.objectContaining({
       command: "chipmate.comments.regenerateForSelection",
     }))
@@ -147,6 +152,13 @@ describe("extension manifest", () => {
     expect(manifest.contributes?.menus?.["editor/context"]).toContainEqual(expect.objectContaining({
       command: "chipmate.comments.generateForCurrentFunction",
       when: "chipmate.comments.supportedEditor",
+    }))
+    expect(manifest.contributes?.menus?.["editor/context"]).toContainEqual(expect.objectContaining({
+      command: "chipmate.comments.generateForWorkspaceChanges",
+    }))
+    expect(manifest.contributes?.menus?.["view/title"]).toContainEqual(expect.objectContaining({
+      command: "chipmate.comments.generateForWorkspaceChanges",
+      when: "view == workbench.scm",
     }))
     expect(manifest.contributes?.menus?.["editor/context"]).not.toContainEqual(expect.objectContaining({
       command: "chipmate.comments.regenerateForSelection",

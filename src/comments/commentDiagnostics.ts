@@ -22,6 +22,7 @@ export type CommentGenerationTerminalReason =
   | "tool-driven-returned-empty-array"
   | "parse-failed"
   | "validator-filtered-all"
+  | "workspace-changes-scan-failed"
   | "proposals-stored"
 
 export type CommentResponsePreview =
@@ -135,6 +136,10 @@ export function commentContextLogFields(context: CommentGenerationContext) {
     workspacePathHash: shortHash(context.workspacePath),
     uriHash: shortHash(context.uri),
     source: context.source,
+    workspaceReviewUnitId: context.workspaceReviewUnitId ? shortHash(context.workspaceReviewUnitId) : undefined,
+    workspaceReviewUnitKind: context.workspaceReviewUnitKind,
+    workspaceChangeDiffHash: context.workspaceChangeDiffHash ? shortHash(context.workspaceChangeDiffHash) : undefined,
+    changedLineSpans: context.changedLineSpans,
     languageId: context.languageId,
     documentVersion: context.documentVersion,
     selectionStartLine: context.selectionStartLine,

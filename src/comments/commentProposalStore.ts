@@ -26,6 +26,21 @@ export class CommentProposalStore {
     this.emit()
   }
 
+  replacePendingForWorkspaceUnit(uri: string, workspaceReviewUnitId: string, proposals: CommentProposal[]) {
+    for (const [id, proposal] of this.proposals) {
+      if (
+        proposal.uri === uri &&
+        proposal.status === "pending" &&
+        proposal.source === "workspaceChanges" &&
+        proposal.workspaceReviewUnitId === workspaceReviewUnitId
+      ) {
+        this.proposals.delete(id)
+      }
+    }
+    for (const proposal of proposals) this.proposals.set(proposal.id, proposal)
+    this.emit()
+  }
+
   get(id: string) {
     return this.proposals.get(id)
   }
@@ -54,6 +69,36 @@ export class CommentProposalStore {
     return [...this.proposals.values()]
       .filter((proposal) => proposal.uri === uri && proposal.status === "pending")
       .sort((left, right) => left.insertBeforeLine - right.insertBeforeLine || left.id.localeCompare(right.id))
+  }
+
+  pendingWorkspaceChanges(diffHash?: string) {
+    return [...this.proposals.values()]
+      .filter((proposal) =>
+        proposal.status === "pending" &&
+        proposal.source === "workspaceChanges" &&
+        (!diffHash || proposal.workspaceChangeDiffHash === diffHash)
+      )
+      .sort((left, right) =>
+        left.uri.localeCompare(right.uri) ||
+        left.insertBeforeLine - right.insertBeforeLine ||
+        left.id.localeCompare(right.id)
+      )
+  }
+
+  clearPendingWorkspaceChanges(diffHash?: string) {
+    let count = 0
+    for (const [id, proposal] of this.proposals) {
+      if (
+        proposal.status === "pending" &&
+        proposal.source === "workspaceChanges" &&
+        (!diffHash || proposal.workspaceChangeDiffHash === diffHash)
+      ) {
+        this.proposals.delete(id)
+        count += 1
+      }
+    }
+    if (count > 0) this.emit()
+    return count
   }
 
   pendingForSelection(context: CommentGenerationContext) {

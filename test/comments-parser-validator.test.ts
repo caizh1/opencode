@@ -173,6 +173,19 @@ describe("AI comment proposal validator", () => {
     expect(tooMany.discarded[0]?.reason).toBe("codeEvidence 数量超过上限")
   })
 
+  test("requires changed-line evidence for workspace change proposals", () => {
+    const accepted = validateRawCommentProposals([
+      validProposal({ codeEvidence: [codeEvidence({ startLine: 12, endLine: 13 })] }),
+    ], selectionContext({ changedLineSpans: [{ startLine: 13, endLine: 13 }] }))
+    const rejected = validateRawCommentProposals([
+      validProposal({ codeEvidence: [codeEvidence({ startLine: 12, endLine: 12 })] }),
+    ], selectionContext({ changedLineSpans: [{ startLine: 15, endLine: 15 }] }))
+
+    expect(accepted.proposals).toHaveLength(1)
+    expect(rejected.proposals).toHaveLength(0)
+    expect(rejected.discarded[0]?.reason).toBe("codeEvidence 必须绑定本次改动行")
+  })
+
   test("repairs adjacent insertBeforeLine when anchor text uniquely matches an allowed anchor", () => {
     const result = validateRawCommentProposals([
       validProposal({
@@ -386,6 +399,7 @@ function selectionContext(overrides: {
   allowedInsertBeforeLines?: number[]
   allowedAnchors?: Array<{ line: number; targetLineText: string }>
   maxProposals?: number
+  changedLineSpans?: Array<{ startLine: number; endLine: number }>
 } = {}) {
   return {
     ...baseSelectionContext(),

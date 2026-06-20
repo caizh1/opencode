@@ -48,6 +48,20 @@ mock.module("vscode", () => ({
   Range: RangeShim,
   Position: PositionShim,
   Uri: UriShim,
+  WorkspaceEdit: class WorkspaceEdit {
+    readonly inserts: unknown[] = []
+    readonly replaces: unknown[] = []
+    readonly deletes: unknown[] = []
+    insert(...args: unknown[]) {
+      this.inserts.push(args)
+    }
+    replace(...args: unknown[]) {
+      this.replaces.push(args)
+    }
+    delete(...args: unknown[]) {
+      this.deletes.push(args)
+    }
+  },
   DiagnosticSeverity: {
     Error: 0,
     Warning: 1,
