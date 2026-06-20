@@ -1,6 +1,7 @@
 import * as vscode from "vscode"
 import type { AstPath } from "../autocomplete/continuedev/core/autocomplete/util/ast"
-import { getAst, getTreePathAtCursor } from "../autocomplete/continuedev/core/autocomplete/util/ast"
+import { getAstWithStatus, getTreePathAtCursor } from "../autocomplete/continuedev/core/autocomplete/util/ast"
+import type { TreeSitterLoadDiagnostic } from "../autocomplete/continuedev/core/util/treeSitter"
 import {
   languageForFilepath,
   type AutocompleteLanguageInfo,
@@ -19,7 +20,7 @@ export type QwenHelperOptions = QwenTokenPruningOptions & {
   resolveTreePath?: boolean
 }
 
-export type QwenTreePathStatus = "not-requested" | "ready" | "missing-ast-infrastructure" | "error"
+export type QwenTreePathStatus = "not-requested" | "ready" | "runtime-load-failed" | "ast-parse-failed" | "error"
 
 export type QwenAutocompleteHelperVars = {
   estimatedPrefixTokens: number
@@ -39,6 +40,7 @@ export type QwenAutocompleteHelperVars = {
   prunedSuffix: string
   tokenizerSource: QwenTokenizerSource
   treePath: AstPath | undefined
+  treeSitterDiagnostic?: TreeSitterLoadDiagnostic
   treePathStatus: QwenTreePathStatus
   workspaceUris: string[]
 }
@@ -50,8 +52,8 @@ export const QWEN_HELPER_DEFAULTS = QWEN_CONTINUE_TOKEN_PRUNING_DEFAULTS
 // - core/autocomplete/util/HelperVars.ts
 // - core/autocomplete/templating/constructPrefixSuffix.ts
 // - core/llm/countTokens.ts
-// qwen-direct keeps treePath undefined in Phase 2C so this does not introduce
-// AST/snippets/context retrieval or wake the old autocomplete runtime.
+// qwen-direct resolves treePath through bundled tree-sitter assets only when
+// the caller opts into AST-backed helper parity.
 export function createQwenAutocompleteHelper(
   document: vscode.TextDocument,
   position: vscode.Position,
@@ -67,13 +69,13 @@ export async function createQwenAutocompleteHelperAsync(
   selected?: vscode.SelectedCompletionInfo,
   opts: QwenHelperOptions = QWEN_HELPER_DEFAULTS,
 ): Promise<QwenAutocompleteHelperVars> {
-  const base = createBaseHelper(document, position, selected, opts, undefined, "missing-ast-infrastructure")
-  if (!opts.resolveTreePath) return { ...base, treePathStatus: "not-requested" }
+  const base = createBaseHelper(document, position, selected, opts, undefined, "error")
+  if (opts.resolveTreePath === false) return { ...base, treePathStatus: "not-requested" }
   try {
-    const ast = await getAst(base.filepath, base.fileContents)
-    if (!ast) return base
-    const treePath = await getTreePathAtCursor(ast, base.fullPrefix.length)
-    return { ...base, treePath, treePathStatus: "ready" }
+    const ast = await getAstWithStatus(base.filepath, base.fileContents)
+    if (!ast.ast) return { ...base, treePathStatus: ast.status, treeSitterDiagnostic: ast.treeSitterDiagnostic }
+    const treePath = await getTreePathAtCursor(ast.ast, base.fullPrefix.length)
+    return { ...base, treePath, treePathStatus: "ready", treeSitterDiagnostic: ast.treeSitterDiagnostic }
   } catch (err) {
     void err
     return { ...base, treePath: undefined, treePathStatus: "error" }

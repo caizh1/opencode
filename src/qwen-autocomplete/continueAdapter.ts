@@ -22,14 +22,14 @@ export function qwenTabAutocompleteOptionsFromConfig(cfg: QwenAutocompleteConfig
     slidingWindowPrefixPercentage: cfg.prefixPercentage,
     slidingWindowSize: cfg.maxPromptTokens,
     useCache: cfg.cacheEnabled,
-    onlyMyCode: false,
+    onlyMyCode: true,
     useRecentlyEdited: cfg.recentlyEditedEnabled,
     useRecentlyOpened: cfg.recentlyOpenedEnabled,
     useImports: cfg.importDefinitionsEnabled,
     experimental_includeClipboard: false,
-    experimental_includeRecentlyVisitedRanges: false,
+    experimental_includeRecentlyVisitedRanges: true,
     experimental_includeRecentlyEditedRanges: cfg.recentlyEditedEnabled,
-    experimental_includeDiff: false,
+    experimental_includeDiff: true,
     experimental_enableStaticContextualization: false,
   }
 }

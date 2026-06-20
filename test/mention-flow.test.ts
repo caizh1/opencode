@@ -50,6 +50,19 @@ describe("file mention flow", () => {
     expect(chatViewSource).not.toContain("this.deps.contextStore.addFile(uri)")
   })
 
+  test("picks workspace files for the current message without persistent context", () => {
+    expect(chatViewSource).toContain('{ type: "pickWorkspaceFilesForMessage" }')
+    expect(chatViewSource).toContain('case "pickWorkspaceFilesForMessage"')
+    expect(chatViewSource).toContain("pickWorkspaceFilesForMessage")
+    expect(chatViewSource).toContain("vscode.window.showQuickPick")
+    expect(chatViewSource).toContain("canPickMany: true")
+    expect(chatViewSource).toContain('entry.type === "file"')
+    expect(chatViewSource).toContain("mentionFileRefFromEntry")
+    expect(chatViewSource).toContain('type: "workspaceFilesPicked"')
+    expect(chatViewSource).toContain("settings.context.maxFiles")
+    expect(chatViewSource).toContain("addPickedFilesToContext(this.deps.contextStore)")
+  })
+
   test("renders explicit context attachments in the composer", () => {
     expect(chatViewSource).toContain("contextItems: this.deps.contextStore.viewItems()")
     expect(contextSource).toContain("LocalContextViewItem")

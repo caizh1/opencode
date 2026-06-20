@@ -2,22 +2,41 @@ import type Parser from "web-tree-sitter"
 type SyntaxNode = Parser.SyntaxNode
 type Tree = Parser.Tree
 
-import { getParserForFile } from "../../util/treeSitter"
+import { getParserForFileWithDiagnostics, type TreeSitterLoadDiagnostic } from "../../util/treeSitter"
 
 export type AstPath = SyntaxNode[]
+export type AstLoadStatus = "ready" | "runtime-load-failed" | "ast-parse-failed"
 
 export async function getAst(filepath: string, fileContents: string): Promise<Tree | undefined> {
-  const parser = await getParserForFile(filepath)
+  return (await getAstWithStatus(filepath, fileContents)).ast
+}
+
+export async function getAstWithStatus(
+  filepath: string,
+  fileContents: string,
+): Promise<{ ast: Tree | undefined; status: AstLoadStatus; treeSitterDiagnostic?: TreeSitterLoadDiagnostic }> {
+  const { parser, diagnostic } = await getParserForFileWithDiagnostics(filepath)
 
   if (!parser) {
-    return undefined
+    return { ast: undefined, status: "runtime-load-failed", treeSitterDiagnostic: diagnostic }
   }
 
   try {
     const ast = parser.parse(fileContents)
-    return ast || undefined
-  } catch {
-    return undefined
+    return ast
+      ? { ast, status: "ready", treeSitterDiagnostic: diagnostic }
+      : { ast: undefined, status: "ast-parse-failed", treeSitterDiagnostic: diagnostic }
+  } catch (err) {
+    return {
+      ast: undefined,
+      status: "ast-parse-failed",
+      treeSitterDiagnostic: {
+        ...diagnostic,
+        stage: "ast-parse-failed",
+        errorKind: err instanceof Error ? err.name || "Error" : typeof err,
+        errorMessage: err instanceof Error ? err.message.slice(0, 300) : String(err).slice(0, 300),
+      },
+    }
   }
 }
 

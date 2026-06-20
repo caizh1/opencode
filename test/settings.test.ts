@@ -112,6 +112,7 @@ mock.module("vscode", () => ({
 
 const {
   DEFAULT_COMPLETION_MODEL,
+  DEFAULT_COMPLETION_CONTEXT_LENGTH,
   DEFAULT_RAG_EMBEDDING_MODEL,
   DEFAULT_RAG_RERANK_MODEL,
   LEGACY_RAG_API_KEY_SECRET_KEY,
@@ -136,6 +137,7 @@ const {
   ragSettingsUpdates,
   readRemoteSettings,
   saveConnectionSettings,
+  saveCompletionSettings,
   saveToolsEnabled,
   saveRagSettings,
   validateRagEmbeddingBatchSize,
@@ -203,16 +205,38 @@ describe("connection settings", () => {
 })
 
 describe("completion settings", () => {
-  test("defaults inline completion to qwen-direct and supports disabling it", () => {
+  test("defaults inline completion to enabled qwen-direct and supports disabling it", () => {
     const settings = readRemoteSettings()
 
+    expect(settings.completion.enabled).toBe(true)
     expect(settings.completion.provider).toBe("qwen-direct")
     expect(settings.completion.model).toBe(DEFAULT_COMPLETION_MODEL)
+    expect(settings.completion.contextLength).toBe(DEFAULT_COMPLETION_CONTEXT_LENGTH)
 
     configValues = new Map<string, unknown>([
+      ["completion.enabled", false],
       ["completion.provider", "none"],
+      ["completion.contextLength", 0],
     ])
+    expect(readRemoteSettings().completion.enabled).toBe(false)
     expect(readRemoteSettings().completion.provider).toBe("none")
+    expect(readRemoteSettings().completion.contextLength).toBe(0)
+  })
+
+  test("saves inline completion context length and normalizes invalid values to the 200k default", async () => {
+    await saveCompletionSettings({
+      enabled: true,
+      provider: "qwen-direct",
+      profile: "qwen-coder-fim",
+      apiBaseUrl: "http://localhost:4096/",
+      model: "qwen-coder-30b0",
+      maxTokens: 256,
+      contextLength: Number.NaN,
+      temperature: 0.1,
+      topP: 1,
+    })
+
+    expect(configUpdates).toContainEqual({ key: "completion.contextLength", value: DEFAULT_COMPLETION_CONTEXT_LENGTH })
   })
 })
 

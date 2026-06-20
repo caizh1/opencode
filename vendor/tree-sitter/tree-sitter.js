@@ -4,11 +4,13 @@
 			(global = typeof globalThis !== 'undefined' ? globalThis : global || self, global.Parser = factory());
 })(this, (function () {
 
+    const __commonJsRequire = typeof require === 'function' ? require : undefined;
+
     // Helper to replace import.meta.url
     function getCurrentScriptUrl() {
-        if (typeof __filename !== 'undefined') {
+        if (typeof __filename !== 'undefined' && __commonJsRequire) {
             // Node.js environment
-            return require('url').pathToFileURL(__filename).href;
+            return __commonJsRequire('url').pathToFileURL(__filename).href;
         }
 
         if (typeof document !== 'undefined') {
@@ -2053,7 +2055,7 @@ var Language = class _Language {
       bytes = Promise.resolve(input);
     } else {
       if (globalThis.process?.versions.node) {
-        const fs2 = await import("fs/promises");
+        const fs2 = __commonJsRequire("fs/promises");
         bytes = fs2.readFile(input);
       } else {
         bytes = fetch(input).then((response) => response.arrayBuffer().then((buffer) => {
@@ -2097,7 +2099,7 @@ var Module2 = (() => {
     var ENVIRONMENT_IS_NODE = typeof process == "object" && typeof process.versions == "object" && typeof process.versions.node == "string";
     var ENVIRONMENT_IS_SHELL = !ENVIRONMENT_IS_WEB && !ENVIRONMENT_IS_NODE && !ENVIRONMENT_IS_WORKER;
     if (ENVIRONMENT_IS_NODE) {
-      const { createRequire } = await import("module");
+      const { createRequire } = __commonJsRequire("module");
       var require = createRequire(getCurrentScriptUrl());
     }
     Module.currentQueryProgressCallback = null;

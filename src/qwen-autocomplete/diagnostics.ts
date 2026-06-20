@@ -11,6 +11,15 @@ export type QwenDiagnosticPhase =
   | "config-read"
   | "ignore-guard"
   | "debounce"
+  | "root-path:start"
+  | "root-path:tree-path"
+  | "root-path:c-query"
+  | "root-path:receiver"
+  | "root-path:type-chain"
+  | "root-path:lsp-definition"
+  | "root-path:codegraph"
+  | "root-path:evidence-build"
+  | "root-path:selected"
   | "prompt-built"
   | "request-start"
   | "response"
@@ -47,6 +56,7 @@ export type QwenDiagnosticInput = {
   prefixChars?: number
   suffixChars?: number
   helper?: QwenAutocompleteHelperVars
+  diagnosticFields?: Record<string, unknown>
   guardBlocked?: boolean
   guardDecision?: string
   guardEnabled?: boolean
@@ -128,6 +138,12 @@ export type QwenDiagnosticInput = {
   recentlyOpenedReadTimeoutMs?: number
   recentlyOpenedSkippedCount?: number
   recentlyOpenedInjectedIntoPrompt?: boolean
+  recentlyVisitedEnabled?: boolean
+  recentlyVisitedTrackedRangeCount?: number
+  recentlyVisitedPayloadCount?: number
+  recentlyVisitedSelectedCount?: number
+  recentlyVisitedSelectedTokens?: number
+  recentlyVisitedInjectedIntoPrompt?: boolean
   importDefinitionsEnabled?: boolean
   importDefinitionsInjectIntoPrompt?: boolean
   importDefinitionsCacheSize?: number
@@ -147,8 +163,18 @@ export type QwenDiagnosticInput = {
   rootPathSkippedCount?: number
   rootPathInjectedIntoPrompt?: boolean
   rootPathBlockedReason?: string
+  rootPathLanguage?: string | null
+  rootPathBackend?: string
+  rootPathCapturedSymbols?: string
+  rootPathEvidenceTokens?: number
+  rootPathCodeGraphSkippedReason?: string
+  rootPathBudgetTrimmed?: boolean
+  receiverTypeResolved?: boolean
+  fieldEvidenceSelected?: boolean
+  typedefChainSelected?: boolean
   snippetsInjectedIntoPrompt?: boolean
   contextLength?: number
+  contextLengthSource?: string
   availablePromptTokens?: number | null
   promptRendererMode?: string
   snippetInjectionBlockedReason?: string
@@ -341,6 +367,12 @@ function entryFor(input: QwenDiagnosticInput): Record<string, unknown> {
     recentlyOpenedReadTimeoutMs: none(input.recentlyOpenedReadTimeoutMs),
     recentlyOpenedSkippedCount: none(input.recentlyOpenedSkippedCount),
     recentlyOpenedInjectedIntoPrompt: none(input.recentlyOpenedInjectedIntoPrompt),
+    recentlyVisitedEnabled: none(input.recentlyVisitedEnabled),
+    recentlyVisitedTrackedRangeCount: none(input.recentlyVisitedTrackedRangeCount),
+    recentlyVisitedPayloadCount: none(input.recentlyVisitedPayloadCount),
+    recentlyVisitedSelectedCount: none(input.recentlyVisitedSelectedCount),
+    recentlyVisitedSelectedTokens: none(input.recentlyVisitedSelectedTokens),
+    recentlyVisitedInjectedIntoPrompt: none(input.recentlyVisitedInjectedIntoPrompt),
     importDefinitionsEnabled: none(input.importDefinitionsEnabled),
     importDefinitionsInjectIntoPrompt: none(input.importDefinitionsInjectIntoPrompt),
     importDefinitionsCacheSize: none(input.importDefinitionsCacheSize),
@@ -360,8 +392,18 @@ function entryFor(input: QwenDiagnosticInput): Record<string, unknown> {
     rootPathSkippedCount: none(input.rootPathSkippedCount),
     rootPathInjectedIntoPrompt: none(input.rootPathInjectedIntoPrompt),
     rootPathBlockedReason: input.rootPathBlockedReason ?? null,
+    rootPathLanguage: input.rootPathLanguage ?? null,
+    rootPathBackend: input.rootPathBackend ?? null,
+    rootPathCapturedSymbols: input.rootPathCapturedSymbols ?? null,
+    rootPathEvidenceTokens: none(input.rootPathEvidenceTokens),
+    rootPathCodeGraphSkippedReason: input.rootPathCodeGraphSkippedReason ?? null,
+    rootPathBudgetTrimmed: none(input.rootPathBudgetTrimmed),
+    receiverTypeResolved: none(input.receiverTypeResolved),
+    fieldEvidenceSelected: none(input.fieldEvidenceSelected),
+    typedefChainSelected: none(input.typedefChainSelected),
     snippetsInjectedIntoPrompt: none(input.snippetsInjectedIntoPrompt),
     contextLength: none(input.contextLength),
+    contextLengthSource: input.contextLengthSource ?? null,
     availablePromptTokens: none(input.availablePromptTokens),
     promptRendererMode: input.promptRendererMode ?? null,
     snippetInjectionBlockedReason: input.snippetInjectionBlockedReason ?? null,
@@ -377,6 +419,7 @@ function entryFor(input: QwenDiagnosticInput): Record<string, unknown> {
     errorKind: errorKind(input.error),
     errorMessage: input.error ? redact(summary(input.error)) : null,
     promptPreview: promptPreview(),
+    ...(input.diagnosticFields ?? {}),
   })
 }
 
@@ -518,6 +561,20 @@ function helperInfo(cfg: QwenAutocompleteConfig, helper?: QwenAutocompleteHelper
     helperParityMode: helper.helperParityMode,
     treePathStatus: helper.treePathStatus,
     treePathDepth: helper.treePath?.length ?? 0,
+    treeSitterStage: helper.treeSitterDiagnostic?.stage ?? null,
+    treeSitterLanguageName: helper.treeSitterDiagnostic?.languageName ?? null,
+    treeSitterQueryPath: helper.treeSitterDiagnostic?.queryPath ?? null,
+    treeSitterAssetRootConfigured: helper.treeSitterDiagnostic?.assetRootConfigured ?? null,
+    treeSitterAssetRootBasename: helper.treeSitterDiagnostic?.assetRootBasename ?? null,
+    treeSitterVendorRootExists: helper.treeSitterDiagnostic?.vendorRootExists ?? null,
+    treeSitterRuntimeJsExists: helper.treeSitterDiagnostic?.runtimeJsExists ?? null,
+    treeSitterRuntimeWasmExists: helper.treeSitterDiagnostic?.runtimeWasmExists ?? null,
+    treeSitterLanguageWasmExists: helper.treeSitterDiagnostic?.languageWasmExists ?? null,
+    treeSitterQueryAssetExists: helper.treeSitterDiagnostic?.queryAssetExists ?? null,
+    treeSitterErrorKind: helper.treeSitterDiagnostic?.errorKind ?? null,
+    treeSitterErrorMessage: helper.treeSitterDiagnostic?.errorMessage
+      ? redact(helper.treeSitterDiagnostic.errorMessage)
+      : null,
   }
 }
 
@@ -535,6 +592,18 @@ function emptyHelperInfo(): Record<string, unknown> {
     helperParityMode: null,
     treePathStatus: null,
     treePathDepth: null,
+    treeSitterStage: null,
+    treeSitterLanguageName: null,
+    treeSitterQueryPath: null,
+    treeSitterAssetRootConfigured: null,
+    treeSitterAssetRootBasename: null,
+    treeSitterVendorRootExists: null,
+    treeSitterRuntimeJsExists: null,
+    treeSitterRuntimeWasmExists: null,
+    treeSitterLanguageWasmExists: null,
+    treeSitterQueryAssetExists: null,
+    treeSitterErrorKind: null,
+    treeSitterErrorMessage: null,
   }
 }
 

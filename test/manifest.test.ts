@@ -51,6 +51,7 @@ describe("extension manifest", () => {
       "chipmate.clearContext",
       "chipmate.openOutput",
       "chipmate.provider.setApiKey",
+      "chipmate.qwenAutocomplete.regenerate",
       "chipmate.qwenAutocomplete.showLogs",
       "chipmate.qwenAutocomplete.exportDiagnostics",
       "chipmate.codeGraph.index",
@@ -60,6 +61,12 @@ describe("extension manifest", () => {
       "chipmate.codeGraph.cancel",
       "chipmate.codeGraph.benchmark",
       "chipmate.codeGraph.status",
+      "chipmate.comments.generateForSelection",
+      "chipmate.comments.generateForCurrentFunction",
+      "chipmate.comments.accept",
+      "chipmate.comments.acceptAll",
+      "chipmate.comments.reject",
+      "chipmate.comments.clear",
     ]) {
       expect(commands.has(command)).toBe(true)
       expect(manifest.activationEvents).toContain(`onCommand:${command}`)
@@ -69,6 +76,25 @@ describe("extension manifest", () => {
     expect(commands.has("opencode.remote.testConnection")).toBe(false)
     expect(commands.has("chipmate.completion.runDirectAblation")).toBe(false)
     expect(commands.has("chipmate.completion.commitInlineSuggestion")).toBe(false)
+    expect(commands.has("chipmate.comments.regenerateForSelection")).toBe(false)
+    expect(manifest.activationEvents).not.toContain("onCommand:chipmate.comments.regenerateForSelection")
+  })
+
+  test("contributes cross-platform regenerate keybindings for qwen inline completion", () => {
+    expect(manifest.contributes?.commands).toContainEqual(expect.objectContaining({
+      command: "chipmate.qwenAutocomplete.regenerate",
+      title: "Regenerate ChipMate Inline Completion",
+    }))
+    expect(manifest.contributes?.keybindings).toContainEqual(expect.objectContaining({
+      command: "chipmate.qwenAutocomplete.regenerate",
+      key: "cmd+alt+]",
+      when: "editorTextFocus && !editorReadonly && isMac",
+    }))
+    expect(manifest.contributes?.keybindings).toContainEqual(expect.objectContaining({
+      command: "chipmate.qwenAutocomplete.regenerate",
+      key: "ctrl+shift+]",
+      when: "editorTextFocus && !editorReadonly && !isMac",
+    }))
   })
 
   test("separates selection and current-file context menu commands", () => {
@@ -83,6 +109,62 @@ describe("extension manifest", () => {
     expect(manifest.contributes?.menus?.["editor/context"]).toContainEqual(expect.objectContaining({
       command: "chipmate.addSelectionToContext",
       when: "editorHasSelection",
+    }))
+  })
+
+  test("contributes AI comment review commands and right-click editor entries", () => {
+    expect(manifest.contributes?.commands).toContainEqual(expect.objectContaining({
+      command: "chipmate.comments.generateForSelection",
+      title: "ChipMate: 为选中代码生成 AI 注释",
+    }))
+    expect(manifest.contributes?.commands).toContainEqual(expect.objectContaining({
+      command: "chipmate.comments.generateForCurrentFunction",
+      title: "ChipMate: 为当前函数生成 AI 注释",
+    }))
+    expect(manifest.contributes?.commands).not.toContainEqual(expect.objectContaining({
+      command: "chipmate.comments.regenerateForSelection",
+    }))
+    expect(manifest.contributes?.commands).toContainEqual(expect.objectContaining({
+      command: "chipmate.comments.accept",
+      title: "ChipMate: 接受 AI 注释",
+    }))
+    expect(manifest.contributes?.commands).toContainEqual(expect.objectContaining({
+      command: "chipmate.comments.acceptAll",
+      title: "ChipMate: 接受全部 AI 注释",
+    }))
+    expect(manifest.contributes?.commands).toContainEqual(expect.objectContaining({
+      command: "chipmate.comments.reject",
+      title: "ChipMate: 拒绝 AI 注释",
+    }))
+    expect(manifest.contributes?.commands).toContainEqual(expect.objectContaining({
+      command: "chipmate.comments.clear",
+      title: "ChipMate: 清除 AI 注释候选",
+    }))
+    expect(manifest.contributes?.menus?.["editor/context"]).toContainEqual(expect.objectContaining({
+      command: "chipmate.comments.generateForSelection",
+      when: "editorHasSelection && chipmate.comments.supportedEditor",
+    }))
+    expect(manifest.contributes?.menus?.["editor/context"]).toContainEqual(expect.objectContaining({
+      command: "chipmate.comments.generateForCurrentFunction",
+      when: "chipmate.comments.supportedEditor",
+    }))
+    expect(manifest.contributes?.menus?.["editor/context"]).not.toContainEqual(expect.objectContaining({
+      command: "chipmate.comments.regenerateForSelection",
+    }))
+    expect(manifest.contributes?.menus?.["editor/context"]).toContainEqual(expect.objectContaining({
+      command: "chipmate.comments.accept",
+      when: "chipmate.comments.cursorHasPendingSuggestion",
+    }))
+    expect(manifest.contributes?.menus?.["editor/context"]).not.toContainEqual(expect.objectContaining({
+      command: "chipmate.comments.acceptAll",
+    }))
+    expect(manifest.contributes?.menus?.["editor/context"]).toContainEqual(expect.objectContaining({
+      command: "chipmate.comments.reject",
+      when: "chipmate.comments.cursorHasPendingSuggestion",
+    }))
+    expect(manifest.contributes?.menus?.["editor/context"]).toContainEqual(expect.objectContaining({
+      command: "chipmate.comments.clear",
+      when: "chipmate.comments.fileHasPendingSuggestions",
     }))
   })
 
@@ -103,6 +185,10 @@ describe("extension manifest", () => {
       default: [],
     })
     expect(properties["chipmate.mcp.enabled"]?.default).toBe(false)
+    expect(properties["chipmate.completion.enabled"]).toMatchObject({
+      type: "boolean",
+      default: true,
+    })
     expect(properties["chipmate.completion.profile"]).toMatchObject({
       type: "string",
       enum: ["generic-chat", "qwen-coder-fim"],
@@ -119,10 +205,10 @@ describe("extension manifest", () => {
     expect(properties["chipmate.completion.maxPromptTokens"]?.default).toBe(1024)
     expect(properties["chipmate.completion.modelTimeout"]?.default).toBe(150)
     expect(properties["chipmate.completion.cache.enabled"]?.default).toBe(true)
-    expect(properties["chipmate.completion.context.recentlyEdited.enabled"]?.default).toBe(false)
-    expect(properties["chipmate.completion.context.recentlyOpened.enabled"]?.default).toBe(false)
-    expect(properties["chipmate.completion.context.importDefinitions.enabled"]?.default).toBe(false)
-    expect(properties["chipmate.completion.context.rootPath.enabled"]?.default).toBe(false)
+    expect(properties["chipmate.completion.context.recentlyEdited.enabled"]?.default).toBe(true)
+    expect(properties["chipmate.completion.context.recentlyOpened.enabled"]?.default).toBe(true)
+    expect(properties["chipmate.completion.context.importDefinitions.enabled"]?.default).toBe(true)
+    expect(properties["chipmate.completion.context.rootPath.enabled"]?.default).toBe(true)
     expect(properties["chipmate.completion.trace"]?.default).toBe(false)
     expect(properties["chipmate.completion.logLevel"]?.enum).toEqual(["off", "info", "debug"])
     expect(properties["chipmate.completion.logPromptPreview"]?.default).toBe(false)

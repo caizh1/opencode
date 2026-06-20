@@ -2,7 +2,7 @@
   "name": "chipmate",
   "displayName": "ChipMate",
   "description": "Direct OpenAI-compatible coding agent with workspace skills for VS Code",
-  "version": "0.0.223",
+  "version": "0.0.245",
   "icon": "media/chipmate-icon.png",
   "publisher": "local",
   "license": "MIT",
@@ -28,6 +28,7 @@
     "onCommand:chipmate.clearContext",
     "onCommand:chipmate.openOutput",
     "onCommand:chipmate.provider.setApiKey",
+    "onCommand:chipmate.qwenAutocomplete.regenerate",
     "onCommand:chipmate.qwenAutocomplete.showLogs",
     "onCommand:chipmate.qwenAutocomplete.exportDiagnostics",
     "onCommand:chipmate.codeGraph.index",
@@ -36,9 +37,19 @@
     "onCommand:chipmate.codeGraph.resume",
     "onCommand:chipmate.codeGraph.cancel",
     "onCommand:chipmate.codeGraph.benchmark",
-    "onCommand:chipmate.codeGraph.status"
+    "onCommand:chipmate.codeGraph.status",
+    "onCommand:chipmate.documentRag.rebuild",
+    "onCommand:chipmate.documentRag.pause",
+    "onCommand:chipmate.documentRag.resume",
+    "onCommand:chipmate.documentRag.status",
+    "onCommand:chipmate.comments.generateForSelection",
+    "onCommand:chipmate.comments.generateForCurrentFunction",
+    "onCommand:chipmate.comments.accept",
+    "onCommand:chipmate.comments.acceptAll",
+    "onCommand:chipmate.comments.reject",
+    "onCommand:chipmate.comments.clear"
   ],
-  "main": "./dist/extension.js",
+  "main": "./dist/extension-entry.js",
   "contributes": {
     "commands": [
       {
@@ -91,6 +102,11 @@
         "category": "ChipMate"
       },
       {
+        "command": "chipmate.qwenAutocomplete.regenerate",
+        "title": "Regenerate ChipMate Inline Completion",
+        "category": "ChipMate"
+      },
+      {
         "command": "chipmate.qwenAutocomplete.showLogs",
         "title": "Show Qwen Autocomplete Logs",
         "category": "ChipMate"
@@ -134,6 +150,68 @@
         "command": "chipmate.codeGraph.status",
         "title": "Show Local Code Graph Status",
         "category": "ChipMate"
+      },
+      {
+        "command": "chipmate.documentRag.rebuild",
+        "title": "Rebuild Document RAG",
+        "category": "ChipMate"
+      },
+      {
+        "command": "chipmate.documentRag.pause",
+        "title": "Pause Document RAG Indexing",
+        "category": "ChipMate"
+      },
+      {
+        "command": "chipmate.documentRag.resume",
+        "title": "Resume Document RAG Indexing",
+        "category": "ChipMate"
+      },
+      {
+        "command": "chipmate.documentRag.status",
+        "title": "Show Document RAG Status",
+        "category": "ChipMate"
+      },
+      {
+        "command": "chipmate.comments.generateForSelection",
+        "title": "ChipMate: 为选中代码生成 AI 注释",
+        "category": "ChipMate"
+      },
+      {
+        "command": "chipmate.comments.generateForCurrentFunction",
+        "title": "ChipMate: 为当前函数生成 AI 注释",
+        "category": "ChipMate"
+      },
+      {
+        "command": "chipmate.comments.accept",
+        "title": "ChipMate: 接受 AI 注释",
+        "category": "ChipMate"
+      },
+      {
+        "command": "chipmate.comments.acceptAll",
+        "title": "ChipMate: 接受全部 AI 注释",
+        "category": "ChipMate"
+      },
+      {
+        "command": "chipmate.comments.reject",
+        "title": "ChipMate: 拒绝 AI 注释",
+        "category": "ChipMate"
+      },
+      {
+        "command": "chipmate.comments.clear",
+        "title": "ChipMate: 清除 AI 注释候选",
+        "category": "ChipMate"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "chipmate.qwenAutocomplete.regenerate",
+        "key": "cmd+alt+]",
+        "when": "editorTextFocus && !editorReadonly && isMac"
+      },
+      {
+        "command": "chipmate.qwenAutocomplete.regenerate",
+        "key": "ctrl+shift+]",
+        "when": "editorTextFocus && !editorReadonly && !isMac"
       }
     ],
     "configuration": {
@@ -252,7 +330,7 @@
         },
         "chipmate.completion.enabled": {
           "type": "boolean",
-          "default": false,
+          "default": true,
           "description": "Enable ChipMate inline completions."
         },
         "chipmate.completion.provider": {
@@ -367,24 +445,24 @@
         },
         "chipmate.completion.contextLength": {
           "type": "number",
-          "default": 0,
+          "default": 200000,
           "minimum": 0,
           "maximum": 1e6,
-          "description": "Explicit qwen-direct autocomplete model context length. Zero means unknown and disables snippet prompt injection."
+          "description": "Maximum qwen-direct autocomplete model context window. Defaults to 200000. Set to 0 to auto-detect from the current provider's read-only /models metadata and fall back to 200000 when unavailable."
         },
         "chipmate.completion.context.recentlyEdited.enabled": {
           "type": "boolean",
-          "default": false,
-          "description": "Enable opt-in qwen-direct autocomplete recently edited range context collection."
+          "default": true,
+          "description": "Enable Continue-style qwen-direct autocomplete recently edited range context collection."
         },
         "chipmate.completion.context.recentlyEdited.injectIntoPrompt": {
           "type": "boolean",
-          "default": false,
-          "description": "Inject selected recently edited snippets into the qwen-coder multifile FIM autocomplete prompt when context length is safe."
+          "default": true,
+          "description": "Inject selected recently edited snippets into the qwen-coder multifile FIM autocomplete prompt when context length is available."
         },
         "chipmate.completion.context.recentlyEdited.maxRanges": {
           "type": "number",
-          "default": 2,
+          "default": 3,
           "minimum": 1,
           "maximum": 20,
           "description": "Maximum recently edited ranges retained in memory for qwen-direct autocomplete."
@@ -398,13 +476,13 @@
         },
         "chipmate.completion.context.recentlyOpened.enabled": {
           "type": "boolean",
-          "default": false,
-          "description": "Enable opt-in qwen-direct autocomplete recently opened file context collection."
+          "default": true,
+          "description": "Enable Continue-style qwen-direct autocomplete recently opened file context collection."
         },
         "chipmate.completion.context.recentlyOpened.injectIntoPrompt": {
           "type": "boolean",
-          "default": false,
-          "description": "Inject selected recently opened file snippets into the qwen-coder multifile FIM autocomplete prompt when context length is safe."
+          "default": true,
+          "description": "Inject selected recently opened file snippets into the qwen-coder multifile FIM autocomplete prompt when context length is available."
         },
         "chipmate.completion.context.recentlyOpened.maxFiles": {
           "type": "number",
@@ -422,13 +500,13 @@
         },
         "chipmate.completion.context.importDefinitions.enabled": {
           "type": "boolean",
-          "default": false,
-          "description": "Enable opt-in qwen-direct autocomplete import definition context collection."
+          "default": true,
+          "description": "Enable Continue-style qwen-direct autocomplete import definition context collection."
         },
         "chipmate.completion.context.importDefinitions.injectIntoPrompt": {
           "type": "boolean",
-          "default": false,
-          "description": "Inject selected import definition snippets into the qwen-coder multifile FIM autocomplete prompt when context length is safe."
+          "default": true,
+          "description": "Inject selected import definition snippets into the qwen-coder multifile FIM autocomplete prompt when context length is available."
         },
         "chipmate.completion.context.importDefinitions.timeoutMs": {
           "type": "number",
@@ -446,13 +524,13 @@
         },
         "chipmate.completion.context.rootPath.enabled": {
           "type": "boolean",
-          "default": false,
-          "description": "Enable opt-in qwen-direct autocomplete root path context collection."
+          "default": true,
+          "description": "Enable Continue-style qwen-direct autocomplete root path context collection."
         },
         "chipmate.completion.context.rootPath.injectIntoPrompt": {
           "type": "boolean",
-          "default": false,
-          "description": "Inject selected root path snippets into the qwen-coder multifile FIM autocomplete prompt when context length is safe."
+          "default": true,
+          "description": "Inject selected root path snippets into the qwen-coder multifile FIM autocomplete prompt when context length is available."
         },
         "chipmate.completion.context.rootPath.timeoutMs": {
           "type": "number",
@@ -839,6 +917,61 @@
           "minimum": 0,
           "maximum": 200,
           "description": "Maximum non-strong evidence candidates sent to the optional rerank service."
+        },
+        "chipmate.documentRag.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically build a separate local RAG index for Word, Excel, and PDF documents in the current workspace."
+        },
+        "chipmate.documentRag.maxFiles": {
+          "type": "number",
+          "default": 5000,
+          "minimum": 1,
+          "maximum": 1e5,
+          "description": "Maximum number of workspace documents considered by Document RAG."
+        },
+        "chipmate.documentRag.maxFileBytes": {
+          "type": "number",
+          "default": 26214400,
+          "minimum": 1024,
+          "maximum": 536870912,
+          "description": "Maximum source document file size accepted by Document RAG."
+        },
+        "chipmate.documentRag.maxExtractedBytesPerFile": {
+          "type": "number",
+          "default": 1048576,
+          "minimum": 1024,
+          "maximum": 33554432,
+          "description": "Maximum extracted text bytes stored from one document in Document RAG."
+        },
+        "chipmate.documentRag.maxChunks": {
+          "type": "number",
+          "default": 50000,
+          "minimum": 1,
+          "maximum": 1e6,
+          "description": "Maximum number of document chunks embedded by Document RAG."
+        },
+        "chipmate.documentRag.excludeGlobs": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "description": "Additional VS Code glob patterns to exclude from Document RAG indexing."
+        },
+        "chipmate.documentRag.queryTopK": {
+          "type": "number",
+          "default": 12,
+          "minimum": 1,
+          "maximum": 100,
+          "description": "Maximum document chunks retrieved from Document RAG for one chat request."
+        },
+        "chipmate.documentRag.maxEvidenceBytes": {
+          "type": "number",
+          "default": 24000,
+          "minimum": 1000,
+          "maximum": 200000,
+          "description": "Maximum Document RAG evidence bytes injected into one chat request."
         }
       }
     },
@@ -868,17 +1001,42 @@
           "group": "chipmate@1"
         },
         {
-          "command": "chipmate.askCurrentFile",
+          "command": "chipmate.comments.generateForSelection",
+          "when": "editorHasSelection && chipmate.comments.supportedEditor",
           "group": "chipmate@2"
+        },
+        {
+          "command": "chipmate.comments.generateForCurrentFunction",
+          "when": "chipmate.comments.supportedEditor",
+          "group": "chipmate@2.1"
+        },
+        {
+          "command": "chipmate.askCurrentFile",
+          "group": "chipmate@3"
         },
         {
           "command": "chipmate.addSelectionToContext",
           "when": "editorHasSelection",
-          "group": "chipmate@3"
+          "group": "chipmate@4"
         },
         {
           "command": "chipmate.addFileToContext",
-          "group": "chipmate@4"
+          "group": "chipmate@5"
+        },
+        {
+          "command": "chipmate.comments.accept",
+          "when": "chipmate.comments.cursorHasPendingSuggestion",
+          "group": "chipmate@6"
+        },
+        {
+          "command": "chipmate.comments.reject",
+          "when": "chipmate.comments.cursorHasPendingSuggestion",
+          "group": "chipmate@7"
+        },
+        {
+          "command": "chipmate.comments.clear",
+          "when": "chipmate.comments.fileHasPendingSuggestions",
+          "group": "chipmate@8"
         }
       ],
       "view/title": [
@@ -923,9 +1081,18 @@
   },
   "dependencies": {
     "diff": "8.0.4",
+    "exceljs": "4.4.0",
     "fastest-levenshtein": "^1.0.16",
     "ignore": "^7.0.3",
     "js-tiktoken": "^1.0.18",
+    "mammoth": "1.12.0",
+    "mkdirp": "0.5.6",
+    "node-html-parser": "7.1.0",
+    "pdfjs-dist": "4.8.69",
+    "sql.js": "1.14.1",
     "web-tree-sitter": "^0.24.7"
+  },
+  "overrides": {
+    "mkdirp": "0.5.6"
   }
 }

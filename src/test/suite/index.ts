@@ -82,6 +82,10 @@ async function qwenAutocompleteSmoke() {
   assert.ok(extension, "local.chipmate extension should be available")
 
   const commands = await vscode.commands.getCommands(true)
+  assert.ok(
+    commands.includes("chipmate.qwenAutocomplete.regenerate"),
+    "qwen regenerate command should be registered",
+  )
   assert.ok(commands.includes("chipmate.qwenAutocomplete.showLogs"), "qwen logs command should be registered")
   assert.ok(
     commands.includes("chipmate.qwenAutocomplete.exportDiagnostics"),

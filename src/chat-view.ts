@@ -24,10 +24,12 @@ import {
   addPickedFilesToContext,
   buildChatPrompt,
   type ContextSummaryItem,
+  type LocalContextItem,
   LocalContextStore,
   MissingLocalContextError,
   relativePath,
 } from "./context"
+import type { DocumentRagContextProvider } from "./document-rag"
 import type { TrackedEditorContext } from "./editor-context"
 import { MissingLocalOnlyAgentError, selectRequestAgent } from "./local-agent"
 import { buildMentionIndex, isMentionIndexExcludedPath, searchMentionIndex, type MentionIndexEntry } from "./mention-index"
@@ -88,6 +90,10 @@ type QueuedMentionedFileRef = MentionedFileRef & {
   type: "file"
 }
 
+type WorkspaceFileQuickPickItem = vscode.QuickPickItem & {
+  entry: MentionIndexEntry
+}
+
 type ChatViewMessage =
   | { type: "ready" }
   | { type: "refresh" }
@@ -96,9 +102,11 @@ type ChatViewMessage =
   | { type: "newSession" }
   | { type: "cancelSend" }
   | { type: "addFile" }
+  | { type: "pickWorkspaceFilesForMessage" }
   | { type: "addDroppedFiles"; candidates?: string[] }
   | { type: "clearContext" }
   | { type: "removeContextItem"; id?: string }
+  | { type: "toggleContextPin"; id?: string; pinned?: boolean; file?: MentionedFileRef }
   | { type: "openContextItem"; id?: string }
   | { type: "exportMarkdown"; scope?: ExportScope; filenameHint?: string }
   | { type: "deleteQueuedSend"; id?: string }
@@ -116,6 +124,10 @@ type ChatViewMessage =
   | { type: "pauseRagIndexing" }
   | { type: "resumeRagIndexing" }
   | { type: "cancelRagIndexing" }
+  | { type: "pauseDocumentRagIndexing" }
+  | { type: "resumeDocumentRagIndexing" }
+  | { type: "rebuildDocumentRag" }
+  | { type: "showDocumentRagStatus" }
   | { type: "showCodeGraphStatus" }
   | { type: "refreshCodeIntelligence" }
   | { type: "openEvidence"; path: string; line?: number }
@@ -197,6 +209,7 @@ type QueuedChatSend = {
   options: ChatContextOptions
   mentionedFiles: vscode.Uri[]
   mentionedFileRefs: QueuedMentionedFileRef[]
+  contextItems: LocalContextItem[]
 }
 
 type RemoteChatViewProviderDeps = {
@@ -204,6 +217,12 @@ type RemoteChatViewProviderDeps = {
   extensionUri: vscode.Uri
   contextStore: LocalContextStore
   codeGraph?: CodeGraphContextProvider
+  documentRag?: DocumentRagContextProvider & {
+    rebuild(): void
+    pauseIndexing(reason?: string): void
+    resumeIndexing(): void
+    showStatus(): Promise<void>
+  }
   getClient: () => DirectAgentClient | undefined
   getSettings: () => RemoteSettings
   getProviderApiKey: () => Promise<string | undefined>
@@ -340,7 +359,8 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
     }
     const brandIconUri = webviewView.webview.asWebviewUri(vscode.Uri.joinPath(this.deps.extensionUri, "media", "chipmate-icon.png")).toString()
     const mermaidScriptUri = webviewView.webview.asWebviewUri(vscode.Uri.joinPath(this.deps.extensionUri, "media", "vendor", "mermaid", "mermaid.min.js")).toString()
-    webviewView.webview.html = createChatViewHtml(webviewView.webview.cspSource, undefined, brandIconUri, mermaidScriptUri)
+    const codiconFontUri = webviewView.webview.asWebviewUri(vscode.Uri.joinPath(this.deps.extensionUri, "media", "vendor", "codicon", "codicon.ttf")).toString()
+    webviewView.webview.html = createChatViewHtml(webviewView.webview.cspSource, undefined, brandIconUri, mermaidScriptUri, codiconFontUri)
     webviewView.webview.onDidReceiveMessage((message: ChatViewMessage) => {
       void this.handleMessage(message)
     })
@@ -577,9 +597,10 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
     mentionedFiles: vscode.Uri[],
     mentionedFileRefs = this.mentionedFileRefsFromUris(mentionedFiles),
     clientQueueID?: string,
+    contextItems: LocalContextItem[] = this.deps.contextStore.snapshot(),
   ) {
     const trimmed = text.trim()
-    if (!trimmed && mentionedFiles.length === 0) {
+    if (!trimmed && mentionedFiles.length === 0 && contextItems.length === 0) {
       this.postQueueRejected(clientQueueID, "Type a message or attach context.")
       return false
     }
@@ -599,6 +620,7 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
         options: { ...options },
         mentionedFiles: [...mentionedFiles],
         mentionedFileRefs: mentionedFileRefs.map((file) => ({ ...file })),
+        contextItems: contextItems.map((item) => ({ ...item })),
       },
     ]
     const message = `Queued ${this.queuedSends.length}/${MAX_QUEUED_CHAT_SENDS}.`
@@ -627,6 +649,8 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
     if (!queued) return
     this.queuedSends = this.queuedSends.filter((item) => item.id !== id)
     this.postQueueUpdated(this.queuedSends.length > 0 ? `Queued ${this.queuedSends.length}/${MAX_QUEUED_CHAT_SENDS}.` : "")
+    this.deps.contextStore.restore(queued.contextItems)
+    this.postState()
     this.view?.webview.postMessage({
       type: "restoreQueuedSendDraft",
       text: queued.text,
@@ -646,7 +670,7 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
         if (!next) continue
         this.postQueueUpdated(this.queuedSends.length > 0 ? `Queued ${this.queuedSends.length}/${MAX_QUEUED_CHAT_SENDS}.` : "")
         const mentioned = await this.resolveExistingMentionedFiles(next.mentionedFileRefs)
-        await this.processSendMessage(next.text, next.options, mentioned.uris)
+        await this.processSendMessage(next.text, next.options, mentioned.uris, next.contextItems)
       }
     } finally {
       this.drainingQueuedSends = false
@@ -1054,6 +1078,9 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
         case "addFile":
           await this.addFile()
           break
+        case "pickWorkspaceFilesForMessage":
+          await this.pickWorkspaceFilesForMessage()
+          break
         case "addDroppedFiles":
           await this.addDroppedFiles(message.candidates ?? [])
           break
@@ -1064,6 +1091,9 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
         case "removeContextItem":
           if (message.id) this.deps.contextStore.remove(message.id)
           this.postState()
+          break
+        case "toggleContextPin":
+          await this.toggleContextPin(message)
           break
         case "openContextItem":
           await this.openContextItem(message.id)
@@ -1121,6 +1151,21 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
         case "cancelRagIndexing":
           this.deps.codeGraph?.cancelRagIndexing("requested from RAG UI")
           this.postState()
+          break
+        case "pauseDocumentRagIndexing":
+          this.deps.documentRag?.pauseIndexing("requested from Document RAG UI")
+          this.postState()
+          break
+        case "resumeDocumentRagIndexing":
+          this.deps.documentRag?.resumeIndexing()
+          this.postState()
+          break
+        case "rebuildDocumentRag":
+          this.deps.documentRag?.rebuild()
+          this.postState()
+          break
+        case "showDocumentRagStatus":
+          await this.deps.documentRag?.showStatus()
           break
         case "showCodeGraphStatus":
           await this.showCodeGraphStatus()
@@ -1453,6 +1498,92 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
     if (count > 0) vscode.window.setStatusBarMessage(`Attached ${count} file(s) to ChipMate context`, 2000)
   }
 
+  private async pickWorkspaceFilesForMessage() {
+    const settings = this.deps.getSettings()
+    try {
+      if (!vscode.workspace.workspaceFolders?.length) {
+        this.view?.webview.postMessage({
+          type: "workspaceFilesPicked",
+          files: [],
+          notice: "Open a workspace folder before attaching workspace files.",
+        })
+        return
+      }
+
+      const index = await this.ensureMentionIndex()
+      const entries = index.entries.filter((entry) => entry.type === "file" && typeof entry.uri === "string")
+      if (entries.length === 0) {
+        this.view?.webview.postMessage({
+          type: "workspaceFilesPicked",
+          files: [],
+          notice: "No workspace files are available to attach.",
+        })
+        return
+      }
+
+      const picks: WorkspaceFileQuickPickItem[] = entries.map((entry) => {
+        const label = path.posix.basename(entry.label) || entry.label
+        const parent = path.posix.dirname(entry.label)
+        return {
+          label,
+          description: parent === "." ? undefined : parent,
+          detail: entry.label,
+          entry,
+        }
+      })
+      const selected = await vscode.window.showQuickPick(picks, {
+        canPickMany: true,
+        matchOnDescription: true,
+        matchOnDetail: true,
+        placeHolder: "Select workspace files to attach to this message",
+        title: "Attach Workspace Files",
+      })
+      if (!selected || selected.length === 0) return
+
+      const files: QueuedMentionedFileRef[] = []
+      const seen = new Set<string>()
+      let skippedCount = 0
+      const maxFiles = Math.max(0, settings.context.maxFiles)
+
+      for (const item of selected) {
+        const file = this.mentionFileRefFromEntry(item.entry)
+        if (!file || seen.has(file.uri)) {
+          skippedCount += 1
+          continue
+        }
+        if (files.length >= maxFiles) {
+          skippedCount += 1
+          continue
+        }
+
+        try {
+          const uri = vscode.Uri.parse(file.uri)
+          const stat = await vscode.workspace.fs.stat(uri)
+          if (stat.type !== vscode.FileType.File) {
+            skippedCount += 1
+            continue
+          }
+        } catch {
+          skippedCount += 1
+          continue
+        }
+
+        seen.add(file.uri)
+        files.push(file)
+      }
+
+      this.view?.webview.postMessage({
+        type: "workspaceFilesPicked",
+        files,
+        notice: pickedWorkspaceFilesNotice(files.length, skippedCount),
+      })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      this.deps.output.appendLine(`[mention] workspace file picker failed: ${message}`)
+      this.view?.webview.postMessage({ type: "workspaceFilesPicked", files: [], notice: message })
+    }
+  }
+
   private async addDroppedFiles(candidates: string[]) {
     const settings = this.deps.getSettings()
     const resolved = await resolveDroppedFiles(candidates, settings.context.maxFiles)
@@ -1462,6 +1593,26 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
       skippedCount: resolved.skippedCount,
       notice: resolved.notice,
     })
+  }
+
+  private async toggleContextPin(message: Extract<ChatViewMessage, { type: "toggleContextPin" }>) {
+    const pinned = message.pinned !== false
+    if (message.id) {
+      const item = this.deps.contextStore.setLifetime(message.id, pinned ? "persistent" : "one-shot")
+      if (!item) this.deps.output.appendLine(`[context] pin skipped missing item id=${message.id}`)
+      this.postState()
+      return
+    }
+
+    if (!message.file || !pinned) return
+    const mentioned = await this.resolveExistingMentionedFiles([message.file])
+    const uri = mentioned.uris[0]
+    if (!uri) {
+      this.view?.webview.postMessage({ type: "workspaceFilesPicked", files: [], notice: "Pinned context file is no longer available." })
+      return
+    }
+    this.deps.contextStore.addFile(uri, "persistent")
+    this.postState()
   }
 
   private async openContextItem(id: string | undefined) {
@@ -1636,16 +1787,18 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
     text: string,
     options: ChatContextOptions,
     mentionedFiles: vscode.Uri[],
-  ) {
+    contextItems: LocalContextItem[] = this.deps.contextStore.snapshot(),
+  ): Promise<boolean> {
     const trimmed = text.trim()
-    if (!trimmed && mentionedFiles.length === 0) return
+    if (!trimmed && mentionedFiles.length === 0 && contextItems.length === 0) return false
     if (this.sending) {
-      this.enqueueChatSend(text, options, mentionedFiles)
-      return
+      const enqueued = this.enqueueChatSend(text, options, mentionedFiles, undefined, undefined, contextItems)
+      if (enqueued && !this.shouldPreserveOneShotContext(text)) this.deps.contextStore.consumeOneShot(contextItems)
+      return enqueued
     }
 
     const client = this.connectedClient("Configure a ChipMate provider before sending.")
-    if (!client) return
+    if (!client) return false
 
     this.clearStreamingEventSuppression()
     const controller = new AbortController()
@@ -1662,7 +1815,7 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
     try {
       const settings = this.deps.getSettings()
       await this.ensureAgentList(client, settings)
-      if (controller.signal.aborted) return
+      if (controller.signal.aborted) return false
       const agentSelection = this.agentForSettings(settings)
       if (!agentSelection.ready) {
         throw new MissingLocalOnlyAgentError(agentSelection.warning ?? "Required VS Code local agent is not available.")
@@ -1678,15 +1831,17 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
         options,
         settings,
         contextStore: this.deps.contextStore,
+        contextItems,
         mentionedFiles,
         editorContext: this.deps.getEditorContext(),
         codeGraph: this.deps.codeGraph,
+        documentRag: this.deps.documentRag,
         onContextSummary: (items) => {
           contextSummary = items
           this.lastContextSummary = items
         },
       })
-      if (controller.signal.aborted) return
+      if (controller.signal.aborted) return false
       this.lastContextSummary = contextSummary
       this.logContextSummary(contextSummary)
       this.deps.output.appendLine(`[agent] ${agentSelection.label}`)
@@ -1697,17 +1852,20 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
         agent: agentSelection.agent,
       }
       sentStreaming = await this.sendPreparedMessage(client, preparedMessage, controller.signal)
+      if (sentStreaming) this.deps.contextStore.consumeOneShot(contextItems)
+      return sentStreaming
     } catch (error) {
-      if (controller.signal.aborted) return
+      if (controller.signal.aborted) return false
       let finalError = error
       if (preparedMessage && isSessionNotFoundError(error)) {
         try {
           this.clearMissingSession(this.sessionID)
           this.deps.output.appendLine("[session] Selected ChipMate session was not found; retrying with a new session.")
           sentStreaming = await this.sendPreparedMessage(client, preparedMessage, controller.signal)
-          return
+          if (sentStreaming) this.deps.contextStore.consumeOneShot(contextItems)
+          return sentStreaming
         } catch (retryError) {
-          if (controller.signal.aborted) return
+          if (controller.signal.aborted) return false
           finalError = retryError
         }
       }
@@ -1725,7 +1883,7 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
         this.pendingLocalUserTexts.delete(optimistic.text)
         this.messages = [...this.messages, localMessage("error", message)]
         this.deps.output.appendLine(`[guard] blocked send: ${message}`)
-        return
+        return false
       }
       if (error instanceof CodeGraphReadinessError || finalError instanceof CodeGraphReadinessError) {
         this.messages = this.messages.filter((messageItem) => messageItem.id !== optimistic.id)
@@ -1733,12 +1891,13 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
         this.pendingLocalUserTexts.delete(optimistic.text)
         this.messages = [...this.messages, localMessage("error", message)]
         this.deps.output.appendLine(`[codegraph] blocked send: ${message}`)
-        return
+        return false
       }
       this.pendingLocalUserMessageIDs.delete(optimistic.id)
       this.pendingLocalUserTexts.delete(optimistic.text)
       this.messages = [...this.messages, localMessage("error", `Failed to send message: ${message}`)]
       this.reportRemoteConnectionFailure(client, "Failed to send message to ChipMate", finalError, message)
+      return false
     } finally {
       this.codeGraphWaitDetail = ""
       if (this.activeSendController === controller) this.activeSendController = undefined
@@ -2053,6 +2212,23 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
     }))
   }
 
+  private mentionFileRefFromEntry(entry: MentionIndexEntry): QueuedMentionedFileRef | undefined {
+    if (entry.type !== "file" || !entry.uri) return undefined
+    try {
+      const uri = vscode.Uri.parse(entry.uri)
+      if (uri.scheme !== "file" || !vscode.workspace.getWorkspaceFolder(uri)) return undefined
+      const label = entry.label || relativePath(uri)
+      return {
+        uri: uri.toString(),
+        label,
+        type: "file",
+        insertText: entry.insertText || label,
+      }
+    } catch {
+      return undefined
+    }
+  }
+
   private async handleSendMessage(
     text: string,
     options: ChatContextOptions,
@@ -2061,23 +2237,33 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
     clientQueueID?: string,
   ) {
     const mentioned = await this.resolveExistingMentionedFiles(mentionedFileRefs)
+    const contextItems = this.deps.contextStore.snapshot()
     if (this.sending) {
-      this.enqueueChatSend(text, options, mentioned.uris, mentioned.refs, clientQueueID)
+      const enqueued = this.enqueueChatSend(text, options, mentioned.uris, mentioned.refs, clientQueueID, contextItems)
+      if (enqueued && !this.shouldPreserveOneShotContext(text)) {
+        this.deps.contextStore.consumeOneShot(contextItems)
+        this.postState()
+      }
       return
     }
 
-    await this.processSendMessage(text, options, mentioned.uris)
+    await this.processSendMessage(text, options, mentioned.uris, contextItems)
+  }
+
+  private shouldPreserveOneShotContext(text: string) {
+    return Boolean(parseExplicitExportCommand(text) || isExportIntentCandidate(text))
   }
 
   private async processSendMessage(
     text: string,
     options: ChatContextOptions,
     mentionedFiles: vscode.Uri[],
-  ) {
+    contextItems: LocalContextItem[] = this.deps.contextStore.snapshot(),
+  ): Promise<boolean> {
     const explicitExport = parseExplicitExportCommand(text)
     if (explicitExport) {
       await this.exportMarkdown(explicitExport.scope, explicitExport.filenameHint)
-      return
+      return false
     }
 
     if (isExportIntentCandidate(text)) {
@@ -2086,13 +2272,13 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
         const decision = await this.classifyExportIntent(client, text)
         if (decision.intent === "export") {
           await this.exportMarkdown(decision.scope, decision.filenameHint)
-          return
+          return false
         }
       }
       this.postExportStatus("")
     }
 
-    await this.sendMessage(text, options, mentionedFiles)
+    return this.sendMessage(text, options, mentionedFiles, contextItems)
   }
 
   private async classifyExportIntent(client: DirectAgentClient, text: string) {
@@ -2300,6 +2486,7 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
         contextFiles: this.deps.contextStore.labels(),
         contextItems: this.deps.contextStore.viewItems(),
         codeGraph: this.deps.codeGraph?.status(),
+        documentRag: this.deps.documentRag?.status(),
         codeGraphWaitDetail: this.codeGraphWaitDetail,
         codeIntelligence: this.codeIntelligence,
         loadingCodeIntelligence: this.loadingCodeIntelligence,
@@ -2813,6 +3000,13 @@ function ragResumeScheduleMessage(rag: RagStatus) {
   const remainingMs = Math.max(0, rag.resumeScheduledAt - Date.now())
   const label = rag.resumeReason === "rate-limit" ? "retry scheduled" : "resume scheduled"
   return `; ${label} in ${Math.ceil(remainingMs / 1000)}s`
+}
+
+function pickedWorkspaceFilesNotice(fileCount: number, skippedCount: number) {
+  if (fileCount === 0) return skippedCount > 0 ? "Selected files could not be attached to this message." : ""
+  const attached = `Attached ${fileCount} file${fileCount === 1 ? "" : "s"} to this message.`
+  const skipped = skippedCount > 0 ? ` Skipped ${skippedCount} item${skippedCount === 1 ? "" : "s"}.` : ""
+  return `${attached}${skipped}`
 }
 
 async function resolveDroppedFiles(candidates: string[], maxFiles: number): Promise<{ files: MentionedFileRef[]; skippedCount: number; notice: string }> {

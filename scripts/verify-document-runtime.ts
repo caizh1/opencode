@@ -15,6 +15,10 @@ const required = [
   "extension/dist/document-parser.js",
   "extension/dist/context.js",
   "extension/dist/tool-runtime.js",
+  "extension/node_modules/mammoth/package.json",
+  "extension/node_modules/node-html-parser/package.json",
+  "extension/node_modules/exceljs/package.json",
+  "extension/node_modules/pdfjs-dist/package.json",
 ]
 const missing = required.filter((entry) => !entries.has(entry))
 if (missing.length > 0) {
@@ -22,14 +26,8 @@ if (missing.length > 0) {
   process.exit(1)
 }
 
-const nodeModules = [...entries].filter((entry) => entry.startsWith("extension/node_modules/"))
-if (nodeModules.length > 0) {
-  console.error(`Document runtime verification failed: VSIX contains node_modules entries, first=${nodeModules[0]}`)
-  process.exit(1)
-}
-
 console.log(`Document runtime OK: ${vsixPath}`)
-console.log(`Verified ${required.join(", ")} and no extension/node_modules entries.`)
+console.log(`Verified ${required.join(", ")}.`)
 
 function listZipEntries(buffer: Buffer) {
   const eocd = findEocd(buffer)

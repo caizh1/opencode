@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import { parseCFile } from "../src/codegraph-c-parser"
 import { RagHttpError } from "../src/rag-provider"
-import { buildRagChunks, buildRagVectorIndex, createRagSerializedManifest, decodeRagShardVectors, encodeRagShardVectors, RagIndexAbortError, ragManifestStaleReason, searchRagVectorIndex, splitRagVectorIndex } from "../src/rag-index"
+import { buildRagChunks, buildRagVectorIndex, createRagSerializedManifest, decodeRagShardVectors, encodeRagShardVectors, RagIndexAbortError, ragManifestStaleReason, searchRagVectorIndex, splitRagVectorIndex, validateRagCrossVersionPartialResume } from "../src/rag-index"
 import type { CodeGraphIndex } from "../src/codegraph-types"
 import type { EmbeddingProvider } from "../src/rag-types"
 
@@ -670,6 +670,79 @@ describe("local RAG vector index", () => {
     expect(ragManifestStaleReason(readyManifest, "0.0.106")).toBeUndefined()
     expect(ragManifestStaleReason(legacyManifest, "0.0.106")).toBeUndefined()
   })
+
+  test("validates compatible cross-version partial manifests for safe resume", async () => {
+    const index = sampleIndex()
+    const provider = recordingEmbeddingProvider()
+    const vectorIndex = await buildRagVectorIndex({
+      index,
+      provider,
+      batchSize: 1,
+      maxRequestsPerRun: 1,
+      requestDelayMs: 0,
+    })
+    const manifest = createRagSerializedManifest(vectorIndex, {
+      extensionVersion: "0.0.105",
+      state: "paused",
+      completed: false,
+    })
+
+    const result = validateRagCrossVersionPartialResume({
+      manifest,
+      currentExtensionVersion: "0.0.106",
+      rootPath: index.rootPath,
+      provider: provider.id,
+      model: provider.model,
+      providerDimension: vectorIndex.dimension,
+      sourceIndexUpdatedAt: index.updatedAt,
+      indexTests: true,
+      shards: loadedShardsForResumeValidation(vectorIndex, manifest),
+    })
+
+    expect(result).toEqual({ ok: true, resumeCompatibility: "cross-version-validated" })
+  })
+
+  test("rejects unsafe cross-version partial resume inputs", async () => {
+    const index = sampleIndex()
+    const provider = recordingEmbeddingProvider()
+    const vectorIndex = await buildRagVectorIndex({
+      index,
+      provider,
+      batchSize: 1,
+      maxRequestsPerRun: 1,
+      requestDelayMs: 0,
+    })
+    const manifest = createRagSerializedManifest(vectorIndex, {
+      extensionVersion: "0.0.105",
+      state: "paused",
+      completed: false,
+    })
+    const shards = loadedShardsForResumeValidation(vectorIndex, manifest)
+    const validInput = {
+      manifest,
+      currentExtensionVersion: "0.0.106",
+      rootPath: index.rootPath,
+      provider: provider.id,
+      model: provider.model,
+      providerDimension: vectorIndex.dimension,
+      sourceIndexUpdatedAt: index.updatedAt,
+      indexTests: true,
+      shards,
+    }
+
+    expect(validateRagCrossVersionPartialResume({ ...validInput, provider: "other" })).toMatchObject({ ok: false })
+    expect(validateRagCrossVersionPartialResume({ ...validInput, model: "other" })).toMatchObject({ ok: false })
+    expect(validateRagCrossVersionPartialResume({ ...validInput, providerDimension: vectorIndex.dimension + 1 })).toMatchObject({ ok: false })
+    expect(validateRagCrossVersionPartialResume({ ...validInput, sourceIndexUpdatedAt: index.updatedAt + 1 })).toMatchObject({ ok: false })
+    expect(validateRagCrossVersionPartialResume({ ...validInput, shards: shards.slice(1) })).toMatchObject({ ok: false })
+    expect(validateRagCrossVersionPartialResume({
+      ...validInput,
+      shards: [{
+        ...shards[0],
+        vectors: [[...shards[0].vectors[0], 1], ...shards[0].vectors.slice(1)],
+      }, ...shards.slice(1)],
+    })).toMatchObject({ ok: false })
+  })
 })
 
 function sampleIndex(): CodeGraphIndex {
@@ -821,4 +894,22 @@ function embedText(text: string) {
 function normalize(values: number[]) {
   const norm = Math.sqrt(values.reduce((sum, value) => sum + value * value, 0)) || 1
   return values.map((value) => value / norm)
+}
+
+function loadedShardsForResumeValidation(index: Awaited<ReturnType<typeof buildRagVectorIndex>>, manifest: ReturnType<typeof createRagSerializedManifest>) {
+  const shards = new Map(splitRagVectorIndex(index).map((shard) => [shard.key, shard]))
+  return manifest.shards.map((manifestShard) => {
+    const shard = shards.get(manifestShard.key)
+    if (!shard) throw new Error(`missing shard ${manifestShard.key}`)
+    return {
+      manifest: manifestShard,
+      metadata: {
+        version: 1 as const,
+        key: manifestShard.key,
+        dimension: index.dimension,
+        chunks: shard.chunks,
+      },
+      vectors: shard.vectors,
+    }
+  })
 }

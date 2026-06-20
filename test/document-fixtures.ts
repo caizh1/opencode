@@ -47,8 +47,37 @@ export function xlsxFixture() {
     "xl/worksheets/sheet1.xml": [
       '<?xml version="1.0" encoding="UTF-8"?>',
       '<worksheet><dimension ref="A1:C2"/><sheetData>',
-      '<row r="1"><c r="A1" t="s"><v>0</v></c><c r="B1" t="s"><v>1</v></c><c r="C1"><v>Formula</v></c></row>',
+      '<row r="1"><c r="A1" t="s"><v>0</v></c><c r="B1" t="s"><v>1</v></c><c r="C1" t="inlineStr"><is><t>Formula</t></is></c></row>',
       '<row r="2"><c r="A2" t="s"><v>2</v></c><c r="B2"><v>3</v></c><c r="C2"><f>B2*2</f><v>6</v></c></row>',
+      "</sheetData></worksheet>",
+    ].join(""),
+  }, 8)
+}
+
+export function xlsxRowsFixture(rowCount: number) {
+  const rows = [
+    '<row r="1"><c r="A1" t="inlineStr"><is><t>Name</t></is></c><c r="B1" t="inlineStr"><is><t>Value</t></is></c></row>',
+  ]
+  for (let row = 2; row <= rowCount; row++) {
+    rows.push(`<row r="${row}"><c r="A${row}" t="inlineStr"><is><t>Item ${row}</t></is></c><c r="B${row}"><v>${row}</v></c></row>`)
+  }
+  return zipFixture({
+    "xl/workbook.xml": [
+      '<?xml version="1.0" encoding="UTF-8"?>',
+      '<workbook xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">',
+      '<sheets><sheet name="Rows" sheetId="1" r:id="rId1"/></sheets>',
+      "</workbook>",
+    ].join(""),
+    "xl/_rels/workbook.xml.rels": [
+      '<?xml version="1.0" encoding="UTF-8"?>',
+      "<Relationships>",
+      '<Relationship Id="rId1" Target="worksheets/sheet1.xml"/>',
+      "</Relationships>",
+    ].join(""),
+    "xl/worksheets/sheet1.xml": [
+      '<?xml version="1.0" encoding="UTF-8"?>',
+      `<worksheet><dimension ref="A1:B${rowCount}"/><sheetData>`,
+      rows.join(""),
       "</sheetData></worksheet>",
     ].join(""),
   }, 8)

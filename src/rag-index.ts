@@ -5,7 +5,7 @@ import { RagHttpError } from "./rag-provider"
 import { estimateEmbeddingTokens } from "./rag-token"
 import type { CodeGraphFile, CodeGraphIndex } from "./codegraph-types"
 import type { StateMachine } from "./analysis-types"
-import type { EmbeddingProvider, RagChunk, RagIndexLifecycleState, RagVectorIndex, RagVectorSearchHit, RagVectorShard } from "./rag-types"
+import type { EmbeddingProvider, RagChunk, RagIndexLifecycleState, RagResumeCompatibility, RagVectorIndex, RagVectorSearchHit, RagVectorShard } from "./rag-types"
 import type { RagIndexPausedReason, RagResumeReason, RagWorkerStatus } from "./types"
 
 export class RagIndexAbortError extends Error {
@@ -56,6 +56,16 @@ export type RagSerializedShardMetadata = {
   dimension: number
   chunks: RagChunk[]
 }
+
+export type RagLoadedShardForResumeValidation = {
+  manifest: RagSerializedManifest["shards"][number]
+  metadata: RagSerializedShardMetadata
+  vectors: number[][]
+}
+
+export type RagCrossVersionPartialResumeValidation =
+  | { ok: true; resumeCompatibility: Extract<RagResumeCompatibility, "cross-version-validated"> }
+  | { ok: false; reason: string }
 
 type RagIndexBuildProgressCounts = {
   embeddedChunks: number
@@ -751,6 +761,67 @@ export function ragManifestIsCompleted(manifest: RagSerializedManifest) {
   const totalChunks = manifest.totalChunks ?? manifest.chunks
   const pendingChunks = Math.max(0, manifest.pendingChunks ?? totalChunks - manifest.chunks)
   return pendingChunks === 0
+}
+
+export function validateRagCrossVersionPartialResume(input: {
+  manifest: RagSerializedManifest
+  currentExtensionVersion: string
+  rootPath: string
+  provider: string
+  model: string
+  providerDimension?: number
+  sourceIndexUpdatedAt?: number
+  indexTests?: boolean
+  shards: RagLoadedShardForResumeValidation[]
+}): RagCrossVersionPartialResumeValidation {
+  const reject = (reason: string): RagCrossVersionPartialResumeValidation => ({ ok: false, reason })
+  const manifest = input.manifest
+  const manifestExtensionVersion = manifest.extensionVersion?.trim()
+  const currentExtensionVersion = input.currentExtensionVersion.trim()
+  if (!manifestExtensionVersion) return reject("manifest extension version is missing")
+  if (manifestExtensionVersion === currentExtensionVersion) return reject("manifest was created by the current extension version")
+  if (manifest.version !== 1) return reject(`manifest version mismatch: ${manifest.version}`)
+  if (ragManifestIsCompleted(manifest)) return reject("manifest is already complete")
+  if (manifest.rootPath !== input.rootPath) return reject("root path mismatch")
+  if (manifest.provider !== input.provider) return reject("embedding provider mismatch")
+  if (manifest.model !== input.model) return reject("embedding model mismatch")
+  if (manifest.sourceIndexUpdatedAt !== input.sourceIndexUpdatedAt) return reject("source index timestamp mismatch")
+  if (manifest.indexTests !== input.indexTests) return reject("RAG test indexing policy mismatch")
+  if (manifest.dimension <= 0) return reject("manifest dimension is missing")
+  const providerDimension = input.providerDimension && input.providerDimension > 0 ? input.providerDimension : undefined
+  if (providerDimension && manifest.dimension !== providerDimension) return reject("embedding dimension mismatch")
+  if (!Array.isArray(manifest.shards)) return reject("manifest shards are missing")
+
+  const totalChunks = manifest.totalChunks ?? manifest.chunks
+  const pendingChunks = Math.max(0, manifest.pendingChunks ?? totalChunks - manifest.chunks)
+  if (pendingChunks <= 0) return reject("manifest has no pending chunks")
+  if (manifest.chunks <= 0) return reject("manifest has no reusable chunks")
+  if (totalChunks < manifest.chunks) return reject("manifest total chunk count is smaller than reusable chunks")
+  const manifestShardChunks = manifest.shards.reduce((sum, shard) => sum + shard.chunks, 0)
+  if (manifestShardChunks !== manifest.chunks) return reject("manifest shard chunk counts do not match manifest chunks")
+  if (input.shards.length !== manifest.shards.length) return reject("loaded shard count does not match manifest")
+
+  let loadedChunks = 0
+  const chunkIds = new Set<string>()
+  for (const shard of input.shards) {
+    if (shard.metadata.version !== 1) return reject(`shard ${shard.manifest.key} metadata version mismatch`)
+    if (shard.metadata.key !== shard.manifest.key) return reject(`shard ${shard.manifest.key} metadata key mismatch`)
+    if (shard.metadata.dimension !== manifest.dimension) return reject(`shard ${shard.manifest.key} dimension mismatch`)
+    if (shard.metadata.chunks.length !== shard.manifest.chunks) return reject(`shard ${shard.manifest.key} chunk count mismatch`)
+    if (shard.vectors.length !== shard.metadata.chunks.length) return reject(`shard ${shard.manifest.key} vector count mismatch`)
+    for (const vector of shard.vectors) {
+      if (vector.length !== manifest.dimension) return reject(`shard ${shard.manifest.key} vector dimension mismatch`)
+    }
+    for (const chunk of shard.metadata.chunks) {
+      if (!chunk.id) return reject(`shard ${shard.manifest.key} contains a chunk without an id`)
+      if (chunkIds.has(chunk.id)) return reject(`duplicate chunk id ${chunk.id}`)
+      chunkIds.add(chunk.id)
+    }
+    loadedChunks += shard.metadata.chunks.length
+  }
+
+  if (loadedChunks !== manifest.chunks) return reject("loaded chunk count does not match manifest")
+  return { ok: true, resumeCompatibility: "cross-version-validated" }
 }
 
 export function encodeRagShardVectors(vectors: number[][], dimension: number): Uint8Array {

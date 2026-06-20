@@ -124,11 +124,120 @@ describe("ToolRuntime", () => {
     const runtime = new ToolRuntime({} as never)
     const toolNames = runtime.toolDefinitions().map((definition) => definition.function.name)
 
-    expect(toolNames).toEqual(["chipmate_read"])
+    expect(toolNames).toEqual([
+      "chipmate_search_text",
+      "chipmate_search_code",
+      "chipmate_graph_inspect_symbol",
+      "chipmate_graph_find_references",
+      "chipmate_graph_callers",
+      "chipmate_graph_callees",
+      "chipmate_graph_trace_call_chain",
+      "chipmate_graph_analyze_impact",
+      "chipmate_graph_map_module",
+      "chipmate_graph_find_state_machines",
+      "chipmate_graph_trace_state_path",
+      "chipmate_search_documents",
+      "chipmate_read_evidence",
+      "chipmate_read",
+    ])
     expect(toolNames).not.toContain("chipmate_write_file")
     expect(toolNames).not.toContain("chipmate_run_command")
     expect(toolNames).not.toContain("chipmate_http_request")
-    expect(runtime.toolDefinitions()[0]?.function.description).toContain("Office/PDF")
+    expect(runtime.toolDefinitions().every((definition) => definition.function.description.includes("Use when"))).toBe(true)
+    expect(runtime.toolDefinitions().every((definition) => definition.function.description.includes("Do not use"))).toBe(true)
+    expect(runtime.toolDefinitions().every((definition) => definition.function.description.includes("Returns"))).toBe(true)
+    expect(runtime.toolDefinitions().find((definition) => definition.function.name === "chipmate_read")?.function.description).toContain("Office/PDF")
+  })
+
+  test("graph tools return refIds that can be read with chipmate_read_evidence", async () => {
+    const root = await tempDir("chipmate-tool-graph-")
+    workspaceFolders = [{ name: "repo", uri: UriShim.file(root) }]
+    const runtime = new ToolRuntime({ append: async () => undefined } as never)
+    runtime.setContextProviders({
+      codeGraph: {
+        status: () => ({ rag: { enabled: false, embeddingEnabled: false, availability: "unavailable", indexAvailability: "none", chunks: 0, embeddedChunks: 0 } }),
+        findSymbols: async () => [],
+        queryEvidence: async () => undefined,
+        runAnalysisTool: async () => ({
+          ok: true,
+          traceId: "trace-callers",
+          tool: "getCallers",
+          elapsedMs: 1,
+          data: { mode: "callers" },
+          evidence: [{
+            file: "src/driver.c",
+            startLine: 10,
+            endLine: 14,
+            snippetHash: "hash",
+            parserKind: "codegraph:caller",
+            snippet: "void boot(void) {\n  nand_read_page();\n}",
+          }],
+          audit: { traceId: "trace-callers", tool: "getCallers", argsSummary: "nand_read_page", evidenceCount: 1, elapsedMs: 1, blocked: false },
+        }),
+      } as never,
+      getSettings: () => directSettings("http://127.0.0.1/v1"),
+    })
+
+    const result = await runtime.execute({
+      sessionID: "session-a",
+      mode: "ask",
+      name: "chipmate_graph_callers",
+      arguments: { symbol: "nand_read_page" },
+    })
+    const payload = JSON.parse(result.output) as { evidence: Array<{ refId: string; sourceKind: string; path: string }>; coverage: string }
+
+    expect(result.approved).toBe(true)
+    expect(payload.coverage).toBe("bounded-complete")
+    expect(payload.evidence[0]).toMatchObject({ path: "src/driver.c", sourceKind: "codegraph:caller" })
+
+    const expanded = await runtime.execute({
+      sessionID: "session-a",
+      mode: "ask",
+      name: "chipmate_read_evidence",
+      arguments: { refId: payload.evidence[0]?.refId },
+    })
+    const expandedPayload = JSON.parse(expanded.output) as { evidence: Array<{ snippet: string }> }
+    expect(expandedPayload.evidence[0]?.snippet).toContain("nand_read_page")
+  })
+
+  test("document search returns unified evidence refs from Document RAG", async () => {
+    const root = await tempDir("chipmate-tool-doc-rag-")
+    workspaceFolders = [{ name: "repo", uri: UriShim.file(root) }]
+    const settings = directSettings("http://127.0.0.1/v1")
+    settings.documentRag.enabled = true
+    const runtime = new ToolRuntime({ append: async () => undefined } as never)
+    runtime.setContextProviders({
+      documentRag: {
+        status: () => ({
+          enabled: true,
+          availability: "ready",
+          documentCount: 1,
+          indexedDocuments: 1,
+          skippedDocuments: 0,
+          pendingDocuments: 0,
+          chunks: 1,
+          embeddedChunks: 1,
+        }),
+        query: async () => ({
+          text: '<local-document-rag documents="1/1" chunks="1/1" evidenceCount="1"><evidence-list><evidence kind="pdf" path="docs/spec.pdf" lines="4-6" section="pdf:1" score="0.991">upgrade flow</evidence></evidence-list></local-document-rag>',
+          hits: [{ path: "docs/spec.pdf", startLine: 4, endLine: 6, score: 0.991 }],
+          elapsedMs: 3,
+        }),
+      },
+      getSettings: () => settings,
+    })
+
+    const result = await runtime.execute({
+      sessionID: "session-doc",
+      mode: "ask",
+      name: "chipmate_search_documents",
+      arguments: { query: "upgrade flow" },
+    })
+    const payload = JSON.parse(result.output) as { evidence: Array<{ refId: string; path: string; sourceKind: string; snippet: string }>; data: { ragHits: unknown[] } }
+
+    expect(payload.evidence[0]).toMatchObject({ path: "docs/spec.pdf", sourceKind: "document-rag:pdf" })
+    expect(payload.evidence[0]?.snippet).toContain("upgrade flow")
+    expect(payload.data.ragHits).toHaveLength(1)
   })
 
   test("reads supported documents through the exposed workspace read tool", async () => {
@@ -144,8 +253,13 @@ describe("ToolRuntime", () => {
     })
 
     expect(result.approved).toBe(true)
-    expect(result.output).toContain("DOCX text:")
-    expect(result.output).toContain("Tool readable Word document")
+    const payload = JSON.parse(result.output) as { answerSummary: string; evidence: Array<{ refId: string; path: string; sourceKind: string; snippet: string }>; coverage: string; data: { text: string } }
+    expect(payload.answerSummary).toContain("brief.docx")
+    expect(payload.coverage).toBe("complete")
+    expect(payload.evidence[0]).toMatchObject({ path: "brief.docx", sourceKind: "document:docx" })
+    expect(payload.evidence[0]?.refId).toBeTruthy()
+    expect(payload.data.text).toContain("DOCX text:")
+    expect(payload.data.text).toContain("Tool readable Word document")
   })
 
   test("returns a failed result when chipmate_read targets a missing workspace file", async () => {
@@ -1195,6 +1309,16 @@ function directSettings(baseUrl: string): RemoteSettings {
       indexTests: false,
       vectorTopK: 24,
       rerankTopK: 16,
+    },
+    documentRag: {
+      enabled: true,
+      maxFiles: 5000,
+      maxFileBytes: 25 * 1024 * 1024,
+      maxExtractedBytesPerFile: 1024 * 1024,
+      maxChunks: 50000,
+      excludeGlobs: [],
+      queryTopK: 12,
+      maxEvidenceBytes: 24000,
     },
   }
 }

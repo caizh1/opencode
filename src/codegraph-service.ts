@@ -55,10 +55,12 @@ import {
   ragManifestStaleReason,
   RagIndexAbortError,
   splitRagVectorIndex,
+  validateRagCrossVersionPartialResume,
   type RagEmbeddingSchedulerBlockedEvent,
   type RagIndexBatchProfile,
   type RagIndexBuildProgress,
   type RagIndexBuildSummary,
+  type RagLoadedShardForResumeValidation,
   type RagManifestLifecycleMetadata,
   type RagSerializedManifest,
   type RagSerializedShardMetadata,
@@ -2138,7 +2140,8 @@ export class LocalCodeGraphService implements vscode.Disposable {
       this.output.appendLine(`[rag-index] auto resume deferred until code graph is ready trigger=${trigger} pending=${pending}`)
       return
     }
-    if (reason !== "request-budget" && reason !== "rate-limit") {
+    const crossVersionValidatedResume = index.resumeCompatibility === "cross-version-validated"
+    if (reason !== "request-budget" && reason !== "rate-limit" && !crossVersionValidatedResume) {
       this.clearRagIndexResume()
       this.output.appendLine(`[rag-index] auto resume skipped reason=${reason ?? "not-paused"} pending=${pending}`)
       return
@@ -2153,13 +2156,27 @@ export class LocalCodeGraphService implements vscode.Disposable {
       return
     }
 
-    const delayMs = this.ragResumeDelayMs(index, reason)
+    if (reason !== "request-budget" && reason !== "rate-limit") {
+      if (crossVersionValidatedResume) {
+        this.clearRagIndexResume()
+        this.queuePendingRagRefresh(undefined, { continuePreviousElapsed: true })
+        this.output.appendLine(`[rag-index] cross-version partial validated for safe resume trigger=${trigger} pending=${pending}`)
+        this.runPendingRagRefreshWhenReady("cross-version partial validated for safe resume", { continuePreviousElapsed: true })
+        return
+      }
+      this.clearRagIndexResume()
+      this.output.appendLine(`[rag-index] auto resume skipped reason=${reason ?? "not-paused"} pending=${pending}`)
+      return
+    }
+
+    const resumeReason = reason
+    const delayMs = this.ragResumeDelayMs(index, resumeReason)
     const nextResumeAt = Date.now() + delayMs
     const scheduled = {
       ...index,
       nextResumeAt,
       resumeDelayMs: delayMs,
-      resumeReason: reason satisfies RagResumeReason,
+      resumeReason: resumeReason satisfies RagResumeReason,
     }
     this.ragIndex = scheduled
     this.setRagStatus({
@@ -2170,16 +2187,16 @@ export class LocalCodeGraphService implements vscode.Disposable {
       }, scheduled),
       resumeScheduledAt: nextResumeAt,
       resumeDelayMs: delayMs,
-      resumeReason: reason,
+      resumeReason,
     })
     const root = workspaceRoot()
     if (root) this.ragIndex = await this.saveRagIndex(root, scheduled)
 
     if (this.ragResumeTimer) clearTimeout(this.ragResumeTimer)
-    this.output.appendLine(`[rag-index] resume scheduled reason=${reason} trigger=${trigger} delayMs=${delayMs} pending=${pending}`)
+    this.output.appendLine(`[rag-index] resume scheduled reason=${resumeReason} trigger=${trigger} delayMs=${delayMs} pending=${pending}`)
     this.ragResumeTimer = setTimeout(() => {
       this.ragResumeTimer = undefined
-      this.ragResumeInFlight = this.runRagIndexResume(reason, pending)
+      this.ragResumeInFlight = this.runRagIndexResume(resumeReason, pending)
         .catch((error) => {
           const message = error instanceof Error ? error.message : String(error)
           this.output.appendLine(`[rag-index] auto resume failed: ${message}`)
@@ -2538,17 +2555,46 @@ export class LocalCodeGraphService implements vscode.Disposable {
         this.setRagStatus(await this.probeRagProvidersOnly())
         return
       }
+      const currentExtensionVersion = this.extensionVersion()
+      const staleReason = ragManifestStaleReason(manifest, currentExtensionVersion)
       const chunks: RagVectorIndex["chunks"] = []
       const vectors: RagVectorIndex["vectors"] = []
+      const loadedShards: RagLoadedShardForResumeValidation[] = []
       const shardsDir = vscode.Uri.joinPath(this.ragDir(root), "shards")
-      for (const shard of manifest.shards) {
-        const metadataBytes = await vscode.workspace.fs.readFile(vscode.Uri.joinPath(shardsDir, `${shard.key}.json`))
-        const metadata = JSON.parse(new TextDecoder().decode(metadataBytes)) as RagSerializedShardMetadata
-        const vectorBytes = await vscode.workspace.fs.readFile(vscode.Uri.joinPath(shardsDir, `${shard.key}.f32`))
-        chunks.push(...metadata.chunks)
-        vectors.push(...decodeRagShardVectors(vectorBytes, manifest.dimension))
+      try {
+        for (const shard of manifest.shards) {
+          const metadataBytes = await vscode.workspace.fs.readFile(vscode.Uri.joinPath(shardsDir, `${shard.key}.json`))
+          const metadata = JSON.parse(new TextDecoder().decode(metadataBytes)) as RagSerializedShardMetadata
+          const vectorBytes = await vscode.workspace.fs.readFile(vscode.Uri.joinPath(shardsDir, `${shard.key}.f32`))
+          const shardVectors = decodeRagShardVectors(vectorBytes, manifest.dimension)
+          loadedShards.push({ manifest: shard, metadata, vectors: shardVectors })
+          chunks.push(...metadata.chunks)
+          vectors.push(...shardVectors)
+        }
+      } catch (error) {
+        if (staleReason) {
+          const message = error instanceof Error ? error.message : String(error)
+          this.output.appendLine(`[rag-index] cross-version partial resume rejected: failed to read shard data: ${message}`)
+        }
+        throw error
       }
-      const staleReason = ragManifestStaleReason(manifest, this.extensionVersion())
+      const crossVersionResume = staleReason
+        ? validateRagCrossVersionPartialResume({
+            manifest,
+            currentExtensionVersion,
+            rootPath: root.uri.fsPath,
+            provider: this.ragEmbeddingProvider.id,
+            model: this.ragEmbeddingProvider.model,
+            providerDimension: this.ragEmbeddingProvider.dimension,
+            sourceIndexUpdatedAt: this.index?.updatedAt,
+            indexTests: settings.indexTests,
+            shards: loadedShards,
+          })
+        : undefined
+      const resumeCompatibility = crossVersionResume?.ok ? crossVersionResume.resumeCompatibility : undefined
+      if (staleReason && crossVersionResume && !crossVersionResume.ok) {
+        this.output.appendLine(`[rag-index] cross-version partial resume rejected: ${crossVersionResume.reason}`)
+      }
       this.ragIndex = {
         version: 1,
         rootPath: manifest.rootPath,
@@ -2571,9 +2617,10 @@ export class LocalCodeGraphService implements vscode.Disposable {
         resumeReason: manifest.resumeReason,
         extensionVersion: manifest.extensionVersion,
         buildId: manifest.buildId,
-        state: staleReason ? "stale" : manifest.state,
-        completed: staleReason ? false : manifest.completed,
-        staleReason: staleReason ?? manifest.staleReason,
+        state: resumeCompatibility ? manifest.indexPausedReason ? "paused" : "building" : staleReason ? "stale" : manifest.state,
+        completed: resumeCompatibility ? false : staleReason ? false : manifest.completed,
+        staleReason: resumeCompatibility ? undefined : staleReason ?? manifest.staleReason,
+        resumeCompatibility,
         buildStartedAt: manifest.buildStartedAt,
         buildFinishedAt: manifest.buildFinishedAt,
       }
@@ -2593,7 +2640,11 @@ export class LocalCodeGraphService implements vscode.Disposable {
         return
       }
       this.setRagStatus(this.ragStatusForIndex(policy.kind, rerankProbe, this.ragIndex))
-      if (staleReason) {
+      if (staleReason && resumeCompatibility) {
+        const pending = this.ragIndex.pendingChunkCount ?? 0
+        this.output.appendLine(`[rag-index] loaded cross-version partial vector index; cross-version partial validated for safe resume previousExtensionVersion=${manifest.extensionVersion} currentExtensionVersion=${currentExtensionVersion} pending=${pending}`)
+        await this.scheduleRagIndexResumeFromStatus("index-load")
+      } else if (staleReason) {
         this.output.appendLine(`[rag-index] loaded stale partial vector index; auto resume disabled: ${staleReason}`)
       } else if (this.currentRagIndexMatchesProvider()) {
         await this.scheduleRagIndexResumeFromStatus("index-load")

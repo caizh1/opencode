@@ -1,12 +1,15 @@
 import * as vscode from "vscode"
+import { activationMs, activationNow, formatActivationSlowRequireTiming, readActivationEntryTiming } from "./activation-timing"
 import { AuditLog } from "./audit-log"
 import { RemoteChatViewProvider } from "./chat-view"
-import { CHIPMATE_COMMANDS, CHIPMATE_OUTPUT_CHANNEL, PROVIDER_API_KEY_SECRET_KEY } from "./chipmate-constants"
+import { CHIPMATE_COMMANDS, CHIPMATE_COMMENT_OUTPUT_CHANNEL, CHIPMATE_OUTPUT_CHANNEL, PROVIDER_API_KEY_SECRET_KEY } from "./chipmate-constants"
 import { LocalCodeGraphService } from "./codegraph-service"
 import { COMPLETION_PLANNER_REVISION } from "./completion-telemetry"
 import { registerCompletionFormatCommand } from "./completion-format-command"
+import { registerCommentReview } from "./comments/commentCommands"
 import { addPickedFilesToContext, addTrackedFileToContext, addTrackedSelectionToContext, LocalContextStore } from "./context"
 import { DirectAgentClient } from "./direct-agent-client"
+import { DocumentRagService, isCodeGraphBusyForDocumentRag } from "./document-rag"
 import { EditorContextTracker } from "./editor-context"
 import { registerQwenAutocompleteProvider } from "./qwen-autocomplete"
 import {
@@ -32,18 +35,38 @@ const EXTENSION_UPDATE_LAST_ACTIVATED_KEY = "chipmate.updateLastActivated.versio
 const RELOAD_WINDOW_ACTION = "Reload Window"
 
 export async function activate(context: vscode.ExtensionContext) {
+  const activationStartedAt = activationNow()
   const output = vscode.window.createOutputChannel(CHIPMATE_OUTPUT_CHANNEL)
+  const commentOutput = vscode.window.createOutputChannel(CHIPMATE_COMMENT_OUTPUT_CHANNEL)
   const extensionVersion = typeof context.extension.packageJSON?.version === "string"
     ? context.extension.packageJSON.version
     : undefined
-  output.appendLine(`[activation] extensionVersion=${extensionVersion ?? "unknown"} plannerRevision=${COMPLETION_PLANNER_REVISION}`)
+  const logActivationPhase = (phase: string, phaseStartedAt: number) => {
+    const now = activationNow()
+    output.appendLine(`[activation-timing] phase=${phase} phaseMs=${activationMs(now - phaseStartedAt)} totalMs=${activationMs(now - activationStartedAt)}`)
+    return now
+  }
+  const logActivationEnvironment = (getSettings: () => ReturnType<typeof readRemoteSettings>) => {
+    const settings = getSettings()
+    output.appendLine(
+      `[activation-timing] environment workspaceFolders=${vscode.workspace.workspaceFolders?.length ?? 0} providerApiBaseUrlConfigured=${Boolean(settings.provider.apiBaseUrl)} providerChatModelConfigured=${Boolean(settings.provider.chatModel)} codeGraphEnabled=${settings.codeGraph.enabled} documentRagEnabled=${settings.documentRag.enabled} completionEnabled=${settings.completion.enabled}`,
+    )
+  }
 
   const contextStore = new LocalContextStore()
   const editorContextTracker = new EditorContextTracker()
   const status = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100)
   status.command = CHIPMATE_COMMANDS.openChat
-  context.subscriptions.push(output, status, editorContextTracker)
+  context.subscriptions.push(output, commentOutput, status, editorContextTracker)
+  output.appendLine(`[activation] extensionVersion=${extensionVersion ?? "unknown"} plannerRevision=${COMPLETION_PLANNER_REVISION}`)
+  logPreActivationTiming(output)
+  logActivationPhase("bootstrap", activationStartedAt)
+
+  let phaseStartedAt = activationNow()
   registerExtensionUpdateReloadPrompt(context, output)
+  logActivationPhase("update-reload-prompt", phaseStartedAt)
+
+  phaseStartedAt = activationNow()
   try {
     const migrated = await migrateLegacyRagApiKey(context)
     if (migrated) output.appendLine("[provider] migrated legacy RAG credential to provider API key")
@@ -51,7 +74,9 @@ export async function activate(context: vscode.ExtensionContext) {
     const message = error instanceof Error ? error.message : String(error)
     output.appendLine(`[provider] legacy RAG credential migration failed: ${message}`)
   }
+  logActivationPhase("legacy-rag-key-migration", phaseStartedAt)
 
+  phaseStartedAt = activationNow()
   const getSettings = () => readRemoteSettings()
   const audit = new AuditLog(context)
   const skills = new SkillRegistry(() => getSettings().skills.enabled, output)
@@ -65,6 +90,8 @@ export async function activate(context: vscode.ExtensionContext) {
     tools,
   })
   client = directClient
+  logActivationEnvironment(getSettings)
+  logActivationPhase("runtime-services", phaseStartedAt)
 
   let chatProvider: RemoteChatViewProvider
   const setConnectionState = (state: ConnectionState, detail = "") => {
@@ -106,11 +133,24 @@ export async function activate(context: vscode.ExtensionContext) {
     await refreshProviderState()
   }
 
+  phaseStartedAt = activationNow()
   const codeGraph = new LocalCodeGraphService(context, output, getSettings, () => readProviderApiKey(context), () => chatProvider?.refreshCodeGraphStatus())
   context.subscriptions.push(codeGraph)
+  const documentRag = new DocumentRagService(
+    context,
+    output,
+    getSettings,
+    () => readProviderApiKey(context),
+    () => chatProvider?.refreshState(),
+    () => isCodeGraphBusyForDocumentRag(codeGraph.status()),
+  )
+  context.subscriptions.push(documentRag)
+  tools.setContextProviders({ codeGraph, documentRag, getSettings })
+  logActivationPhase("rag-services", phaseStartedAt)
   async function refreshRagProvidersAfterProviderKeyChange() {
     try {
       await codeGraph.applyRagConfiguration()
+      documentRag.refreshConfiguration()
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       output.appendLine(`[rag] provider API key refresh failed: ${message}`)
@@ -152,11 +192,13 @@ export async function activate(context: vscode.ExtensionContext) {
     if (ragConfigurationApplyTimer) clearTimeout(ragConfigurationApplyTimer)
   }))
 
+  phaseStartedAt = activationNow()
   chatProvider = new RemoteChatViewProvider({
     output,
     extensionUri: context.extensionUri,
     contextStore,
     codeGraph,
+    documentRag,
     getClient: () => client,
     getSettings,
     getEditorContext: () => editorContextTracker.snapshot(),
@@ -173,6 +215,18 @@ export async function activate(context: vscode.ExtensionContext) {
     listSkills: () => skills.listSkills(),
   })
   context.subscriptions.push(chatProvider)
+  logActivationPhase("chat-provider", phaseStartedAt)
+
+  phaseStartedAt = activationNow()
+  registerCommentReview({
+    context,
+    output: commentOutput,
+    getSettings,
+    getApiKey: () => readProviderApiKey(context),
+    codeGraph,
+    tools,
+    extensionVersion,
+  })
 
   context.subscriptions.push(
     context.secrets.onDidChange((event) => {
@@ -190,6 +244,10 @@ export async function activate(context: vscode.ExtensionContext) {
       }
       if (event.affectsConfiguration("chipmate.rag")) {
         if (Date.now() >= ignoreRagConfigurationChangesUntil) scheduleRagConfigurationApply()
+        documentRag.refreshConfiguration()
+      }
+      if (event.affectsConfiguration("chipmate.documentRag")) {
+        documentRag.refreshConfiguration()
       }
       if (event.affectsConfiguration("chipmate.codeGraph.indexTests")) {
         output.appendLine("[codegraph] test directory indexing setting changed; queued full rebuild")
@@ -210,7 +268,9 @@ export async function activate(context: vscode.ExtensionContext) {
       }
     }),
   )
+  logActivationPhase("comment-review-and-listeners", phaseStartedAt)
 
+  phaseStartedAt = activationNow()
   context.subscriptions.push(
     vscode.commands.registerCommand(CHIPMATE_COMMANDS.openChat, async () => {
       await chatProvider.reveal()
@@ -294,37 +354,84 @@ export async function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand(CHIPMATE_COMMANDS.codeGraphStatus, async () => {
       await codeGraph.showStatus()
     }),
+    vscode.commands.registerCommand(CHIPMATE_COMMANDS.documentRagRebuild, async () => {
+      documentRag.rebuild()
+      await chatProvider.reveal()
+    }),
+    vscode.commands.registerCommand(CHIPMATE_COMMANDS.documentRagPause, async () => {
+      documentRag.pauseIndexing("requested from command palette")
+    }),
+    vscode.commands.registerCommand(CHIPMATE_COMMANDS.documentRagResume, async () => {
+      documentRag.resumeIndexing()
+    }),
+    vscode.commands.registerCommand(CHIPMATE_COMMANDS.documentRagStatus, async () => {
+      await documentRag.showStatus()
+    }),
   )
 
   registerCompletionFormatCommand(context, output)
   updateStatus(status, "disconnected")
   status.show()
+  logActivationPhase("commands", phaseStartedAt)
 
+  phaseStartedAt = activationNow()
   try {
     context.subscriptions.push(vscode.window.registerWebviewViewProvider(RemoteChatViewProvider.viewType, chatProvider))
   } catch (error) {
     reportActivationError(output, "Failed to register ChipMate chat view", error)
   }
+  logActivationPhase("webview-provider", phaseStartedAt)
 
+  phaseStartedAt = activationNow()
   try {
     context.subscriptions.push(registerQwenAutocompleteProvider(context, {
       apiKey: () => readProviderApiKey(context),
       log: (message) => output.appendLine(message),
+      rootPathGraph: {
+        findSymbols: (input) => codeGraph.findSymbols(input),
+        status: () => codeGraph.status(),
+      },
     }))
   } catch (error) {
     reportActivationError(output, "Failed to register ChipMate inline completion", error)
   }
+  logActivationPhase("qwen-autocomplete", phaseStartedAt)
 
+  phaseStartedAt = activationNow()
   await refreshProviderState().catch((error) => {
     const message = error instanceof Error ? error.message : String(error)
     output.appendLine(`[provider] restore failed: ${message}`)
     setConnectionState("error", message)
   })
+  logActivationPhase("provider-refresh", phaseStartedAt)
+
+  phaseStartedAt = activationNow()
+  documentRag.start()
+  logActivationPhase("document-rag-start", phaseStartedAt)
+
+  phaseStartedAt = activationNow()
   void codeGraph.maybePromptAndIndex()
+  logActivationPhase("codegraph-start-kickoff", phaseStartedAt)
+  output.appendLine(`[activation-timing] done totalMs=${activationMs(activationNow() - activationStartedAt)}`)
 }
 
 export function deactivate() {
   client = undefined
+}
+
+function logPreActivationTiming(output: vscode.OutputChannel) {
+  const timing = readActivationEntryTiming()
+  if (!timing) return
+  output.appendLine(
+    `[activation-timing] preactivate entryWaitMs=${formatActivationTimingMs(timing.entryWaitMs)} moduleLoadMs=${formatActivationTimingMs(timing.moduleLoadMs)} beforeDelegateMs=${formatActivationTimingMs(timing.beforeDelegateMs)}`,
+  )
+  for (const item of timing.slowRequires) {
+    output.appendLine(formatActivationSlowRequireTiming("[activation-timing]", item))
+  }
+}
+
+function formatActivationTimingMs(value: number | undefined) {
+  return value === undefined ? "unknown" : String(value)
 }
 
 function registerExtensionUpdateReloadPrompt(context: vscode.ExtensionContext, output: vscode.OutputChannel) {

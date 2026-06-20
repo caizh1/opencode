@@ -1,11 +1,41 @@
+import { createRequire } from "node:module"
 import { inflateRawSync, inflateSync } from "node:zlib"
 
+export type ParsedDocumentKind = "docx" | "xlsx" | "xlsm" | "pdf"
+
+export type ParsedDocumentBlockKind =
+  | "heading"
+  | "paragraph"
+  | "list"
+  | "table"
+  | "worksheet-summary"
+  | "worksheet-rows"
+  | "pdf-page"
+  | "note"
+  | "text"
+
+export type ParsedDocumentBlock = {
+  kind: ParsedDocumentBlockKind
+  text: string
+  label?: string
+  lineStart?: number
+  lineEnd?: number
+  headingPath?: string[]
+  sheetName?: string
+  rowStart?: number
+  rowEnd?: number
+  cellRange?: string
+  pageStart?: number
+  pageEnd?: number
+}
+
 export type ParsedDocumentContent = {
-  kind: "docx" | "xlsx" | "xlsm" | "pdf"
+  kind: ParsedDocumentKind
   language: string
   text: string
   lineCount: number
   truncated: boolean
+  blocks: ParsedDocumentBlock[]
 }
 
 type ZipEntry = {
@@ -13,10 +43,61 @@ type ZipEntry = {
   data: Buffer
 }
 
-type CellValue = {
+type FormattedCell = {
   ref: string
   value: string
   formula?: string
+}
+
+type WorksheetRow = {
+  number: string
+  cells: FormattedCell[]
+}
+
+type WorksheetSnapshot = {
+  name: string
+  range?: string
+  rows: WorksheetRow[]
+  omittedRows?: number
+}
+
+type ExcelJsModule = typeof import("exceljs")
+type ExcelJsWorksheet = import("exceljs").Worksheet
+type ExcelJsCell = import("exceljs").Cell
+type ExcelJsCellValue = import("exceljs").CellValue
+type MammothModule = typeof import("mammoth")
+type HtmlParserModule = typeof import("node-html-parser")
+
+type HtmlNode = {
+  rawTagName?: string
+  tagName?: string
+  childNodes?: HtmlNode[]
+  structuredText?: string
+  textContent?: string
+  innerText?: string
+  querySelectorAll?: (selector: string) => HtmlNode[]
+}
+
+type PdfJsModule = {
+  getDocument: (input: unknown) => {
+    promise: Promise<PdfDocumentProxy>
+    destroy?: () => Promise<void> | void
+  }
+}
+
+type PdfDocumentProxy = {
+  numPages: number
+  getPage: (pageNumber: number) => Promise<PdfPageProxy>
+  destroy?: () => Promise<void> | void
+}
+
+type PdfPageProxy = {
+  getTextContent: (options?: unknown) => Promise<{ items: PdfTextItem[] }>
+}
+
+type PdfTextItem = {
+  str?: string
+  hasEOL?: boolean
 }
 
 const ZIP_EOCD_SIGNATURE = 0x06054b50
@@ -25,37 +106,60 @@ const ZIP_LOCAL_SIGNATURE = 0x04034b50
 const ZIP_STORED = 0
 const ZIP_DEFLATED = 8
 const MAX_WORKSHEETS = 8
-const MAX_ROWS_PER_SHEET = 80
-const MAX_CELLS_PER_ROW = 24
+const MAX_ROWS_PER_SHEET = 300
+const MAX_CELLS_PER_ROW = 64
+const EXCEL_ROWS_PER_BLOCK = 30
 const MAX_PDF_STREAM_BYTES = 12 * 1024 * 1024
+const nodeRequire = createRequire(__filename)
+
+let excelJsModule: ExcelJsModule | undefined
+let mammothModule: MammothModule | undefined
+let htmlParserModule: HtmlParserModule | undefined
+
+function loadExcelJs() {
+  if (!excelJsModule) excelJsModule = nodeRequire("exceljs") as ExcelJsModule
+  return excelJsModule
+}
+
+function loadMammoth() {
+  if (!mammothModule) mammothModule = nodeRequire("mammoth") as MammothModule
+  return mammothModule
+}
+
+function loadHtmlParser() {
+  if (!htmlParserModule) htmlParserModule = nodeRequire("node-html-parser") as HtmlParserModule
+  return htmlParserModule
+}
 
 export function isSupportedDocumentPath(path: string) {
   return supportedDocumentKind(path) !== undefined
 }
 
-export function parseSupportedDocument(input: {
+export async function parseSupportedDocument(input: {
   path: string
   bytes: Uint8Array
   maxBytes: number
-}): ParsedDocumentContent | undefined {
+}): Promise<ParsedDocumentContent | undefined> {
   const kind = supportedDocumentKind(input.path)
   if (!kind) return undefined
-  const rawText = kind === "docx"
-    ? parseDocx(input.bytes)
+  const blocks = kind === "docx"
+    ? await parseDocx(input.bytes)
     : kind === "xlsx" || kind === "xlsm"
-      ? parseWorkbook(input.bytes, kind)
-      : parsePdf(input.bytes)
-  const limited = limitText(rawText.trim() || emptyDocumentMessage(kind), input.maxBytes)
+      ? await parseWorkbook(input.bytes, kind)
+      : await parsePdf(input.bytes)
+  const rendered = renderParsedDocument(kind, blocks.length > 0 ? blocks : [noteBlock(emptyDocumentMessage(kind))])
+  const limited = limitParsedDocument(rendered.text, rendered.blocks, input.maxBytes)
   return {
     kind,
     language: kind,
     text: limited.text,
     lineCount: Math.max(1, limited.text.split(/\r?\n/).length),
     truncated: limited.truncated,
+    blocks: limited.blocks,
   }
 }
 
-function supportedDocumentKind(path: string): ParsedDocumentContent["kind"] | undefined {
+function supportedDocumentKind(path: string): ParsedDocumentKind | undefined {
   const lower = path.toLowerCase()
   if (lower.endsWith(".docx")) return "docx"
   if (lower.endsWith(".xlsx")) return "xlsx"
@@ -64,15 +168,377 @@ function supportedDocumentKind(path: string): ParsedDocumentContent["kind"] | un
   return undefined
 }
 
-function parseDocx(bytes: Uint8Array) {
+async function parseDocx(bytes: Uint8Array): Promise<ParsedDocumentBlock[]> {
+  try {
+    const mammoth = loadMammoth()
+    const result = await mammoth.convertToHtml({ buffer: Buffer.from(bytes) }, { ignoreEmptyParagraphs: true })
+    const blocks = htmlDocumentBlocks(result.value)
+    if (blocks.length > 0) return blocks
+  } catch {
+    // Fall back to the small OOXML extractor below for minimal or unusual archives.
+  }
+
+  try {
+    const text = extractDocxTextFromZip(bytes)
+    return text
+      ? [{ kind: "paragraph", label: "Document text", text }]
+      : [noteBlock("No extractable DOCX text found.")]
+  } catch (error) {
+    return [noteBlock(error instanceof Error ? error.message : String(error))]
+  }
+}
+
+function htmlDocumentBlocks(html: string) {
+  const root = loadHtmlParser().parse(html) as unknown as HtmlNode
+  const blocks: ParsedDocumentBlock[] = []
+  const headingPath: string[] = []
+  for (const child of root.childNodes ?? []) visitHtmlNode(child, blocks, headingPath)
+  if (blocks.length === 0) {
+    const text = htmlNodeText(root)
+    if (text) blocks.push({ kind: "paragraph", label: "Document text", text })
+  }
+  return blocks
+}
+
+function visitHtmlNode(node: HtmlNode, blocks: ParsedDocumentBlock[], headingPath: string[]) {
+  const tag = htmlTagName(node)
+  if (!tag) return
+  if (/^h[1-6]$/.test(tag)) {
+    const text = htmlNodeText(node)
+    if (!text) return
+    const level = Number(tag.slice(1))
+    headingPath[level - 1] = text
+    headingPath.length = level
+    blocks.push({ kind: "heading", label: `Heading ${level}: ${text}`, text, headingPath: [...headingPath] })
+    return
+  }
+  if (tag === "p" || tag === "blockquote") {
+    const text = htmlNodeText(node)
+    if (text) blocks.push({ kind: "paragraph", label: headingPath.at(-1) || "Paragraph", text, headingPath: [...headingPath] })
+    return
+  }
+  if (tag === "ul" || tag === "ol") {
+    const items = directListItems(node)
+      .map((item, index) => `${tag === "ol" ? `${index + 1}.` : "-"} ${htmlNodeText(item)}`)
+      .filter((item) => item.trim().length > 2)
+    if (items.length > 0) {
+      blocks.push({ kind: "list", label: headingPath.at(-1) || "List", text: items.join("\n"), headingPath: [...headingPath] })
+    }
+    return
+  }
+  if (tag === "table") {
+    const rows = tableRows(node)
+    if (rows.length > 0) {
+      blocks.push({
+        kind: "table",
+        label: headingPath.at(-1) ? `Table under ${headingPath.at(-1)}` : "Table",
+        text: rows.map((cells, index) => `${index === 0 ? "header" : `row ${index + 1}`}: ${cells.join(" | ")}`).join("\n"),
+        headingPath: [...headingPath],
+      })
+    }
+    return
+  }
+  for (const child of node.childNodes ?? []) visitHtmlNode(child, blocks, headingPath)
+}
+
+function directListItems(node: HtmlNode) {
+  return (node.childNodes ?? []).filter((child) => htmlTagName(child) === "li")
+}
+
+function tableRows(node: HtmlNode) {
+  const rows = node.querySelectorAll?.("tr") ?? []
+  return rows
+    .map((row) => collectTableCells(row).map(htmlNodeText).filter(Boolean))
+    .filter((cells) => cells.length > 0)
+}
+
+function collectTableCells(row: HtmlNode) {
+  const cells: HtmlNode[] = []
+  const visit = (node: HtmlNode) => {
+    const tag = htmlTagName(node)
+    if (tag === "td" || tag === "th") {
+      cells.push(node)
+      return
+    }
+    for (const child of node.childNodes ?? []) visit(child)
+  }
+  for (const child of row.childNodes ?? []) visit(child)
+  return cells
+}
+
+function htmlTagName(node: HtmlNode) {
+  return (node.rawTagName || node.tagName || "").toLowerCase()
+}
+
+function htmlNodeText(node: HtmlNode) {
+  return normalizeTextLines(String(node.structuredText ?? node.textContent ?? node.innerText ?? ""))
+}
+
+async function parseWorkbook(bytes: Uint8Array, kind: "xlsx" | "xlsm"): Promise<ParsedDocumentBlock[]> {
+  const excelBlocks = await parseWorkbookWithExcelJs(bytes, kind)
+  if (excelBlocks.length > 0) return excelBlocks
+  return parseWorkbookWithZipFallback(bytes, kind)
+}
+
+async function parseWorkbookWithExcelJs(bytes: Uint8Array, kind: "xlsx" | "xlsm") {
+  try {
+    const ExcelJS = loadExcelJs()
+    const workbook = new ExcelJS.Workbook()
+    await workbook.xlsx.load(Buffer.from(bytes) as never)
+    const sheets = workbook.worksheets.slice(0, MAX_WORKSHEETS).map((worksheet) => worksheetSnapshotFromExcelJs(worksheet))
+    return workbookBlocks(kind, sheets, workbook.worksheets.length)
+  } catch {
+    return []
+  }
+}
+
+function worksheetSnapshotFromExcelJs(worksheet: ExcelJsWorksheet): WorksheetSnapshot {
+  const rows: WorksheetRow[] = []
+  worksheet.eachRow({ includeEmpty: false }, (row) => {
+    if (rows.length >= MAX_ROWS_PER_SHEET) return
+    const cells: FormattedCell[] = []
+    row.eachCell({ includeEmpty: false }, (cell) => {
+      if (cells.length >= MAX_CELLS_PER_ROW) return
+      const value = excelJsCellValue(cell)
+      if (value) cells.push(value)
+    })
+    if (cells.length > 0) rows.push({ number: String(row.number), cells })
+  })
+  return {
+    name: worksheet.name || "Sheet",
+    range: worksheet.dimensions?.range,
+    rows,
+    omittedRows: Math.max(0, worksheet.actualRowCount - rows.length),
+  }
+}
+
+function excelJsCellValue(cell: ExcelJsCell): FormattedCell | undefined {
+  const formula = normalizeWhitespace(String(cell.formula ?? ""))
+  const value = normalizeWhitespace(cell.text || excelJsValueText(cell.value))
+  if (!value && !formula) return undefined
+  return { ref: cell.address, value, formula: formula || undefined }
+}
+
+function excelJsValueText(value: ExcelJsCellValue): string {
+  if (value === null || value === undefined) return ""
+  if (value instanceof Date) return value.toISOString()
+  if (typeof value !== "object") return String(value)
+  if ("richText" in value && Array.isArray(value.richText)) return value.richText.map((part) => part.text).join("")
+  if ("text" in value && typeof value.text === "string") return value.text
+  if ("result" in value && value.result !== undefined) return String(value.result)
+  if ("error" in value && typeof value.error === "string") return value.error
+  return JSON.stringify(value)
+}
+
+function parseWorkbookWithZipFallback(bytes: Uint8Array, kind: "xlsx" | "xlsm") {
+  try {
+    const entries = readZipEntries(bytes)
+    const workbookXml = zipText(entries, "xl/workbook.xml")
+    if (!workbookXml) return [noteBlock(`${kind.toUpperCase()} workbook has no xl/workbook.xml metadata.`)]
+    const relationships = workbookRelationships(entries)
+    const sharedStrings = workbookSharedStrings(entries)
+    const sheets = workbookSheets(workbookXml, relationships)
+      .slice(0, MAX_WORKSHEETS)
+      .map((sheet) => {
+        const xml = zipText(entries, sheet.path)
+        if (!xml) return { name: sheet.name, rows: [], omittedRows: 0 } satisfies WorksheetSnapshot
+        return worksheetSnapshotFromXml(sheet.name, xml, sharedStrings)
+      })
+    return workbookBlocks(kind, sheets, workbookSheets(workbookXml, relationships).length)
+  } catch (error) {
+    return [noteBlock(error instanceof Error ? error.message : String(error))]
+  }
+}
+
+function worksheetSnapshotFromXml(name: string, xml: string, sharedStrings: string[]): WorksheetSnapshot {
+  const range = xml.match(/<dimension\b[^>]*\bref="([^"]+)"/)?.[1]
+  const rows = worksheetRows(xml, sharedStrings)
+  const emitted = rows.slice(0, MAX_ROWS_PER_SHEET)
+  return {
+    name,
+    range: range ? decodeXml(range) : undefined,
+    rows: emitted,
+    omittedRows: Math.max(0, rows.length - emitted.length),
+  }
+}
+
+function workbookBlocks(kind: "xlsx" | "xlsm", sheets: WorksheetSnapshot[], totalSheets: number) {
+  const blocks: ParsedDocumentBlock[] = []
+  if (sheets.length === 0) blocks.push(noteBlock("No worksheets found."))
+  for (const sheet of sheets) {
+    blocks.push(...worksheetBlocks(sheet))
+  }
+  if (totalSheets > MAX_WORKSHEETS) blocks.push(noteBlock(`[${totalSheets - MAX_WORKSHEETS} worksheet(s) omitted]`))
+  if (kind === "xlsm") blocks.push(noteBlock("Macro streams are not executed or inspected; only workbook cell data is extracted."))
+  return blocks
+}
+
+function worksheetBlocks(sheet: WorksheetSnapshot) {
+  const blocks: ParsedDocumentBlock[] = []
+  const summary = [`sheet "${sheet.name}"${sheet.range ? ` range=${sheet.range}` : ""}`]
+  const header = sheet.rows.find((row) => row.cells.length > 0)
+  if (!header) {
+    summary.push("[empty worksheet]")
+    blocks.push({ kind: "worksheet-summary", label: `Sheet "${sheet.name}"`, sheetName: sheet.name, cellRange: sheet.range, text: summary.join("\n") })
+    return blocks
+  }
+  summary.push(`header row ${header.number}: ${formatCells(header.cells)}`)
+  blocks.push({ kind: "worksheet-summary", label: `Sheet "${sheet.name}"`, sheetName: sheet.name, cellRange: sheet.range, text: summary.join("\n") })
+
+  for (let index = 0; index < sheet.rows.length; index += EXCEL_ROWS_PER_BLOCK) {
+    const group = sheet.rows.slice(index, index + EXCEL_ROWS_PER_BLOCK)
+    const start = numericRow(group[0]?.number)
+    const end = numericRow(group[group.length - 1]?.number)
+    const text = [
+      `sheet "${sheet.name}" rows ${group[0]?.number ?? "?"}-${group[group.length - 1]?.number ?? "?"}`,
+      `header row ${header.number}: ${formatCells(header.cells)}`,
+      ...group.map((row) => `row ${row.number}: ${formatCells(row.cells)}`),
+    ].join("\n")
+    blocks.push({
+      kind: "worksheet-rows",
+      label: `Sheet "${sheet.name}" rows ${group[0]?.number ?? "?"}-${group[group.length - 1]?.number ?? "?"}`,
+      sheetName: sheet.name,
+      rowStart: start,
+      rowEnd: end,
+      cellRange: sheet.range,
+      text,
+    })
+  }
+
+  if (sheet.omittedRows && sheet.omittedRows > 0) {
+    blocks.push({
+      kind: "note",
+      label: `Sheet "${sheet.name}" omitted rows`,
+      sheetName: sheet.name,
+      text: `[${sheet.omittedRows} row(s) omitted after first ${MAX_ROWS_PER_SHEET} non-empty rows]`,
+    })
+  }
+  return blocks
+}
+
+async function parsePdf(bytes: Uint8Array): Promise<ParsedDocumentBlock[]> {
+  const pdfJsBlocks = await parsePdfWithPdfJs(bytes)
+  if (pdfJsBlocks.length > 0) return pdfJsBlocks
+  return parsePdfWithStreamFallback(bytes)
+}
+
+async function parsePdfWithPdfJs(bytes: Uint8Array) {
+  let pdf: PdfDocumentProxy | undefined
+  try {
+    if (!looksLikePageBasedPdf(bytes)) return []
+    const pdfjs = await import("pdfjs-dist/legacy/build/pdf.mjs") as PdfJsModule
+    const loading = pdfjs.getDocument({
+      data: new Uint8Array(bytes),
+      disableWorker: true,
+      isEvalSupported: false,
+      useSystemFonts: true,
+    })
+    pdf = await loading.promise
+    const blocks: ParsedDocumentBlock[] = []
+    for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber++) {
+      const page = await pdf.getPage(pageNumber)
+      const content = await page.getTextContent({ includeMarkedContent: false, disableNormalization: false })
+      const text = normalizeTextLines(pdfTextItems(content.items))
+      if (!text) continue
+      blocks.push({
+        kind: "pdf-page",
+        label: `Page ${pageNumber}`,
+        pageStart: pageNumber,
+        pageEnd: pageNumber,
+        text: `page ${pageNumber}:\n${text}`,
+      })
+    }
+    if (blocks.length > 0) return blocks
+  } catch {
+    // Fall back to the lightweight stream extractor for minimal PDFs and malformed files.
+  } finally {
+    try {
+      await pdf?.destroy?.()
+    } catch {
+      // Best-effort cleanup only.
+    }
+  }
+  return []
+}
+
+function looksLikePageBasedPdf(bytes: Uint8Array) {
+  const preview = Buffer.from(bytes).subarray(0, 1024 * 1024).toString("latin1")
+  return /\/Type\s*\/Page\b/.test(preview)
+}
+
+function pdfTextItems(items: PdfTextItem[]) {
+  const pieces: string[] = []
+  for (const item of items) {
+    if (!item || typeof item.str !== "string") continue
+    pieces.push(item.str)
+    pieces.push(item.hasEOL ? "\n" : " ")
+  }
+  return pieces.join("")
+}
+
+function parsePdfWithStreamFallback(bytes: Uint8Array) {
+  const streamTexts = extractPdfStreams(Buffer.from(bytes))
+    .map(extractPdfContentText)
+    .filter(Boolean)
+  const text = normalizeTextLines(streamTexts.join("\n"))
+  if (!text) return [noteBlock("No extractable PDF text layer found. Image-only PDFs and scanned pages are not supported.")]
+  return [{
+    kind: "pdf-page" as const,
+    label: "Page 1",
+    pageStart: 1,
+    pageEnd: 1,
+    text: `page 1:\n${text}`,
+  }]
+}
+
+function renderParsedDocument(kind: ParsedDocumentKind, blocks: ParsedDocumentBlock[]) {
+  const lines = [`${kind === "pdf" ? "PDF text" : kind === "docx" ? "DOCX text" : `${kind.toUpperCase()} workbook`}:`]
+  const renderedBlocks: ParsedDocumentBlock[] = []
+  for (const block of blocks) {
+    const text = normalizeTextLines(block.text)
+    if (!text) continue
+    if (lines.length > 1 && lines[lines.length - 1] !== "") lines.push("")
+    const start = lines.length + 1
+    const blockLines = text.split("\n")
+    lines.push(...blockLines)
+    const end = start + blockLines.length - 1
+    renderedBlocks.push({ ...block, text, lineStart: start, lineEnd: end })
+  }
+  const text = lines.join("\n").replace(/[ \t]+$/gm, "").trim()
+  return { text, blocks: renderedBlocks }
+}
+
+function limitParsedDocument(text: string, blocks: ParsedDocumentBlock[], maxBytes: number) {
+  const limited = limitText(text, maxBytes)
+  if (!limited.truncated) return { ...limited, blocks }
+  const lineCount = Math.max(1, limited.text.split(/\r?\n/).length)
+  return {
+    ...limited,
+    blocks: blocks
+      .filter((block) => (block.lineStart ?? 1) <= lineCount)
+      .map((block) => ({
+        ...block,
+        lineEnd: Math.min(block.lineEnd ?? lineCount, lineCount),
+        text: block.text.split(/\r?\n/).slice(0, Math.max(1, lineCount - (block.lineStart ?? 1) + 1)).join("\n"),
+      })),
+  }
+}
+
+function noteBlock(text: string): ParsedDocumentBlock {
+  return { kind: "note", label: "Note", text }
+}
+
+function numericRow(value: string | undefined) {
+  const number = Number(value)
+  return Number.isFinite(number) ? number : undefined
+}
+
+function extractDocxTextFromZip(bytes: Uint8Array) {
   const entries = readZipEntries(bytes)
   const documentXml = zipText(entries, "word/document.xml")
   if (!documentXml) return "DOCX document has no word/document.xml text body."
   const text = extractDocxDocumentText(documentXml)
-  return [
-    "DOCX text:",
-    text || "No extractable DOCX text found.",
-  ].join("\n")
+  return text || "No extractable DOCX text found."
 }
 
 function extractDocxDocumentText(xml: string) {
@@ -91,28 +557,6 @@ function extractDocxDocumentText(xml: string) {
     }
   }
   return normalizeTextLines(pieces.join(""))
-}
-
-function parseWorkbook(bytes: Uint8Array, kind: "xlsx" | "xlsm") {
-  const entries = readZipEntries(bytes)
-  const workbookXml = zipText(entries, "xl/workbook.xml")
-  if (!workbookXml) return `${kind.toUpperCase()} workbook has no xl/workbook.xml metadata.`
-  const relationships = workbookRelationships(entries)
-  const sharedStrings = workbookSharedStrings(entries)
-  const sheets = workbookSheets(workbookXml, relationships)
-  const rows: string[] = [`${kind.toUpperCase()} workbook:`]
-  if (sheets.length === 0) rows.push("No worksheets found.")
-  for (const sheet of sheets.slice(0, MAX_WORKSHEETS)) {
-    const xml = zipText(entries, sheet.path)
-    if (!xml) {
-      rows.push(`sheet "${sheet.name}": missing worksheet data (${sheet.path})`)
-      continue
-    }
-    rows.push(...formatWorksheet(sheet.name, xml, sharedStrings))
-  }
-  if (sheets.length > MAX_WORKSHEETS) rows.push(`[${sheets.length - MAX_WORKSHEETS} worksheet(s) omitted]`)
-  if (kind === "xlsm") rows.push("Macro streams are not executed or inspected; only workbook cell data is extracted.")
-  return rows.join("\n")
 }
 
 function workbookRelationships(entries: Map<string, ZipEntry>) {
@@ -143,31 +587,10 @@ function workbookSharedStrings(entries: Map<string, ZipEntry>) {
   return matchAllXmlElements(sharedXml, "si").map((item) => extractXmlText(item.body))
 }
 
-function formatWorksheet(name: string, xml: string, sharedStrings: string[]) {
-  const rows: string[] = []
-  const dimension = xml.match(/<dimension\b[^>]*\bref="([^"]+)"/)?.[1]
-  rows.push(`sheet "${name}"${dimension ? ` range=${decodeXml(dimension)}` : ""}`)
-  const parsedRows = worksheetRows(xml, sharedStrings)
-  if (parsedRows.length === 0) {
-    rows.push("  [empty worksheet]")
-    return rows
-  }
-  const header = parsedRows.find((row) => row.cells.length > 0)
-  if (header) rows.push(`  header row ${header.number}: ${formatCells(header.cells)}`)
-  let emitted = 0
-  for (const row of parsedRows) {
-    if (emitted >= MAX_ROWS_PER_SHEET) break
-    rows.push(`  row ${row.number}: ${formatCells(row.cells)}`)
-    emitted++
-  }
-  if (parsedRows.length > MAX_ROWS_PER_SHEET) rows.push(`  [${parsedRows.length - MAX_ROWS_PER_SHEET} row(s) omitted]`)
-  return rows
-}
-
 function worksheetRows(xml: string, sharedStrings: string[]) {
-  const rows: Array<{ number: string; cells: CellValue[] }> = []
+  const rows: WorksheetRow[] = []
   for (const row of matchAllXmlElements(xml, "row")) {
-    const cells: CellValue[] = []
+    const cells: FormattedCell[] = []
     for (const cell of matchAllXmlElements(row.body, "c")) {
       const value = worksheetCellValue(cell.attrs, cell.body, sharedStrings)
       if (value) cells.push(value)
@@ -178,7 +601,7 @@ function worksheetRows(xml: string, sharedStrings: string[]) {
   return rows
 }
 
-function worksheetCellValue(attrs: string, body: string, sharedStrings: string[]): CellValue | undefined {
+function worksheetCellValue(attrs: string, body: string, sharedStrings: string[]): FormattedCell | undefined {
   const ref = xmlAttr(attrs, "r") || "?"
   const type = xmlAttr(attrs, "t")
   const formula = firstXmlElementText(body, "f")
@@ -195,24 +618,13 @@ function worksheetCellValue(attrs: string, body: string, sharedStrings: string[]
   return { ref, value, formula: decodedFormula }
 }
 
-function formatCells(cells: CellValue[]) {
+function formatCells(cells: FormattedCell[]) {
   return cells.map((cell) => {
     const display = cell.formula
       ? `{formula:${cell.formula}${cell.value ? `, value:${cell.value}` : ""}}`
       : cell.value
     return `${cell.ref}=${display}`
   }).join(" | ")
-}
-
-function parsePdf(bytes: Uint8Array) {
-  const streamTexts = extractPdfStreams(Buffer.from(bytes))
-    .map(extractPdfContentText)
-    .filter(Boolean)
-  const text = normalizeTextLines(streamTexts.join("\n"))
-  return [
-    "PDF text:",
-    text || "No extractable PDF text layer found. Image-only PDFs and scanned pages are not supported.",
-  ].join("\n")
 }
 
 function extractPdfStreams(buffer: Buffer) {
@@ -486,8 +898,8 @@ function normalizeTextLines(value: string) {
     .trim()
 }
 
-function emptyDocumentMessage(kind: ParsedDocumentContent["kind"]) {
-  if (kind === "pdf") return "PDF text:\nNo extractable PDF text layer found. Image-only PDFs and scanned pages are not supported."
+function emptyDocumentMessage(kind: ParsedDocumentKind) {
+  if (kind === "pdf") return "No extractable PDF text layer found. Image-only PDFs and scanned pages are not supported."
   return `${kind.toUpperCase()} document has no extractable text.`
 }
 

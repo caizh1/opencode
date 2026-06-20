@@ -754,10 +754,14 @@ function systemPrompt(settings: RemoteSettings, skillCatalog: string, loadedSkil
   return [
     "You are ChipMate, a direct model coding agent running inside the VS Code workspace extension host.",
     toolsEnabled
-      ? "Use only the context and the read-only file tool provided by ChipMate for workspace operations."
+      ? "Use only the context and the read-only tools provided by ChipMate for workspace evidence operations."
       : "Use only the context provided by ChipMate for workspace operations.",
     toolsEnabled
-      ? "Only chipmate_read is available; use it only to read workspace text files or supported Office/PDF documents when local evidence is incomplete."
+      ? [
+          "Use the initial local evidence pack first. Call read-only ChipMate tools only when evidence is missing, ambiguous, or needs deeper context.",
+          "Tool routing: chipmate_search_text for exact strings/macros/registers/logs; chipmate_search_code for natural-language code evidence gaps; chipmate_graph_inspect_symbol for definitions; chipmate_graph_find_references for references; chipmate_graph_callers/callees for direct function edges; chipmate_graph_trace_call_chain for source-to-target call paths; chipmate_graph_analyze_impact for bounded impact; chipmate_graph_map_module for module overview; chipmate_graph_find_state_machines/trace_state_path for states; chipmate_search_documents for Word/Excel/PDF evidence; chipmate_read_evidence for returned refIds; chipmate_read only for an explicit workspace path.",
+          "All tool results are bounded evidence. Cite file paths and line ranges, and state gaps instead of guessing when coverage is partial or unknown.",
+        ].join("\n")
       : "ChipMate tool calling is disabled. Do not request, simulate, or emit tool calls; explain missing local information instead.",
     toolsEnabled
       ? `Permission mode: ${settings.permissions.mode}. Obey blocked tool results; if non-read operations are needed, explain the missing capability instead of calling another tool.`

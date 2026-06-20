@@ -11,10 +11,12 @@ import {
   type CompletionContextPack,
 } from "./completion-context"
 import { parseSupportedDocument } from "./document-parser"
+import type { DocumentRagContextProvider, DocumentRagQueryResult } from "./document-rag"
 import type { CompletionPlan, RetrievedCompletionSnippet } from "./completion-types"
 import type { ChatContextOptions, RagStatus, RemoteSettings } from "./types"
 
 const CHAT_RAG_LATENCY_BUDGET_MS = 2000
+const CHAT_DOCUMENT_RAG_LATENCY_BUDGET_MS = 1000
 
 type FileContext = {
   uri: vscode.Uri
@@ -31,6 +33,7 @@ export type LocalContextFileItem = {
   id: string
   kind: "file"
   uri: vscode.Uri
+  lifetime: LocalContextLifetime
 }
 
 export type LocalContextSelectionItem = {
@@ -42,13 +45,16 @@ export type LocalContextSelectionItem = {
   endLine: number
   text: string
   truncated: boolean
+  lifetime: LocalContextLifetime
 }
 
+export type LocalContextLifetime = "one-shot" | "persistent"
 export type LocalContextItem = LocalContextFileItem | LocalContextSelectionItem
 
 export type LocalContextViewItem = {
   id: string
   kind: LocalContextItem["kind"]
+  lifetime: LocalContextLifetime
   path: string
   label: string
   startLine?: number
@@ -104,6 +110,7 @@ function localContextViewItem(item: LocalContextItem): LocalContextViewItem {
     return {
       id: item.id,
       kind: item.kind,
+      lifetime: item.lifetime,
       path,
       label,
       startLine: item.startLine,
@@ -116,6 +123,7 @@ function localContextViewItem(item: LocalContextItem): LocalContextViewItem {
   return {
     id: item.id,
     kind: item.kind,
+    lifetime: item.lifetime,
     path,
     label,
   }
@@ -168,15 +176,16 @@ function stableTextHash(text: string) {
 export class LocalContextStore {
   private readonly contextItems = new Map<string, LocalContextItem>()
 
-  add(uri: vscode.Uri) {
-    return this.addFile(uri)
+  add(uri: vscode.Uri, lifetime: LocalContextLifetime = "one-shot") {
+    return this.addFile(uri, lifetime)
   }
 
-  addFile(uri: vscode.Uri) {
+  addFile(uri: vscode.Uri, lifetime: LocalContextLifetime = "one-shot") {
     const item: LocalContextFileItem = {
       id: fileContextItemId(uri),
       kind: "file",
       uri,
+      lifetime,
     }
     this.contextItems.set(item.id, item)
     return item
@@ -189,6 +198,7 @@ export class LocalContextStore {
     endLine: number
     text: string
     truncated: boolean
+    lifetime?: LocalContextLifetime
   }) {
     const item: LocalContextSelectionItem = {
       id: selectionContextItemId(input.uri, input.startLine, input.endLine, input.text),
@@ -199,6 +209,7 @@ export class LocalContextStore {
       endLine: input.endLine,
       text: input.text,
       truncated: input.truncated,
+      lifetime: input.lifetime ?? "one-shot",
     }
     this.contextItems.set(item.id, item)
     return item
@@ -220,6 +231,33 @@ export class LocalContextStore {
     return [...this.contextItems.values()]
   }
 
+  snapshot() {
+    return this.list().map(copyLocalContextItem)
+  }
+
+  setLifetime(id: string, lifetime: LocalContextLifetime) {
+    const item = this.contextItems.get(id)
+    if (!item) return undefined
+    const next = { ...item, lifetime } as LocalContextItem
+    this.contextItems.set(id, next)
+    return next
+  }
+
+  restore(items: LocalContextItem[]) {
+    for (const item of items) this.contextItems.set(item.id, copyLocalContextItem(item))
+  }
+
+  consumeOneShot(items: LocalContextItem[]) {
+    let removed = 0
+    for (const item of items) {
+      if (item.lifetime !== "one-shot") continue
+      const current = this.contextItems.get(item.id)
+      if (!current || current.lifetime !== "one-shot") continue
+      if (this.contextItems.delete(item.id)) removed += 1
+    }
+    return removed
+  }
+
   labels() {
     return this.list().map((item) => localContextItemLabel(item))
   }
@@ -229,14 +267,20 @@ export class LocalContextStore {
   }
 }
 
+function copyLocalContextItem(item: LocalContextItem): LocalContextItem {
+  return { ...item }
+}
+
 export async function buildChatPrompt(input: {
   question: string
   options: ChatContextOptions
   settings: RemoteSettings
   contextStore: LocalContextStore
+  contextItems?: LocalContextItem[]
   mentionedFiles?: vscode.Uri[]
   editorContext?: TrackedEditorContext
   codeGraph?: CodeGraphContextProvider
+  documentRag?: DocumentRagContextProvider
   onContextSummary?: (items: ContextSummaryItem[]) => void
 }) {
   const chunks: string[] = [
@@ -245,7 +289,7 @@ export async function buildChatPrompt(input: {
   const context = await buildLocalContext(
     input.options,
     input.settings,
-    input.contextStore,
+    input.contextItems ?? input.contextStore.list(),
     input.mentionedFiles ?? [],
     input.editorContext,
   )
@@ -272,10 +316,15 @@ export async function buildChatPrompt(input: {
     editorContext: input.editorContext,
     retrievalOptions,
   }) : undefined
+  const documentEvidence = await retrieveDocumentRagEvidence({
+    question: input.question,
+    settings: input.settings,
+    documentRag: input.documentRag,
+  })
 
   if (input.settings.context.localOnlyMode) chunks.push(localContextContract(input.settings.tools.enabled))
 
-  const hasLocalContext = hasUsableFileContext(context.summary) || Boolean(codeGraph?.text) || Boolean(analysisEvidence?.evidencePack.evidence.length)
+  const hasLocalContext = hasUsableFileContext(context.summary) || Boolean(codeGraph?.text) || Boolean(analysisEvidence?.evidencePack.evidence.length) || Boolean(documentEvidence?.text)
 
   if (input.settings.context.localOnlyMode && looksLikeLocalFileQuestion(input.question) && !hasLocalContext) {
     throw new MissingLocalContextError()
@@ -287,7 +336,27 @@ export async function buildChatPrompt(input: {
   if (context.text) chunks.push(`Local workspace context:\n${context.text}`)
   if (codeGraph?.text) chunks.push(`Local code graph evidence:\n${codeGraph.text}`)
   if (analysisEvidence) chunks.push(`Local analysis evidence pack:\n${formatAnalysisEvidence(analysisEvidence)}`)
+  if (documentEvidence?.text) chunks.push(`Local document RAG evidence:\n${documentEvidence.text}`)
   return chunks.join("\n\n")
+}
+
+async function retrieveDocumentRagEvidence(input: {
+  question: string
+  settings: RemoteSettings
+  documentRag?: DocumentRagContextProvider
+}): Promise<DocumentRagQueryResult | undefined> {
+  if (!input.documentRag || !input.settings.documentRag.enabled) return undefined
+  const status = input.documentRag.status()
+  if (status.availability !== "ready" && status.availability !== "partial") return undefined
+  try {
+    return await input.documentRag.query(input.question, {
+      topK: input.settings.documentRag.queryTopK,
+      maxEvidenceBytes: input.settings.documentRag.maxEvidenceBytes,
+      latencyBudgetMs: CHAT_DOCUMENT_RAG_LATENCY_BUDGET_MS,
+    })
+  } catch {
+    return undefined
+  }
 }
 
 async function retrieveChatAnalysisEvidence(input: {
@@ -334,14 +403,14 @@ export async function addActiveFileToContext(store: LocalContextStore) {
   const editor = vscode.window.activeTextEditor
   if (!editor) return false
   if (editor.document.uri.scheme !== "file") return false
-  store.addFile(editor.document.uri)
+  store.addFile(editor.document.uri, "persistent")
   return true
 }
 
 export async function addTrackedFileToContext(store: LocalContextStore, tracked?: TrackedEditorContext) {
   const active = await resolveEditorContext(tracked)
   if (!active) return undefined
-  return store.addFile(active.document.uri)
+  return store.addFile(active.document.uri, "persistent")
 }
 
 export async function addTrackedSelectionToContext(
@@ -360,6 +429,7 @@ export async function addTrackedSelectionToContext(
     endLine: ctx.endLine,
     text: ctx.text,
     truncated: ctx.truncated,
+    lifetime: "one-shot",
   })
 }
 
@@ -371,7 +441,7 @@ export async function addPickedFilesToContext(store: LocalContextStore) {
     openLabel: "Add to ChipMate context",
   })
   if (!picked) return 0
-  for (const uri of picked) store.addFile(uri)
+  for (const uri of picked) store.addFile(uri, "persistent")
   return picked.length
 }
 
@@ -728,7 +798,7 @@ function supportsHashComments(languageId: string) {
 async function buildLocalContext(
   options: ChatContextOptions,
   settings: RemoteSettings,
-  contextStore: LocalContextStore,
+  contextItems: LocalContextItem[],
   mentionedFiles: vscode.Uri[],
   trackedEditorContext?: TrackedEditorContext,
 ) {
@@ -737,7 +807,7 @@ async function buildLocalContext(
   const files: FileContext[] = []
   const active = await resolveEditorContext(trackedEditorContext)
 
-  for (const item of contextStore.list()) {
+  for (const item of contextItems) {
     if (files.length >= settings.context.maxFiles) break
     if (seen.has(item.uri.toString())) continue
     files.push(await contextForStoredItem(item, settings))
@@ -817,13 +887,14 @@ function localContextContract(toolsEnabled: boolean) {
     "Local Context Contract:",
     "The following files are local VS Code context supplied by the extension.",
     "Use only the supplied <file>, <diagnostics>, <git-diff>, and <local-code-graph> evidence blocks when answering questions about local code.",
+    "Use supplied <local-document-rag> evidence for local Word, Excel, and PDF questions; if document evidence is missing or insufficient, say what is missing instead of guessing.",
     "Use the <local-analysis-pack> answer policy, query trace, summaries, state machines, and evidence refs when present.",
     "When local code graph evidence is present, cite paths and line ranges from the evidence; if evidence is insufficient, say what is missing instead of guessing.",
     toolsEnabled
-      ? "Only the read-only chipmate_read tool is available for workspace evidence; do not request writes, commands, network calls, or remote server filesystem access."
+      ? "Read-only ChipMate workspace evidence tools may be available for targeted gap searches and drill-down reads; do not request writes, commands, network calls, or remote server filesystem access."
       : "ChipMate workspace-host tools are disabled for this chat turn; do not request, simulate, or emit tool calls.",
     toolsEnabled
-      ? "If evidence points to a workspace-relative path but the needed content is missing, use chipmate_read to read that file before asking the user to open or @mention it."
+      ? "Use chipmate_read_evidence for returned refIds and chipmate_read only when the user or evidence gives an explicit workspace path."
       : "If evidence points to a workspace-relative path but the needed content is missing, say what is missing and ask the user to open, attach, or @mention the file.",
   ].join("\n")
 }
@@ -930,7 +1001,7 @@ async function fileContext(uri: vscode.Uri, settings: RemoteSettings, reason = "
 
   try {
     const bytes = await vscode.workspace.fs.readFile(uri)
-    const document = parseSupportedDocument({
+    const document = await parseSupportedDocument({
       path: uri.fsPath,
       bytes,
       maxBytes: settings.context.maxFileBytes,

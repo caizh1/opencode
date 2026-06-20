@@ -14,14 +14,20 @@ import {
 } from "./guard"
 import { createQwenAutocompleteHelperAsync, type QwenAutocompleteHelperVars } from "./helperVars"
 import type { QwenImportDefinitionsSource } from "./importDefinitions"
+import {
+  QWEN_AUTODETECT_CONTEXT_LENGTH_FALLBACK,
+  QwenModelContextResolver,
+  type QwenResolvedContextLength,
+} from "./modelContext"
 import { classifyQwenMultiline, type QwenMultilineClassifierResult } from "./multiline"
 import { firstLogLine, postprocessQwenCompletion } from "./postprocess"
 import { decideQwenPrefilter, type QwenPrefilterDecision } from "./prefilter"
 import { buildQwenPromptPlan, type QwenPromptPlan } from "./qwenMultifileFimRenderer"
 import { renderQwenInlineCompletionItem } from "./range"
 import type { QwenRecentlyEditedSource } from "./recentlyEdited"
+import type { QwenRecentlyVisitedSource } from "./recentlyVisited"
 import type { QwenRecentlyOpenedSource } from "./recentlyOpened"
-import type { QwenRootPathSource } from "./rootPathContext"
+import type { QwenRootPathSource, QwenRootPathTraceEntry, QwenRootPathTraceSummary } from "./rootPathContext"
 import {
   emptyQwenSnippetPayload,
   selectQwenSnippets,
@@ -42,7 +48,9 @@ type Deps = {
   read?: () => QwenAutocompleteConfig
   guard?: QwenSafetyGuard
   cache?: QwenAutocompleteCache
+  contextLength?: QwenModelContextResolver
   edited?: QwenRecentlyEditedSource
+  visited?: QwenRecentlyVisitedSource
   opened?: QwenRecentlyOpenedSource
   imports?: QwenImportDefinitionsSource
   root?: QwenRootPathSource
@@ -51,6 +59,14 @@ type Deps = {
 
 type Pending = QwenRequestInfo & {
   abort: AbortController
+}
+
+type ForceFreshRequest = {
+  documentUri: string
+  version: number
+  line: number
+  character: number
+  expiresAt: number
 }
 
 type Gate = {
@@ -67,6 +83,7 @@ type CacheResult = {
 
 type SnippetState = {
   edited: QwenAutocompleteCodeSnippet[]
+  visited: QwenAutocompleteCodeSnippet[]
   opened: QwenAutocompleteCodeSnippet[]
   openedSkipped: number
   imports: QwenAutocompleteCodeSnippet[]
@@ -74,12 +91,15 @@ type SnippetState = {
   root: QwenAutocompleteCodeSnippet[]
   rootSkipped: number
   rootBlocked: string
+  rootSummary: QwenRootPathTraceSummary
+  rootTrace: QwenRootPathTraceEntry[]
   payload: QwenSnippetPayload
   selection: QwenSnippetSelection
 }
 
 type InjectFlags = {
   edited: boolean
+  visited: boolean
   opened: boolean
   imports: boolean
   root: boolean
@@ -99,13 +119,16 @@ export class KiloQwenInlineCompletionProvider implements vscode.InlineCompletion
   private readonly read: () => QwenAutocompleteConfig
   private readonly guard: QwenSafetyGuard
   private readonly cache: QwenAutocompleteCache
+  private readonly contextLength: QwenModelContextResolver
   private readonly edited?: QwenRecentlyEditedSource
+  private readonly visited?: QwenRecentlyVisitedSource
   private readonly opened?: QwenRecentlyOpenedSource
   private readonly imports?: QwenImportDefinitionsSource
   private readonly root?: QwenRootPathSource
   private readonly log: (message: string) => void
   private readonly customGuard: boolean
   private current: Pending | null = null
+  private forceFresh: ForceFreshRequest | null = null
   private seq = 0
 
   constructor(deps: Deps = {}) {
@@ -115,7 +138,9 @@ export class KiloQwenInlineCompletionProvider implements vscode.InlineCompletion
     this.read = deps.read ?? readQwenAutocompleteConfig
     this.guard = deps.guard ?? shouldGuardQwenDocument
     this.cache = deps.cache ?? new QwenAutocompleteLruCache()
+    this.contextLength = deps.contextLength ?? new QwenModelContextResolver()
     this.edited = deps.edited
+    this.visited = deps.visited
     this.opened = deps.opened
     this.imports = deps.imports
     this.root = deps.root
@@ -125,12 +150,25 @@ export class KiloQwenInlineCompletionProvider implements vscode.InlineCompletion
 
   dispose(): void {
     this.debouncer.dispose()
+    void this.cache.dispose?.()
     this.edited?.dispose()
+    this.visited?.dispose()
     this.opened?.dispose()
     this.imports?.dispose()
     this.root?.dispose()
     this.current?.abort.abort()
     this.current = null
+    this.forceFresh = null
+  }
+
+  forceFreshOnce(document: vscode.TextDocument, position: vscode.Position): void {
+    this.forceFresh = {
+      documentUri: document.uri.toString(),
+      version: document.version,
+      line: position.line,
+      character: position.character,
+      expiresAt: Date.now() + 5_000,
+    }
   }
 
   async provideInlineCompletionItems(
@@ -151,23 +189,27 @@ export class KiloQwenInlineCompletionProvider implements vscode.InlineCompletion
     const req = this.start(id, document, position)
     token.onCancellationRequested(() => req.abort.abort())
     const started = Date.now()
+    const apiKey = (await this.apiKey())?.trim() || cfg.apiKey
     const helper = await createQwenAutocompleteHelperAsync(document, position, gate.selected, {
       maxPromptTokens: cfg.maxPromptTokens,
       maxSuffixPercentage: cfg.maxSuffixPercentage,
       modelName: cfg.model,
       prefixPercentage: cfg.prefixPercentage,
-      resolveTreePath: cfg.rootPathEnabled,
+      resolveTreePath: true,
     })
     const snippets = await this.snippets(cfg, helper, document)
+    this.emitRootTrace(cfg, id, document, position, gate.selected, snippets)
     const inject = this.injectable(cfg, snippets)
+    const resolvedContext = await this.resolveContextLength(cfg, apiKey, inject.snippets.length > 0)
     const prompt = buildQwenPromptPlan({
-      cfg,
+      cfg: this.withContextLength(cfg, resolvedContext),
       helper,
-      injectIntoPrompt: this.injectEnabled(cfg),
+      injectIntoPrompt: inject.snippets.length > 0,
       snippets: inject.snippets,
     })
     const multi = classifyQwenMultiline({ helper, position, selected: gate.selected })
     const multiline = multi.allowed
+    const forceFresh = this.consumeForceFresh(document, position)
     this.emit(cfg, {
       requestId: id,
       phase: "prompt-built",
@@ -177,25 +219,29 @@ export class KiloQwenInlineCompletionProvider implements vscode.InlineCompletion
       prefixChars: helper.prunedPrefix.length,
       suffixChars: helper.prunedSuffix.length,
       helper,
-      ...this.snippetFields(cfg, snippets, prompt),
+      ...this.snippetFields(cfg, snippets, prompt, inject, resolvedContext),
       ...this.multilineFields(multi),
       prompt: prompt.prompt,
     })
 
-    const cached = this.lookupCache(
-      cfg,
-      id,
-      document,
-      position,
-      context,
-      gate.selected,
-      started,
-      helper,
-      multiline,
-      multi,
-      snippets,
-      prompt,
-    )
+    const cached = forceFresh
+      ? { hit: false, returned: null, status: "miss" as const }
+      : await this.lookupCache(
+          cfg,
+          id,
+          document,
+          position,
+          context,
+          gate.selected,
+          started,
+          helper,
+          inject,
+          multiline,
+          multi,
+          snippets,
+          prompt,
+          resolvedContext,
+        )
     if (cached.items) return cached.items
 
     let httpStatus: number | null = null
@@ -210,13 +256,13 @@ export class KiloQwenInlineCompletionProvider implements vscode.InlineCompletion
         suffixChars: helper.prunedSuffix.length,
         helper,
         ...this.cacheFields(cfg, cached.status, cached.hit, helper, cached.returned),
-        ...this.snippetFields(cfg, snippets, prompt),
+        ...this.snippetFields(cfg, snippets, prompt, inject, resolvedContext),
         ...this.multilineFields(multi),
       })
       const raw = await this.client.complete({
         endpoint: cfg.endpoint,
         model: cfg.model,
-        apiKey: (await this.apiKey())?.trim() || cfg.apiKey,
+        apiKey,
         prompt: prompt.prompt,
         maxTokens: cfg.maxTokens,
         temperature: cfg.temperature,
@@ -235,7 +281,7 @@ export class KiloQwenInlineCompletionProvider implements vscode.InlineCompletion
         suffixChars: helper.prunedSuffix.length,
         helper,
         ...this.cacheFields(cfg, cached.status, cached.hit, helper, cached.returned),
-        ...this.snippetFields(cfg, snippets, prompt),
+        ...this.snippetFields(cfg, snippets, prompt, inject, resolvedContext),
         httpStatus,
         latencyMs: Date.now() - started,
         rawTextLength: raw.length,
@@ -254,10 +300,24 @@ export class KiloQwenInlineCompletionProvider implements vscode.InlineCompletion
           rawTextLength: raw.length,
           helper,
           ...this.cacheFields(cfg, cached.status, cached.hit, helper, cached.returned),
-          ...this.snippetFields(cfg, snippets, prompt),
+          ...this.snippetFields(cfg, snippets, prompt, inject, resolvedContext),
           emptyReason: "stale",
         })
-        return this.empty(cfg, id, document, position, gate.selected, started, "stale", helper, snippets, prompt)
+        return this.empty(
+          cfg,
+          id,
+          document,
+          position,
+          gate.selected,
+          started,
+          "stale",
+          helper,
+          snippets,
+          prompt,
+          {},
+          inject,
+          resolvedContext,
+        )
       }
       const filtered = filterQwenCompletionDetailed({
         completion: raw,
@@ -278,7 +338,7 @@ export class KiloQwenInlineCompletionProvider implements vscode.InlineCompletion
           suffixChars: helper.prunedSuffix.length,
           helper,
           ...this.cacheFields(cfg, cached.status, cached.hit, helper, cached.returned),
-          ...this.snippetFields(cfg, snippets, prompt),
+          ...this.snippetFields(cfg, snippets, prompt, inject, resolvedContext),
           ...this.filterFields(filtered),
           rawTextLength: raw.length,
           filteredTextLength: filtered.text.length,
@@ -298,6 +358,9 @@ export class KiloQwenInlineCompletionProvider implements vscode.InlineCompletion
           helper,
           snippets,
           prompt,
+          {},
+          inject,
+          resolvedContext,
         )
       }
       const processed = postprocessQwenCompletion({
@@ -316,7 +379,7 @@ export class KiloQwenInlineCompletionProvider implements vscode.InlineCompletion
         suffixChars: helper.prunedSuffix.length,
         helper,
         ...this.cacheFields(cfg, cached.status, cached.hit, helper, cached.returned),
-        ...this.snippetFields(cfg, snippets, prompt),
+        ...this.snippetFields(cfg, snippets, prompt, inject, resolvedContext),
         ...this.filterFields(filtered),
         rawTextLength: raw.length,
         filteredTextLength: filtered.text.length,
@@ -337,6 +400,9 @@ export class KiloQwenInlineCompletionProvider implements vscode.InlineCompletion
           helper,
           snippets,
           prompt,
+          {},
+          inject,
+          resolvedContext,
         )
       }
       const text = gate.selected ? gate.selected.text + processed : processed
@@ -352,6 +418,9 @@ export class KiloQwenInlineCompletionProvider implements vscode.InlineCompletion
           helper,
           snippets,
           prompt,
+          {},
+          inject,
+          resolvedContext,
         )
       }
       const item = renderQwenInlineCompletionItem(document, position, context, text)
@@ -365,7 +434,7 @@ export class KiloQwenInlineCompletionProvider implements vscode.InlineCompletion
         suffixChars: helper.prunedSuffix.length,
         helper,
         ...this.cacheFields(cfg, cached.status, cached.hit, helper, cached.returned),
-        ...this.snippetFields(cfg, snippets, prompt),
+        ...this.snippetFields(cfg, snippets, prompt, inject, resolvedContext),
         finalTextLength: text.length,
         itemCount: item ? 1 : 0,
         ...this.multilineFields(multi),
@@ -386,9 +455,12 @@ export class KiloQwenInlineCompletionProvider implements vscode.InlineCompletion
           helper,
           snippets,
           prompt,
+          {},
+          inject,
+          resolvedContext,
         )
       }
-      this.putCache(cfg, helper, prompt, processed)
+      await this.putCache(cfg, helper, prompt, processed)
       this.emit(cfg, {
         requestId: id,
         phase: "return-items",
@@ -399,7 +471,7 @@ export class KiloQwenInlineCompletionProvider implements vscode.InlineCompletion
         suffixChars: helper.prunedSuffix.length,
         helper,
         ...this.cacheFields(cfg, cached.status, cached.hit, helper, cached.returned),
-        ...this.snippetFields(cfg, snippets, prompt),
+        ...this.snippetFields(cfg, snippets, prompt, inject, resolvedContext),
         finalTextLength: text.length,
         itemCount: 1,
         ...this.multilineFields(multi),
@@ -425,18 +497,32 @@ export class KiloQwenInlineCompletionProvider implements vscode.InlineCompletion
         suffixChars: helper.prunedSuffix.length,
         helper,
         ...this.cacheFields(cfg, cached.status, cached.hit, helper, cached.returned),
-        ...this.snippetFields(cfg, snippets, prompt),
+        ...this.snippetFields(cfg, snippets, prompt, inject, resolvedContext),
         httpStatus,
         latencyMs: Date.now() - started,
         emptyReason: reason,
         error: err,
       })
       this.logError(req, started, helper.prunedPrefix.length, helper.prunedSuffix.length, err)
-      return this.empty(cfg, id, document, position, gate.selected, started, reason, helper, snippets, prompt)
+      return this.empty(
+        cfg,
+        id,
+        document,
+        position,
+        gate.selected,
+        started,
+        reason,
+        helper,
+        snippets,
+        prompt,
+        {},
+        inject,
+        resolvedContext,
+      )
     }
   }
 
-  private lookupCache(
+  private async lookupCache(
     cfg: QwenAutocompleteConfig,
     requestId: string,
     document: vscode.TextDocument,
@@ -445,15 +531,17 @@ export class KiloQwenInlineCompletionProvider implements vscode.InlineCompletion
     selected: vscode.SelectedCompletionInfo | undefined,
     started: number,
     helper: QwenAutocompleteHelperVars,
+    inject: InjectionState,
     multiline: boolean,
     multi: QwenMultilineClassifierResult,
     snippets: SnippetState,
     prompt: QwenPromptPlan,
-  ): CacheResult {
+    resolvedContext: QwenResolvedContextLength,
+  ): Promise<CacheResult> {
     if (!cfg.cacheEnabled) return { hit: false, returned: null, status: "disabled" }
     try {
-      this.cache.setMaxEntries(cfg.cacheMaxEntries)
-      const completion = this.cache.get(helper.prunedPrefix)
+      await this.cache.setMaxEntries(cfg.cacheMaxEntries)
+      const completion = await this.cache.get(this.cachePrefix(helper, prompt))
       if (!completion) return { hit: false, returned: null, status: "miss" }
       return this.renderCached(
         cfg,
@@ -469,6 +557,8 @@ export class KiloQwenInlineCompletionProvider implements vscode.InlineCompletion
         completion,
         snippets,
         prompt,
+        inject,
+        resolvedContext,
       )
     } catch (err) {
       void err
@@ -490,6 +580,8 @@ export class KiloQwenInlineCompletionProvider implements vscode.InlineCompletion
     completion: string,
     snippets: SnippetState,
     prompt: QwenPromptPlan,
+    inject: InjectionState,
+    resolvedContext: QwenResolvedContextLength,
   ): CacheResult {
     const text = selected ? selected.text + completion : completion
     const item = renderQwenInlineCompletionItem(document, position, context, text)
@@ -504,7 +596,7 @@ export class KiloQwenInlineCompletionProvider implements vscode.InlineCompletion
       suffixChars: helper.prunedSuffix.length,
       helper,
       ...base,
-      ...this.snippetFields(cfg, snippets, prompt),
+      ...this.snippetFields(cfg, snippets, prompt, inject, resolvedContext),
       finalTextLength: text.length,
       itemCount: item ? 1 : 0,
       ...this.multilineFields(multi),
@@ -524,7 +616,7 @@ export class KiloQwenInlineCompletionProvider implements vscode.InlineCompletion
       suffixChars: helper.prunedSuffix.length,
       helper,
       ...base,
-      ...this.snippetFields(cfg, snippets, prompt),
+      ...this.snippetFields(cfg, snippets, prompt, inject, resolvedContext),
       finalTextLength: text.length,
       itemCount: 1,
       ...this.multilineFields(multi),
@@ -631,19 +723,25 @@ export class KiloQwenInlineCompletionProvider implements vscode.InlineCompletion
   ): Promise<SnippetState> {
     const payload = emptyQwenSnippetPayload()
     const edited = this.edited?.snippets(cfg) ?? []
+    const visited = this.visited?.snippets(cfg) ?? []
     const opened = (await this.opened?.snippets(cfg, document)) ?? { skippedCount: 0, snippets: [] }
     const imports = (await this.imports?.snippets(cfg, helper, document)) ?? { skippedCount: 0, snippets: [] }
     const root = (await this.root?.snippets(cfg, helper)) ?? {
-      blockedReason: cfg.rootPathEnabled ? "missing-tree-path" : "disabled",
+      blockedReason: cfg.rootPathEnabled ? "error" : "disabled",
+      summary: emptyRootSummary(),
       skippedCount: 0,
       snippets: [],
+      trace: [],
     }
     payload.recentlyEditedRangeSnippets = edited
+    payload.recentlyVisitedRangesSnippets = visited
     payload.recentlyOpenedFileSnippets = opened.snippets
     payload.importDefinitionSnippets = imports.snippets
     payload.rootPathSnippets = root.snippets
     const selection = selectQwenSnippets(helper, payload, {
+      includeDiff: true,
       includeRecentlyEditedRanges: cfg.recentlyEditedEnabled,
+      includeRecentlyVisitedRanges: true,
       useImports: cfg.importDefinitionsEnabled,
       maxPromptTokens: cfg.maxPromptTokens,
       modelName: cfg.model,
@@ -660,7 +758,10 @@ export class KiloQwenInlineCompletionProvider implements vscode.InlineCompletion
       root: root.snippets,
       rootBlocked: root.blockedReason,
       rootSkipped: root.skippedCount,
+      rootSummary: root.summary,
+      rootTrace: root.trace,
       selection,
+      visited,
     }
   }
 
@@ -668,6 +769,8 @@ export class KiloQwenInlineCompletionProvider implements vscode.InlineCompletion
     cfg: QwenAutocompleteConfig,
     state: SnippetState,
     prompt?: QwenPromptPlan,
+    inject = this.injectable(cfg, state),
+    resolvedContext?: QwenResolvedContextLength,
   ): Record<string, unknown> {
     return {
       snippetScaffoldEnabled: true,
@@ -681,15 +784,11 @@ export class KiloQwenInlineCompletionProvider implements vscode.InlineCompletion
       snippetSelectionTotalSelectedTokens: state.selection.selectedSnippetTokens,
       snippetSelectionDroppedByBudgetCount: state.selection.droppedByBudgetCount,
       snippetSelectionDroppedDuplicateFileCount:
-        state.selection.droppedDuplicateFileCount + this.injectable(cfg, state).droppedDuplicateFileCount,
+        state.selection.droppedDuplicateFileCount + inject.droppedDuplicateFileCount,
       snippetSelectionDroppedInvalidCount: state.selection.droppedInvalidCount,
-      snippetSelectionInjectedCount: prompt?.snippetsInjectedIntoPrompt
-        ? this.injectable(cfg, state).snippets.length
-        : 0,
-      snippetSelectionInjectedSources: prompt?.snippetsInjectedIntoPrompt
-        ? this.injectable(cfg, state).sources.join(",")
-        : "",
-      snippetSelectionAdapterPriority: this.injectable(cfg, state).priority,
+      snippetSelectionInjectedCount: prompt?.snippetsInjectedIntoPrompt ? inject.snippets.length : 0,
+      snippetSelectionInjectedSources: prompt?.snippetsInjectedIntoPrompt ? inject.sources.join(",") : "",
+      snippetSelectionAdapterPriority: inject.priority,
       snippetSelectionBudgetRemaining: state.selection.budgetRemaining,
       contextReadGuardDecision: "applied",
       contextReadGuardSkippedCount: state.openedSkipped + state.importSkipped + state.rootSkipped,
@@ -697,15 +796,51 @@ export class KiloQwenInlineCompletionProvider implements vscode.InlineCompletion
       recentlyOpenedTrimmedCount: state.selection.recentlyOpenedTrimmedCount,
       baseSnippetSelectedCount: state.selection.baseSnippetSelectedCount,
       baseSnippetInjectedCount: prompt?.snippetsInjectedIntoPrompt
-        ? this.injectable(cfg, state).snippets.filter(
+        ? inject.snippets.filter(
             (snippet) => this.selectedImports(state).includes(snippet) || this.selectedRoot(state).includes(snippet),
           ).length
         : 0,
       ...this.editedFields(cfg, state),
-      ...this.openedFields(cfg, state, prompt),
-      ...this.importFields(cfg, state, prompt),
-      ...this.rootFields(cfg, state, prompt),
-      ...this.promptFields(cfg, prompt),
+      ...this.visitedFields(cfg, state, prompt, inject),
+      ...this.openedFields(cfg, state, prompt, inject),
+      ...this.importFields(cfg, state, prompt, inject),
+      ...this.rootFields(cfg, state, prompt, inject),
+      ...this.promptFields(cfg, prompt, resolvedContext),
+    }
+  }
+
+  private emitRootTrace(
+    cfg: QwenAutocompleteConfig,
+    requestId: string,
+    document: vscode.TextDocument,
+    position: vscode.Position,
+    selected: vscode.SelectedCompletionInfo | undefined,
+    state: SnippetState,
+  ): void {
+    for (const entry of state.rootTrace) {
+      this.emit(cfg, {
+        requestId,
+        phase: entry.phase,
+        document,
+        position,
+        selected,
+        diagnosticFields: entry.fields,
+        ...this.rootSummaryFields(state),
+      })
+    }
+  }
+
+  private rootSummaryFields(state: SnippetState): Record<string, unknown> {
+    return {
+      rootPathLanguage: state.rootSummary.rootPathLanguage,
+      rootPathBackend: state.rootSummary.rootPathBackend,
+      rootPathCapturedSymbols: state.rootSummary.rootPathCapturedSymbols,
+      rootPathEvidenceTokens: state.rootSummary.rootPathEvidenceTokens,
+      rootPathCodeGraphSkippedReason: state.rootSummary.rootPathCodeGraphSkippedReason,
+      rootPathBudgetTrimmed: state.rootSummary.rootPathBudgetTrimmed,
+      receiverTypeResolved: state.rootSummary.receiverTypeResolved,
+      fieldEvidenceSelected: state.rootSummary.fieldEvidenceSelected,
+      typedefChainSelected: state.rootSummary.typedefChainSelected,
     }
   }
 
@@ -721,13 +856,32 @@ export class KiloQwenInlineCompletionProvider implements vscode.InlineCompletion
     }
   }
 
+  private visitedFields(
+    cfg: QwenAutocompleteConfig,
+    state: SnippetState,
+    prompt: QwenPromptPlan | undefined,
+    inject: InjectionState,
+  ): Record<string, unknown> {
+    const visited = this.selectedVisited(state)
+    return {
+      recentlyVisitedEnabled: true,
+      recentlyVisitedTrackedRangeCount: this.visited?.count() ?? 0,
+      recentlyVisitedPayloadCount: state.payload.recentlyVisitedRangesSnippets.length,
+      recentlyVisitedSelectedCount: visited.length,
+      recentlyVisitedSelectedTokens: visited.reduce((sum, snippet) => sum + countTokens(snippet.content, cfg.model), 0),
+      recentlyVisitedInjectedIntoPrompt: prompt?.snippetsInjectedIntoPrompt
+        ? inject.snippets.some((snippet) => visited.includes(snippet))
+        : false,
+    }
+  }
+
   private openedFields(
     cfg: QwenAutocompleteConfig,
     state: SnippetState,
     prompt?: QwenPromptPlan,
+    inject = this.injectable(cfg, state),
   ): Record<string, unknown> {
     const opened = this.selectedOpened(state)
-    const inject = this.injectable(cfg, state)
     return {
       recentlyOpenedEnabled: cfg.recentlyOpenedEnabled,
       recentlyOpenedInjectIntoPrompt: cfg.recentlyOpenedInjectIntoPrompt,
@@ -747,9 +901,9 @@ export class KiloQwenInlineCompletionProvider implements vscode.InlineCompletion
     cfg: QwenAutocompleteConfig,
     state: SnippetState,
     prompt?: QwenPromptPlan,
+    inject = this.injectable(cfg, state),
   ): Record<string, unknown> {
     const imports = this.selectedImports(state)
-    const inject = this.injectable(cfg, state)
     return {
       importDefinitionsEnabled: cfg.importDefinitionsEnabled,
       importDefinitionsInjectIntoPrompt: cfg.importDefinitionsInjectIntoPrompt,
@@ -772,9 +926,9 @@ export class KiloQwenInlineCompletionProvider implements vscode.InlineCompletion
     cfg: QwenAutocompleteConfig,
     state: SnippetState,
     prompt?: QwenPromptPlan,
+    inject = this.injectable(cfg, state),
   ): Record<string, unknown> {
     const root = this.selectedRoot(state)
-    const inject = this.injectable(cfg, state)
     return {
       rootPathEnabled: cfg.rootPathEnabled,
       rootPathInjectIntoPrompt: cfg.rootPathInjectIntoPrompt,
@@ -788,12 +942,18 @@ export class KiloQwenInlineCompletionProvider implements vscode.InlineCompletion
         ? inject.snippets.some((snippet) => root.includes(snippet))
         : false,
       rootPathBlockedReason: state.rootBlocked,
+      ...this.rootSummaryFields(state),
     }
   }
 
-  private promptFields(cfg: QwenAutocompleteConfig, prompt?: QwenPromptPlan): Record<string, unknown> {
+  private promptFields(
+    cfg: QwenAutocompleteConfig,
+    prompt: QwenPromptPlan | undefined,
+    resolvedContext?: QwenResolvedContextLength,
+  ): Record<string, unknown> {
     return {
-      contextLength: cfg.contextLength,
+      contextLength: resolvedContext?.value ?? cfg.contextLength,
+      contextLengthSource: resolvedContext?.source ?? (cfg.contextLength > 0 ? "configured" : "unknown"),
       availablePromptTokens: prompt?.availablePromptTokens ?? null,
       promptRendererMode: prompt?.promptRendererMode ?? "disabled",
       snippetInjectionBlockedReason: prompt?.snippetInjectionBlockedReason ?? "disabled",
@@ -808,6 +968,12 @@ export class KiloQwenInlineCompletionProvider implements vscode.InlineCompletion
   private selectedEdited(state: SnippetState): QwenAutocompleteCodeSnippet[] {
     return state.selection.snippets.filter((snippet) =>
       state.edited.includes(snippet as QwenAutocompleteCodeSnippet),
+    ) as QwenAutocompleteCodeSnippet[]
+  }
+
+  private selectedVisited(state: SnippetState): QwenAutocompleteCodeSnippet[] {
+    return state.selection.snippets.filter((snippet) =>
+      state.visited.includes(snippet as QwenAutocompleteCodeSnippet),
     ) as QwenAutocompleteCodeSnippet[]
   }
 
@@ -832,28 +998,25 @@ export class KiloQwenInlineCompletionProvider implements vscode.InlineCompletion
   private injectable(cfg: QwenAutocompleteConfig, state: SnippetState): InjectionState {
     const flags = this.injectFlags(cfg)
     const files = new Set<string>()
-    const edited = new Map(state.edited.map((snippet) => [snippet.filepath, snippet]))
     const out: QwenAutocompleteCodeSnippet[] = []
     const sources = new Set<string>()
     let droppedDuplicateFileCount = 0
-    const priority = state.selection.snippets
-    for (const snippet of priority) {
+    for (const snippet of state.selection.snippets) {
       const current = snippet as QwenAutocompleteCodeSnippet
       if (!current.filepath) continue
-      const item = this.injectItem(current, state, flags, edited)
-      if (!item) continue
-      if (files.has(item.filepath)) {
+      const source = this.injectSource(current, state)
+      if (!source || !this.sourceEnabled(source, flags)) continue
+      if (files.has(current.filepath)) {
         droppedDuplicateFileCount++
         continue
       }
-      files.add(item.filepath)
-      out.push(item)
-      const source = this.injectSource(item, state)
-      if (source) sources.add(source)
+      files.add(current.filepath)
+      out.push(current)
+      sources.add(source)
     }
     return {
       droppedDuplicateFileCount,
-      priority: "recentlyEdited>recentlyOpened>importDefinitions>rootPath",
+      priority: "recentlyOpened>recentlyVisited>recentlyEdited>importDefinitions>rootPath",
       snippets: out,
       sources: [...sources],
     }
@@ -862,63 +1025,41 @@ export class KiloQwenInlineCompletionProvider implements vscode.InlineCompletion
   private injectFlags(cfg: QwenAutocompleteConfig): InjectFlags {
     return {
       edited: cfg.recentlyEditedEnabled && cfg.recentlyEditedInjectIntoPrompt,
+      visited: true,
       imports: cfg.importDefinitionsEnabled && cfg.importDefinitionsInjectIntoPrompt,
       opened: cfg.recentlyOpenedEnabled && cfg.recentlyOpenedInjectIntoPrompt,
       root: cfg.rootPathEnabled && cfg.rootPathInjectIntoPrompt,
     }
   }
 
-  private injectItem(
-    item: QwenAutocompleteCodeSnippet,
-    state: SnippetState,
-    flags: InjectFlags,
-    edited: Map<string, QwenAutocompleteCodeSnippet>,
-  ): QwenAutocompleteCodeSnippet | null {
-    if (!state.selection.snippets.includes(item)) return null
-    const fromEdited = state.edited.includes(item)
-    const fromOpened = state.opened.includes(item)
-    const fromImports = state.imports.includes(item)
-    const fromRoot = state.root.includes(item)
-    // qwen/Kilo adapter deviation from Continue selection parity: Continue
-    // processes recently opened before recently edited. At injection time,
-    // qwen prefers the recently edited payload for the same filepath because
-    // it reflects the latest local edit range.
-    if (flags.edited && fromOpened && edited.has(item.filepath)) return edited.get(item.filepath) ?? item
-    if (flags.edited && fromEdited) return item
-    if (flags.opened && fromOpened) return item
-    if (flags.imports && fromImports) return item
-    if (flags.root && fromRoot) return item
-    return null
-  }
-
   private injectSource(item: QwenAutocompleteCodeSnippet, state: SnippetState): string | null {
-    if (state.edited.includes(item)) return "recentlyEdited"
     if (state.opened.includes(item)) return "recentlyOpened"
+    if (state.visited.includes(item)) return "recentlyVisited"
+    if (state.edited.includes(item)) return "recentlyEdited"
     if (state.imports.includes(item)) return "importDefinitions"
     if (state.root.includes(item)) return "rootPath"
     return null
   }
 
-  private injectEnabled(cfg: QwenAutocompleteConfig): boolean {
-    return (
-      (cfg.recentlyEditedEnabled && cfg.recentlyEditedInjectIntoPrompt) ||
-      (cfg.recentlyOpenedEnabled && cfg.recentlyOpenedInjectIntoPrompt) ||
-      (cfg.importDefinitionsEnabled && cfg.importDefinitionsInjectIntoPrompt) ||
-      (cfg.rootPathEnabled && cfg.rootPathInjectIntoPrompt)
-    )
+  private sourceEnabled(source: string, flags: InjectFlags): boolean {
+    if (source === "recentlyOpened") return flags.opened
+    if (source === "recentlyVisited") return flags.visited
+    if (source === "recentlyEdited") return flags.edited
+    if (source === "importDefinitions") return flags.imports
+    if (source === "rootPath") return flags.root
+    return false
   }
 
-  private putCache(
+  private async putCache(
     cfg: QwenAutocompleteConfig,
     helper: QwenAutocompleteHelperVars,
     prompt: QwenPromptPlan,
     completion: string,
-  ): void {
+  ): Promise<void> {
     if (!cfg.cacheEnabled) return
     try {
-      this.cache.setMaxEntries(cfg.cacheMaxEntries)
-      const prefix = prompt.snippetsInjectedIntoPrompt ? prompt.renderedPrefix : helper.prunedPrefix
-      this.cache.put(prefix, completion)
+      await this.cache.setMaxEntries(cfg.cacheMaxEntries)
+      await this.cache.put(this.cachePrefix(helper, prompt), completion)
     } catch (err) {
       void err
     }
@@ -926,6 +1067,22 @@ export class KiloQwenInlineCompletionProvider implements vscode.InlineCompletion
 
   private nextId(): string {
     return `qwen-${Date.now()}-${++this.seq}`
+  }
+
+  private consumeForceFresh(document: vscode.TextDocument, position: vscode.Position): boolean {
+    const pending = this.forceFresh
+    if (!pending) return false
+    if (pending.expiresAt < Date.now()) {
+      this.forceFresh = null
+      return false
+    }
+    if (pending.documentUri !== document.uri.toString()) return false
+    this.forceFresh = null
+    return (
+      pending.version === document.version &&
+      pending.line === position.line &&
+      pending.character === position.character
+    )
   }
 
   private start(id: string, document: vscode.TextDocument, position: vscode.Position): Pending {
@@ -1118,6 +1275,8 @@ export class KiloQwenInlineCompletionProvider implements vscode.InlineCompletion
     snippets?: SnippetState,
     prompt?: QwenPromptPlan,
     extra: Record<string, unknown> = {},
+    inject?: InjectionState,
+    resolvedContext?: QwenResolvedContextLength,
   ): vscode.InlineCompletionItem[] {
     this.emit(cfg, {
       requestId,
@@ -1130,12 +1289,39 @@ export class KiloQwenInlineCompletionProvider implements vscode.InlineCompletion
       latencyMs: Date.now() - started,
       itemCount: 0,
       helper,
-      ...(snippets ? this.snippetFields(cfg, snippets, prompt) : {}),
+      ...(snippets ? this.snippetFields(cfg, snippets, prompt, inject, resolvedContext) : {}),
       ...extra,
       emptyReason,
       filterReason: emptyReason,
     })
     return []
+  }
+
+  private async resolveContextLength(
+    cfg: QwenAutocompleteConfig,
+    apiKey: string,
+    needed: boolean,
+  ): Promise<QwenResolvedContextLength> {
+    if (cfg.contextLength > 0) return { source: "configured", value: cfg.contextLength }
+    if (!needed) return { source: "fallback-200k", value: QWEN_AUTODETECT_CONTEXT_LENGTH_FALLBACK }
+    return this.contextLength.resolve({
+      contextLength: cfg.contextLength,
+      endpoint: cfg.endpoint,
+      model: cfg.model,
+      apiKey,
+    })
+  }
+
+  private withContextLength(cfg: QwenAutocompleteConfig, resolved: QwenResolvedContextLength): QwenAutocompleteConfig {
+    if (!Number.isFinite(resolved.value) || resolved.value <= 0 || cfg.contextLength === resolved.value) return cfg
+    return {
+      ...cfg,
+      contextLength: resolved.value,
+    }
+  }
+
+  private cachePrefix(helper: QwenAutocompleteHelperVars, prompt: QwenPromptPlan): string {
+    return prompt.snippetsInjectedIntoPrompt ? prompt.renderedPrefix : helper.prunedPrefix
   }
 
   private emit(cfg: QwenAutocompleteConfig, input: Omit<Parameters<typeof emitQwenDiagnostic>[0], "cfg">): void {
@@ -1193,4 +1379,18 @@ function quote(value: string): string {
 
 function summary(err: unknown): string {
   return err instanceof Error ? err.message.slice(0, 300) : String(err).slice(0, 300)
+}
+
+function emptyRootSummary(): QwenRootPathTraceSummary {
+  return {
+    rootPathLanguage: null,
+    rootPathBackend: "none",
+    rootPathCapturedSymbols: "",
+    rootPathEvidenceTokens: 0,
+    rootPathCodeGraphSkippedReason: "not-run",
+    rootPathBudgetTrimmed: false,
+    receiverTypeResolved: false,
+    fieldEvidenceSelected: false,
+    typedefChainSelected: false,
+  }
 }

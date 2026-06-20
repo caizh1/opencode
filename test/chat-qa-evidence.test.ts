@@ -238,6 +238,50 @@ describe("QA chat evidence retrieval", () => {
     expect(calls.query[0]?.options).toMatchObject({ retrievalMode: "hybrid", latencyBudgetMs: 2000 })
   })
 
+  test("includes document RAG evidence while the document index is partial", async () => {
+    const localSettings = settings()
+    localSettings.documentRag.enabled = true
+    const query = mock(async () => ({
+      text: '<local-document-rag documents="3/4" chunks="9/9" evidenceCount="1"><evidence-list><evidence kind="pdf" path="docs/spec.pdf" lines="4-6" section="pdf:1" score="0.991">upgrade flow</evidence></evidence-list></local-document-rag>',
+      hits: [{ path: "docs/spec.pdf", startLine: 4, endLine: 6, score: 0.991 }],
+      elapsedMs: 8,
+    }))
+
+    const prompt = await buildChatPrompt({
+      question: "文档里有没有 upgrade flow",
+      options: {
+        includeSelection: false,
+        includeCurrentFile: false,
+        includeOpenFiles: false,
+        includeDiagnostics: false,
+        includeGitDiff: false,
+      },
+      settings: localSettings,
+      contextStore: new LocalContextStore(),
+      documentRag: {
+        status: () => ({
+          enabled: true,
+          availability: "partial",
+          documentCount: 4,
+          indexedDocuments: 3,
+          skippedDocuments: 1,
+          pendingDocuments: 0,
+          chunks: 9,
+          embeddedChunks: 9,
+        }),
+        query,
+      },
+    })
+
+    expect(query).toHaveBeenCalledWith("文档里有没有 upgrade flow", expect.objectContaining({
+      topK: localSettings.documentRag.queryTopK,
+      maxEvidenceBytes: localSettings.documentRag.maxEvidenceBytes,
+    }))
+    expect(prompt).toContain("Local document RAG evidence:")
+    expect(prompt).toContain('path="docs/spec.pdf"')
+    expect(prompt).toContain("upgrade flow")
+  })
+
   test("packs explicit attached selection before automatic current-file context", async () => {
     const document = fakeDocument("hw/char/char-hmp-cmds.c", "int before(void) { return 0; }\nselected_call();\nint after(void) { return 1; }\n")
     textDocuments = [document]
@@ -273,6 +317,60 @@ describe("QA chat evidence retrieval", () => {
     expect(prompt).toContain('lines="2-2"')
     expect(prompt).toContain("selected_call();")
     expect(prompt).not.toContain('source="current file"')
+  })
+
+  test("keeps one-shot selection snapshots available for the accepted send", async () => {
+    const document = fakeDocument("src/once.c", "void once(void) {\n  selected_once();\n}\n")
+    textDocuments = [document]
+    const store = new LocalContextStore()
+    const item = store.addSelection({
+      uri: document.uri as never,
+      languageId: "c",
+      startLine: 2,
+      endLine: 2,
+      text: "selected_once();",
+      truncated: false,
+    })
+    const snapshot = store.snapshot()
+
+    expect(item.lifetime).toBe("one-shot")
+    expect(store.consumeOneShot(snapshot)).toBe(1)
+    expect(store.list()).toHaveLength(0)
+
+    const prompt = await buildChatPrompt({
+      question: "解释这段一次性上下文",
+      options: {
+        includeSelection: false,
+        includeCurrentFile: true,
+        includeOpenFiles: false,
+        includeDiagnostics: false,
+        includeGitDiff: false,
+      },
+      settings: settings(),
+      contextStore: store,
+      contextItems: snapshot,
+      editorContext: {
+        uri: document.uri as never,
+        selection: { isEmpty: true } as never,
+        position: { line: 1, character: 0 } as never,
+      },
+    })
+
+    expect(prompt).toContain('source="attached selection"')
+    expect(prompt).toContain("selected_once();")
+    expect(prompt).not.toContain('source="current file"')
+  })
+
+  test("keeps pinned context when one-shot context is consumed", () => {
+    const store = new LocalContextStore()
+    const oneShot = store.addFile(UriShim.file("/repo/src/one-shot.c") as never)
+    const pinned = store.addFile(UriShim.file("/repo/src/pinned.c") as never)
+    store.setLifetime(pinned.id, "persistent")
+
+    expect(oneShot.lifetime).toBe("one-shot")
+    expect(store.viewItems().find((item) => item.id === pinned.id)?.lifetime).toBe("persistent")
+    expect(store.consumeOneShot(store.snapshot())).toBe(1)
+    expect(store.list().map((item) => item.id)).toEqual([pinned.id])
   })
 })
 
@@ -509,6 +607,16 @@ function settings(): RemoteSettings {
       indexTests: false,
       vectorTopK: 24,
       rerankTopK: 16,
+    },
+    documentRag: {
+      enabled: false,
+      maxFiles: 5000,
+      maxFileBytes: 25 * 1024 * 1024,
+      maxExtractedBytesPerFile: 1024 * 1024,
+      maxChunks: 50000,
+      excludeGlobs: [],
+      queryTopK: 12,
+      maxEvidenceBytes: 24000,
     },
   }
 }

@@ -6,6 +6,7 @@ import type { CodeGraphAnalysisMode, CompletionCommentGuidedRetrievalMode, Compl
 export const PASSWORD_SECRET_KEY = "chipmate.provider.legacyPassword"
 export const LEGACY_RAG_API_KEY_SECRET_KEY = RAG_API_KEY_SECRET_KEY
 export const DEFAULT_COMPLETION_MODEL = "qwen-coder-30b0"
+export const DEFAULT_COMPLETION_CONTEXT_LENGTH = 200_000
 export const DEFAULT_RAG_EMBEDDING_MODEL = "qwen3-embedding-8b"
 export const DEFAULT_RAG_RERANK_MODEL = "qwen3-reranker-8b"
 export const RAG_EMBEDDING_BATCH_SIZE_DEFAULT = 64
@@ -28,6 +29,12 @@ export const RAG_EMBEDDING_CHECKPOINT_MODE_DEFAULT: RagEmbeddingCheckpointMode =
 export const RAG_EMBEDDING_CHECKPOINT_MODES = ["off", "interval", "safe"] as const
 export const RAG_EMBEDDING_CHECKPOINT_CHUNK_INTERVAL_DEFAULT = 8192
 export const RAG_EMBEDDING_CHECKPOINT_INTERVAL_DEFAULT_MS = 120000
+export const DOCUMENT_RAG_MAX_FILES_DEFAULT = 5000
+export const DOCUMENT_RAG_MAX_FILE_BYTES_DEFAULT = 25 * 1024 * 1024
+export const DOCUMENT_RAG_MAX_EXTRACTED_BYTES_PER_FILE_DEFAULT = 1024 * 1024
+export const DOCUMENT_RAG_MAX_CHUNKS_DEFAULT = 50000
+export const DOCUMENT_RAG_QUERY_TOP_K_DEFAULT = 12
+export const DOCUMENT_RAG_MAX_EVIDENCE_BYTES_DEFAULT = 24000
 
 export type ConnectionSettingsInput = {
   serverUrl: string
@@ -42,6 +49,7 @@ export type CompletionSettingsInput = {
   apiBaseUrl: string
   model: string
   maxTokens: number
+  contextLength: number
   temperature: number
   topP: number
 }
@@ -155,12 +163,13 @@ export function readRemoteSettings(): RemoteSettings {
       enabled: false,
     },
     completion: {
-      enabled: config.get<boolean>("completion.enabled", false),
+      enabled: config.get<boolean>("completion.enabled", true),
       provider: readCompletionProvider(config.get<string>("completion.provider", "qwen-direct")),
       profile: readCompletionProfile(config.get<string>("completion.profile", "qwen-coder-fim")),
       apiBaseUrl: providerApiBaseUrl,
       model: readDefaultedString(config.get<string>("completion.model", DEFAULT_COMPLETION_MODEL), DEFAULT_COMPLETION_MODEL),
       maxTokens: Math.max(1, Math.min(4096, config.get<number>("completion.maxTokens", 128))),
+      contextLength: clampInteger(config.get<number>("completion.contextLength", DEFAULT_COMPLETION_CONTEXT_LENGTH), 0, 1_000_000, DEFAULT_COMPLETION_CONTEXT_LENGTH),
       temperature: Math.max(0, Math.min(2, config.get<number>("completion.temperature", 0.1))),
       topP: Math.max(0, Math.min(1, config.get<number>("completion.topP", 1))),
       debounceMs: Math.max(0, config.get<number>("completion.debounceMs", 350)),
@@ -200,7 +209,7 @@ export function readRemoteSettings(): RemoteSettings {
       maxGraphEdges: Math.max(10, Math.min(1000, config.get<number>("analysis.maxGraphEdges", 120))),
       maxPaths: Math.max(1, Math.min(50, config.get<number>("analysis.maxPaths", 10))),
     },
-	    rag: {
+    rag: {
 	      embedding: {
 	        enabled: Boolean(ragEmbeddingEndpoint) && !ragEmbeddingBatchSize.configError,
 	        endpoint: ragEmbeddingEndpoint,
@@ -231,6 +240,16 @@ export function readRemoteSettings(): RemoteSettings {
       indexTests: config.get<boolean>("rag.indexTests", false),
       vectorTopK: Math.max(0, Math.min(200, config.get<number>("rag.vectorTopK", 24))),
       rerankTopK: Math.max(0, Math.min(200, config.get<number>("rag.rerankTopK", 16))),
+    },
+    documentRag: {
+      enabled: config.get<boolean>("documentRag.enabled", true),
+      maxFiles: clampInteger(config.get<number>("documentRag.maxFiles", DOCUMENT_RAG_MAX_FILES_DEFAULT), 1, 100000, DOCUMENT_RAG_MAX_FILES_DEFAULT),
+      maxFileBytes: clampInteger(config.get<number>("documentRag.maxFileBytes", DOCUMENT_RAG_MAX_FILE_BYTES_DEFAULT), 1024, 512 * 1024 * 1024, DOCUMENT_RAG_MAX_FILE_BYTES_DEFAULT),
+      maxExtractedBytesPerFile: clampInteger(config.get<number>("documentRag.maxExtractedBytesPerFile", DOCUMENT_RAG_MAX_EXTRACTED_BYTES_PER_FILE_DEFAULT), 1024, 32 * 1024 * 1024, DOCUMENT_RAG_MAX_EXTRACTED_BYTES_PER_FILE_DEFAULT),
+      maxChunks: clampInteger(config.get<number>("documentRag.maxChunks", DOCUMENT_RAG_MAX_CHUNKS_DEFAULT), 1, 1_000_000, DOCUMENT_RAG_MAX_CHUNKS_DEFAULT),
+      excludeGlobs: readStringArray(config.get<unknown>("documentRag.excludeGlobs", [])),
+      queryTopK: clampInteger(config.get<number>("documentRag.queryTopK", DOCUMENT_RAG_QUERY_TOP_K_DEFAULT), 1, 100, DOCUMENT_RAG_QUERY_TOP_K_DEFAULT),
+      maxEvidenceBytes: clampInteger(config.get<number>("documentRag.maxEvidenceBytes", DOCUMENT_RAG_MAX_EVIDENCE_BYTES_DEFAULT), 1000, 200000, DOCUMENT_RAG_MAX_EVIDENCE_BYTES_DEFAULT),
     },
   }
 }
@@ -349,6 +368,7 @@ export async function saveCompletionSettings(input: CompletionSettingsInput) {
   if (input.apiBaseUrl !== undefined) await config.update("provider.apiBaseUrl", normalizeServerUrl(input.apiBaseUrl), vscode.ConfigurationTarget.Global)
   await config.update("completion.model", readDefaultedString(input.model, DEFAULT_COMPLETION_MODEL), vscode.ConfigurationTarget.Global)
   await config.update("completion.maxTokens", Math.max(1, Math.min(4096, Math.floor(input.maxTokens))), vscode.ConfigurationTarget.Global)
+  await config.update("completion.contextLength", clampInteger(input.contextLength, 0, 1_000_000, DEFAULT_COMPLETION_CONTEXT_LENGTH), vscode.ConfigurationTarget.Global)
   await config.update("completion.temperature", Math.max(0, Math.min(2, input.temperature)), vscode.ConfigurationTarget.Global)
   await config.update("completion.topP", Math.max(0, Math.min(1, input.topP)), vscode.ConfigurationTarget.Global)
 }

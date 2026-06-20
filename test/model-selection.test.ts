@@ -35,14 +35,16 @@ describe("model selection flow", () => {
     expect(chatHtmlSource).toContain('class="composerToolbar composerPrimaryRail composerControlRail"')
     expect(chatHtmlSource).toContain('class="composerPickerRail"')
     expect(chatHtmlSource).toContain('id="permissionStatusPill" class="composerStatusPill permissionTrigger oc-chip oc-liquid-chip permission tools-off is-empty"')
-    expect(chatHtmlSource).toContain("${liquidIcons.toolDisabled}")
+    expect(chatHtmlSource).toContain("liquidIcons.toolDisabled")
     expect(chatHtmlSource).not.toContain("${liquidIcons.stop}</span></button>")
     expect(chatHtmlSource).toContain('id="composerMore"')
     expect(chatHtmlSource).toContain('id="composerMoreMenu" class="modelMenu composerMoreMenu"')
     expect(chatHtmlSource).not.toContain('class="composerCommandRail"')
     expect(chatHtmlSource).toContain('class="composerSupportRail" aria-label="Composer status details"')
-    expect(chatHtmlSource).toContain('class="composerIconButton oc-icon-btn oc-liquid-btn" type="button" title="Refresh models"')
-    expect(chatHtmlSource).toContain('id="diffToggle" class="oc-icon-toggle oc-liquid-toggle"')
+    expect(chatHtmlSource).toContain(
+      'class="composerIconButton chat-toolbar-icon-button oc-icon-btn oc-liquid-btn" type="button" title="Refresh models"',
+    )
+    expect(chatHtmlSource).toContain('id="diffToggle" class="chat-toolbar-icon-button oc-icon-toggle oc-liquid-toggle"')
     expect(chatHtmlSource).toContain('aria-label="Include git diff" aria-pressed="false"')
     expect(chatHtmlSource).not.toContain("composerIconActions")
     expect(chatHtmlSource).toContain("setIconButtonState")
@@ -58,6 +60,8 @@ describe("model selection flow", () => {
 
   test("renders completion model selection from provider-returned Qwen Coder models only", () => {
     expect(chatHtmlSource).toContain('<label class="field">Model<select id="completionModel"></select></label>')
+    expect(chatHtmlSource).toContain('id="completionContextLength"')
+    expect(chatHtmlSource).toContain('title="0 = auto detect via /models"')
     expect(chatHtmlSource).toContain('id="refreshCompletionModels"')
     expect(chatHtmlSource).toContain('type: "refreshModels"')
     expect(chatHtmlSource).toContain("function qwenCoderCompletionModels()")
@@ -67,6 +71,8 @@ describe("model selection flow", () => {
     expect(chatHtmlSource).toContain("completionModelId(candidates[0])")
     expect(chatHtmlSource).toContain("No Qwen Coder completion model")
     expect(chatHtmlSource).toContain("无可用补全模型，补全暂不可用")
+    expect(chatHtmlSource).toContain('numberInputValue("completionContextLength", 200000)')
+    expect(chatHtmlSource).toContain('el("completionContextLength").value = String(completion.contextLength ?? 200000);')
     expect(chatHtmlSource).toContain("el(\"saveCompletionSettings\").disabled = unavailable")
     expect(chatHtmlSource).toContain("el(\"testCompletionApi\").disabled = !direct || unavailable")
   })
@@ -146,12 +152,12 @@ describe("model selection flow", () => {
       chatHtmlSource.indexOf("    .agentTrigger.warning .oc-liquid-chip-label"),
     )
     const composerIconSizeRule = chatHtmlSource.slice(
-      chatHtmlSource.lastIndexOf("    .composerStatusToggle,", pickerModelRuleStart),
-      chatHtmlSource.indexOf("    .composerStatusToggle {", chatHtmlSource.lastIndexOf("    .composerStatusToggle,", pickerModelRuleStart)),
+      chatHtmlSource.indexOf("    .chat-toolbar-icon-button,"),
+      chatHtmlSource.indexOf("    .composerSupportRail {", chatHtmlSource.indexOf("    .chat-toolbar-icon-button,")),
     )
     const composerIconGlyphRule = chatHtmlSource.slice(
-      chatHtmlSource.lastIndexOf("    .composerStatusPill .oc-liquid-icon,", pickerModelRuleStart),
-      chatHtmlSource.indexOf("    .composerStatusPill:hover", chatHtmlSource.lastIndexOf("    .composerStatusPill .oc-liquid-icon,", pickerModelRuleStart)),
+      chatHtmlSource.indexOf("    .chat-toolbar-icon-slot .oc-liquid-icon,"),
+      chatHtmlSource.indexOf("    .index-status-icon {", chatHtmlSource.indexOf("    .chat-toolbar-icon-slot .oc-liquid-icon,")),
     )
     const finalSendRule = chatHtmlSource.slice(
       chatHtmlSource.lastIndexOf("    .send {", chatHtmlSource.indexOf("    .send:hover")),
@@ -223,14 +229,20 @@ describe("model selection flow", () => {
     expect(warningChipRule).toContain("width: 102px;")
     expect(warningChipRule).toContain("min-width: 92px;")
     expect(warningChipRule).toContain("max-width: 110px;")
-    expect(chatHtmlSource).toContain("--composer-icon-button-size: 24px;")
+    expect(chatHtmlSource).toContain("--composer-icon-button-size: 28px;")
+    expect(chatHtmlSource).toContain("--composer-toolbar-icon-slot-size: 22px;")
+    expect(chatHtmlSource).toContain("--composer-toolbar-glyph-size: 17px;")
+    expect(chatHtmlSource).toContain("--composer-toolbar-status-glyph-size: 13px;")
     expect(chatHtmlSource).toContain("--composer-send-button-size: 34px;")
     expect(composerIconSizeRule).toContain("width: var(--composer-icon-button-size);")
     expect(composerIconSizeRule).toContain("min-width: var(--composer-icon-button-size);")
     expect(composerIconSizeRule).toContain("height: var(--composer-icon-button-size);")
     expect(composerIconSizeRule).toContain("min-height: var(--composer-icon-button-size);")
-    expect(composerIconGlyphRule).toContain("width: 16px;")
-    expect(composerIconGlyphRule).toContain("height: 16px;")
+    expect(composerIconSizeRule).toContain(".composerStatusPill.oc-chip {")
+    expect(composerIconGlyphRule).toContain("width: var(--composer-toolbar-glyph-size);")
+    expect(composerIconGlyphRule).toContain("height: var(--composer-toolbar-glyph-size);")
+    expect(chatHtmlSource).toContain(".index-status-icon {")
+    expect(chatHtmlSource).toContain(".index-status-icon .codicon")
     expect(toolbarSendRule).toContain("flex: 0 0 var(--composer-send-button-size);")
     expect(toolbarSendRule).toContain("margin-inline-start: auto;")
     expect(toolbarSendRule).not.toContain("margin-left: auto;")
@@ -277,6 +289,7 @@ describe("model selection flow", () => {
     expect(triggerRule).not.toContain("position: absolute;")
     expect(triggerRule).toContain("background: transparent;")
     expect(sendRule).not.toContain("position: absolute;")
+    expect(sendRule).not.toContain(".send .oc-liquid-icon")
     expect(chatHtmlSource).toContain(".modelTrigger::after")
     expect(chatHtmlSource).toContain('aria-haspopup="listbox"')
     expect(chatHtmlSource).toContain('aria-expanded="false"')

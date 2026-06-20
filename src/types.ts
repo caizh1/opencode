@@ -132,6 +132,60 @@ export type RagConfigurationApplyResult = {
   hasReusableIndex: boolean
 }
 
+export type DocumentRagAvailability =
+  | "disabled"
+  | "not-configured"
+  | "no-documents"
+  | "scanning"
+  | "indexing"
+  | "ready"
+  | "partial"
+  | "paused"
+  | "large-workspace-paused"
+  | "error"
+
+export type DocumentRagSettings = {
+  enabled: boolean
+  maxFiles: number
+  maxFileBytes: number
+  maxExtractedBytesPerFile: number
+  maxChunks: number
+  excludeGlobs: string[]
+  queryTopK: number
+  maxEvidenceBytes: number
+}
+
+export type DocumentRagProgress = {
+  phase: "scanning" | "indexing" | "backoff"
+  documents: number
+  indexedDocuments: number
+  pendingDocuments: number
+  chunks: number
+  embeddedChunks: number
+  elapsedMs?: number
+  updatedAt: number
+}
+
+export type DocumentRagStatus = {
+  enabled: boolean
+  availability: DocumentRagAvailability
+  documentCount: number
+  indexedDocuments: number
+  skippedDocuments: number
+  pendingDocuments: number
+  chunks: number
+  embeddedChunks: number
+  pendingChunkCount?: number
+  dimension?: number
+  provider?: string
+  model?: string
+  updatedAt?: number
+  lastScanAt?: number
+  lastError?: string
+  fallbackReason?: string
+  progress?: DocumentRagProgress
+}
+
 export type RemoteSettings = {
   provider: {
     apiBaseUrl: string
@@ -174,6 +228,7 @@ export type RemoteSettings = {
     apiBaseUrl: string
     model: string
     maxTokens: number
+    contextLength: number
     temperature: number
     topP: number
     debounceMs: number
@@ -212,6 +267,7 @@ export type RemoteSettings = {
     maxPaths: number
   }
   rag: RagSettings
+  documentRag: DocumentRagSettings
 }
 
 export type HealthResponse = {

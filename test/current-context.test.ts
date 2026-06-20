@@ -25,7 +25,7 @@ describe("default current file context", () => {
 
   test("warns the model to use only read-only workspace evidence tools", () => {
     expect(contextSource).toContain("local VS Code context supplied by the extension")
-    expect(contextSource).toContain("Only the read-only chipmate_read tool is available for workspace evidence")
+    expect(contextSource).toContain("Read-only ChipMate workspace evidence tools may be available")
     expect(contextSource).toContain("ChipMate workspace-host tools are disabled for this chat turn")
     expect(contextSource).toContain("ask the user to open, attach, or @mention the file")
     expect(contextSource).toContain("No local file content was captured")
@@ -43,6 +43,8 @@ describe("default current file context", () => {
     expect(chatViewSource).toContain("autoContext: this.autoContextState()")
     expect(chatViewSource).toContain("contextItems: this.deps.contextStore.viewItems()")
     expect(chatViewSource).toContain('type: "removeContextItem"')
+    expect(chatViewSource).toContain('type: "toggleContextPin"')
+    expect(chatViewSource).toContain('this.deps.contextStore.addFile(uri, "persistent")')
     expect(chatViewSource).toContain('type: "openContextItem"')
     expect(chatViewSource).toContain("workspaceDiagnosticsSummary")
     expect(chatViewSource).toContain("diagnosticCount: diagnostics.total")
@@ -53,10 +55,21 @@ describe("default current file context", () => {
     expect(contextSource).toContain('kind: "file"')
     expect(contextSource).toContain('kind: "selection"')
     expect(contextSource).toContain("addTrackedSelectionToContext")
+    expect(contextSource).toContain('lifetime: "one-shot"')
+    expect(contextSource).toContain('store.addFile(active.document.uri, "persistent")')
+    expect(contextSource).toContain("consumeOneShot")
     expect(contextSource).toContain('"attached selection"')
     expect(contextSource).toContain("contextForStoredItem")
-    expect(contextSource.indexOf("for (const item of contextStore.list())")).toBeLessThan(
+    expect(contextSource.indexOf("for (const item of contextItems)")).toBeLessThan(
       contextSource.indexOf("if (options.includeSelection"),
     )
+  })
+
+  test("queues send-specific context snapshots", () => {
+    expect(chatViewSource).toContain("contextItems: LocalContextItem[]")
+    expect(chatViewSource).toContain("contextItems: contextItems.map")
+    expect(chatViewSource).toContain("next.contextItems")
+    expect(chatViewSource).toContain("this.deps.contextStore.consumeOneShot(contextItems)")
+    expect(chatViewSource).toContain("this.deps.contextStore.restore(queued.contextItems)")
   })
 })

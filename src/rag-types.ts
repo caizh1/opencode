@@ -3,6 +3,7 @@ import type { RagEndpointKind, RagIndexPausedReason, RagResumeReason, RagSetting
 
 export type RagChunkKind = "function" | "file-summary" | "module-summary" | "state-transition" | "text-window"
 export type RagIndexLifecycleState = "building" | "ready" | "paused" | "stale"
+export type RagResumeCompatibility = "same-version" | "cross-version-validated"
 
 export type RagChunk = {
   id: string
@@ -42,6 +43,7 @@ export type RagVectorIndex = {
   state?: RagIndexLifecycleState
   completed?: boolean
   staleReason?: string
+  resumeCompatibility?: RagResumeCompatibility
   buildStartedAt?: number
   buildFinishedAt?: number
 }
