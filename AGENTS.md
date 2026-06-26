@@ -130,3 +130,39 @@ After completing any bug fix or behavior change that should be tested in VS
 Code, create a fresh local extension package before handing off the work. Use
 `bun run vsix` to advance the build number on the current release line, then
 report the new `.vsix` filename.
+
+### Local default provider/RAG injection
+
+Private local provider and RAG defaults must live only in the ignored root file
+`.chipmate-vsix-defaults.local.json`. Do not write those concrete endpoint,
+host, or private model values into tracked files such as `package.json`,
+`AGENTS.md`, README files, tests, scripts, or source code.
+
+Before any local ChipMate VSIX packaging, read
+`.chipmate-vsix-defaults.local.json` when it exists and inject its values only
+into the packaged VSIX manifest. The local file schema is:
+
+```json
+{
+  "provider": {
+    "apiBaseUrl": "...",
+    "chatModel": "..."
+  },
+  "rag": {
+    "embedding": {
+      "endpoint": "...",
+      "model": "..."
+    },
+    "rerank": {
+      "endpoint": "...",
+      "model": "..."
+    },
+    "allowedHosts": ["..."]
+  }
+}
+```
+
+`bun run vsix` must fail closed if that local defaults file exists but is not
+ignored by git. After packaging, verify that tracked source files do not contain
+the private default values, and keep them only in the ignored local defaults file
+and the ignored/generated `.vsix` artifact.

@@ -21,7 +21,7 @@ This ledger fixes the non-streaming parity boundary for the ChipMate qwen autoco
 
 | Area | Status | Notes |
 | --- | --- | --- |
-| Config and provider registration | Aligned | `chipmate.completion.provider` preserves `qwen-direct`, `none`, and legacy `openai-compatible` UI compatibility. Only `qwen-direct` registers the qwen provider. |
+| Config and provider registration | Aligned | `chipmate.completion.provider` preserves `qwen-direct`, `none`, and legacy `openai-compatible` UI compatibility. `qwen-direct` remains the default qwen path; explicit `fim-direct` reuses the same local inline provider shell for profile-specific FIM requests. |
 | Transport | Aligned | `QwenFimClient` posts raw completions with `stream: false`, Qwen stop tokens, and the shared ChipMate provider API key. |
 | HelperVars | Aligned with diagnostics | Prefix/suffix pruning, `workspaceUris`, language info, file contents/lines, selected completion info, and optional AST `treePath` status are represented. |
 | Context payload | Partially aligned with qwen C enhancement | Recently edited, recently opened, import definitions, and root path snippets are qwen-owned. C root-path may use an extension-injected graph-only exact symbol lookup, but qwen does not import Chat/RAG/CodeGraph runtime or hybrid retrieval. Clipboard, diff, recent visited, and static context remain payload slots but are not active sources. |

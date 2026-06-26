@@ -129,6 +129,7 @@ const {
   DEFAULT_COMPLETION_CONTEXT_LENGTH,
   DEFAULT_RAG_EMBEDDING_MODEL,
   DEFAULT_RAG_RERANK_MODEL,
+  DEFAULT_TOOLS_MAX_AGENT_STEPS,
   LEGACY_RAG_API_KEY_SECRET_KEY,
   RAG_EMBEDDING_BATCH_SIZE_DEFAULT,
   RAG_EMBEDDING_BATCH_SIZE_ERROR,
@@ -224,6 +225,8 @@ describe("completion settings", () => {
 
     expect(settings.completion.enabled).toBe(true)
     expect(settings.completion.provider).toBe("qwen-direct")
+    expect(settings.completion.profile).toBe("qwen-coder-fim")
+    expect(settings.completion.apiBaseUrl).toBe("")
     expect(settings.completion.model).toBe(DEFAULT_COMPLETION_MODEL)
     expect(settings.completion.contextLength).toBe(DEFAULT_COMPLETION_CONTEXT_LENGTH)
 
@@ -251,24 +254,136 @@ describe("completion settings", () => {
     })
 
     expect(configUpdates).toContainEqual({ key: "completion.contextLength", value: DEFAULT_COMPLETION_CONTEXT_LENGTH })
+    expect(configUpdates).toContainEqual({ key: "completion.apiBaseUrl", value: "http://localhost:4096" })
+  })
+
+  test("reads and saves fim-direct DeepSeek completion settings without changing provider defaults", async () => {
+    configValues = new Map<string, unknown>([
+      ["completion.provider", "fim-direct"],
+      ["completion.profile", "deepseek-fim"],
+      ["completion.apiBaseUrl", "https://api.deepseek.com/"],
+      ["completion.model", "deepseek-v4-flash"],
+    ])
+
+    const settings = readRemoteSettings()
+
+    expect(settings.provider.apiBaseUrl).toBe("")
+    expect(settings.completion.provider).toBe("fim-direct")
+    expect(settings.completion.profile).toBe("deepseek-fim")
+    expect(settings.completion.apiBaseUrl).toBe("https://api.deepseek.com")
+    expect(settings.completion.model).toBe("deepseek-v4-flash")
+
+    await saveCompletionSettings({
+      enabled: true,
+      provider: "fim-direct",
+      profile: "deepseek-fim",
+      apiBaseUrl: "https://api.deepseek.com/beta",
+      model: "deepseek-v4-flash",
+      maxTokens: 512,
+      contextLength: 200000,
+      temperature: 0.1,
+      topP: 0.9,
+    })
+
+    expect(configUpdates).toContainEqual({ key: "completion.provider", value: "fim-direct" })
+    expect(configUpdates).toContainEqual({ key: "completion.profile", value: "deepseek-fim" })
+    expect(configUpdates).toContainEqual({ key: "completion.apiBaseUrl", value: "https://api.deepseek.com/beta" })
+    expect(configUpdates).not.toContainEqual({ key: "provider.apiBaseUrl", value: "https://api.deepseek.com/beta" })
   })
 })
 
 describe("tool settings", () => {
   test("disables model tool calling by default and reads explicit enablement", () => {
     expect(readRemoteSettings().tools.enabled).toBe(false)
+    expect(readRemoteSettings().tools.maxAgentSteps).toBe(DEFAULT_TOOLS_MAX_AGENT_STEPS)
 
     configValues = new Map<string, unknown>([
       ["tools.enabled", true],
+      ["tools.maxAgentSteps", 60],
     ])
 
     expect(readRemoteSettings().tools.enabled).toBe(true)
+    expect(readRemoteSettings().tools.maxAgentSteps).toBe(60)
+  })
+
+  test("clamps tool max agent steps and falls back for invalid values", () => {
+    configValues = new Map<string, unknown>([
+      ["tools.maxAgentSteps", 999],
+    ])
+    expect(readRemoteSettings().tools.maxAgentSteps).toBe(100)
+
+    configValues = new Map<string, unknown>([
+      ["tools.maxAgentSteps", 0],
+    ])
+    expect(readRemoteSettings().tools.maxAgentSteps).toBe(1)
+
+    configValues = new Map<string, unknown>([
+      ["tools.maxAgentSteps", "not-a-number"],
+    ])
+    expect(readRemoteSettings().tools.maxAgentSteps).toBe(DEFAULT_TOOLS_MAX_AGENT_STEPS)
   })
 
   test("saves the model tool calling switch", async () => {
     await saveToolsEnabled(true)
 
     expect(configUpdates).toEqual([{ key: "tools.enabled", value: true }])
+  })
+})
+
+describe("skill settings", () => {
+  test("scans user skills by default and keeps explicit disablement", () => {
+    expect(readRemoteSettings().skills.scanUserSkills).toBe(true)
+    expect(readRemoteSettings().skills.scanClaudeSkills).toBe(true)
+
+    configValues = new Map<string, unknown>([
+      ["skills.scanUserSkills", false],
+    ])
+
+    expect(readRemoteSettings().skills.scanUserSkills).toBe(false)
+  })
+})
+
+describe("context settings", () => {
+  test("defaults and clamps chat history memory summary settings", () => {
+    let settings = readRemoteSettings()
+
+    expect(settings.context.maxHistoryTurns).toBe(10)
+    expect(settings.context.maxHistoryBytes).toBe(40000)
+    expect(settings.context.memorySummary).toEqual({
+      enabled: true,
+      maxBytes: 12000,
+      triggerOverflowTurns: 2,
+    })
+
+    configValues = new Map<string, unknown>([
+      ["context.maxHistoryTurns", 99],
+      ["context.maxHistoryBytes", 999999],
+      ["context.memorySummary.enabled", false],
+      ["context.memorySummary.maxBytes", 999999],
+      ["context.memorySummary.triggerOverflowTurns", 99],
+    ])
+    settings = readRemoteSettings()
+
+    expect(settings.context.maxHistoryTurns).toBe(20)
+    expect(settings.context.maxHistoryBytes).toBe(200000)
+    expect(settings.context.memorySummary).toEqual({
+      enabled: false,
+      maxBytes: 80000,
+      triggerOverflowTurns: 20,
+    })
+
+    configValues = new Map<string, unknown>([
+      ["context.maxHistoryTurns", -1],
+      ["context.maxHistoryBytes", -1],
+      ["context.memorySummary.maxBytes", -1],
+      ["context.memorySummary.triggerOverflowTurns", -1],
+    ])
+    settings = readRemoteSettings()
+
+    expect(settings.context.maxHistoryTurns).toBe(0)
+    expect(settings.context.maxHistoryBytes).toBe(0)
+    expect(settings.context.memorySummary.maxBytes).toBe(0)
+    expect(settings.context.memorySummary.triggerOverflowTurns).toBe(0)
   })
 })
 

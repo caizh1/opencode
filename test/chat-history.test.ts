@@ -20,6 +20,50 @@ describe("chat history flow", () => {
     expect(chatViewSource).toContain("client.getMessages(sessionID, SESSION_MESSAGE_LIMIT, signal)")
   })
 
+  test("persists local Word generation results into chat history", () => {
+    const directClientSource = readFileSync(join(import.meta.dir, "..", "src", "direct-agent-client.ts"), "utf8")
+    const chatSessionSource = readFileSync(join(import.meta.dir, "..", "src", "chat-session.ts"), "utf8")
+
+    expect(directClientSource).toContain("appendLocalMessages")
+    expect(directClientSource).toContain('message.info.mode === "doc-agent-local"')
+    expect(chatViewSource).toContain("persistDocumentAgentHistory")
+    expect(chatViewSource).toContain("persistedDocAgentTimelinePart")
+    expect(chatSessionSource).toContain("pluginHistoryUserText")
+    expect(chatViewSource).toContain('type === "generatedDocument"')
+    expect(chatViewSource).toContain('type === "docAgentTimeline"')
+  })
+
+  test("keeps draw.io diagram parts renderable across chat history refreshes", () => {
+    expect(chatViewSource).toContain('if (part.type === "diagram")')
+    expect(chatViewSource).toContain('type: "diagram"')
+    expect(chatViewSource).toContain('kind: stringFromPart(record.kind) || "drawio"')
+    expect(chatViewSource).toContain('xml: stringFromPart(record.xml)')
+    expect(chatViewSource).toContain('|| part.xml')
+    expect(chatHtmlSource).toContain('return (item.parts || []).some((part) => part.text || part.detail || part.status || part.xml || part.type === "diagram");')
+  })
+
+  test("keeps document agent stage summaries in persisted history", () => {
+    expect(chatViewSource).toContain('event.type === "read_docx"')
+    expect(chatViewSource).toContain('|| event.type === "source_classify"')
+    expect(chatViewSource).toContain('|| event.type === "model.extract"')
+    expect(chatViewSource).toContain('|| event.type === "merge"')
+    expect(chatViewSource).toContain("summarizePersistedDocAgentTimelineEvents")
+    expect(chatViewSource).toContain("events: summarizedEvents")
+    expect(chatViewSource).toContain("stateLabel: typeof item.stateLabel === \"string\" ? item.stateLabel : undefined")
+    expect(chatViewSource).not.toContain("merge:guidelines")
+    expect(chatViewSource).not.toContain("merge:placement:")
+    expect(chatViewSource).not.toContain("extract-batch:")
+  })
+
+  test("merges document agent timeline updates by stable timeline keys", () => {
+    expect(chatViewSource).toContain("mergeDocAgentTimelineEvent")
+    expect(chatViewSource).toContain("item.timelineKey === event.timelineKey")
+    expect(chatViewSource).toContain("next[existingIndex] = event")
+    expect(chatViewSource).toContain("event.stateLabel ? `${event.title} · ${event.stateLabel}` : event.title")
+    expect(chatViewSource).toContain("stateLabel: typeof item.stateLabel === \"string\" ? item.stateLabel : undefined")
+    expect(chatViewSource).toContain('item.type === "fallback" || item.stateLabel === "本地回退"')
+  })
+
   test("deletes chat history sessions after confirmation", () => {
     expect(chatViewSource).toContain('{ type: "deleteSession"; sessionID: string }')
     expect(chatViewSource).toContain("private async deleteSession")
@@ -30,7 +74,40 @@ describe("chat history flow", () => {
     expect(chatViewSource).toContain("this.reconcileSessionSelection()")
     expect(chatHtmlSource).toContain('deleteButton.title = "Delete chat history"')
     expect(chatHtmlSource).toContain('deleteButton.setAttribute("aria-label", "Delete chat history")')
+    expect(chatHtmlSource).toContain("deleteButton.innerHTML = LIQUID_ICONS.trash")
     expect(chatHtmlSource).toContain('vscode.postMessage({ type: "deleteSession", sessionID: session.id })')
+  })
+
+  test("supports bulk deleting selected chat history sessions", () => {
+    expect(chatViewSource).toContain('{ type: "deleteSessions"; sessionIDs: string[] }')
+    expect(chatViewSource).toContain('await this.deleteSessions(message.sessionIDs)')
+    expect(chatViewSource).toContain("private async deleteSessions")
+    expect(chatViewSource).toContain("private async deleteConfirmedSessions")
+    expect(chatViewSource).toContain("const targetIDs = uniqueStrings(sessionIDs)")
+    expect(chatViewSource).toContain("deletedIDs.includes(this.sessionID)")
+    expect(chatViewSource).toContain('"assets", "icons", "history-toolbar"')
+    expect(chatHtmlSource).toContain('id="deleteSelectedHistorySessions"')
+    expect(chatHtmlSource).toContain('class="oc-icon-btn oc-liquid-btn historyToolbarButton danger"')
+    expect(chatHtmlSource).toContain('historyToolbarIconGlyph("delete", historyToolbarIconUris)')
+    expect(chatHtmlSource).not.toContain('id="cancelHistorySelection"')
+    expect(chatHtmlSource).not.toContain('id="clearHistorySelection"')
+    expect(chatHtmlSource).toContain('setIconOnlyButton(check, selected ? "checkboxChecked" : "checkbox", check.title);')
+    expect(chatHtmlSource).toContain('allSelected ? "deselectAll" : "selectAll"')
+    expect(chatHtmlSource).toContain('historyBulkSelectMode = !historyBulkSelectMode;')
+    expect(chatHtmlSource).toContain('el("selectHistorySessions").hidden = total === 0;')
+    expect(chatHtmlSource).toContain('el("selectHistorySessions").setAttribute("aria-pressed", historyBulkSelectMode ? "true" : "false");')
+    expect(chatHtmlSource).toContain('historyBulkSelectMode ? "Exit selection mode" : "Select chat history sessions"')
+    expect(chatHtmlSource).toContain('el("closeHistory").hidden = historyBulkSelectMode;')
+    expect(chatHtmlSource).not.toContain('setHistoryToolbarButton(el("cancelHistorySelection"), "exitSelection", "Exit selection mode");')
+    expect(chatHtmlSource).toContain('vscode.postMessage({ type: "deleteSessions", sessionIDs })')
+  })
+
+  test("renders generated session display titles without changing plugin session identity", () => {
+    expect(chatViewSource).toContain("session.displayTitle?.trim()")
+    expect(chatViewSource).toContain("sessionListTitle(session)")
+    expect(chatViewSource).toContain("if (canonical && canonical !== CHAT_SESSION_TITLE) return canonical")
+    expect(chatViewSource).toContain("client.ensureSessionDisplayTitle(sessionID, signal)")
+    expect(chatViewSource).toContain("queueMissingSessionDisplayTitles(client, visibleSessions)")
   })
 
   test("refreshes session history after session-changing actions", () => {
@@ -39,6 +116,37 @@ describe("chat history flow", () => {
     expect(chatViewSource).toContain("client.listSessions(signal)")
     expect(chatViewSource).toContain("this.isVisibleChatSession(session)")
     expect(chatViewSource).toContain("isPluginChatSession(session)")
+  })
+
+  test("refreshes history toolbar state without reloading the current chat timeline", () => {
+    const refreshCaseStart = chatViewSource.indexOf('case "refresh":')
+    const refreshCaseBody = chatViewSource.slice(
+      refreshCaseStart,
+      chatViewSource.indexOf('case "openAgentTerminal"', refreshCaseStart),
+    )
+    const historyRefreshStart = chatViewSource.indexOf("private async refreshHistorySessions")
+    const historyRefreshBody = chatViewSource.slice(
+      historyRefreshStart,
+      chatViewSource.indexOf("refreshCodeGraphStatus", historyRefreshStart),
+    )
+
+    expect(refreshCaseBody).toContain('case "refresh":')
+    expect(refreshCaseBody).toContain("await this.refresh()")
+    expect(refreshCaseBody).toContain('case "refreshSessions":')
+    expect(refreshCaseBody).toContain("await this.refreshHistorySessions()")
+    expect(refreshCaseBody).not.toContain('case "refreshSessions":\n          await this.refresh()')
+    expect(historyRefreshBody).toContain("await this.refreshSessionList(client)")
+    expect(historyRefreshBody).toContain("await this.refreshSessionStatuses(client)")
+    expect(historyRefreshBody).toContain("this.postState()")
+    expect(historyRefreshBody).toContain("Failed to refresh history list")
+    expect(historyRefreshBody).toContain("this.deps.output.appendLine(`[history] ${detail}`)")
+    expect(historyRefreshBody).not.toContain("this.loadingMessages = true")
+    expect(historyRefreshBody).not.toContain("loadSelectedSessionMessages")
+    expect(historyRefreshBody).not.toContain("loadSessionMessages")
+    expect(historyRefreshBody).not.toContain("reconcileSessionSelection")
+    expect(historyRefreshBody).not.toContain("clearActiveSendState")
+    expect(historyRefreshBody).not.toContain("clearQueuedSends")
+    expect(historyRefreshBody).not.toContain("reportRemoteConnectionFailure")
   })
 
   test("hides inline completion sessions from chat history", () => {
@@ -57,9 +165,12 @@ describe("chat history flow", () => {
   test("hides external ChipMate sessions from plugin chat history", () => {
     expect(chatViewSource).toContain("CHAT_SESSION_TITLE")
     expect(chatViewSource).toContain("hiddenExternalSessions")
-    expect(chatViewSource).toContain("messages.some(isExternalChatMessage)")
+    expect(chatViewSource).toContain("classifyChatSessionSource(session, messages)")
+    expect(chatViewSource).toContain('if (sessionSource === "external")')
+    expect(chatViewSource).toContain('if (sessionSource === "legacy-plugin")')
     expect(chatViewSource).toContain("private async hideExternalSession")
     expect(chatViewSource).toContain("Hidden external ChipMate session")
+    expect(chatViewSource).toContain("Keeping legacy VS Code chat session")
   })
 
   test("recovers when the direct runtime has lost the selected session", () => {
@@ -146,6 +257,8 @@ describe("chat history flow", () => {
   })
 
   test("streams chat replies through ChipMate events with async polling fallback", () => {
+    const directClientSource = readFileSync(join(import.meta.dir, "..", "src", "direct-agent-client.ts"), "utf8")
+
     expect(chatViewSource).toContain("ensureEventSubscription")
     expect(chatViewSource).toContain("subscribeEvents")
     expect(chatViewSource).toContain("sendMessageAsync")
@@ -155,16 +268,31 @@ describe("chat history flow", () => {
     expect(chatViewSource).toContain("EVENT_READY_TIMEOUT_MS")
     expect(chatViewSource).not.toContain("live stream unavailable; falling back to blocking message request")
     expect(chatViewSource).toContain("finishStreamingSession")
+    expect(chatViewSource).toContain("private readonly remoteMessagesBySession = new Map<string, ChipMateMessage[]>()")
+    expect(chatViewSource).toContain("private sessionIDForRemoteEvent")
+    expect(chatViewSource).toContain("const targetSessionID = this.sessionIDForRemoteEvent(event, eventSessionID)")
+    expect(chatViewSource).toContain("const targetMessages = targetSessionID ? this.remoteMessagesForSession(targetSessionID) : []")
+    expect(chatViewSource).toContain("this.setRemoteMessagesForSession(resultSessionID, result.messages)")
+    expect(chatViewSource).toContain("if (resultSessionID === this.sessionID)")
+    expect(chatStreamSource).toContain("chipMateEventSessionIDForMessages")
+    expect(chatStreamSource).toContain("messagePartFromDeltaEvent(properties, relevantSessionID)")
     expect(chatStreamSource).toContain('case "message.part.updated"')
     expect(chatStreamSource).toContain('case "message.part.delta"')
     expect(chatStreamSource).toContain('case "session.status"')
+    expect(directClientSource).toContain("private emitToolActivityPart")
+    expect(directClientSource).toContain('status: "pending"')
+    expect(directClientSource).toContain('status: "running"')
+    expect(directClientSource).toContain("const announcedToolCallIDs = new Set<string>()")
+    expect(directClientSource).toContain("const stableToolCallIDsByIndex = new Map<number, string>()")
+    expect(directClientSource).toContain("toolsAllowed && stableToolCallID && existing.function.name")
+    expect(directClientSource).not.toContain("announcedToolCallIDs.has(existing.id)")
   })
 
   test("cancels active async sends through remote abort and suppresses late stream events", () => {
     expect(chatViewSource).toContain("SESSION_ABORT_TIMEOUT_MS")
     expect(chatViewSource).toContain("await this.cancelActiveSend()")
     expect(chatViewSource).toContain("client.abortSession(sessionID, signal)")
-    expect(chatViewSource).toContain("this.beginActiveSend(client, sessionID)")
+    expect(chatViewSource).toContain("this.beginActiveSend(client, sessionID, input.fingerprint)")
     expect(chatViewSource).toContain("this.startSendStatusWatchdog(client, sessionID, generation)")
     expect(chatViewSource).toContain("this.stopSendStatusWatchdog()")
     expect(chatViewSource).toContain("this.stopMessagePollingFallback()")
@@ -174,13 +302,62 @@ describe("chat history flow", () => {
     expect(chatViewSource).toContain("sendCancellable:")
   })
 
+  test("keeps active chat send state isolated by selected session", () => {
+    const newSessionBody = chatViewSource.slice(
+      chatViewSource.indexOf("async newSession()"),
+      chatViewSource.indexOf("refreshState()", chatViewSource.indexOf("async newSession()")),
+    )
+    const selectSessionBody = chatViewSource.slice(
+      chatViewSource.indexOf("private async selectSession"),
+      chatViewSource.indexOf("private async deleteSession", chatViewSource.indexOf("private async selectSession")),
+    )
+    const postStateBody = chatViewSource.slice(
+      chatViewSource.indexOf("private postStateNow()"),
+      chatViewSource.indexOf("private reportError", chatViewSource.indexOf("private postStateNow()")),
+    )
+    const cancelBody = chatViewSource.slice(
+      chatViewSource.indexOf("private async cancelActiveSend"),
+      chatViewSource.indexOf("private suppressStreamingEventsForSession", chatViewSource.indexOf("private async cancelActiveSend")),
+    )
+
+    expect(chatViewSource).toContain("private readonly activeSends = new Map<string, ActiveSend>()")
+    expect(chatViewSource).toContain("private readonly activeSendControllers = new Map<string, AbortController>()")
+    expect(chatViewSource).toContain("private readonly activeSendStartedAt = new Map<string, number>()")
+    expect(chatViewSource).toContain("private readonly sessionStatuses = new Map<string, ChipMateSessionStatus>()")
+    expect(chatViewSource).toContain("private sessionLoadGeneration = 0")
+    expect(chatViewSource).toContain("private newSessionInFlight = false")
+    expect(chatViewSource).toContain("private currentSessionSending()")
+    expect(chatViewSource).toContain("private currentSessionCancellable()")
+    expect(chatViewSource).toContain("private currentActiveSendActivity(): ActiveSendActivity | undefined")
+    expect(chatViewSource).toContain("private currentTurnToolActivity()")
+    expect(chatViewSource).toContain('[...toolParts].reverse().find((part) => isActiveToolStatus(part.status))')
+    expect(chatViewSource).toContain('status === "running" || status === "approval-required" || status === "pending" || status === "waiting"')
+    expect(newSessionBody).toContain("if (this.newSessionInFlight)")
+    expect(newSessionBody).toContain("const loadGeneration = ++this.sessionLoadGeneration")
+    expect(newSessionBody).not.toContain("clearActiveSendState()")
+    expect(selectSessionBody).toContain("const loadGeneration = ++this.sessionLoadGeneration")
+    expect(selectSessionBody).toContain("this.syncCurrentRemoteMessages()")
+    expect(selectSessionBody).toContain("await this.loadSessionMessages(client, sessionID, loadGeneration)")
+    expect(selectSessionBody).not.toContain("clearActiveSendState()")
+    expect(selectSessionBody).toContain("await this.refreshSessionStatuses(client)")
+    expect(postStateBody).toContain("const sending = this.currentSessionSending()")
+    expect(postStateBody).toContain("sendCancellable: sending && this.currentSessionCancellable()")
+    expect(postStateBody).toContain("activeSendActivity: this.currentActiveSendActivity()")
+    expect(cancelBody).toContain("const sessionID = this.sessionID")
+    expect(cancelBody).toContain("this.clearActiveSendState(sessionID)")
+  })
+
   test("queues busy chat sends and drains them FIFO after terminal send states", () => {
     expect(chatViewSource).toContain("const MAX_QUEUED_CHAT_SENDS = 10")
     expect(chatViewSource).toContain("type QueuedChatSend")
     expect(chatViewSource).toContain("private queuedSends: QueuedChatSend[] = []")
+    expect(chatViewSource).toContain("fingerprint: string")
     expect(chatViewSource).toContain("private enqueueChatSend")
     expect(chatViewSource).toContain("clientQueueID?: string")
     expect(chatViewSource).toContain("this.enqueueChatSend(text, options, mentioned.uris, mentioned.refs, clientQueueID, contextItems)")
+    expect(chatViewSource).toContain("this.duplicateSendMessage(this.sessionID, fingerprint)")
+    expect(chatViewSource).toContain("this.activeSends.get(sessionID)?.fingerprint === fingerprint")
+    expect(chatViewSource).toContain('this.postQueueRejected(clientQueueID, duplicate, "duplicate")')
     expect(chatViewSource).toContain('type: "queueUpdated"')
     expect(chatViewSource).toContain('type: "queueRejected"')
     expect(chatViewSource).toContain("private postQueueUpdated")
@@ -189,7 +366,7 @@ describe("chat history flow", () => {
     expect(chatViewSource).toContain("const next = this.queuedSends.shift()")
     expect(chatViewSource).toContain("this.postQueueUpdated(this.queuedSends.length > 0")
     expect(chatViewSource).toContain("const mentioned = await this.resolveExistingMentionedFiles(next.mentionedFileRefs)")
-    expect(chatViewSource).toContain("await this.processSendMessage(next.text, next.options, mentioned.uris, next.contextItems)")
+    expect(chatViewSource).toContain("await this.processSendMessage(next.text, next.options, mentioned.uris, next.contextItems, mentioned.refs)")
     expect(chatViewSource).toContain("contextItems: LocalContextItem[]")
     expect(chatViewSource).toContain("void this.drainQueuedSends()")
     expect(chatViewSource).toContain("queuedSends: this.queuedSends.map")
@@ -221,11 +398,37 @@ describe("chat history flow", () => {
     expect(chatViewSource).toContain('status?.type === "retry"')
     expect(chatViewSource).toContain("result.retry")
     expect(chatViewSource).toContain("remoteRetryMessage")
-    expect(chatViewSource).toContain("this.clearActiveSendState()")
-    expect(chatViewSource).toContain("this.sending = false")
+    expect(chatViewSource).toContain("private clearActiveSendState(sessionID?: string)")
+    expect(chatViewSource).toContain("this.activeSends.delete(sessionID)")
+    expect(chatViewSource).toContain("this.activeSendControllers.delete(sessionID)")
+    expect(chatViewSource).toContain("this.localSendSessionID = undefined")
     expect(chatViewSource).toContain("远端 ChipMate 正在重试模型请求")
     expect(chatStreamSource).toContain("retry?: ChipMateSessionStatus")
     expect(chatStreamSource).toContain('retry: type === "retry" ? normalizedStatus : undefined')
+  })
+
+  test("keeps pending user messages visible across message refreshes", () => {
+    expect(chatViewSource).toContain("pendingLocalUserMessages")
+    expect(chatViewSource).toContain("mergeRenderedChatMessages({")
+    expect(chatViewSource).toContain("pendingMessages: this.pendingLocalUserMessagesForSession(this.sessionID)")
+    expect(chatViewSource).not.toContain("this.pendingLocalUserMessageIDs")
+    expect(chatViewSource).not.toContain("this.pendingLocalUserTexts")
+    expect(chatViewSource).toContain('sendStatusForStage("pending")')
+    expect(chatViewSource).toContain('this.updatePendingLocalUserStage(sendSessionID, "preparing"')
+    expect(chatViewSource).toContain('this.updatePendingLocalUserStage(sendSessionID, "sending"')
+  })
+
+  test("emits staged local runtime statuses during long chat preparation", () => {
+    const directClientSource = readFileSync(join(import.meta.dir, "..", "src", "direct-agent-client.ts"), "utf8")
+
+    expect(directClientSource).toContain("private setBusyStatus")
+    expect(directClientSource).toContain('this.setBusyStatus(sessionID, "preparing", "Preparing conversation history")')
+    expect(directClientSource).toContain("queueConversationMemoryRefresh")
+    expect(directClientSource).toContain("[chat-memory] queued background summary")
+    expect(directClientSource).toContain("flushQueuedConversationMemoryRefresh(sessionID)")
+    expect(directClientSource).toContain('this.setBusyStatus(sessionID, "thinking"')
+    expect(chatViewSource).toContain("chatSendStageFromSessionStatus")
+    expect(chatViewSource).toContain("chatSendStatusDetail(status)")
   })
 
   test("surfaces interrupted active sends from stream errors and status polling", () => {
@@ -279,11 +482,21 @@ describe("chat history flow", () => {
     expect(chatHtmlSource).toContain("syntaxFunction")
     expect(chatHtmlSource).toContain("syntaxInserted")
     expect(chatHtmlSource).toContain("async function copyCode")
-    expect(chatHtmlSource).toContain('setButtonTemporaryLabel(button, "Copied", previousLabel)')
-    expect(chatHtmlSource).toContain('copy.className = "copyCode oc-icon-btn oc-liquid-btn"')
-    expect(chatHtmlSource).toContain("function thinkingNode")
-    expect(chatHtmlSource).toContain("hasAssistantContentAfterLastUser")
-  })
+	    expect(chatHtmlSource).toContain('setButtonTemporaryLabel(button, "Copied", previousLabel)')
+	    expect(chatHtmlSource).toContain('copy.className = "copyCode oc-icon-btn oc-liquid-btn"')
+	    expect(chatHtmlSource).toContain("function thinkingNode")
+	    expect(chatHtmlSource).toContain("function assistantActivityStatus")
+	    expect(chatHtmlSource).toContain("function currentTurnActivityMessageKey")
+	    expect(chatHtmlSource).toContain("function toolLiveActivityRow")
+	    expect(chatHtmlSource).toContain("function assistantActivityFingerprint")
+	    expect(chatHtmlSource).toContain('status.stage === "summarizing"')
+	    expect(chatHtmlSource).toContain('assistantActivityLabel(status)')
+	    expect(chatHtmlSource).toContain('fingerprint: assistantActivityFingerprint(activityStatus)')
+	    expect(chatHtmlSource).toContain("if (activityStatus && !activityMessageKey) {")
+	    expect(chatHtmlSource).toContain('renderPartCards(body, item, options)')
+	    expect(chatHtmlSource).toContain('root.appendChild(toolLiveActivityRow(liveToolActivity));')
+	    expect(chatHtmlSource).toContain("hasAssistantContentAfterLastUser")
+	  })
 
   test("renders message actions and outline controls without nested long-answer scrolling", () => {
     expect(chatHtmlSource).toContain("function messageActions")
@@ -447,6 +660,51 @@ describe("chat history flow", () => {
     expect(chatViewSource).toContain("hiddenExportIntentSessions")
   })
 
+  test("exports rendered draw.io diagrams as validated PNG files", () => {
+    expect(chatHtmlSource).toContain('type: "exportDrawioImage"')
+    expect(chatHtmlSource).toContain('type: "registerDiagramVisualEvidence"')
+    expect(chatHtmlSource).toContain("function registerDiagramVisualEvidence")
+    expect(chatHtmlSource).toContain("function normalizeDiagramVisualDataUri")
+    expect(chatHtmlSource).toContain('data:image\\\\/png;base64,')
+    expect(chatViewSource).toContain('{ type: "registerDiagramVisualEvidence"')
+    expect(chatViewSource).toContain("private async registerDiagramVisualEvidence")
+    expect(chatViewSource).toContain("appendVisualEvidence")
+    expect(chatHtmlSource).toContain("DIAGRAM_VISUAL_NORMAL_MAX_SIDE = 1280")
+    expect(chatHtmlSource).toContain("DIAGRAM_VISUAL_DENSE_MAX_SIDE = 2048")
+    expect(chatHtmlSource).toContain("DIAGRAM_VISUAL_READABLE_MIN_SIDE = 1024")
+    expect(chatHtmlSource).toContain("DIAGRAM_VISUAL_SOFT_MAX_BYTES = 1024 * 1024")
+    expect(chatHtmlSource).toContain("DIAGRAM_VISUAL_HARD_MAX_BYTES = 2 * 1024 * 1024")
+    expect(chatHtmlSource).toContain("function diagramVisualProfile")
+    expect(chatHtmlSource).toContain("function isDenseDiagramVisual")
+    expect(chatHtmlSource).toContain("function diagramVisualResizeAttempts")
+    expect(chatHtmlSource).not.toContain("DIAGRAM_VISUAL_MIN_SIDE = 512")
+    expect(chatViewSource).toContain('{ type: "exportDrawioImage"; diagramId?: string; filenameHint?: string; dataUri?: string }')
+    expect(chatViewSource).toContain('case "exportDrawioImage"')
+    expect(chatViewSource).toContain("private async exportDrawioImage")
+    expect(chatViewSource).toContain("decodeDrawioPngDataUri")
+    expect(chatViewSource).toContain("drawioPngFilename")
+    expect(chatViewSource).toContain('title: "Export draw.io diagram as PNG"')
+    expect(chatViewSource).toContain('filters: {\n        PNG: ["png"],\n      }')
+    expect(chatViewSource).toContain("workspace.fs.writeFile")
+  })
+
+  test("exports rendered Mermaid diagrams as PNG files without replacing source copy", () => {
+    expect(chatHtmlSource).toContain('exportPng.className = "exportMermaidImage oc-icon-btn oc-liquid-btn";')
+    expect(chatHtmlSource).toContain('setIconOnlyButton(exportPng, "save", "Export Mermaid diagram as PNG");')
+    expect(chatHtmlSource).toContain("function exportMermaidDiagramImage")
+    expect(chatHtmlSource).toContain("function mermaidSvgToPngDataUrl")
+    expect(chatHtmlSource).toContain("registerDiagramVisualEvidence(block, {")
+    expect(chatHtmlSource).toContain('type: "exportMermaidImage"')
+    expect(chatHtmlSource).toContain('setIconOnlyButton(copy, "copy", "Copy Mermaid source");')
+    expect(chatViewSource).toContain('{ type: "exportMermaidImage"; format?: "png"; filenameHint?: string; dataUrl?: string }')
+    expect(chatViewSource).toContain('case "exportMermaidImage"')
+    expect(chatViewSource).toContain("private async exportMermaidImage")
+    expect(chatViewSource).toContain("decodePngDataUri")
+    expect(chatViewSource).toContain("pngExportFilename")
+    expect(chatViewSource).toContain('title: "Export Mermaid diagram as PNG"')
+    expect(chatViewSource).toContain('filters: {\n        PNG: ["png"],\n      }')
+  })
+
   test("collapses reasoning content into a details card", () => {
     expect(chatViewSource).toContain("splitThinkingFromParts(message.parts)")
     expect(chatViewSource).toContain("if (split.reasoning || split.openThinking)")
@@ -465,6 +723,7 @@ describe("chat history flow", () => {
 
   test("marks workspace filesystem tool usage", () => {
     expect(chatViewSource).toContain("WORKSPACE_FILESYSTEM_TOOLS")
+    expect(chatViewSource).toContain('"chipmate_edit_file"')
     expect(chatViewSource).toContain("serverToolWarning")
     expect(chatViewSource).toContain("flaggedSessions")
     expect(chatHtmlSource).toContain("Workspace tools used")
@@ -472,7 +731,11 @@ describe("chat history flow", () => {
 
   test("normalizes legacy read tool names before rendering chat history", () => {
     expect(chatViewSource).toContain("function displayToolName(tool: string)")
-    expect(chatViewSource).toContain('return tool === "chipmate_read_file" ? "chipmate_read" : tool')
+    expect(chatViewSource).toContain('if (tool === "chipmate_read" || tool === "chipmate_read_file") return "Read file"')
+    expect(chatViewSource).toContain('if (tool === "chipmate_read_evidence") return "Read evidence"')
+    expect(chatViewSource).toContain('if (tool === "chipmate_create_directory") return "Create folder"')
+    expect(chatViewSource).toContain('if (tool === "chipmate_edit_file") return "Edit file"')
+    expect(chatViewSource).toContain("return tool")
     expect(chatViewSource).toContain('title: displayToolName("tool" in part && typeof part.tool === "string" ? part.tool : "tool")')
   })
 })

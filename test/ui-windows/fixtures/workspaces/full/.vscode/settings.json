@@ -1,0 +1,11 @@
+{
+  "chipmate.codeGraph.promptOnWorkspaceOpen": false,
+  "chipmate.codeGraph.maxFiles": 1000,
+  "chipmate.rag.embedding.resumeAutomatically": false,
+  "chipmate.documentRag.maxFiles": 200,
+  "chipmate.completion.logLevel": "debug",
+  "editor.inlineSuggest.enabled": true,
+  "editor.tabCompletion": "off",
+  "editor.acceptSuggestionOnEnter": "off",
+  "files.autoSave": "off"
+}

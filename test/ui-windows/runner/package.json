@@ -1,0 +1,7 @@
+{
+  "name": "chipmate-windows-offline-ui-runner",
+  "version": "0.1.0",
+  "private": true,
+  "type": "commonjs",
+  "description": "Offline Windows UI runner for an already-installed ChipMate extension"
+}

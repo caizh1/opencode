@@ -12,11 +12,13 @@ import {
 } from "./completion-context"
 import { parseSupportedDocument } from "./document-parser"
 import type { DocumentRagContextProvider, DocumentRagQueryResult } from "./document-rag"
+import { isMentionIndexExcludedPath } from "./mention-index"
 import type { CompletionPlan, RetrievedCompletionSnippet } from "./completion-types"
-import type { ChatContextOptions, RagStatus, RemoteSettings } from "./types"
+import type { ChatContextOptions, EvidenceLedgerEntry, RagStatus, RemoteSettings } from "./types"
 
 const CHAT_RAG_LATENCY_BUDGET_MS = 2000
 const CHAT_DOCUMENT_RAG_LATENCY_BUDGET_MS = 1000
+const FOLDER_CONTEXT_SCAN_LIMIT = 20000
 
 type FileContext = {
   uri: vscode.Uri
@@ -71,6 +73,13 @@ export type ContextSummaryItem = {
   skipped: boolean
 }
 
+export type MentionedContextRef = {
+  uri: vscode.Uri
+  type?: "file" | "folder"
+  label?: string
+  insertText?: string
+}
+
 type ResolvedEditorContext = {
   document: vscode.TextDocument
   selection: vscode.Selection
@@ -80,6 +89,26 @@ type ResolvedEditorContext = {
 type ChatRetrievalOptions = {
   retrievalMode: CodeGraphEvidenceRetrievalMode
   latencyBudgetMs?: number
+}
+
+export type BuildChatPromptInput = {
+  question: string
+  options: ChatContextOptions
+  settings: RemoteSettings
+  contextStore: LocalContextStore
+  contextItems?: LocalContextItem[]
+  mentionedFiles?: vscode.Uri[]
+  mentionedContext?: MentionedContextRef[]
+  editorContext?: TrackedEditorContext
+  codeGraph?: CodeGraphContextProvider
+  documentRag?: DocumentRagContextProvider
+  onContextSummary?: (items: ContextSummaryItem[]) => void
+}
+
+export type BuildChatPromptResult = {
+  prompt: string
+  evidenceLedgerInput: EvidenceLedgerEntry[]
+  contextSummary: ContextSummaryItem[]
 }
 
 export class MissingLocalContextError extends Error {
@@ -271,18 +300,11 @@ function copyLocalContextItem(item: LocalContextItem): LocalContextItem {
   return { ...item }
 }
 
-export async function buildChatPrompt(input: {
-  question: string
-  options: ChatContextOptions
-  settings: RemoteSettings
-  contextStore: LocalContextStore
-  contextItems?: LocalContextItem[]
-  mentionedFiles?: vscode.Uri[]
-  editorContext?: TrackedEditorContext
-  codeGraph?: CodeGraphContextProvider
-  documentRag?: DocumentRagContextProvider
-  onContextSummary?: (items: ContextSummaryItem[]) => void
-}) {
+export async function buildChatPrompt(input: BuildChatPromptInput) {
+  return (await buildChatPromptWithEvidence(input)).prompt
+}
+
+export async function buildChatPromptWithEvidence(input: BuildChatPromptInput): Promise<BuildChatPromptResult> {
   const chunks: string[] = [
     `User question:\n${input.question.trim()}`,
   ]
@@ -290,7 +312,7 @@ export async function buildChatPrompt(input: {
     input.options,
     input.settings,
     input.contextItems ?? input.contextStore.list(),
-    input.mentionedFiles ?? [],
+    input.mentionedContext ?? (input.mentionedFiles ?? []).map((uri) => ({ uri, type: "file" as const })),
     input.editorContext,
   )
   input.onContextSummary?.(context.summary)
@@ -323,6 +345,7 @@ export async function buildChatPrompt(input: {
   })
 
   if (input.settings.context.localOnlyMode) chunks.push(localContextContract(input.settings.tools.enabled))
+  chunks.push(drawioDiagramOutputGuidance(input.settings.tools.enabled))
 
   const hasLocalContext = hasUsableFileContext(context.summary) || Boolean(codeGraph?.text) || Boolean(analysisEvidence?.evidencePack.evidence.length) || Boolean(documentEvidence?.text)
 
@@ -337,7 +360,17 @@ export async function buildChatPrompt(input: {
   if (codeGraph?.text) chunks.push(`Local code graph evidence:\n${codeGraph.text}`)
   if (analysisEvidence) chunks.push(`Local analysis evidence pack:\n${formatAnalysisEvidence(analysisEvidence)}`)
   if (documentEvidence?.text) chunks.push(`Local document RAG evidence:\n${documentEvidence.text}`)
-  return chunks.join("\n\n")
+  return {
+    prompt: chunks.join("\n\n"),
+    evidenceLedgerInput: buildEvidenceLedgerInput({
+      question: input.question,
+      contextSummary: context.summary,
+      codeGraph,
+      analysisEvidence,
+      documentEvidence,
+    }),
+    contextSummary: context.summary,
+  }
 }
 
 async function retrieveDocumentRagEvidence(input: {
@@ -357,6 +390,93 @@ async function retrieveDocumentRagEvidence(input: {
   } catch {
     return undefined
   }
+}
+
+function buildEvidenceLedgerInput(input: {
+  question: string
+  contextSummary: ContextSummaryItem[]
+  codeGraph?: Awaited<ReturnType<CodeGraphContextProvider["buildContext"]>>
+  analysisEvidence?: QueryEvidenceResult
+  documentEvidence?: DocumentRagQueryResult
+}): EvidenceLedgerEntry[] {
+  const entries: EvidenceLedgerEntry[] = []
+  for (const item of input.contextSummary) {
+    if (item.skipped) continue
+    const kind = /\bselection\b/i.test(item.source) ? "selection" : "file"
+    entries.push({
+      source: "local-context",
+      kind,
+      path: item.path,
+      summary: compactEvidenceSummary(`${item.source} ${item.path} was included as current local workspace context.`),
+      truncated: item.truncated,
+      staleness: "current",
+    })
+  }
+  if (input.codeGraph?.text) {
+    entries.push({
+      source: "codegraph",
+      kind: "codegraph",
+      symbol: input.codeGraph.symbols[0],
+      query: input.question,
+      summary: compactEvidenceSummary([
+        `Local code graph evidence retrieved in ${input.codeGraph.mode} mode.`,
+        `evidence=${input.codeGraph.metrics.evidenceCount}`,
+        `candidates=${input.codeGraph.metrics.candidateCount}`,
+        input.codeGraph.metrics.omittedCandidates ? `omitted=${input.codeGraph.metrics.omittedCandidates}` : "",
+      ].filter(Boolean).join(" ")),
+      truncated: input.codeGraph.truncated || input.codeGraph.metrics.truncated,
+      staleness: "current",
+    })
+  }
+  if (input.analysisEvidence) {
+    entries.push({
+      source: "analysis",
+      kind: "analysis",
+      query: input.question,
+      summary: compactEvidenceSummary([
+        "Local analysis evidence pack was retrieved for the current question.",
+        `intent=${input.analysisEvidence.trace.intent}`,
+        `packedBytes=${input.analysisEvidence.evidencePack.packedBytes}`,
+        input.analysisEvidence.evidencePack.omittedEvidence ? `omitted=${input.analysisEvidence.evidencePack.omittedEvidence}` : "",
+        input.analysisEvidence.answerPolicy?.confidence ? `confidence=${input.analysisEvidence.answerPolicy.confidence}` : "",
+      ].filter(Boolean).join(" ")),
+      truncated: input.analysisEvidence.evidencePack.truncated,
+      staleness: "current",
+    })
+  }
+  if (input.documentEvidence) {
+    if (input.documentEvidence.hits.length === 0) {
+      entries.push({
+        source: "document-rag",
+        kind: "document",
+        query: input.question,
+        summary: compactEvidenceSummary("Local document RAG returned evidence text for the current question."),
+        truncated: false,
+        staleness: "current",
+      })
+    }
+    for (const hit of input.documentEvidence.hits.slice(0, 12)) {
+      entries.push({
+        source: "document-rag",
+        kind: "document",
+        path: hit.path,
+        range: `${hit.startLine}-${hit.endLine}`,
+        query: input.question,
+        summary: compactEvidenceSummary(`Document RAG hit ${hit.path}:${hit.startLine}-${hit.endLine} score=${formatEvidenceScore(hit.score)}.`),
+        truncated: false,
+        staleness: "current",
+      })
+    }
+  }
+  return entries
+}
+
+function compactEvidenceSummary(input: string) {
+  return limitPreviewBytes(input.replace(/\s+/g, " ").trim(), 300)
+}
+
+function formatEvidenceScore(score: number) {
+  return Number.isFinite(score) ? score.toFixed(3) : "unknown"
 }
 
 async function retrieveChatAnalysisEvidence(input: {
@@ -799,7 +919,7 @@ async function buildLocalContext(
   options: ChatContextOptions,
   settings: RemoteSettings,
   contextItems: LocalContextItem[],
-  mentionedFiles: vscode.Uri[],
+  mentionedContext: MentionedContextRef[],
   trackedEditorContext?: TrackedEditorContext,
 ) {
   const chunks: string[] = [workspaceInfo()]
@@ -814,8 +934,14 @@ async function buildLocalContext(
     seen.add(item.uri.toString())
   }
 
-  for (const uri of mentionedFiles) {
+  for (const item of mentionedContext) {
     if (files.length >= settings.context.maxFiles) break
+    if (item.type === "folder") {
+      const expanded = await expandMentionedFolderContext(item, settings, seen, settings.context.maxFiles - files.length)
+      files.push(...expanded)
+      continue
+    }
+    const uri = item.uri
     if (seen.has(uri.toString())) continue
     files.push(await fileContext(uri, settings, "mentioned file"))
     seen.add(uri.toString())
@@ -891,11 +1017,37 @@ function localContextContract(toolsEnabled: boolean) {
     "Use the <local-analysis-pack> answer policy, query trace, summaries, state machines, and evidence refs when present.",
     "When local code graph evidence is present, cite paths and line ranges from the evidence; if evidence is insufficient, say what is missing instead of guessing.",
     toolsEnabled
-      ? "Read-only ChipMate workspace evidence tools may be available for targeted gap searches and drill-down reads; do not request writes, commands, network calls, or remote server filesystem access."
+      ? "ChipMate workspace evidence tools may be available for targeted gap searches and drill-down reads; chipmate_validate_diagram_ir validates evidence-backed DiagramIR and chipmate_create_drawio_diagram may generate deterministic draw.io XML for direct chat rendering without writing files; chipmate_create_directory may create new workspace folders, chipmate_create_file may create new workspace text/code files, and chipmate_edit_file may modify existing workspace text/code files only by exact oldString/newString replacement when the user explicitly asks for local file changes. Do not request overwrites, fuzzy patches, deletes, renames, moves, commands, network calls, or remote server filesystem access."
       : "ChipMate workspace-host tools are disabled for this chat turn; do not request, simulate, or emit tool calls.",
     toolsEnabled
-      ? "Use chipmate_read_evidence for returned refIds and chipmate_read only when the user or evidence gives an explicit workspace path."
+      ? "Use chipmate_read_evidence for returned refIds, chipmate_read_skill_resource for active skill references/assets/scripts resources, and chipmate_read only when the user or evidence gives an explicit workspace path. If an existing file must change, read enough exact surrounding text first, then use chipmate_edit_file with a unique oldString or replaceAll when every exact occurrence should change."
       : "If evidence points to a workspace-relative path but the needed content is missing, say what is missing and ask the user to open, attach, or @mention the file.",
+  ].join("\n")
+}
+
+function drawioDiagramOutputGuidance(toolsEnabled: boolean) {
+  if (toolsEnabled) {
+    return [
+      "Draw.io Diagram Output Contract:",
+      "When the user asks for a complex draw.io or diagrams.net diagram, first collect code/document/reference evidence, organize it as DiagramIR, call chipmate_validate_diagram_ir, then call chipmate_create_drawio_diagram as the final renderer.",
+      "The model or active skill decides the user-visible diagramType from intent and evidence: business-flow for business/process perspective, code-flow for entry/function/branch/return execution paths, state-machine for pure state transitions, architecture for module boundaries, and soc-block for chip/module/bus/port diagrams. Code evidence does not automatically mean code-flow.",
+      "For simple illustrative diagrams, chipmate_create_drawio_diagram may be called directly with a structured spec instead of hand-authoring mxCell/mxGeometry XML.",
+      "chipmate_create_drawio_diagram always runs the Diagram Design Compiler before ELKJS layout. Provide semantic structure, visualRole, importance, edgeKind, pathRole, labelPriority, textParts, and layout/style/semantic hints; do not write raw draw.io coordinates unless the user explicitly asks for source.",
+      "For embedded process diagrams with modules plus FSM states/events, keep the requested diagramType such as business-flow or code-flow, and encode module/state/event semantics with semanticHints; the compiler may choose an internal embedded-fsm-flow visual profile.",
+      "Treat containers, regions, lanes, swimlanes, and groups as ownership/background areas, not execution steps. Assign owned nodes with parent/container/lane/region/group. For business-flow/code-flow embedded FSM diagrams these ownership areas render as weak background bands so flow edges remain readable; for architecture/soc-block or explicit containerMode='strong' they render as strong compound containers. Empty ownership containers are not rendered unless explicitly marked allowEmpty or placeholder.",
+      "DiagramIR may include composition, nodes, edges, regions, containers, lanes, buses, ports, arrays, subdiagrams, evidenceRefs, layoutHints, styleHints, semanticHints, sourceArtifacts, and referenceDiagrams.",
+      "Set DiagramIR composition.mode to single by default. Only set composition.mode to multi when the current user request or an active skill explicitly asks for or allows multiple diagrams; if one dense diagram would benefit from splitting, mention that as a warning instead of splitting automatically.",
+      "Active skills may refine evidence collection, DiagramIR organization, VisualPlan hints, layout/style hints, and reference constraints; current user instructions override skill defaults, but skills must not bypass the Design Compiler, ELKJS layout, offline rendering, or XML/PNG safety checks.",
+      "Use Mermaid only when the user explicitly asks for Mermaid, mmd, or Mermaid source.",
+      "Do not reference external image URLs, font URLs, CSS URLs, or remote diagrams.net/embed services.",
+      "After the tool renders the diagram directly in chat, put only a short caption or explanation outside the diagram.",
+    ].join("\n")
+  }
+  return [
+    "Draw.io Diagram Output Contract:",
+    "ChipMate tool calling is disabled. When the user asks for a draw.io or diagrams.net diagram, fall back to one fenced `drawio` code block containing valid <mxfile> or <mxGraphModel> XML, and note that hand-authored XML is less reliable with small local models.",
+    "Do not reference external image URLs, font URLs, CSS URLs, or remote diagrams.net/embed services inside the XML.",
+    "Keep text labels concise, use built-in draw.io shapes/styles, and put only a short caption outside the fenced block.",
   ].join("\n")
 }
 
@@ -1034,6 +1186,64 @@ async function fileContext(uri: vscode.Uri, settings: RemoteSettings, reason = "
   } catch (error) {
     return skippedFile(uri, error instanceof Error ? error.message : String(error))
   }
+}
+
+async function expandMentionedFolderContext(
+  item: MentionedContextRef,
+  settings: RemoteSettings,
+  seen: Set<string>,
+  remainingSlots: number,
+): Promise<FileContext[]> {
+  const folder = item.uri
+  if (remainingSlots <= 0 || folder.scheme !== "file" || !isInWorkspace(folder)) return []
+
+  try {
+    const stat = await vscode.workspace.fs.stat(folder)
+    if (!Boolean(stat.type & vscode.FileType.Directory)) return []
+  } catch {
+    return []
+  }
+
+  if (typeof vscode.workspace.findFiles !== "function") return []
+
+  const RelativePattern = (vscode as typeof vscode & { RelativePattern?: typeof vscode.RelativePattern }).RelativePattern
+  const include = typeof RelativePattern === "function" ? new RelativePattern(folder, "**/*") : "**/*"
+  const uris = await vscode.workspace.findFiles(include, null, FOLDER_CONTEXT_SCAN_LIMIT + 1)
+  const files: FileContext[] = []
+  const sorted = uris
+    .filter((uri) => uri.scheme === "file" && isInWorkspace(uri) && isUriInsideFolder(uri, folder))
+    .sort((left, right) => relativePath(left).localeCompare(relativePath(right)))
+
+  for (const uri of sorted) {
+    if (files.length >= remainingSlots) break
+    if (isMentionIndexExcludedPath(relativePath(uri))) continue
+    const key = uri.toString()
+    if (seen.has(key)) continue
+
+    try {
+      const stat = await vscode.workspace.fs.stat(uri)
+      if (!Boolean(stat.type & vscode.FileType.File) || Boolean(stat.type & vscode.FileType.Directory)) continue
+    } catch {
+      continue
+    }
+
+    const ctx = await fileContext(uri, settings, "mentioned folder")
+    if (ctx.reason === "skipped") continue
+    files.push(ctx)
+    seen.add(key)
+  }
+
+  return files
+}
+
+function isUriInsideFolder(uri: vscode.Uri, folder: vscode.Uri) {
+  const folderPath = normalizeFsPath(folder.fsPath)
+  const filePath = normalizeFsPath(uri.fsPath)
+  return filePath.startsWith(`${folderPath}/`)
+}
+
+function normalizeFsPath(input: string) {
+  return input.replace(/\\/g, "/").replace(/\/+$/, "")
 }
 
 async function contextForStoredItem(item: LocalContextItem, settings: RemoteSettings): Promise<FileContext> {
@@ -1230,7 +1440,11 @@ function looksBinary(bytes: Uint8Array) {
 }
 
 function languageFromPath(path: string) {
-  const ext = path.toLowerCase().split(".").pop()
+  const normalized = path.replace(/\\/g, "/")
+  const basename = normalized.split("/").pop()?.toLowerCase() ?? ""
+  if (basename === "makefile") return "makefile"
+  if (basename === "cmakelists.txt") return "cmake"
+  const ext = basename.split(".").pop()
   switch (ext) {
     case "ts":
       return "typescript"
@@ -1242,6 +1456,17 @@ function languageFromPath(path: string) {
       return "javascriptreact"
     case "py":
       return "python"
+    case "sh":
+    case "bash":
+    case "zsh":
+      return "shellscript"
+    case "yml":
+    case "yaml":
+      return "yaml"
+    case "mk":
+      return "makefile"
+    case "cmake":
+      return "cmake"
     case "go":
       return "go"
     case "rs":
@@ -1254,8 +1479,14 @@ function languageFromPath(path: string) {
     case "cc":
     case "cxx":
       return "cpp"
+    case "h":
+    case "hh":
+    case "hpp":
+    case "hxx":
     case "c":
       return "c"
+    case "s":
+      return "asm"
     default:
       return ext || "text"
   }

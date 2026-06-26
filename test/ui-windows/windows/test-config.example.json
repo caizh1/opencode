@@ -1,0 +1,41 @@
+{
+  "installMode": "already-installed",
+  "profileMode": "direct-real",
+  "extensionId": "local.chipmate",
+  "codeCmd": "auto",
+  "realUserDataDir": "C:\\Users\\<user>\\AppData\\Roaming\\Code",
+  "realExtensionsDir": "C:\\Users\\<user>\\.vscode\\extensions",
+  "workspace": "fixtures\\workspaces\\smoke",
+  "provider": {
+    "apiBaseUrl": "https://<intranet-provider>/v1",
+    "chatModel": "<chat-model>",
+    "apiKey": ""
+  },
+  "completion": {
+    "enabled": true,
+    "provider": "qwen-direct",
+    "profile": "qwen-coder-fim",
+    "model": "qwen-coder-30b0"
+  },
+  "rag": {
+    "embeddingEndpoint": "https://<intranet-provider>/v1/embeddings",
+    "embeddingModel": "qwen3-embedding-8b",
+    "rerankEndpoint": "https://<intranet-provider>/v1/rerank",
+    "rerankModel": "qwen3-reranker-8b",
+    "allowedHosts": ["<intranet-host>"]
+  },
+  "mode": "full",
+  "timeouts": {
+    "startupMs": 12000,
+    "chatMs": 180000,
+    "completionMs": 90000,
+    "indexMs": 600000
+  },
+  "windowActivation": {
+    "strategy": "auto",
+    "processNameRegex": "^Code",
+    "titleRegex": "",
+    "workspaceTitleHint": "",
+    "timeoutMs": 45000
+  }
+}

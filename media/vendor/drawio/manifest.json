@@ -1,0 +1,13 @@
+{
+  "name": "draw.io viewer runtime",
+  "source": "https://github.com/jgraph/drawio",
+  "commit": "7976c02e1b10b1687c028d82782f9f5d90a885d6",
+  "commitDate": "2026-06-19T20:23:32Z",
+  "license": "Apache-2.0",
+  "files": [
+    "viewer-static.min.js",
+    "adapter.html",
+    "LICENSE"
+  ],
+  "notes": "ChipMate uses the official draw.io viewer-static runtime inside a local VS Code webview iframe. The adapter exposes a small offline load/export protocol for chat previews and PNG export. No online embed.diagrams.net fallback is used."
+}

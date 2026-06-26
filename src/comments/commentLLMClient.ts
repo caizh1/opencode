@@ -166,6 +166,8 @@ export class CommentLLMClient {
     let lastStage = "model.http.prepare"
     let responseHeadersReceived = false
     let firstChunkReceived = false
+    let responseStatus: number | undefined
+    let responseContentType = "unknown"
     let timer: ReturnType<typeof setTimeout> | undefined
     const armTimeout = () => {
       if (timer) clearTimeout(timer)
@@ -200,9 +202,10 @@ export class CommentLLMClient {
         body: input.requestBody,
       })
       responseHeadersReceived = true
+      responseStatus = response.status
       armTimeout()
       lastStage = "model.http.response.headers"
-      const responseContentType = response.headers.get("content-type") ?? "unknown"
+      responseContentType = response.headers.get("content-type") ?? "unknown"
       input.diagnostics?.({
         stage: lastStage,
         fields: {
@@ -315,7 +318,19 @@ export class CommentLLMClient {
 
       while (true) {
         input.signal?.throwIfAborted()
-        const chunk = await reader.read()
+        let chunk: Awaited<ReturnType<typeof reader.read>>
+        try {
+          chunk = await reader.read()
+        } catch (error) {
+          if (responseHeadersReceived && isPrematureStreamCloseError(error) && !input.signal?.aborted) {
+            if (!firstChunkReceived) {
+              firstChunkReceived = true
+              firstChunkMs = Date.now() - input.requestStarted
+            }
+            break
+          }
+          throw error
+        }
         if (chunk.done) break
         if (!firstChunkReceived) {
           firstChunkReceived = true
@@ -420,6 +435,41 @@ export class CommentLLMClient {
       if (error instanceof CommentLLMGenerationError) throw error
       if (timedOut && !input.signal?.aborted && isAbortError(error)) {
         throw new Error(`注释生成在 ${input.timeoutMs}ms 后超时。`)
+      }
+      if (responseHeadersReceived && !input.signal?.aborted && isPrematureStreamCloseError(error)) {
+        firstChunkReceived = true
+        lastStage = "model.http.stream.done"
+        const normalizedError = new Error("注释生成流结束前未收到完成标记。")
+        input.diagnostics?.({
+          stage: lastStage,
+          fields: {
+            ...input.safeRequestFields,
+            elapsedMs: Date.now() - input.requestStarted,
+            responseStatus,
+            responseContentType,
+            firstChunkMs: undefined,
+            deltaCount: 0,
+            reasoningDeltaCount: 0,
+            sseDataCount: 0,
+            rawBytes: 0,
+            textBytes: 0,
+            rawContentBytes: 0,
+            doneMarker: false,
+            finishReason: "none",
+          },
+        })
+        input.diagnostics?.({
+          stage: "model.http.error",
+          fields: {
+            ...input.safeRequestFields,
+            elapsedMs: Date.now() - input.requestStarted,
+            lastStage,
+            responseHeadersReceived,
+            firstChunkReceived,
+            ...errorDiagnostics(normalizedError),
+          },
+        })
+        throw new Error(`注释生成请求失败: ${formatError(normalizedError)}`)
       }
       input.diagnostics?.({
         stage: "model.http.error",
@@ -738,6 +788,11 @@ function trimErrorBody(input: string) {
 
 function isAbortError(error: unknown) {
   return error instanceof Error && error.name === "AbortError"
+}
+
+function isPrematureStreamCloseError(error: unknown) {
+  const message = formatError(error)
+  return /(?:socket connection was closed unexpectedly|stream.*closed|terminated|premature close)/i.test(message)
 }
 
 function isResponseFormatFallbackStatus(status: number) {

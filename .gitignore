@@ -5,7 +5,21 @@ node_modules/
 out/
 .vscode-test/
 .completion-quality/
+.chipmate/
+chipmate-ui-test-windows-*.zip
+chipmate-ui-test-windows-with-vscode-*.zip
+chipmate-ui-test-windows-*.zip.sha256
+chipmate-ui-test-windows-with-vscode-*.zip.sha256
+chipmate-ui-runner-windows-*.zip
+chipmate-ui-runner-windows-with-vscode-*.zip
+chipmate-ui-runner-windows-*.zip.sha256
+chipmate-ui-runner-windows-with-vscode-*.zip.sha256
+chipmate-ui-report-*.zip
 
 # Local OpenCode configuration
 .opencode/
 opencode.json
+
+# Local VSIX packaging defaults. This file may contain private provider/RAG
+# endpoint defaults that are injected only into local VSIX artifacts.
+.chipmate-vsix-defaults.local.json

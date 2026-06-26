@@ -50,6 +50,7 @@ export const DEFAULT_ANALYSIS_TOOL_POLICY: AnalysisToolPolicy = {
     "getCallers",
     "getCallees",
     "getCallChain",
+    "getFunctionCfg",
     "getModuleMap",
     "getStateMachines",
     "getStatePath",
@@ -212,6 +213,43 @@ export async function runAnalysisTool(input: RunAnalysisToolInput): Promise<Anal
           audit: audit(traceId, input.tool, args, packed.evidence.length, Date.now() - started, false),
           truncated: packed.truncated,
           omittedEvidence: packed.omittedEvidence,
+        })
+      }
+      case "getFunctionCfg": {
+        const symbol = requiredString(args, "symbol")
+        const maps = buildMaps(input.index)
+        const candidates = (maps.functionsByName.get(symbol) ?? [])
+          .concat(maps.functions.filter((fn) => fn.name.toLowerCase().includes(symbol.toLowerCase())))
+          .filter((fn, index, all) => all.findIndex((candidate) => candidate.id === fn.id) === index)
+          .slice(0, 8)
+        const selected = candidates[0]
+        const cfg = selected ? buildFunctionCfgView(selected) : undefined
+        const evidence = selected
+          ? [evidenceRef(selected.path, selected.startLine, selected.endLine, selected.snippet, "function-cfg")]
+          : []
+        return toolResult({
+          ok: Boolean(selected),
+          traceId,
+          tool: input.tool,
+          elapsedMs: Date.now() - started,
+          data: {
+            symbol,
+            candidates: candidates.map((fn) => ({
+              id: fn.id,
+              name: fn.name,
+              path: fn.path,
+              lines: `${fn.startLine}-${fn.endLine}`,
+              signature: fn.signature,
+            })),
+            cfg,
+            coverage: selected ? "bounded-structural" : "unknown",
+            gaps: selected
+              ? ["CFG is reconstructed from indexed function snippets and call summaries; macro-expanded/generated paths and dynamic dispatch may be missing."]
+              : [`No indexed function matched ${symbol}.`],
+          },
+          evidence,
+          error: selected ? undefined : `Function ${symbol} was not found for CFG extraction.`,
+          audit: audit(traceId, input.tool, args, evidence.length, Date.now() - started, false),
         })
       }
       case "getModuleMap": {
@@ -639,6 +677,84 @@ function getSymbols(index: CodeGraphIndex, name: string) {
     ...(derived.symbolsByName[name.toLowerCase()] ?? []),
     ...Object.values(derived.symbolsByName).flat().filter((symbol) => symbol.name.toLowerCase().includes(name.toLowerCase())),
   ].filter((symbol, index, all) => all.findIndex((candidate) => candidate.id === symbol.id) === index)
+}
+
+function buildFunctionCfgView(fn: CodeGraphFunction) {
+  type CfgNode = {
+    id: string
+    kind: string
+    label: string
+    line: number
+    evidence: { path: string; lines: string; snippet: string }
+  }
+  const lines = fn.snippet.replace(/\r\n/g, "\n").split("\n")
+  const nodes: CfgNode[] = [{
+    id: `${fn.id}:entry`,
+    kind: "entry",
+    label: fn.signature || fn.name,
+    line: fn.startLine,
+    evidence: { path: fn.path, lines: `${fn.startLine}-${fn.startLine}`, snippet: lines[0]?.trim() || fn.signature || fn.name },
+  }]
+  const lineNodeKeys = new Set<string>()
+  const addLineNode = (kind: string, line: number, label: string, snippet: string) => {
+    const key = `${kind}:${line}:${label}`
+    if (lineNodeKeys.has(key)) return
+    lineNodeKeys.add(key)
+    nodes.push({
+      id: `${fn.id}:${kind}:${line}:${nodes.length}`,
+      kind,
+      label: compactCfgLabel(label),
+      line,
+      evidence: { path: fn.path, lines: `${line}-${line}`, snippet: snippet.trim() },
+    })
+  }
+  lines.forEach((rawLine, offset) => {
+    const line = fn.startLine + offset
+    const text = rawLine.trim()
+    if (!text) return
+    const control = text.match(/\b(if|else\s+if|else|switch|case|default|for|while|do)\b\s*(?:\(([^)]*)\)|([^:;{]*))?/)
+    if (control) {
+      const keyword = control[1]?.replace(/\s+/g, "-") || "branch"
+      addLineNode(/for|while|do/.test(keyword) ? "loop" : keyword === "switch" ? "switch" : /case|default/.test(keyword) ? "case" : "branch", line, text, rawLine)
+    }
+    if (/\breturn\b/.test(text)) addLineNode("return", line, text, rawLine)
+    if (/^\w[\w\s*]*:\s*(?:$|\/)/.test(text) || /\bgoto\s+\w+/.test(text)) addLineNode("error-path", line, text, rawLine)
+  })
+  for (const call of fn.calls.slice(0, 40)) {
+    const snippet = call.snippet || `${call.name}(...)`
+    addLineNode("call", call.line, call.returnHandling ? `${call.name}: ${call.returnHandling}` : call.name, snippet)
+  }
+  nodes.sort((left, right) => left.line - right.line || cfgKindOrder(left.kind) - cfgKindOrder(right.kind))
+  const edges = nodes.slice(1).map((node, index) => ({
+    id: `${fn.id}:cfg-edge:${index}`,
+    source: nodes[index]?.id,
+    target: node.id,
+    label: node.kind === "branch" || node.kind === "switch" || node.kind === "case" ? "control" : "",
+  }))
+  return {
+    functionId: fn.id,
+    name: fn.name,
+    path: fn.path,
+    lines: `${fn.startLine}-${fn.endLine}`,
+    nodes: nodes.slice(0, 80),
+    edges: edges.slice(0, 120),
+    calls: fn.calls.slice(0, 40).map((call) => ({
+      callee: call.name,
+      line: call.line,
+      args: call.args,
+      returnHandling: call.returnHandling,
+      snippet: call.snippet,
+    })),
+  }
+}
+
+function compactCfgLabel(input: string) {
+  const text = input.replace(/\s+/g, " ").trim()
+  return text.length <= 120 ? text : `${text.slice(0, 117)}...`
+}
+
+function cfgKindOrder(kind: string) {
+  return ["entry", "branch", "switch", "case", "loop", "call", "return", "error-path"].indexOf(kind)
 }
 
 function fallbackFileSlice(index: CodeGraphIndex, path: string, startLine = 1, endLine?: number, maxBytes = DEFAULT_ANALYSIS_BUDGET.maxFileSliceBytes) {

@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test"
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import { collectCommentInsertionAnchors } from "../src/comments/commentAnchors"
+import { commentWorkspaceLanguageIdForPath } from "../src/comments/commentLanguage"
 import { parseCommentProposalResponse, summarizeCommentProposalResponse } from "../src/comments/commentProposalParser"
 import { discardReasonHistogram, validateRawCommentProposals } from "../src/comments/commentProposalValidator"
 import { commentPreviewText } from "../src/comments/commentPreview"
@@ -279,6 +280,28 @@ describe("AI comment proposal validator", () => {
       "commentText 看起来像代码": 3,
     })
   })
+
+  test("accepts hash comments for shell and rejects slash comments", () => {
+    const accepted = validateRawCommentProposals([
+      validProposal({
+        commentText: "# 只有准备好环境变量后才继续执行后续脚本。",
+      }),
+    ], selectionContext({ commentSyntax: "hash-line" }))
+    const rejectedLine = validateRawCommentProposals([
+      validProposal({
+        commentText: "// 这里是 shell 注释",
+      }),
+    ], selectionContext({ commentSyntax: "hash-line" }))
+    const rejectedBlock = validateRawCommentProposals([
+      validProposal({
+        commentText: "/* 这里是 yaml 注释 */",
+      }),
+    ], selectionContext({ commentSyntax: "hash-line" }))
+
+    expect(accepted.proposals).toHaveLength(1)
+    expect(rejectedLine.discarded[0]?.reason).toBe("commentText 只能包含注释")
+    expect(rejectedBlock.discarded[0]?.reason).toBe("commentText 只能包含注释")
+  })
 })
 
 describe("AI comment insertion anchors", () => {
@@ -354,6 +377,53 @@ describe("AI comment insertion anchors", () => {
       [5, "controlBlock"],
     ])
   })
+
+  test("extracts shell function and control block anchors", () => {
+    const document = documentShim([
+      "sync_logs() {",
+      "    if [ -n \"$LOG_DIR\" ]; then",
+      "        cp \"$src\" \"$LOG_DIR\"",
+      "    fi",
+      "}",
+    ])
+
+    expect(collectCommentInsertionAnchors(document, 0, 4, "shellscript").map((anchor) => [anchor.line, anchor.kind])).toEqual([
+      [0, "function"],
+      [1, "controlBlock"],
+    ])
+  })
+
+  test("extracts makefile rule and conditional anchors", () => {
+    const document = documentShim([
+      "build: deps",
+      "\t@echo build",
+      "ifeq ($(MODE),debug)",
+      "\t@echo debug",
+      "endif",
+    ])
+
+    expect(collectCommentInsertionAnchors(document, 0, 4, "makefile").map((anchor) => [anchor.line, anchor.kind])).toEqual([
+      [0, "function"],
+      [2, "controlBlock"],
+    ])
+  })
+
+  test("extracts yaml structural anchors", () => {
+    const document = documentShim([
+      "build:",
+      "  steps:",
+      "    - run: make all",
+      "deploy:",
+      "  needs: build",
+    ])
+
+    expect(collectCommentInsertionAnchors(document, 0, 4, "yaml").map((anchor) => [anchor.line, anchor.kind])).toEqual([
+      [0, "controlBlock"],
+      [1, "controlBlock"],
+      [2, "controlBlock"],
+      [3, "controlBlock"],
+    ])
+  })
 })
 
 describe("AI comment apply service source guard", () => {
@@ -391,6 +461,23 @@ describe("AI comment preview text", () => {
   test("falls back safely for empty comment wrappers", () => {
     expect(commentPreviewText("/**\n */")).toBe("+ /** 可预览 AI 注释候选 */")
   })
+
+  test("builds hash comment previews for shell, makefile, and yaml comments", () => {
+    expect(commentPreviewText("# 只有在构建缓存存在时才复用旧产物。")).toBe(
+      "+ # 只有在构建缓存存在时才复用旧产物。",
+    )
+  })
+})
+
+describe("AI comment workspace language mapping", () => {
+  test("maps shell, makefile, and yaml paths to supported language ids", () => {
+    expect(commentWorkspaceLanguageIdForPath("scripts/build.sh")).toBe("shellscript")
+    expect(commentWorkspaceLanguageIdForPath("ci/setup.bash")).toBe("shellscript")
+    expect(commentWorkspaceLanguageIdForPath("Makefile")).toBe("makefile")
+    expect(commentWorkspaceLanguageIdForPath("mk/common.mk")).toBe("makefile")
+    expect(commentWorkspaceLanguageIdForPath("gitea-ci.yml")).toBe("yaml")
+    expect(commentWorkspaceLanguageIdForPath("ci/pipeline.yaml")).toBe("yaml")
+  })
 })
 
 function selectionContext(overrides: {
@@ -400,6 +487,7 @@ function selectionContext(overrides: {
   allowedAnchors?: Array<{ line: number; targetLineText: string }>
   maxProposals?: number
   changedLineSpans?: Array<{ startLine: number; endLine: number }>
+  commentSyntax?: "c-style" | "hash-line"
 } = {}) {
   return {
     ...baseSelectionContext(),

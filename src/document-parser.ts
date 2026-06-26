@@ -1,7 +1,7 @@
 import { createRequire } from "node:module"
 import { inflateRawSync, inflateSync } from "node:zlib"
 
-export type ParsedDocumentKind = "docx" | "xlsx" | "xlsm" | "pdf"
+export type ParsedDocumentKind = "doc" | "docx" | "xlsx" | "xlsm" | "pdf"
 
 export type ParsedDocumentBlockKind =
   | "heading"
@@ -67,6 +67,7 @@ type ExcelJsCell = import("exceljs").Cell
 type ExcelJsCellValue = import("exceljs").CellValue
 type MammothModule = typeof import("mammoth")
 type HtmlParserModule = typeof import("node-html-parser")
+type WordExtractorModule = typeof import("word-extractor")
 
 type HtmlNode = {
   rawTagName?: string
@@ -115,6 +116,7 @@ const nodeRequire = createRequire(__filename)
 let excelJsModule: ExcelJsModule | undefined
 let mammothModule: MammothModule | undefined
 let htmlParserModule: HtmlParserModule | undefined
+let wordExtractorModule: WordExtractorModule | undefined
 
 function loadExcelJs() {
   if (!excelJsModule) excelJsModule = nodeRequire("exceljs") as ExcelJsModule
@@ -131,6 +133,11 @@ function loadHtmlParser() {
   return htmlParserModule
 }
 
+function loadWordExtractor() {
+  if (!wordExtractorModule) wordExtractorModule = nodeRequire("word-extractor") as WordExtractorModule
+  return wordExtractorModule
+}
+
 export function isSupportedDocumentPath(path: string) {
   return supportedDocumentKind(path) !== undefined
 }
@@ -142,11 +149,13 @@ export async function parseSupportedDocument(input: {
 }): Promise<ParsedDocumentContent | undefined> {
   const kind = supportedDocumentKind(input.path)
   if (!kind) return undefined
-  const blocks = kind === "docx"
-    ? await parseDocx(input.bytes)
-    : kind === "xlsx" || kind === "xlsm"
-      ? await parseWorkbook(input.bytes, kind)
-      : await parsePdf(input.bytes)
+  const blocks = kind === "doc"
+    ? await parseDoc(input.bytes)
+    : kind === "docx"
+      ? await parseDocx(input.bytes)
+      : kind === "xlsx" || kind === "xlsm"
+        ? await parseWorkbook(input.bytes, kind)
+        : await parsePdf(input.bytes)
   const rendered = renderParsedDocument(kind, blocks.length > 0 ? blocks : [noteBlock(emptyDocumentMessage(kind))])
   const limited = limitParsedDocument(rendered.text, rendered.blocks, input.maxBytes)
   return {
@@ -161,11 +170,36 @@ export async function parseSupportedDocument(input: {
 
 function supportedDocumentKind(path: string): ParsedDocumentKind | undefined {
   const lower = path.toLowerCase()
+  if (lower.endsWith(".doc")) return "doc"
   if (lower.endsWith(".docx")) return "docx"
   if (lower.endsWith(".xlsx")) return "xlsx"
   if (lower.endsWith(".xlsm")) return "xlsm"
   if (lower.endsWith(".pdf")) return "pdf"
   return undefined
+}
+
+async function parseDoc(bytes: Uint8Array): Promise<ParsedDocumentBlock[]> {
+  try {
+    const WordExtractor = loadWordExtractor()
+    const extractor = new WordExtractor()
+    const document = await extractor.extract(Buffer.from(bytes))
+    const blocks: ParsedDocumentBlock[] = []
+    addDocTextBlock(blocks, "Document body", "paragraph", document.getBody())
+    addDocTextBlock(blocks, "Headers", "text", document.getHeaders({ includeFooters: false }))
+    addDocTextBlock(blocks, "Footers", "text", document.getFooters())
+    addDocTextBlock(blocks, "Footnotes", "text", document.getFootnotes())
+    addDocTextBlock(blocks, "Endnotes", "text", document.getEndnotes())
+    addDocTextBlock(blocks, "Annotations", "text", document.getAnnotations())
+    addDocTextBlock(blocks, "Textboxes", "text", document.getTextboxes({ includeHeadersAndFooters: false }))
+    return blocks.length > 0 ? blocks : [noteBlock("No extractable DOC text found.")]
+  } catch (error) {
+    return [noteBlock(error instanceof Error ? error.message : String(error))]
+  }
+}
+
+function addDocTextBlock(blocks: ParsedDocumentBlock[], label: string, kind: ParsedDocumentBlockKind, text: string) {
+  const normalized = normalizeTextLines(text)
+  if (normalized) blocks.push({ kind, label, text: normalized })
 }
 
 async function parseDocx(bytes: Uint8Array): Promise<ParsedDocumentBlock[]> {
@@ -492,7 +526,7 @@ function parsePdfWithStreamFallback(bytes: Uint8Array) {
 }
 
 function renderParsedDocument(kind: ParsedDocumentKind, blocks: ParsedDocumentBlock[]) {
-  const lines = [`${kind === "pdf" ? "PDF text" : kind === "docx" ? "DOCX text" : `${kind.toUpperCase()} workbook`}:`]
+  const lines = [`${documentFormatLabel(kind)}:`]
   const renderedBlocks: ParsedDocumentBlock[] = []
   for (const block of blocks) {
     const text = normalizeTextLines(block.text)
@@ -506,6 +540,13 @@ function renderParsedDocument(kind: ParsedDocumentKind, blocks: ParsedDocumentBl
   }
   const text = lines.join("\n").replace(/[ \t]+$/gm, "").trim()
   return { text, blocks: renderedBlocks }
+}
+
+function documentFormatLabel(kind: ParsedDocumentKind) {
+  if (kind === "doc") return "DOC text"
+  if (kind === "docx") return "DOCX text"
+  if (kind === "pdf") return "PDF text"
+  return `${kind.toUpperCase()} workbook`
 }
 
 function limitParsedDocument(text: string, blocks: ParsedDocumentBlock[], maxBytes: number) {

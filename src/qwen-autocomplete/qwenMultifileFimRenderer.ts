@@ -1,14 +1,24 @@
-import { buildQwenFimPrompt } from "./fimTemplates"
+import { buildQwenFimPrompt, fimRequestShape, isQwenCoderModel } from "./fimTemplates"
 import type { QwenAutocompleteHelperVars } from "./helperVars"
 import type { QwenAutocompleteCodeSnippet } from "./snippets"
 import { countTokens, pruneLinesFromBottom, pruneLinesFromTop } from "./tokenPruning"
-import type { QwenAutocompleteConfig, QwenPromptRendererMode, QwenSnippetInjectionBlockedReason } from "./types"
+import type {
+  QwenAutocompleteConfig,
+  QwenAutocompleteProfile,
+  QwenFimRequestShape,
+  QwenPromptRendererMode,
+  QwenSnippetInjectionBlockedReason,
+} from "./types"
 
 export type QwenPromptPlan = {
   availablePromptTokens: number | null
   estimatedRenderedPromptTokens: number | null
+  fimProfile: QwenAutocompleteProfile
   prompt: string
   promptRendererMode: QwenPromptRendererMode
+  requestPrompt: string
+  requestShape: QwenFimRequestShape
+  requestSuffix?: string
   renderedPrefix: string
   renderedPrefixChars: number
   renderedPromptChars: number
@@ -48,15 +58,22 @@ export function buildQwenPromptPlan(input: RenderInput): QwenPromptPlan {
   if (!gate.allowed) {
     return single(input, gate)
   }
+  if (input.cfg.profile === "deepseek-fim") {
+    return renderDeepSeekFimPromptWithTokenLimit(input, gate.availablePromptTokens ?? 0)
+  }
   return renderQwenMultifileFimPromptWithTokenLimit(input, gate.availablePromptTokens ?? 0)
 }
 
 export function resolveQwenSnippetInjectionGate(input: RenderInput): Gate {
-  if (!input.cfg.enabled || input.cfg.provider !== "qwen-direct") return blocked("disabled", "disabled", null)
+  if (!input.cfg.enabled || (input.cfg.provider !== "qwen-direct" && input.cfg.provider !== "fim-direct")) {
+    return blocked("disabled", "disabled", null)
+  }
   const inject = input.injectIntoPrompt ?? input.snippets.length > 0
   if (!inject) return blocked("disabled", "disabled", null)
   if (input.snippets.length === 0) return blocked("no-selected-snippets", "single-file-qwen-fim", null)
-  if (!isQwenCoder(input.cfg.model)) return blocked("unsupported-model", "blocked", available(input.cfg))
+  if (input.cfg.profile === "qwen-coder-fim" && !isQwenCoderModel(input.cfg.model)) {
+    return blocked("unsupported-model", "blocked", available(input.cfg))
+  }
   const tokens = available(input.cfg)
   if (tokens === null) return blocked("unknown-context-length", "blocked", null)
   if (tokens < input.cfg.maxPromptTokens) return blocked("insufficient-context-length", "blocked", tokens)
@@ -115,6 +132,49 @@ function build(
   return { prefix: compiled, prompt: template(compiled, suffixText), suffix: suffixText }
 }
 
+function buildDeepSeek(
+  prefix: string,
+  suffixText: string,
+  input: RenderInput,
+): { prefix: string; prompt: string; suffix: string } {
+  const paths = unique(
+    [...input.snippets.map((snippet) => snippet.filepath), input.helper.filepath],
+    input.helper.workspaceUris,
+  )
+  const files = input.snippets
+    .map((snippet, index) => `// File: ${paths[index]?.uniquePath ?? safeName(snippet.filepath)}\n${snippet.content}`)
+    .join("\n\n")
+  const current = paths[paths.length - 1]?.uniquePath ?? safeName(input.helper.filepath)
+  const compiled = files ? `${files}\n\n// Current file: ${current}\n${prefix}` : prefix
+  return { prefix: compiled, prompt: compiled, suffix: suffixText }
+}
+
+export function renderDeepSeekFimPromptWithTokenLimit(input: RenderInput, limit: number): QwenPromptPlan {
+  const initial = buildDeepSeek(input.helper.prunedPrefix, input.helper.prunedSuffix, input)
+  if (countTokens(initial.prompt + initial.suffix, input.cfg.model) <= limit) {
+    return injected(input, initial, limit)
+  }
+  const prefixTokens = countTokens(input.helper.prunedPrefix, input.cfg.model)
+  const suffixTokens = countTokens(input.helper.prunedSuffix, input.cfg.model)
+  const total = prefixTokens + suffixTokens
+  if (total > 0) {
+    const prune = countTokens(initial.prompt + initial.suffix, input.cfg.model) - limit
+    const dropPrefix = Math.ceil(prune * (prefixTokens / total))
+    const dropSuffix = Math.ceil(prune - dropPrefix)
+    const prefixMax = Math.max(0, prefixTokens - dropPrefix)
+    const suffixMax = Math.max(0, suffixTokens - dropSuffix)
+    const pruned = buildDeepSeek(
+      pruneLinesFromTop(input.helper.prunedPrefix, prefixMax, input.cfg.model),
+      pruneLinesFromBottom(input.helper.prunedSuffix, suffixMax, input.cfg.model),
+      input,
+    )
+    if (countTokens(pruned.prompt + pruned.suffix, input.cfg.model) <= limit) {
+      return injected(input, pruned, limit)
+    }
+  }
+  return single(input, blocked("insufficient-context-length", "blocked", limit))
+}
+
 function template(prefix: string, suffixText: string): string {
   if (!prefix.includes(SEP)) return buildQwenFimPrompt({ prefix, suffix: suffixText })
   const [before, ...after] = prefix.split(SEP)
@@ -126,15 +186,23 @@ function injected(
   out: { prefix: string; prompt: string; suffix: string },
   tokens: number,
 ): QwenPromptPlan {
-  const estimate = countTokens(out.prompt, input.cfg.model)
+  const requestShape = fimRequestShape(input.cfg.profile)
+  const estimate = countTokens(
+    requestShape === "prompt-suffix" ? out.prompt + out.suffix : out.prompt,
+    input.cfg.model,
+  )
   return {
     availablePromptTokens: tokens,
     estimatedRenderedPromptTokens: estimate,
+    fimProfile: input.cfg.profile,
     prompt: out.prompt,
-    promptRendererMode: "qwen-multifile-fim",
+    promptRendererMode: input.cfg.profile === "deepseek-fim" ? "deepseek-multifile-fim" : "qwen-multifile-fim",
+    requestPrompt: out.prompt,
+    requestShape,
+    requestSuffix: requestShape === "prompt-suffix" ? out.suffix : undefined,
     renderedPrefix: out.prefix,
     renderedPrefixChars: out.prefix.length,
-    renderedPromptChars: out.prompt.length,
+    renderedPromptChars: requestShape === "prompt-suffix" ? out.prompt.length + out.suffix.length : out.prompt.length,
     renderedSuffix: out.suffix,
     renderedSuffixChars: out.suffix.length,
     snippetInjectionBlockedReason: "none",
@@ -143,15 +211,27 @@ function injected(
 }
 
 function single(input: RenderInput, gate: Gate): QwenPromptPlan {
-  const prompt = buildQwenFimPrompt({ prefix: input.helper.prunedPrefix, suffix: input.helper.prunedSuffix })
+  const requestShape = fimRequestShape(input.cfg.profile)
+  const prompt = input.cfg.profile === "deepseek-fim"
+    ? input.helper.prunedPrefix
+    : buildQwenFimPrompt({ prefix: input.helper.prunedPrefix, suffix: input.helper.prunedSuffix })
   return {
     availablePromptTokens: gate.availablePromptTokens,
-    estimatedRenderedPromptTokens: countTokens(prompt, input.cfg.model),
+    estimatedRenderedPromptTokens: countTokens(
+      requestShape === "prompt-suffix" ? prompt + input.helper.prunedSuffix : prompt,
+      input.cfg.model,
+    ),
+    fimProfile: input.cfg.profile,
     prompt,
-    promptRendererMode: gate.promptRendererMode,
+    promptRendererMode: input.cfg.profile === "deepseek-fim" && gate.promptRendererMode === "single-file-qwen-fim"
+      ? "single-file-deepseek-fim"
+      : gate.promptRendererMode,
+    requestPrompt: prompt,
+    requestShape,
+    requestSuffix: requestShape === "prompt-suffix" ? input.helper.prunedSuffix : undefined,
     renderedPrefix: input.helper.prunedPrefix,
     renderedPrefixChars: input.helper.prunedPrefix.length,
-    renderedPromptChars: prompt.length,
+    renderedPromptChars: requestShape === "prompt-suffix" ? prompt.length + input.helper.prunedSuffix.length : prompt.length,
     renderedSuffix: input.helper.prunedSuffix,
     renderedSuffixChars: input.helper.prunedSuffix.length,
     snippetInjectionBlockedReason: gate.snippetInjectionBlockedReason,
@@ -176,11 +256,6 @@ function available(cfg: QwenAutocompleteConfig): number | null {
 
 function suffix(value: string): string {
   return value === "" ? "\n" : value
-}
-
-function isQwenCoder(model: string): boolean {
-  const name = model.toLowerCase()
-  return name.includes("qwen") && name.includes("coder")
 }
 
 function repo(workspaces: string[]): string {

@@ -4,7 +4,8 @@ import { stat } from "node:fs/promises"
 import path from "node:path"
 import { promisify } from "node:util"
 import * as vscode from "vscode"
-import { resolveFunctionSelectionAtLine } from "./commentFunctionRange"
+import { resolveWorkspaceReviewUnitSelectionAtLine } from "./commentFunctionRange"
+import { commentWorkspaceLanguageIdForPath } from "./commentLanguage"
 import type { CommentLineSpan, CommentWorkspaceReviewUnitKind } from "./commentTypes"
 
 const execFileAsync = promisify(execFile)
@@ -159,7 +160,7 @@ async function reviewUnitsForChange(
     skipped.push({ relativePath: change.relativePath, reason: "binary-file", detail: "二进制文件不参与 AI 注释生成。" })
     return []
   }
-  const languageId = languageIdForPath(change.relativePath)
+  const languageId = commentWorkspaceLanguageIdForPath(change.relativePath)
   if (!languageId) {
     skipped.push({ relativePath: change.relativePath, reason: "unsupported-language", detail: "当前文件语言暂不支持 AI 注释生成。" })
     return []
@@ -200,17 +201,17 @@ async function reviewUnitsForChange(
   }>()
 
   for (const span of changedLineSpans) {
-    const functionSelection = resolveFunctionSelectionAtLine(document, span.startLine)
-    if (functionSelection) {
-      const startLine = functionSelection.start.line
-      const endLine = functionSelection.end.line
-      const key = `function:${startLine}:${endLine}`
+    const structuredSelection = resolveWorkspaceReviewUnitSelectionAtLine(document, span.startLine, languageId)
+    if (structuredSelection) {
+      const startLine = structuredSelection.selection.start.line
+      const endLine = structuredSelection.selection.end.line
+      const key = `${structuredSelection.unitKind}:${startLine}:${endLine}`
       const existing = groups.get(key)
       if (existing) {
         existing.changedLineSpans.push(span)
       } else {
         groups.set(key, {
-          unitKind: "function",
+          unitKind: structuredSelection.unitKind,
           startLine,
           endLine,
           changedLineSpans: [span],
@@ -253,7 +254,7 @@ async function reviewUnitsForChange(
         relativePath: change.relativePath,
         languageId,
         unitKind: group.unitKind,
-        title: unitTitle(document, group.unitKind, group.startLine, group.endLine),
+        title: unitTitle(document, languageId, group.unitKind, group.startLine, group.endLine),
         range: {
           startLine: group.startLine,
           endLine: group.endLine,
@@ -365,20 +366,19 @@ function mergeLineSpans(spans: CommentLineSpan[]) {
   return merged
 }
 
-function languageIdForPath(relativePath: string) {
-  const extension = path.extname(relativePath).toLowerCase()
-  if (extension === ".c") return "c"
-  if ([".cc", ".cpp", ".cxx", ".c++", ".hh", ".hpp", ".hxx", ".h++"].includes(extension)) return "cpp"
-  if (extension === ".h") return "cpp"
-  if (extension === ".cu" || extension === ".cuh") return "cuda-cpp"
-  if (extension === ".m") return "objective-c"
-  if (extension === ".mm") return "objective-cpp"
-  return undefined
-}
-
-function unitTitle(document: vscode.TextDocument, kind: CommentWorkspaceReviewUnitKind, startLine: number, endLine: number) {
+function unitTitle(document: vscode.TextDocument, languageId: string, kind: CommentWorkspaceReviewUnitKind, startLine: number, endLine: number) {
   const firstLine = document.lineAt(startLine).text.replace(/\s+/g, " ").trim()
-  const prefix = kind === "function" ? "函数" : kind === "block" ? "结构块" : "文件片段"
+  const prefix = kind === "function"
+    ? languageId === "shellscript"
+      ? "函数"
+      : "函数"
+    : kind === "block"
+      ? languageId === "makefile"
+        ? "规则块"
+        : languageId === "yaml"
+          ? "配置块"
+          : "结构块"
+      : "文件片段"
   const summary = firstLine.length > 96 ? `${firstLine.slice(0, 93)}...` : firstLine
   return `${prefix} · 第 ${startLine + 1}-${endLine + 1} 行${summary ? ` · ${summary}` : ""}`
 }

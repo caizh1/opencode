@@ -1,0 +1,193 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1672" height="941" viewBox="0 0 1672 941" role="img" aria-labelledby="title desc">
+  <title id="title">ChipMate VSCode 插件技术实现架构</title>
+  <desc id="desc">整仓代码理解实现链路，展示 CodeGraph、RAG、Context Packer、内网 Qwen 模型、安全审批和 ToolRuntime 的正确数据流关系。</desc>
+  <defs>
+    <marker id="arrow-blue" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#0b55c7"/>
+    </marker>
+    <marker id="arrow-orange" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#e85d04"/>
+    </marker>
+    <filter id="card-shadow" x="-10%" y="-10%" width="120%" height="125%">
+      <feDropShadow dx="0" dy="5" stdDeviation="7" flood-color="#0b2a66" flood-opacity="0.10"/>
+    </filter>
+    <style>
+      .bg { fill: #ffffff; }
+      .title { font: 700 52px -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", Arial, sans-serif; fill: #07175f; }
+      .subtitle { font: 500 24px -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", Arial, sans-serif; fill: #3e4658; }
+      .section { fill: #0b55c7; }
+      .sectionText { font: 700 22px -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", Arial, sans-serif; fill: #ffffff; }
+      .card { fill: #ffffff; stroke: #0b55c7; stroke-width: 2.8; rx: 14; filter: url(#card-shadow); }
+      .safety { fill: #fffaf5; stroke: #e85d04; stroke-width: 3; rx: 14; filter: url(#card-shadow); }
+      .tool { fill: #fbfdff; stroke: #0b55c7; stroke-width: 2.8; rx: 14; filter: url(#card-shadow); }
+      .num { fill: #0b55c7; }
+      .numText { font: 700 18px -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", Arial, sans-serif; fill: #ffffff; }
+      .cardTitle { font: 700 20px -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", Arial, sans-serif; fill: #07175f; }
+      .cardTitleSmall { font: 700 18px -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", Arial, sans-serif; fill: #07175f; }
+      .safetyTitle { font: 700 21px -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", Arial, sans-serif; fill: #d9480f; }
+      .body { font: 500 16px -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", Arial, sans-serif; fill: #111827; }
+      .bodySmall { font: 500 15px -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", Arial, sans-serif; fill: #111827; }
+      .label { font: 700 15px -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", Arial, sans-serif; fill: #0b55c7; }
+      .orangeLabel { font: 700 15px -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", Arial, sans-serif; fill: #e85d04; }
+      .note { font: 600 18px -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", Arial, sans-serif; fill: #07175f; }
+      .arrow { fill: none; stroke: #0b55c7; stroke-width: 3; stroke-linecap: round; stroke-linejoin: round; marker-end: url(#arrow-blue); }
+      .arrowDashed { fill: none; stroke: #0b55c7; stroke-width: 3; stroke-linecap: round; stroke-linejoin: round; stroke-dasharray: 8 8; marker-end: url(#arrow-blue); }
+      .arrowOrangeDashed { fill: none; stroke: #e85d04; stroke-width: 3; stroke-linecap: round; stroke-linejoin: round; stroke-dasharray: 8 8; marker-end: url(#arrow-orange); }
+      .divider { stroke: #c9d3e5; stroke-width: 1.5; stroke-dasharray: 4 6; }
+      .iconStroke { fill: none; stroke: #0b55c7; stroke-width: 4; stroke-linecap: round; stroke-linejoin: round; }
+      .iconFill { fill: #e9f2ff; stroke: #0b55c7; stroke-width: 4; }
+      .iconOrange { fill: none; stroke: #e85d04; stroke-width: 4; stroke-linecap: round; stroke-linejoin: round; }
+    </style>
+  </defs>
+
+  <rect class="bg" width="1672" height="941"/>
+  <text class="title" x="836" y="62" text-anchor="middle">ChipMate VSCode 插件技术实现架构</text>
+  <text class="subtitle" x="836" y="100" text-anchor="middle">整仓代码理解：CodeGraph + RAG + 内网 Qwen 3.6 27B + 安全审批</text>
+
+  <rect class="section" x="42" y="128" width="142" height="52" rx="12"/>
+  <text class="sectionText" x="113" y="161" text-anchor="middle">A. 后台索引</text>
+
+  <rect class="card" x="216" y="132" width="220" height="156"/>
+  <circle class="num" cx="245" cy="160" r="18"/><text class="numText" x="245" y="166" text-anchor="middle">1</text>
+  <text class="cardTitle" x="326" y="163" text-anchor="middle">Workspace 源码</text>
+  <path class="iconFill" d="M284 188h88v58h-88z"/>
+  <path class="iconStroke" d="M284 188h35l9 12h44"/>
+  <text class="body" x="326" y="267" text-anchor="middle">C / C++ / headers / tests</text>
+
+  <rect class="card" x="496" y="132" width="220" height="156"/>
+  <circle class="num" cx="525" cy="160" r="18"/><text class="numText" x="525" y="166" text-anchor="middle">2</text>
+  <text class="cardTitle" x="606" y="163" text-anchor="middle">扫描与过滤</text>
+  <path class="iconStroke" d="M576 190h60l-24 28v33l-13 7v-40z"/>
+  <text class="body" x="606" y="254" text-anchor="middle">glob · excludes</text>
+  <text class="body" x="606" y="276" text-anchor="middle">增量变更</text>
+
+  <rect class="card" x="776" y="132" width="220" height="156"/>
+  <circle class="num" cx="805" cy="160" r="18"/><text class="numText" x="805" y="166" text-anchor="middle">3</text>
+  <text class="cardTitle" x="886" y="163" text-anchor="middle">CodeGraph 构建</text>
+  <path class="iconStroke" d="M837 221l35-30 43 16 29-27"/>
+  <circle class="iconFill" cx="837" cy="221" r="8"/><circle class="iconFill" cx="872" cy="191" r="8"/><circle class="iconFill" cx="915" cy="207" r="8"/><circle class="iconFill" cx="944" cy="180" r="8"/>
+  <text class="body" x="886" y="252" text-anchor="middle">AST 解析 · 符号表</text>
+  <text class="body" x="886" y="274" text-anchor="middle">调用/引用图</text>
+
+  <rect class="card" x="1056" y="132" width="220" height="156"/>
+  <circle class="num" cx="1085" cy="160" r="18"/><text class="numText" x="1085" y="166" text-anchor="middle">4</text>
+  <text class="cardTitle" x="1166" y="163" text-anchor="middle">RAG Chunk 构建</text>
+  <rect class="iconFill" x="1125" y="188" width="34" height="51" rx="4"/>
+  <rect class="iconFill" x="1173" y="198" width="43" height="41" rx="4"/>
+  <path class="iconStroke" d="M1134 204h16M1134 218h16M1183 214h22M1183 228h22"/>
+  <text class="body" x="1166" y="254" text-anchor="middle">代码片段 · 符号上下文</text>
+  <text class="body" x="1166" y="276" text-anchor="middle">路径/行号</text>
+
+  <rect class="card" x="1336" y="132" width="220" height="156"/>
+  <circle class="num" cx="1365" cy="160" r="18"/><text class="numText" x="1365" y="166" text-anchor="middle">5</text>
+  <text class="cardTitleSmall" x="1446" y="163" text-anchor="middle">Embedding / Rerank</text>
+  <path class="iconStroke" d="M1408 191h58v58h-58zM1421 204h5M1448 204h5M1421 226h5M1448 226h5"/>
+  <circle class="iconStroke" cx="1484" cy="236" r="18"/><path class="iconStroke" d="M1498 250l18 18"/>
+  <text class="body" x="1446" y="254" text-anchor="middle">内网 embedding · 向量索引</text>
+  <text class="body" x="1446" y="276" text-anchor="middle">rerank 可选</text>
+
+  <path class="arrow" d="M436 210 H489"/>
+  <path class="arrow" d="M716 210 H769"/>
+  <path class="arrow" d="M996 210 H1049"/>
+  <path class="arrow" d="M1276 210 H1329"/>
+
+  <line class="divider" x1="32" y1="320" x2="1640" y2="320"/>
+  <rect class="section" x="42" y="337" width="292" height="52" rx="12"/>
+  <text class="sectionText" x="188" y="370" text-anchor="middle">B/C. 理解与生成主链路</text>
+
+  <rect class="card" x="42" y="408" width="178" height="154"/>
+  <circle class="num" cx="70" cy="435" r="17"/><text class="numText" x="70" y="441" text-anchor="middle">1</text>
+  <text class="cardTitleSmall" x="131" y="437" text-anchor="middle">用户请求 + 上下文</text>
+  <path class="iconStroke" d="M97 464h53a22 22 0 0 1 0 44h-20l-24 18v-18h-9a22 22 0 0 1 0-44z"/>
+  <text class="bodySmall" x="131" y="531" text-anchor="middle">Chat / 代码补全 / AI 注释</text>
+  <text class="bodySmall" x="131" y="550" text-anchor="middle">选区 · git diff · @mentions</text>
+
+  <rect class="card" x="244" y="408" width="178" height="154"/>
+  <circle class="num" cx="272" cy="435" r="17"/><text class="numText" x="272" y="441" text-anchor="middle">2</text>
+  <text class="cardTitle" x="333" y="437" text-anchor="middle">检索路由</text>
+  <path class="iconStroke" d="M305 468c16-18 40-18 56 0M305 468h-24M361 468h24M305 518c16 18 40 18 56 0M305 518h-24M361 518h24M333 468v50"/>
+  <text class="bodySmall" x="333" y="531" text-anchor="middle">RAG ready → hybrid</text>
+  <text class="bodySmall" x="333" y="550" text-anchor="middle">未就绪 → graph-only</text>
+
+  <rect class="card" x="446" y="408" width="178" height="154"/>
+  <circle class="num" cx="474" cy="435" r="17"/><text class="numText" x="474" y="441" text-anchor="middle">3</text>
+  <text class="cardTitle" x="535" y="437" text-anchor="middle">Evidence Pack</text>
+  <path class="iconStroke" d="M506 478l29-15 29 15-29 15zM506 478v33l29 16 29-16v-33M535 493v34"/>
+  <text class="bodySmall" x="535" y="531" text-anchor="middle">CodeGraph / RAG evidence</text>
+  <text class="bodySmall" x="535" y="550" text-anchor="middle">analysis evidence</text>
+
+  <rect class="card" x="648" y="408" width="178" height="154"/>
+  <circle class="num" cx="676" cy="435" r="17"/><text class="numText" x="676" y="441" text-anchor="middle">4</text>
+  <text class="cardTitle" x="737" y="437" text-anchor="middle">Context Packer</text>
+  <path class="iconStroke" d="M708 488l29-18 29 18-29 18zM708 514l29-18 29 18M708 540l29-18 29 18"/>
+  <text class="bodySmall" x="737" y="531" text-anchor="middle">token budget · 去重</text>
+  <text class="bodySmall" x="737" y="550" text-anchor="middle">截断 · evidence ledger</text>
+
+  <rect class="card" x="850" y="408" width="178" height="154"/>
+  <circle class="num" cx="878" cy="435" r="17"/><text class="numText" x="878" y="441" text-anchor="middle">5</text>
+  <text class="cardTitleSmall" x="939" y="437" text-anchor="middle">模型路由 / 请求构造</text>
+  <path class="iconStroke" d="M908 474h23l16-16M908 514h23l16 16M947 458h25M947 530h25"/>
+  <text class="bodySmall" x="939" y="531" text-anchor="middle">Chat → /chat/completions</text>
+  <text class="bodySmall" x="939" y="550" text-anchor="middle">补全 → Qwen FIM</text>
+
+  <rect class="card" x="1052" y="408" width="178" height="154"/>
+  <circle class="num" cx="1080" cy="435" r="17"/><text class="numText" x="1080" y="441" text-anchor="middle">6</text>
+  <text class="cardTitleSmall" x="1141" y="437" text-anchor="middle">内网 Qwen 3.6 27B</text>
+  <path class="iconStroke" d="M1111 492c0-21 14-35 30-35s30 14 30 35-14 35-30 35-30-14-30-35zM1128 475c8 5 18 5 26 0M1128 509c8-5 18-5 26 0M1141 457v70"/>
+  <text class="bodySmall" x="1141" y="531" text-anchor="middle">OpenAI-compatible</text>
+  <text class="bodySmall" x="1141" y="550" text-anchor="middle">SSE streaming</text>
+
+  <rect class="card" x="1254" y="408" width="178" height="154"/>
+  <circle class="num" cx="1282" cy="435" r="17"/><text class="numText" x="1282" y="441" text-anchor="middle">7</text>
+  <text class="cardTitle" x="1343" y="437" text-anchor="middle">结果后处理</text>
+  <path class="iconStroke" d="M1315 466h52v67h-52zM1327 487h28M1327 505h28M1360 527l14 14 28-31"/>
+  <text class="bodySmall" x="1343" y="531" text-anchor="middle">流式解析 · range</text>
+  <text class="bodySmall" x="1343" y="550" text-anchor="middle">suffix 去重 · 质量校验</text>
+
+  <rect class="card" x="1456" y="408" width="178" height="154"/>
+  <circle class="num" cx="1484" cy="435" r="17"/><text class="numText" x="1484" y="441" text-anchor="middle">8</text>
+  <text class="cardTitle" x="1545" y="437" text-anchor="middle">返回 VS Code</text>
+  <path class="iconStroke" d="M1512 472h48v54h-48zM1560 499h32M1580 485l15 14-15 14"/>
+  <text class="bodySmall" x="1545" y="531" text-anchor="middle">Chat 回答 · ghost text</text>
+  <text class="bodySmall" x="1545" y="550" text-anchor="middle">注释候选 · 终端结果</text>
+
+  <path class="arrow" d="M220 485 H237"/>
+  <path class="arrow" d="M422 485 H439"/>
+  <path class="arrow" d="M624 485 H641"/>
+  <path class="arrow" d="M826 485 H843"/>
+  <path class="arrow" d="M1028 485 H1045"/>
+  <path class="arrow" d="M1230 485 H1247"/>
+  <path class="arrow" d="M1432 485 H1449"/>
+  <text class="label" x="850" y="394" text-anchor="middle">主链路：Context Packer → 模型路由 → 内网模型</text>
+
+  <path class="arrowDashed" d="M886 288 V326 H333 V400"/>
+  <text class="label" x="613" y="314" text-anchor="middle">符号图可检索</text>
+  <path class="arrowDashed" d="M1446 288 V343 H333 V400"/>
+  <text class="label" x="1038" y="350" text-anchor="middle">向量检索可用</text>
+
+  <line class="divider" x1="32" y1="598" x2="1640" y2="598"/>
+  <rect class="section" x="42" y="622" width="206" height="52" rx="12"/>
+  <text class="sectionText" x="145" y="655" text-anchor="middle">D. 安全执行分支</text>
+
+  <rect class="safety" x="872" y="636" width="242" height="132"/>
+  <text class="safetyTitle" x="993" y="666" text-anchor="middle">安全审批门</text>
+  <path class="iconOrange" d="M993 682l38 15v25c0 30-22 47-38 55-16-8-38-25-38-55v-25zM977 724l12 12 26-32"/>
+  <text class="bodySmall" x="993" y="746" text-anchor="middle">仅工具调用时触发</text>
+  <text class="bodySmall" x="993" y="764" text-anchor="middle">用户批准后执行</text>
+
+  <rect class="tool" x="1162" y="636" width="242" height="132"/>
+  <text class="cardTitle" x="1283" y="666" text-anchor="middle">ToolRuntime / Agent</text>
+  <rect class="iconFill" x="1242" y="684" width="82" height="44" rx="7"/>
+  <path class="iconStroke" d="M1258 696l14 10-14 10M1284 718h23"/>
+  <text class="bodySmall" x="1283" y="746" text-anchor="middle">只读检索 · exact edit</text>
+  <text class="bodySmall" x="1283" y="764" text-anchor="middle">terminal plan · audit log</text>
+
+  <path class="arrowOrangeDashed" d="M1141 562 V606 H993 V629"/>
+  <text class="orangeLabel" x="1070" y="615" text-anchor="middle">模型产生 tool_call 时</text>
+  <path class="arrow" d="M1114 702 H1155"/>
+  <path class="arrowDashed" d="M1283 768 V842 H535 V570"/>
+  <text class="label" x="846" y="864" text-anchor="middle">工具结果 / 新证据回流到 Evidence Pack，进入下一轮上下文打包</text>
+
+  <rect x="298" y="813" width="438" height="52" rx="12" fill="#f2f7ff" stroke="#b7cdfa" stroke-width="2"/>
+  <text class="note" x="517" y="846" text-anchor="middle">普通回答和代码补全不经过安全审批门</text>
+</svg>

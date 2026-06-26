@@ -4,9 +4,15 @@ const PREVIEW_SUMMARY_MAX_LENGTH = 96
 const FALLBACK_PREVIEW_TEXT = "可预览 AI 注释候选"
 
 export function commentPreviewText(commentText: string) {
-  const style = commentText.trimStart().startsWith("/*") ? "block" : "line"
+  const trimmed = commentText.trimStart()
+  const style = trimmed.startsWith("/*")
+    ? "block"
+    : trimmed.startsWith("#")
+      ? "hash"
+      : "line"
   const summary = commentPreviewSummary(commentText)
   if (style === "block") return `+ /** ${summary} */`
+  if (style === "hash") return `+ # ${summary}`
   return `+ // ${summary}`
 }
 
@@ -59,6 +65,7 @@ export function commentEvidenceLine(evidence: RawCommentEvidence) {
 function stripCommentMarker(line: string) {
   let text = line.trim()
   if (text === "/*" || text === "/**" || text === "*/" || text === "*") return ""
+  if (text.startsWith("#")) return text.slice(1).trim()
   if (text.startsWith("//")) return text.slice(2).trim()
   if (text.startsWith("/**")) text = text.slice(3).trim()
   else if (text.startsWith("/*")) text = text.slice(2).trim()

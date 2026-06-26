@@ -82,6 +82,37 @@ describe("chat stream events", () => {
     )
     expect(missingPart.changed).toBe(false)
     expect(missingPart.messages).toBe(started.messages)
+
+    const currentSession = applyChipMateEventToMessages([], messageUpdated("s2", "m-current"), "s2")
+    const stalePreviousSessionDelta = applyChipMateEventToMessages(
+      currentSession.messages,
+      partDelta({ sessionID: "s1", messageID: "m1", partID: "p1", type: "text", delta: "old answer" }),
+      "s2",
+    )
+    expect(stalePreviousSessionDelta.changed).toBe(false)
+    expect(stalePreviousSessionDelta.messages).toBe(currentSession.messages)
+
+    const unownedDelta = applyChipMateEventToMessages(
+      [],
+      partDelta({ messageID: "m1", partID: "p1", type: "text", delta: "unowned" }),
+      "s1",
+    )
+    expect(unownedDelta.changed).toBe(false)
+    expect(unownedDelta.messages).toHaveLength(0)
+  })
+
+  test("infers session ownership for sessionless deltas from existing buffered messages", () => {
+    let result = applyChipMateEventToMessages([], messageUpdated("s1", "m1"), "s1")
+    result = applyChipMateEventToMessages(
+      result.messages,
+      partDelta({ messageID: "m1", partID: "p1", type: "text", delta: "owned" }),
+      "s1",
+    )
+
+    expect(result.changed).toBe(true)
+    expect(result.sessionID).toBe("s1")
+    expect(result.messages[0]?.info.sessionID).toBe("s1")
+    expect(result.messages[0]?.parts[0]).toMatchObject({ id: "p1", sessionID: "s1", text: "owned" })
   })
 
   test("keeps tool and reasoning parts structured", () => {

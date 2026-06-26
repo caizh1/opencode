@@ -180,6 +180,7 @@ const EMPTY_LATENCIES = { min: 0, max: 0, avg: 0, p50: 0, p95: 0 }
 const cfg: QwenAutocompleteConfig = {
   enabled: true,
   provider: "qwen-direct",
+  profile: "qwen-coder-fim",
   endpoint: "",
   model: DEFAULT_MODEL,
   apiKey: "",
@@ -190,6 +191,7 @@ const cfg: QwenAutocompleteConfig = {
   maxSuffixPercentage: 0.2,
   prefixPercentage: 0.3,
   temperature: 0.1,
+  topP: 1,
   cacheEnabled: false,
   cacheMaxEntries: 1000,
   prefixChars: 12_000,

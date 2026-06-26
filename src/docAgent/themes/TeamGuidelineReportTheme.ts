@@ -1,0 +1,77 @@
+import type { ReportTheme } from "./ReportTheme"
+
+export const TeamGuidelineReportTheme: ReportTheme = {
+  id: "team-guideline-report",
+  name: "Team Guideline Report",
+  page: {
+    size: "A4",
+    margin: {
+      top: 1440,
+      right: 1260,
+      bottom: 1260,
+      left: 1260,
+    },
+  },
+  fonts: {
+    body: "Arial",
+    latin: "Arial",
+    code: "Courier New",
+  },
+  colors: {
+    primary: "1F4E79",
+    secondary: "3A6EA5",
+    muted: "667085",
+    border: "D0D7DE",
+    surface: "F6F8FA",
+    callout: "EAF3FF",
+    warning: "FFF4CE",
+    danger: "FDECEC",
+    success: "E8F5E9",
+    codeBackground: "F3F4F6",
+  },
+  styles: {
+    normal: { sizeHalfPoints: 22, color: "24292F", spacingAfter: 120 },
+    heading1: { sizeHalfPoints: 32, color: "1F4E79", bold: true, spacingBefore: 360, spacingAfter: 160 },
+    heading2: { sizeHalfPoints: 26, color: "235A8C", bold: true, spacingBefore: 260, spacingAfter: 120 },
+    heading3: { sizeHalfPoints: 23, color: "2F5F89", bold: true, spacingBefore: 180, spacingAfter: 80 },
+    body: { sizeHalfPoints: 22, color: "24292F", spacingAfter: 120 },
+    muted: { sizeHalfPoints: 18, color: "667085", spacingAfter: 80 },
+    coverTitle: { sizeHalfPoints: 42, color: "17324D", bold: true, spacingAfter: 220 },
+    coverSubtitle: { sizeHalfPoints: 24, color: "3A6EA5", spacingAfter: 180 },
+    header: { sizeHalfPoints: 16, color: "667085" },
+    footer: { sizeHalfPoints: 16, color: "667085" },
+    tableHeader: { sizeHalfPoints: 19, color: "FFFFFF", bold: true },
+    tableCell: { sizeHalfPoints: 18, color: "24292F" },
+    ruleCardTitle: { sizeHalfPoints: 22, color: "1F4E79", bold: true, spacingAfter: 80 },
+    ruleCardLabel: { sizeHalfPoints: 17, color: "667085", bold: true },
+    code: { sizeHalfPoints: 18, color: "1F2937" },
+    calloutTitle: { sizeHalfPoints: 20, color: "1F4E79", bold: true, spacingAfter: 60 },
+    calloutBody: { sizeHalfPoints: 19, color: "24292F", spacingAfter: 80 },
+    references: { sizeHalfPoints: 18, color: "24292F", spacingAfter: 80 },
+    appendix: { sizeHalfPoints: 21, color: "1F4E79", bold: true, spacingAfter: 100 },
+  },
+  table: {
+    borderSize: 8,
+    cellMargin: 120,
+    headerFill: "1F4E79",
+  },
+  ruleCard: {
+    borderSize: 10,
+    fill: "F8FBFF",
+    labelFill: "EAF3FF",
+  },
+  codeBlock: {
+    fill: "F3F4F6",
+    borderSize: 6,
+  },
+  callout: {
+    borderSize: 8,
+    fill: "EAF3FF",
+  },
+  example: {
+    borderSize: 8,
+    preservedFill: "F0F7FF",
+    generatedFill: "F7F3FF",
+    labelFill: "EAF3FF",
+  },
+}

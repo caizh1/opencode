@@ -180,6 +180,8 @@ const {
 const { QwenFimClient, QwenFimRequestError } = await import("../src/qwen-autocomplete/QwenFimClient")
 const {
   buildQwenFimPrompt,
+  DEEPSEEK_FIM_STOP,
+  getFimStopTokens,
   getContinueAutocompleteStopTokens,
   QWEN_FIM_STOP,
 } = await import("../src/qwen-autocomplete/fimTemplates")
@@ -243,6 +245,7 @@ const continueCommonStops = ["/src/", "#- coding: utf-8", "```"]
 const baseCfg: QwenAutocompleteConfig = {
   enabled: true,
   provider: "qwen-direct",
+  profile: "qwen-coder-fim",
   endpoint: "http://unit.test/v1/completions",
   model: "qwen-coder-30b0",
   apiKey: "",
@@ -253,6 +256,7 @@ const baseCfg: QwenAutocompleteConfig = {
   maxSuffixPercentage: 0.2,
   prefixPercentage: 0.3,
   temperature: 0.1,
+  topP: 1,
   cacheEnabled: true,
   cacheMaxEntries: 1000,
   prefixChars: 12_000,
@@ -378,6 +382,7 @@ describe("ChipMate qwen autocomplete configuration", () => {
     expect(cfg).toMatchObject({
       enabled: true,
       provider: "qwen-direct",
+      profile: "qwen-coder-fim",
       endpoint: "https://chip.example.test/v1/completions",
       model: "custom-qwen-coder",
       apiKey: "",
@@ -387,6 +392,7 @@ describe("ChipMate qwen autocomplete configuration", () => {
       prefixPercentage: 0.4,
       maxSuffixPercentage: 0.1,
       temperature: 0.2,
+      topP: 1,
       cacheEnabled: false,
       cacheMaxEntries: 12,
       recentlyEditedEnabled: true,
@@ -398,6 +404,53 @@ describe("ChipMate qwen autocomplete configuration", () => {
       logLevel: "debug",
     })
     expect(qwenAutocompleteEnabled(cfg)).toBe(true)
+  })
+
+  test("supports explicit fim-direct DeepSeek profile without changing qwen defaults", () => {
+    setConfig({
+      "chipmate.completion.enabled": true,
+      "chipmate.completion.provider": "fim-direct",
+      "chipmate.completion.profile": "deepseek-fim",
+      "chipmate.completion.apiBaseUrl": "https://api.deepseek.com",
+      "chipmate.provider.apiBaseUrl": "https://chip.example.test/v1",
+      "chipmate.completion.model": "deepseek-v4-flash",
+      "chipmate.completion.topP": 0.9,
+    })
+
+    const cfg = readQwenAutocompleteConfig()
+
+    expect(cfg).toMatchObject({
+      enabled: true,
+      provider: "fim-direct",
+      profile: "deepseek-fim",
+      endpoint: "https://api.deepseek.com/beta/completions",
+      model: "deepseek-v4-flash",
+      topP: 0.9,
+    })
+    expect(qwenAutocompleteEnabled(cfg)).toBe(true)
+  })
+
+  test("maps DeepSeek official and proxy completion endpoints conservatively", () => {
+    setConfig({
+      "chipmate.completion.provider": "fim-direct",
+      "chipmate.completion.profile": "deepseek-fim",
+      "chipmate.provider.apiBaseUrl": "https://api.deepseek.com/v1",
+    })
+    expect(readQwenAutocompleteConfig().endpoint).toBe("https://api.deepseek.com/beta/completions")
+
+    setConfig({
+      "chipmate.completion.provider": "fim-direct",
+      "chipmate.completion.profile": "deepseek-fim",
+      "chipmate.provider.apiBaseUrl": "https://internal.example.test/v1",
+    })
+    expect(readQwenAutocompleteConfig().endpoint).toBe("https://internal.example.test/v1/completions")
+
+    setConfig({
+      "chipmate.completion.provider": "fim-direct",
+      "chipmate.completion.profile": "deepseek-fim",
+      "chipmate.provider.apiBaseUrl": "https://internal.example.test/v1/completions",
+    })
+    expect(readQwenAutocompleteConfig().endpoint).toBe("https://internal.example.test/v1/completions")
   })
 
   test("defaults qwen context sources to Continue non-streaming behavior", () => {
@@ -511,6 +564,29 @@ describe("ChipMate qwen autocomplete configuration", () => {
     legacy.dispose()
   })
 
+  test("registers the same inline provider for explicit fim-direct", () => {
+    setConfig({
+      "chipmate.completion.enabled": true,
+      "chipmate.completion.provider": "fim-direct",
+      "chipmate.completion.profile": "deepseek-fim",
+      "chipmate.provider.apiBaseUrl": "https://api.deepseek.com",
+      "chipmate.completion.model": "deepseek-v4-flash",
+    })
+    const context = {
+      extensionPath: TEST_EXTENSION_PATH,
+      extensionUri: vscode.Uri.file(TEST_EXTENSION_PATH),
+      subscriptions: [] as Array<{ dispose(): void }>,
+    }
+
+    const registration = registerQwenAutocompleteProvider(context as unknown as vscode.ExtensionContext)
+
+    expect(readQwenAutocompleteConfig().provider).toBe("fim-direct")
+    expect(readQwenAutocompleteConfig().profile).toBe("deepseek-fim")
+    expect(inlineRegistrations).toHaveLength(1)
+    expect(inlineRegistrations[0]!.provider).toBeInstanceOf(KiloQwenInlineCompletionProvider)
+    registration.dispose()
+  })
+
   test("uses kilocode/Continue runtime primitives instead of local shim replacements", () => {
     const tokenPruning = readFileSync(join(import.meta.dir, "..", "src", "qwen-autocomplete", "tokenPruning.ts"), "utf8")
     const postprocess = readFileSync(join(import.meta.dir, "..", "src", "qwen-autocomplete", "postprocess.ts"), "utf8")
@@ -554,7 +630,8 @@ describe("ChipMate qwen autocomplete configuration", () => {
     expect(ledger).toContain("Streaming/generator reuse: ignored")
     expect(ledger).toContain("`CompletionStreamer`: ignored")
     expect(ledger).toContain("`GeneratorReuseManager`: ignored")
-    expect(ledger).toContain("Only `qwen-direct` registers the qwen provider")
+    expect(ledger).toContain("`qwen-direct` remains the default qwen path")
+    expect(ledger).toContain("explicit `fim-direct` reuses the same local inline provider shell")
     expect(ledger).toContain("C root-path may receive a narrow extension-injected CodeGraph `status/findSymbols` interface")
   })
 
@@ -773,6 +850,43 @@ describe("Qwen FIM transport and provider integration", () => {
     })
     expect(QWEN_FIM_STOP).toEqual([...qwenTemplateLocalStops, ...continueCommonStops])
     expect(getContinueAutocompleteStopTokens("qwen-coder-30b0")).toEqual(QWEN_FIM_STOP)
+    expect(getFimStopTokens("qwen-coder-fim", "qwen-coder-30b0")).toEqual(QWEN_FIM_STOP)
+  })
+
+  test("posts DeepSeek FIM body with separate prompt and suffix and no qwen markers", async () => {
+    const seen: { url?: string; body?: Record<string, unknown> } = {}
+    const client = new QwenFimClient(async (url, init) => {
+      seen.url = String(url)
+      seen.body = JSON.parse(String(init?.body)) as Record<string, unknown>
+      return new Response(JSON.stringify({ choices: [{ text: "return deepseek;" }] }))
+    })
+
+    const text = await client.complete({
+      endpoint: "https://api.deepseek.com/beta/completions",
+      profile: "deepseek-fim",
+      requestShape: "prompt-suffix",
+      model: "deepseek-v4-flash",
+      apiKey: "",
+      prompt: "int main(void) {\n  ",
+      suffix: "\n}\n",
+      maxTokens: 128,
+      temperature: 0.1,
+      topP: 0.9,
+    })
+
+    expect(text).toBe("return deepseek;")
+    expect(seen.url).toBe("https://api.deepseek.com/beta/completions")
+    expect(seen.body).toEqual({
+      model: "deepseek-v4-flash",
+      prompt: "int main(void) {\n  ",
+      suffix: "\n}\n",
+      max_tokens: 128,
+      temperature: 0.1,
+      top_p: 0.9,
+      stream: false,
+      stop: DEEPSEEK_FIM_STOP,
+    })
+    expect(JSON.stringify(seen.body)).not.toContain("<|fim_prefix|>")
   })
 
   test("rejects chat-completions response shapes instead of falling back", async () => {
@@ -813,6 +927,40 @@ describe("Qwen FIM transport and provider integration", () => {
     expect(captured?.endpoint).toBe(baseCfg.endpoint)
     expect(items).toHaveLength(1)
     expect(items[0]!.insertText).toBe("return ok;")
+  })
+
+  test("sends DeepSeek provider requests with separated suffix through the same inline pipeline", async () => {
+    let captured: QwenFimCompleteInput | undefined
+    const provider = new KiloQwenInlineCompletionProvider({
+      client: {
+        complete: async (input: QwenFimCompleteInput) => {
+          captured = input
+          return "return deepseek;"
+        },
+      } as unknown as InstanceType<typeof QwenFimClient>,
+      guard: async () => false,
+      read: () => ({
+        ...baseCfg,
+        provider: "fim-direct",
+        profile: "deepseek-fim",
+        endpoint: "https://api.deepseek.com/beta/completions",
+        model: "deepseek-v4-flash",
+        cacheEnabled: false,
+        topP: 0.9,
+      }),
+      log: () => undefined,
+    })
+
+    const items = await complete(provider, doc("int main(void) {\n  \n}\n"), new vscode.Position(1, 2))
+
+    expect(captured?.profile).toBe("deepseek-fim")
+    expect(captured?.requestShape).toBe("prompt-suffix")
+    expect(captured?.prompt).toBe("int main(void) {\n  ")
+    expect(captured?.suffix).toBe("\n}\n")
+    expect(captured?.topP).toBe(0.9)
+    expect(captured?.prompt).not.toContain("<|fim_prefix|>")
+    expect(items).toHaveLength(1)
+    expect(items[0]!.insertText).toBe("return deepseek;")
   })
 })
 
@@ -1142,6 +1290,50 @@ describe("Qwen snippets and context sources", () => {
     expect(prompt.prompt).toContain("<|file_sep|>opened.c")
     expect(prompt.prompt).toContain("<|file_sep|>visited.c")
     expect(prompt.prompt).toContain("<|fim_prefix|>")
+  })
+
+  test("renders DeepSeek multifile FIM as plain prefix plus separate suffix", () => {
+    const helper = createQwenAutocompleteHelper(doc("int main(void) {\n  helper();\n}\n"), new vscode.Position(1, 2))
+    const payload = emptyQwenSnippetPayload()
+    payload.recentlyOpenedFileSnippets = [
+      { filepath: "/repo/src/opened.c", content: "int opened(void);", type: QwenAutocompleteSnippetType.Code },
+    ]
+    payload.importDefinitionSnippets = [
+      { filepath: "/repo/include/helper.h", content: "int helper(void);", type: QwenAutocompleteSnippetType.Code },
+    ]
+    const selected = selectQwenSnippets(helper, payload, {
+      maxPromptTokens: baseCfg.maxPromptTokens,
+      modelName: "deepseek-v4-flash",
+      useImports: true,
+      useRecentlyOpened: true,
+    })
+
+    const prompt = buildQwenPromptPlan({
+      cfg: {
+        ...baseCfg,
+        provider: "fim-direct",
+        profile: "deepseek-fim",
+        model: "deepseek-v4-flash",
+        contextLength: 8192,
+        recentlyOpenedEnabled: true,
+        recentlyOpenedInjectIntoPrompt: true,
+        importDefinitionsEnabled: true,
+        importDefinitionsInjectIntoPrompt: true,
+      },
+      helper,
+      injectIntoPrompt: true,
+      snippets: selected.snippets.filter((snippet) => "filepath" in snippet),
+    })
+
+    expect(prompt.snippetsInjectedIntoPrompt).toBe(true)
+    expect(prompt.promptRendererMode).toBe("deepseek-multifile-fim")
+    expect(prompt.requestShape).toBe("prompt-suffix")
+    expect(prompt.requestPrompt).toContain("// File: opened.c")
+    expect(prompt.requestPrompt).toContain("int opened(void);")
+    expect(prompt.requestPrompt).toContain("// Current file: main.c")
+    expect(prompt.requestSuffix).toBe("helper();\n}\n")
+    expect(prompt.requestPrompt).not.toContain("<|fim_prefix|>")
+    expect(prompt.requestPrompt).not.toContain("<|file_sep|>")
   })
 
   test("injects only snippets that survive Continue token-budget selection", async () => {

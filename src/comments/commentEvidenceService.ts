@@ -2,6 +2,7 @@ import type { EvidenceRef, QueryEvidenceResult } from "../analysis-types"
 import type { CodeGraphContextProvider } from "../codegraph-types"
 import type { CodeGraphStatus, RagStatus, RemoteSettings } from "../types"
 import type { CommentDiagnosticStageEvent } from "./commentDiagnostics"
+import { commentLanguageLabel } from "./commentLanguage"
 import type {
   CommentEvidenceSections,
   CommentGenerationContext,
@@ -89,6 +90,38 @@ const C_FAMILY_KEYWORDS = new Set([
   "while",
 ])
 
+const HASH_LANGUAGE_KEYWORDS = new Set([
+  "case",
+  "do",
+  "done",
+  "elif",
+  "else",
+  "esac",
+  "export",
+  "fi",
+  "for",
+  "function",
+  "if",
+  "ifneq",
+  "ifeq",
+  "ifdef",
+  "ifndef",
+  "in",
+  "include",
+  "run",
+  "script",
+  "select",
+  "set",
+  "step",
+  "target",
+  "task",
+  "then",
+  "until",
+  "uses",
+  "value",
+  "while",
+])
+
 export type CommentEvidenceServiceInput = {
   codeGraph?: Pick<CodeGraphContextProvider, "queryEvidence" | "status">
   getSettings: () => RemoteSettings
@@ -149,7 +182,7 @@ export class CommentEvidenceService {
   async collect(context: CommentGenerationContext, logger?: CommentEvidenceDiagnosticLogger): Promise<CommentEvidenceResult> {
     const settings = this.deps.getSettings()
     const codeGraph = this.deps.codeGraph
-    const identifiers = extractSelectionIdentifiers(context.selectedCode)
+    const identifiers = extractSelectionIdentifiers(context.selectedCode, context.languageId)
     const anchorLines = selectionAnchorLines(context.selectedCode)
     const baseCounts = {
       graphSummaryFunctionCount: 0,
@@ -437,8 +470,9 @@ export class CommentEvidenceService {
 }
 
 function buildGraphEvidenceQuestion(context: CommentGenerationContext, identifiers: string[], anchorLines: string[]) {
+  const languageLabel = commentLanguageLabel(context.languageId)
   return [
-    "Repository graph evidence request for C/C++ comment generation.",
+    `Repository graph evidence request for ${languageLabel} comment generation.`,
     "comment-intent: selection-review",
     `current-path: ${context.workspacePath}`,
     `selection-lines: ${context.selectionStartLine}-${context.selectionEndLine}`,
@@ -449,10 +483,11 @@ function buildGraphEvidenceQuestion(context: CommentGenerationContext, identifie
 }
 
 function buildHybridEvidenceQuestion(context: CommentGenerationContext, identifiers: string[], anchorLines: string[]) {
+  const languageLabel = commentLanguageLabel(context.languageId)
   return [
     "User question:",
     [
-      "For this selected C/C++ code, gather grounded repository evidence that explains why the code exists and any non-obvious hardware, protocol, DMA/cache, state-machine, concurrency, or error-recovery behavior.",
+      `For this selected ${languageLabel} code, gather grounded repository evidence that explains why the code exists and any non-obvious control-flow, dependency, state, environment, concurrency, hardware, protocol, or error-recovery behavior.`,
       `Current file: ${context.workspacePath}`,
       `Selection lines: ${context.selectionStartLine}-${context.selectionEndLine}`,
       identifiers.length ? `Selection identifiers: ${identifiers.join(", ")}` : "",
@@ -644,9 +679,12 @@ function rankRows<T>(items: T[], score: (item: T) => number, limit: number) {
     .map((entry) => entry.item)
 }
 
-function extractSelectionIdentifiers(selectedCode: string) {
+function extractSelectionIdentifiers(selectedCode: string, languageId: string) {
   const matches = selectedCode.match(/[A-Za-z_][A-Za-z0-9_]*/g) ?? []
-  return uniqueStrings(matches.filter((item) => !C_FAMILY_KEYWORDS.has(item)))
+  const keywords = languageId === "shellscript" || languageId === "makefile" || languageId === "yaml"
+    ? HASH_LANGUAGE_KEYWORDS
+    : C_FAMILY_KEYWORDS
+  return uniqueStrings(matches.filter((item) => !keywords.has(item)))
     .slice(0, COMMENT_EVIDENCE_IDENTIFIER_LIMIT)
 }
 

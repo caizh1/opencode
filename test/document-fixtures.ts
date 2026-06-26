@@ -22,6 +22,55 @@ export function docxFixture(text: string) {
   }, 8)
 }
 
+export function cGuidelineDocxFixture(input: {
+  title: string
+  sections: Array<{ heading: string; paragraphs: string[]; bullets?: string[] }>
+  tableRows?: string[][]
+}) {
+  const body = [
+    paragraphXml(input.title, "Heading1"),
+    ...input.sections.flatMap((section) => [
+      paragraphXml(section.heading, "Heading2"),
+      ...section.paragraphs.map((paragraph) => paragraphXml(paragraph)),
+      ...(section.bullets ?? []).map((bullet) => paragraphXml(bullet, "ListParagraph")),
+    ]),
+    ...(input.tableRows?.length
+      ? [tableXml(["规则", "说明"], input.tableRows)]
+      : []),
+  ].join("")
+  return zipFixture({
+    "[Content_Types].xml": [
+      '<?xml version="1.0" encoding="UTF-8"?>',
+      '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">',
+      '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>',
+      '<Default Extension="xml" ContentType="application/xml"/>',
+      '<Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>',
+      '<Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/>',
+      "</Types>",
+    ].join(""),
+    "_rels/.rels": [
+      '<?xml version="1.0" encoding="UTF-8"?>',
+      '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">',
+      '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>',
+      "</Relationships>",
+    ].join(""),
+    "word/document.xml": [
+      '<?xml version="1.0" encoding="UTF-8"?>',
+      '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">',
+      `<w:body>${body}</w:body>`,
+      "</w:document>",
+    ].join(""),
+    "word/styles.xml": [
+      '<?xml version="1.0" encoding="UTF-8"?>',
+      '<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">',
+      '<w:style w:type="paragraph" w:styleId="Heading1"><w:name w:val="heading 1"/></w:style>',
+      '<w:style w:type="paragraph" w:styleId="Heading2"><w:name w:val="heading 2"/></w:style>',
+      '<w:style w:type="paragraph" w:styleId="ListParagraph"><w:name w:val="List Paragraph"/></w:style>',
+      "</w:styles>",
+    ].join(""),
+  }, 8)
+}
+
 export function xlsxFixture() {
   return zipFixture({
     "xl/workbook.xml": [
@@ -177,6 +226,28 @@ function xmlEscape(value: string) {
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;")
+}
+
+function paragraphXml(text: string, styleId?: string) {
+  return [
+    "<w:p>",
+    styleId ? `<w:pPr><w:pStyle w:val="${xmlEscape(styleId)}"/></w:pPr>` : "",
+    `<w:r><w:t>${xmlEscape(text)}</w:t></w:r>`,
+    "</w:p>",
+  ].join("")
+}
+
+function tableXml(headers: string[], rows: string[][]) {
+  return [
+    "<w:tbl>",
+    tableRowXml(headers),
+    ...rows.map(tableRowXml),
+    "</w:tbl>",
+  ].join("")
+}
+
+function tableRowXml(cells: string[]) {
+  return `<w:tr>${cells.map((cell) => `<w:tc>${paragraphXml(cell)}</w:tc>`).join("")}</w:tr>`
 }
 
 function pdfEscape(value: string) {

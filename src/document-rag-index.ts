@@ -1,6 +1,6 @@
 import * as crypto from "node:crypto"
 
-export const DOCUMENT_RAG_GLOB = "**/*.{docx,xlsx,xlsm,pdf}"
+export const DOCUMENT_RAG_GLOB = "**/*.{doc,docx,xlsx,xlsm,pdf}"
 export const DOCUMENT_RAG_DEFAULT_EXCLUDES = [
   "**/node_modules/**",
   "**/.git/**",
@@ -24,7 +24,7 @@ export type DocumentRagDocument = {
   error?: string
 }
 
-export type DocumentRagDocumentKind = "docx" | "xlsx" | "xlsm" | "pdf"
+export type DocumentRagDocumentKind = "doc" | "docx" | "xlsx" | "xlsm" | "pdf"
 
 export type DocumentRagChunk = {
   id: string
@@ -74,6 +74,7 @@ export function isSupportedDocumentRagPath(path: string) {
 
 export function documentRagKindFromPath(path: string): DocumentRagDocumentKind | undefined {
   const lower = path.toLowerCase()
+  if (lower.endsWith(".doc")) return "doc"
   if (lower.endsWith(".docx")) return "docx"
   if (lower.endsWith(".xlsx")) return "xlsx"
   if (lower.endsWith(".xlsm")) return "xlsm"

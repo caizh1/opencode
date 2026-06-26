@@ -958,7 +958,7 @@ describe("AI comment commands", () => {
     })
 
     expect(modelCalls).toBe(0)
-    expect(infoMessages).toContain("请先选中一段 C/C++ 代码，再生成 AI 注释。")
+    expect(infoMessages).toContain("请先选中一段 C/C++、Shell、Makefile 和 YAML 代码，再生成 AI 注释。")
   })
 
   test("resolves the current function range from signature, body, and closing brace cursors", () => {
@@ -982,6 +982,39 @@ describe("AI comment commands", () => {
       expect(selection?.start.character).toBe(0)
       expect(selection?.end.line).toBe(6)
       expect(selection?.end.character).toBe(document.lineAt(6).text.length)
+    }
+  })
+
+  test("resolves the current shell function range from header and body cursors", () => {
+    const document = documentShim([
+      "sync_logs() {",
+      "    if [ -n \"$LOG_DIR\" ]; then",
+      "        cp \"$src\" \"$LOG_DIR\"",
+      "    fi",
+      "}",
+    ], { languageId: "shellscript", uri: "file:///repo/scripts/build.sh" })
+
+    for (const [line, character] of [[0, 4], [2, 8], [4, 1]] as const) {
+      const selection = resolveCurrentFunctionSelection(cursorEditor(document, line, character) as never)
+      expect(selection?.start.line).toBe(0)
+      expect(selection?.end.line).toBe(4)
+    }
+  })
+
+  test("resolves the current makefile rule block from target and recipe cursors", () => {
+    const document = documentShim([
+      "build: deps",
+      "\t@echo build",
+      "\t@make all",
+      "",
+      "clean:",
+      "\t@rm -rf out",
+    ], { languageId: "makefile", uri: "file:///repo/Makefile" })
+
+    for (const [line, character] of [[0, 3], [1, 2], [2, 2]] as const) {
+      const selection = resolveCurrentFunctionSelection(cursorEditor(document, line, character) as never)
+      expect(selection?.start.line).toBe(0)
+      expect(selection?.end.line).toBe(3)
     }
   })
 
@@ -1012,6 +1045,38 @@ describe("AI comment commands", () => {
     expect(modelCalls).toBe(0)
     expect(infoMessages).toContain("未找到当前函数，请选中代码后生成 AI 注释。")
     expect(outputLines.some((line) => line.includes("source=\"currentFunction\"") && line.includes("未找到当前函数"))).toBe(true)
+  })
+
+  test("current function generation does not call tools or the LLM for yaml files", async () => {
+    const document = documentShim([
+      "build:",
+      "  steps:",
+      "    - run: make all",
+    ], { languageId: "yaml", uri: "file:///repo/.gitea-ci.yml" })
+    activeTextEditor = cursorEditor(document, 1, 2)
+    let toolCalls = 0
+    let modelCalls = 0
+
+    await generateForCurrentFunction({
+      output: outputShim(outputLines),
+      store: new CommentProposalStore(),
+      toolAgent: {
+        collectEvidence: async () => {
+          toolCalls += 1
+          return successEvidence() as never
+        },
+      },
+      llmClient: {
+        generate: async () => {
+          modelCalls += 1
+          return { text: "{\"proposals\":[]}", elapsedMs: 1 }
+        },
+      },
+    })
+
+    expect(toolCalls).toBe(0)
+    expect(modelCalls).toBe(0)
+    expect(infoMessages).toContain("当前“为当前函数生成 AI 注释”仅支持 C/C++、Shell 和 Makefile。")
   })
 
   test("current function generation reuses the selection pipeline and stores source metadata", async () => {
@@ -1365,6 +1430,7 @@ describe("AI comment commands", () => {
         toolDefinitions: () => [
           { type: "function", function: { name: "chipmate_read" } },
           { type: "function", function: { name: "chipmate_search_text" } },
+          { type: "function", function: { name: "chipmate_edit_file" } },
           { type: "function", function: { name: "chipmate_write_file" } },
           { type: "function", function: { name: "chipmate_run_command" } },
           { type: "function", function: { name: "chipmate_http_request" } },

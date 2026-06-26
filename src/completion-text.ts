@@ -16,7 +16,7 @@ export function completionInsertText(message: ChipMateMessage | undefined, profi
   if (!message) return ""
 
   const split = splitThinkingFromParts(message.parts)
-  const text = profile === "qwen-coder-fim"
+  const text = isFimProfile(profile)
     ? cleanupFimCompletion(split.text)
     : cleanupChatCompletion(split.text)
   if (text) return text
@@ -47,12 +47,16 @@ function cleanupReasoningCompletion(input: string, profile: CompletionProfile) {
 
   const fenced = firstFencedCode(input)
   if (fenced !== undefined) {
-    return profile === "qwen-coder-fim" ? cleanupFimCompletion(fenced) : cleanupChatCompletion(fenced)
+    return isFimProfile(profile) ? cleanupFimCompletion(fenced) : cleanupChatCompletion(fenced)
   }
 
   const finalMatch = /(?:^|\n)\s*(?:final(?: answer)?|answer|completion)\s*:\s*([\s\S]+)$/i.exec(input)
   if (!finalMatch) return ""
-  return profile === "qwen-coder-fim" ? cleanupFimCompletion(finalMatch[1]) : cleanupChatCompletion(finalMatch[1])
+  return isFimProfile(profile) ? cleanupFimCompletion(finalMatch[1]) : cleanupChatCompletion(finalMatch[1])
+}
+
+function isFimProfile(profile: CompletionProfile): boolean {
+  return profile === "qwen-coder-fim" || profile === "deepseek-fim"
 }
 
 function firstFencedCode(input: string) {

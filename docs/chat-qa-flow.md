@@ -69,23 +69,27 @@ Enabled ChipMate skills:
 
 ## Skills
 
-ChipMate v1 只自动发现 workspace 内的 `.agents/skills/*/SKILL.md`。解析范围是 Agent Skills、Codex skills 与 Claude Code skills 的核心交集：
+ChipMate 自动发现 workspace 内的 `.agents/skills/*/SKILL.md` 和兼容 `.claude/skills/*/SKILL.md`，并沿 workspace 父目录向上寻找 `.agents/skills`。用户级 `~/.agents/skills` 默认开启；在 `chipmate.skills.scanClaudeSkills=true` 时也会扫描 `~/.claude/skills`，可用 `chipmate.skills.scanUserSkills=false` 关闭用户级扫描。解析范围覆盖 Agent Skills、Codex skills 与 Claude Code skills 的核心交集：
 
 - `name` / `description` frontmatter。
-- `allowed-tools` 只在 `chipmate.tools.enabled=true` 时作为提示和审计信息，不绕过用户权限模式；direct chat 渲染 prompt 时还会按本轮实际暴露工具过滤，目前只会保留 `chipmate_read`。
-- 渐进加载：列表只展示元信息，启用后才把正文注入 prompt。
-- 保留 `scripts/`、`references/`、`assets/` 目录结构，模型需要执行脚本时仍通过工具审批路径。
+- `allowed-tools` 在 `chipmate.tools.enabled=true` 时作为提示、active skill policy 和审计信息，不绕过用户权限模式；direct chat 渲染 prompt 时还会按本轮实际暴露工具过滤。
+- 渐进加载：初始 catalog 只展示元信息；显式 `$skill`/`/skill` 调用或隐式匹配后，才把该 skill 正文注入 prompt。
+- 保留并索引 `scripts/`、`references/`、`assets/` 目录结构；active skill 资源通过 `chipmate_read_skill_resource` 读取，脚本不会自动执行。
 - 动态 `!command` 只作为 skill 文本中的运行提示，实际执行仍进入 command tool 权限判断。
+- Skills 设置页可通过 `Import Skill...` 或导入区拖拽导入 skill 目录、父目录或 `SKILL.md`；导入前会校验当前支持的 `SKILL.md` 格式，有效项统一落到用户级 `~/.agents/skills/<commandName>`。
 
 ## Tools 与权限
 
 QA 默认 evidence 先行：首轮请求仍由 `buildChatPrompt()` 发送本地上下文、code graph evidence 和 analysis evidence pack。工具只用于模型发现证据不完整时补充读取 workspace 文件。
 
-当前 direct chat 只向模型暴露一个工具：
+当前 direct chat 会向模型暴露受限工具面：
 
-- `chipmate_read`：读取 workspace host 上的 UTF-8 文本文件，或提取 `.docx`、`.xlsx`、`.xlsm`、`.pdf` 文档文本，用于补齐本地证据。
+- Workspace/evidence：`chipmate_search_text`、`chipmate_search_code`、`chipmate_read_evidence`、`chipmate_read`、`chipmate_read_skill_resource`。
+- CodeGraph：`chipmate_graph_inspect_symbol`、`chipmate_graph_find_references`、`chipmate_graph_callers`、`chipmate_graph_callees`、`chipmate_graph_trace_call_chain`、`chipmate_graph_analyze_impact`、`chipmate_graph_map_module`、`chipmate_graph_find_state_machines`、`chipmate_graph_trace_state_path`。
+- Document/Word：`chipmate_search_documents`、`read_docx`、`create_word_document`。
+- Workspace 创建/编辑：`chipmate_create_directory`、`chipmate_create_file`、`chipmate_edit_file`。
 
-写文件、命令执行和 HTTP 请求的 runtime 实现可能仍作为内部/未来扩展点存在，但不会作为 chat tool definition 发给模型。`chipmate.tools.enabled` 默认 `false`。关闭时，模型请求不包含 `tools` 和 `tool_choice`，即使 provider 返回 `tool_calls` 也不会执行、不会追加 `role: "tool"` 消息、不会进入下一轮工具循环。开启后，请求体也只包含 `chipmate_read`；如果 provider 返回未暴露的工具调用，direct chat 会返回 blocked tool result，不进入真实执行。
+任意全文件覆盖、删除、重命名、移动、shell 命令和 HTTP 请求不会作为 chat tool definition 发给模型。`chipmate.tools.enabled` 默认 `false`。关闭时，模型请求不包含 `tools` 和 `tool_choice`，即使 provider 返回 `tool_calls` 也不会执行、不会追加 `role: "tool"` 消息、不会进入下一轮工具循环。如果 provider 返回未暴露的工具调用，direct chat 会返回 blocked tool result，不进入真实执行。
 
 权限模式：
 
@@ -127,7 +131,7 @@ bun run verify:document-runtime -- chipmate-<version>.vsix
 
 QA analysis evidence 使用用户原始问题和本次本地上下文里的 related paths 发起检索，不套用 inline completion 的 `body-statement`、comment-guided 或 symbol-prefix 查询语义。模块级、文件级和状态机问题应按 QA 的问题类型检索证据，而不是按“当前光标要插入什么代码”检索。
 
-这些 evidence 只作为 prompt 中的本地证据文本发送给模型。模型不应绕过工具权限读取文件；如果工具关闭且证据不足，应说明缺失内容并要求用户打开、附加或 `@mention` 文件。工具开启后，模型只能通过 `chipmate_read` 补读 workspace 文件；需要写文件、命令、网络或其他外部动作时，应说明需要用户或后续模式提供额外能力。
+这些 evidence 只作为 prompt 中的本地证据文本发送给模型。模型不应绕过工具权限读取文件；如果工具关闭且证据不足，应说明缺失内容并要求用户打开、附加或 `@mention` 文件。工具开启后，模型应优先通过 evidence/codegraph/document 工具补证据，通过 `chipmate_read_skill_resource` 读取 active skill 资源，通过 `chipmate_read` 补读明确 workspace 文件；需要未暴露的命令、网络、删除、重命名或移动时，应说明需要用户或后续模式提供额外能力。
 
 ## 与 Inline Completion 的差异
 

@@ -1,0 +1,374 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data: blob:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; connect-src 'none'; font-src 'none'; frame-src 'none';">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ChipMate draw.io Runtime</title>
+  <style>
+    html, body, #root {
+      margin: 0;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: transparent;
+    }
+    #root {
+      position: relative;
+    }
+  </style>
+  <script>
+    window.DRAWIO_BASE_URL = ".";
+    window.EXPORT_URL = "";
+    window.IMAGE_PATH = ".";
+    window.STYLE_PATH = ".";
+    window.SHAPES_PATH = ".";
+    window.STENCIL_PATH = ".";
+    window.DRAW_MATH_URL = ".";
+    window.GRAPH_IMAGE_PATH = ".";
+    window.mxImageBasePath = ".";
+    window.mxBasePath = ".";
+    window.mxLoadStylesheets = false;
+  </script>
+  <script src="./viewer-static.min.js"></script>
+</head>
+<body>
+  <div id="root" aria-hidden="true"></div>
+  <script>
+    (function () {
+      const RUNTIME_SOURCE = "chipmate-drawio-runtime";
+      const RUNTIME_INIT_TIMEOUT_MS = 10000;
+      const RUNTIME_POLL_INTERVAL_MS = 50;
+      const PNG_DATA_URI_PREFIX = "data:image/png;base64,";
+      const SELF_TEST_XML = '<mxGraphModel dx="140" dy="90" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="160" pageHeight="100" math="0" shadow="0"><root><mxCell id="0"/><mxCell id="1" parent="0"/><mxCell id="2" value="Offline" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#eaf4ff;strokeColor=#5b8def;fontColor=#172033;" vertex="1" parent="1"><mxGeometry x="20" y="20" width="100" height="44" as="geometry"/></mxCell></root></mxGraphModel>';
+      const root = document.getElementById("root");
+      let graph = null;
+      let currentXml = "";
+      let runtimeMode = "";
+
+      function post(message) {
+        parent.postMessage(Object.assign({ source: RUNTIME_SOURCE }, message), "*");
+      }
+
+      function runtimeError(requestId, error) {
+        const message = error && error.message ? error.message : String(error || "Unknown draw.io runtime error");
+        post({ event: "error", requestId, message, code: error && error.code ? error.code : "drawio.runtime_error" });
+      }
+
+      function codedError(code, message) {
+        const error = new Error(message);
+        error.code = code;
+        return error;
+      }
+
+      function runtimeApi() {
+        const mxUtilsApi = window.mxUtils;
+        const mxCodecCtor = window.mxCodec;
+        const graphCtor = window.Graph || window.mxGraph;
+        const editorApi = window.Editor;
+        const canUseDrawioGraph = !!window.Graph && !!window.Graph.prototype && typeof window.Graph.prototype.getSvg === "function";
+        const canUseBaseSvgExport = !!window.mxGraph && !!window.mxImageExport && !!window.mxSvgCanvas2D && !!window.mxConstants;
+        return {
+          mxUtils: mxUtilsApi,
+          mxCodec: mxCodecCtor,
+          Graph: graphCtor,
+          Editor: editorApi,
+          canUseDrawioGraph,
+          canUseBaseSvgExport,
+        };
+      }
+
+      function assertRuntimeReady() {
+        const api = runtimeApi();
+        if (!api.mxUtils || !api.mxCodec || !api.Graph) {
+          throw codedError("drawio.runtime_not_ready", "Offline draw.io viewer runtime did not initialize.");
+        }
+        if (!api.canUseDrawioGraph && !api.canUseBaseSvgExport) {
+          throw codedError("drawio.runtime_export_unavailable", "Offline draw.io runtime has no usable SVG export path.");
+        }
+        return api;
+      }
+
+      function waitForRuntimeReady() {
+        const started = Date.now();
+        return new Promise((resolve, reject) => {
+          const poll = () => {
+            try {
+              resolve(assertRuntimeReady());
+            } catch (error) {
+              if (Date.now() - started >= RUNTIME_INIT_TIMEOUT_MS) {
+                reject(error);
+                return;
+              }
+              window.setTimeout(poll, RUNTIME_POLL_INTERVAL_MS);
+            }
+          };
+          poll();
+        });
+      }
+
+      function graphModelNodeFromXml(xml) {
+        const api = assertRuntimeReady();
+        const documentNode = mxUtils.parseXml(String(xml || ""));
+        const rootNode = documentNode.documentElement;
+        if (!rootNode || rootNode.nodeName === "parsererror" || rootNode.getElementsByTagName("parsererror").length > 0) {
+          throw codedError("drawio.xml_parse_failed", "Draw.io XML could not be parsed.");
+        }
+        if (rootNode.nodeName === "mxGraphModel") {
+          return rootNode;
+        }
+        if (rootNode.nodeName !== "mxfile") {
+          throw codedError("drawio.unsupported_xml", "Expected <mxfile> or <mxGraphModel> draw.io XML.");
+        }
+        if (!api.Editor || typeof api.Editor.extractGraphModel !== "function") {
+          throw codedError("drawio.mxfile_requires_editor", "Draw.io <mxfile> XML requires the full Editor runtime; use <mxGraphModel> for offline chat preview.");
+        }
+        const modelNode = api.Editor.extractGraphModel(rootNode, false);
+        if (!modelNode || modelNode.nodeName !== "mxGraphModel") {
+          throw codedError("drawio.unsupported_xml", "Expected <mxfile> or <mxGraphModel> draw.io XML.");
+        }
+        return modelNode;
+      }
+
+      function loadXml(xml) {
+        const api = assertRuntimeReady();
+        root.textContent = "";
+        const container = document.createElement("div");
+        container.style.position = "absolute";
+        container.style.left = "0";
+        container.style.top = "0";
+        container.style.width = "4096px";
+        container.style.height = "4096px";
+        container.style.overflow = "hidden";
+        root.appendChild(container);
+
+        const modelNode = graphModelNodeFromXml(xml);
+        graph = new api.Graph(container);
+        if (typeof graph.setEnabled === "function") graph.setEnabled(false);
+        if (typeof graph.setPanning === "function") graph.setPanning(false);
+        if (typeof graph.setTooltips === "function") graph.setTooltips(false);
+        graph.centerZoom = false;
+        graph.autoScroll = false;
+        if (graph.view && typeof graph.view.setTranslate === "function") graph.view.setTranslate(0, 0);
+        const codec = new api.mxCodec(modelNode.ownerDocument);
+        codec.decode(modelNode, graph.getModel());
+        graph.view.validate();
+        if (typeof graph.sizeDidChange === "function") graph.sizeDidChange();
+        currentXml = String(xml || "");
+        runtimeMode = typeof graph.getSvg === "function" ? "drawio-graph" : "mxgraph-svg";
+        const bounds = graph.getGraphBounds();
+        return rectPayload(bounds);
+      }
+
+      function rectPayload(rect) {
+        return rect ? {
+          x: Number(rect.x) || 0,
+          y: Number(rect.y) || 0,
+          width: Number(rect.width) || 0,
+          height: Number(rect.height) || 0,
+        } : { x: 0, y: 0, width: 0, height: 0 };
+      }
+
+      function exportSvg(options) {
+        if (!graph) throw new Error("No draw.io diagram has been loaded.");
+        const scale = positiveNumber(options.scale, 1);
+        const border = nonNegativeNumber(options.border, 16);
+        const background = options.transparent === false ? "#ffffff" : null;
+        const size = options.size === "page" ? "page" : "diagram";
+        if (typeof graph.getSvg === "function") {
+          return exportSvgWithDrawioGraph(graph, { background, scale, border, size, shadow: options.shadow === true });
+        }
+        return exportSvgWithMxGraph(graph, { background, scale, border });
+      }
+
+      function exportSvgWithDrawioGraph(targetGraph, options) {
+        const originalCreateSvgCanvas = targetGraph.createSvgCanvas;
+        if (typeof originalCreateSvgCanvas === "function") {
+          targetGraph.createSvgCanvas = function (rootNode) {
+            const canvas = originalCreateSvgCanvas.call(this, rootNode);
+            // PNG export rasterizes the generated SVG into a local canvas. Avoid
+            // foreignObject labels because Chrome treats those SVGs as tainted.
+            canvas.foEnabled = false;
+            return canvas;
+          };
+        }
+        try {
+          const svg = targetGraph.getSvg(options.background, options.scale, options.border, null, null, true, true, null, null, options.shadow, null, null, options.size);
+          if (!svg) throw codedError("drawio.export_empty_svg", "draw.io renderer produced an empty SVG.");
+          return mxUtils.getXml(svg);
+        } finally {
+          if (typeof originalCreateSvgCanvas === "function") targetGraph.createSvgCanvas = originalCreateSvgCanvas;
+        }
+      }
+
+      function exportSvgWithMxGraph(targetGraph, options) {
+        if (!window.mxImageExport || !window.mxSvgCanvas2D || !window.mxConstants) {
+          throw codedError("drawio.runtime_export_unavailable", "Offline draw.io runtime has no usable SVG export path.");
+        }
+        targetGraph.view.validate();
+        const bounds = targetGraph.getGraphBounds();
+        const width = Math.max(1, Math.ceil((Math.max(1, bounds.width) + options.border * 2) * options.scale));
+        const height = Math.max(1, Math.ceil((Math.max(1, bounds.height) + options.border * 2) * options.scale));
+        const svgDocument = mxUtils.createXmlDocument();
+        const svg = svgDocument.createElementNS(mxConstants.NS_SVG, "svg");
+        svg.setAttribute("xmlns", mxConstants.NS_SVG);
+        svg.setAttribute("width", width + "px");
+        svg.setAttribute("height", height + "px");
+        svg.setAttribute("viewBox", "0 0 " + width + " " + height);
+        svg.setAttribute("version", "1.1");
+        svgDocument.appendChild(svg);
+
+        if (options.background) {
+          const background = svgDocument.createElementNS(mxConstants.NS_SVG, "rect");
+          background.setAttribute("x", "0");
+          background.setAttribute("y", "0");
+          background.setAttribute("width", "100%");
+          background.setAttribute("height", "100%");
+          background.setAttribute("fill", options.background);
+          svg.appendChild(background);
+        }
+
+        const group = svgDocument.createElementNS(mxConstants.NS_SVG, "g");
+        svg.appendChild(group);
+        const canvas = new mxSvgCanvas2D(group);
+        canvas.foEnabled = false;
+        canvas.translate(options.border / options.scale - bounds.x, options.border / options.scale - bounds.y);
+        canvas.scale(options.scale);
+
+        const imageExport = new mxImageExport();
+        const view = targetGraph.getView();
+        const model = targetGraph.getModel();
+        const defaultParent = typeof targetGraph.getDefaultParent === "function"
+          ? targetGraph.getDefaultParent()
+          : model.getChildAt(model.getRoot(), 0);
+        const rootState = view.getState(model.getRoot()) || view.getState(defaultParent);
+        if (rootState) {
+          imageExport.drawState(rootState, canvas);
+        } else if (defaultParent) {
+          for (let index = 0; index < model.getChildCount(defaultParent); index += 1) {
+            const state = view.getState(model.getChildAt(defaultParent, index));
+            if (state) imageExport.drawState(state, canvas);
+          }
+        }
+        return mxUtils.getXml(svg);
+      }
+
+      function positiveNumber(value, fallback) {
+        const parsed = Number(value);
+        return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+      }
+
+      function nonNegativeNumber(value, fallback) {
+        const parsed = Number(value);
+        return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
+      }
+
+      function svgSize(svgText) {
+        const doc = mxUtils.parseXml(svgText);
+        const svg = doc.documentElement;
+        const width = parseSvgLength(svg.getAttribute("width")) || parseViewBoxSize(svg.getAttribute("viewBox"), 2) || 1;
+        const height = parseSvgLength(svg.getAttribute("height")) || parseViewBoxSize(svg.getAttribute("viewBox"), 3) || 1;
+        return {
+          width: Math.max(1, Math.ceil(width)),
+          height: Math.max(1, Math.ceil(height)),
+        };
+      }
+
+      function parseSvgLength(value) {
+        const parsed = parseFloat(String(value || "").replace("px", ""));
+        return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
+      }
+
+      function parseViewBoxSize(value, index) {
+        const parts = String(value || "").trim().split(/\s+/).map(Number);
+        const parsed = parts[index];
+        return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
+      }
+
+      function svgToPngDataUri(svgText) {
+        return new Promise((resolve, reject) => {
+          const size = svgSize(svgText);
+          const blob = new Blob([svgText], { type: "image/svg+xml;charset=utf-8" });
+          const url = URL.createObjectURL(blob);
+          const image = new Image();
+          image.onload = () => {
+            try {
+              const canvas = document.createElement("canvas");
+              canvas.width = size.width;
+              canvas.height = size.height;
+              const context = canvas.getContext("2d");
+              if (!context) throw new Error("Canvas 2D context is unavailable.");
+              context.clearRect(0, 0, size.width, size.height);
+              context.drawImage(image, 0, 0, size.width, size.height);
+              resolve(canvas.toDataURL("image/png"));
+            } catch (error) {
+              reject(error);
+            } finally {
+              URL.revokeObjectURL(url);
+            }
+          };
+          image.onerror = () => {
+            URL.revokeObjectURL(url);
+            reject(new Error("Failed to rasterize draw.io SVG as PNG."));
+          };
+          image.src = url;
+        });
+      }
+
+      async function handleMessage(event) {
+        const message = event.data || {};
+        if (!message || message.source !== "chipmate-chat" || typeof message.action !== "string") return;
+        const requestId = message.requestId || "";
+        try {
+          if (message.action === "load") {
+            const bounds = loadXml(message.xml || "");
+            post({ event: "load", requestId, bounds, xml: currentXml, mode: runtimeMode });
+            return;
+          }
+          if (message.action === "export") {
+            const format = String(message.format || "png").toLowerCase();
+            const svg = exportSvg(message);
+            if (format === "svg" || format === "xmlsvg") {
+              post({ event: "export", requestId, format: "svg", data: "data:image/svg+xml;charset=utf-8," + encodeURIComponent(svg), svg, xml: currentXml, mode: runtimeMode });
+              return;
+            }
+            if (format === "png" || format === "xmlpng") {
+              const data = await svgToPngDataUri(svg);
+              post({ event: "export", requestId, format: "png", data, svg, xml: currentXml, mode: runtimeMode });
+              return;
+            }
+            throw codedError("drawio.unsupported_export_format", "Unsupported draw.io export format: " + format);
+          }
+        } catch (error) {
+          runtimeError(requestId, error);
+        }
+      }
+
+      window.addEventListener("message", (event) => {
+        void handleMessage(event);
+      });
+
+      async function selfTestRuntime() {
+        loadXml(SELF_TEST_XML);
+        const svg = exportSvg({ format: "xmlpng", scale: 1, border: 4, transparent: true, size: "diagram" });
+        const data = await svgToPngDataUri(svg);
+        if (!String(data || "").toLowerCase().startsWith(PNG_DATA_URI_PREFIX)) {
+          throw codedError("drawio.self_test_failed", "Offline draw.io runtime self-test did not return PNG.");
+        }
+      }
+
+      async function initializeRuntime() {
+        try {
+          await waitForRuntimeReady();
+          await selfTestRuntime();
+          post({ event: "init", version: "viewer-static", offline: true, mode: runtimeMode });
+        } catch (error) {
+          runtimeError("", error);
+        }
+      }
+
+      void initializeRuntime();
+    })();
+  </script>
+</body>
+</html>

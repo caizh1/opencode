@@ -1,4 +1,5 @@
 import * as vscode from "vscode"
+import { commentCodeblockLanguage } from "./commentLanguage"
 import { commentEvidenceDetail } from "./commentPreview"
 import type { CommentProposalStore } from "./commentProposalStore"
 import type { CommentProposal } from "./commentTypes"
@@ -33,17 +34,17 @@ export class CommentDecorations implements vscode.Disposable {
     const proposals = this.store.pendingForDocument(editor.document.uri.toString())
     const decorations = proposals.map((proposal) => ({
       range: new vscode.Range(proposal.insertBeforeLine, 0, proposal.insertBeforeLine, 0),
-      hoverMessage: hoverMessage(proposal),
+      hoverMessage: hoverMessage(proposal, editor.document.languageId),
     }))
     editor.setDecorations(this.decorationType, decorations)
   }
 }
 
-function hoverMessage(proposal: CommentProposal) {
+function hoverMessage(proposal: CommentProposal, languageId: string) {
   const markdown = new vscode.MarkdownString(undefined, true)
   markdown.isTrusted = false
   markdown.appendMarkdown("**AI 注释候选**\n\n")
-  markdown.appendCodeblock(proposal.commentText, "c")
+  markdown.appendCodeblock(proposal.commentText, commentCodeblockLanguage(languageId))
   markdown.appendMarkdown(`\n\n置信度: ${proposal.confidence}`)
   const evidence = commentEvidenceDetail(proposal.codeEvidence)
   if (evidence) markdown.appendMarkdown(`\n\n**代码证据**\n\n${escapeMarkdown(evidence)}`)

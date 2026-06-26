@@ -13,6 +13,7 @@ export type ChatStreamApplyResult = {
   idle: boolean
   completed: boolean
   refreshSessions: boolean
+  sessionID?: string
   error?: string
   retry?: ChipMateSessionStatus
   interruption?: ChipMateSessionStatus
@@ -50,11 +51,12 @@ export function chipMateEventSessionID(event: ChipMateEvent) {
 export function applyChipMateEventToMessages(
   messages: ChipMateMessage[],
   event: ChipMateEvent,
-  currentSessionID: string | undefined,
+  targetSessionID: string | undefined,
 ): ChatStreamApplyResult {
-  const relevantSessionID = chipMateEventSessionID(event)
+  const relevantSessionID = chipMateEventSessionIDForMessages(event, messages)
   const result = unchanged(messages)
-  if (currentSessionID && relevantSessionID && relevantSessionID !== currentSessionID) return result
+  if (targetSessionID && relevantSessionID && relevantSessionID !== targetSessionID) return result
+  if (targetSessionID && isMessageMutationEvent(event.type) && !relevantSessionID) return result
 
   switch (event.type) {
     case "message.updated": {
@@ -62,6 +64,7 @@ export function applyChipMateEventToMessages(
       if (!info) return result
       return {
         ...result,
+        sessionID: relevantSessionID,
         messages: upsertMessageInfo(messages, info),
         changed: true,
         completed: Boolean(info.time?.completed),
@@ -72,6 +75,7 @@ export function applyChipMateEventToMessages(
       if (!messageID) return result
       return {
         ...result,
+        sessionID: relevantSessionID,
         messages: messages.filter((message) => message.info.id !== messageID),
         changed: messages.some((message) => message.info.id === messageID),
       }
@@ -82,17 +86,19 @@ export function applyChipMateEventToMessages(
       if (!part?.messageID) return result
       return {
         ...result,
+        sessionID: relevantSessionID,
         messages: upsertMessagePart(messages, part, textValue(properties.delta)),
         changed: true,
       }
     }
     case "message.part.delta": {
       const properties = objectRecord(event.properties)
-      const part = messagePartFromDeltaEvent(properties, currentSessionID)
+      const part = messagePartFromDeltaEvent(properties, relevantSessionID)
       const delta = textValue(properties.delta) || textValue(properties.text)
       if (!part?.messageID || !part.id || !delta) return result
       return {
         ...result,
+        sessionID: relevantSessionID,
         messages: upsertMessagePart(messages, part, delta),
         changed: true,
       }
@@ -109,6 +115,7 @@ export function applyChipMateEventToMessages(
       )
       return {
         ...result,
+        sessionID: relevantSessionID,
         messages: next,
         changed: next !== messages,
       }
@@ -122,6 +129,7 @@ export function applyChipMateEventToMessages(
       } as ChipMateSessionStatus
       return {
         ...result,
+        sessionID: relevantSessionID,
         idle: type === "idle",
         retry: type === "retry" ? normalizedStatus : undefined,
         interruption: type === "error" && status.interrupted === true ? normalizedStatus : undefined,
@@ -130,6 +138,7 @@ export function applyChipMateEventToMessages(
     case "session.error":
       return {
         ...result,
+        sessionID: relevantSessionID,
         error: sessionErrorMessage(objectRecord(event.properties).error),
       }
     case "session.created":
@@ -137,6 +146,7 @@ export function applyChipMateEventToMessages(
     case "session.deleted":
       return {
         ...result,
+        sessionID: relevantSessionID,
         refreshSessions: true,
       }
     default:
@@ -152,6 +162,54 @@ function unchanged(messages: ChipMateMessage[]): ChatStreamApplyResult {
     completed: false,
     refreshSessions: false,
   }
+}
+
+function chipMateEventSessionIDForMessages(event: ChipMateEvent, messages: ChipMateMessage[]) {
+  const direct = chipMateEventSessionID(event)
+  if (direct) return direct
+  const properties = objectRecord(event.properties)
+  if (event.type === "message.updated") {
+    const messageID = stringValue(objectRecord(properties.info).id)
+    return sessionIDForBufferedMessage(messages, messageID)
+  }
+  if (event.type === "message.part.updated") {
+    const part = objectRecord(properties.part)
+    return sessionIDForBufferedMessage(messages, stringValue(part.messageID), stringValue(part.id))
+  }
+  if (event.type === "message.part.delta") {
+    const part = objectRecord(properties.part)
+    return sessionIDForBufferedMessage(
+      messages,
+      stringValue(part.messageID) || stringValue(properties.messageID),
+      stringValue(part.id) || stringValue(properties.partID),
+    )
+  }
+  if (event.type === "message.part.removed") {
+    return sessionIDForBufferedMessage(messages, stringValue(properties.messageID), stringValue(properties.partID))
+  }
+  if (event.type === "message.removed") {
+    return sessionIDForBufferedMessage(messages, stringValue(properties.messageID))
+  }
+  return ""
+}
+
+function sessionIDForBufferedMessage(messages: ChipMateMessage[], messageID: string, partID = "") {
+  if (!messageID) return ""
+  const message = messages.find((item) => item.info.id === messageID)
+  if (!message) return ""
+  const messageSessionID = stringValue(message.info.sessionID)
+  if (messageSessionID) return messageSessionID
+  if (!partID) return ""
+  const part = message.parts.find((item) => stringValue(objectRecord(item).id) === partID)
+  return stringValue(objectRecord(part).sessionID)
+}
+
+function isMessageMutationEvent(type: string) {
+  return type === "message.updated" ||
+    type === "message.removed" ||
+    type === "message.part.updated" ||
+    type === "message.part.delta" ||
+    type === "message.part.removed"
 }
 
 function messageInfoFromEvent(event: ChipMateEvent): ChipMateMessageInfo | undefined {
@@ -183,7 +241,7 @@ function messagePartFromEvent(input: unknown): ChipMateMessagePart | undefined {
 
 function messagePartFromDeltaEvent(
   properties: Record<string, unknown>,
-  currentSessionID: string | undefined,
+  sessionID: string | undefined,
 ): ChipMateMessagePart | undefined {
   const partPayload = objectRecord(properties.part)
   const type = stringValue(partPayload.type) || stringValue(properties.type) || "text"
@@ -195,7 +253,7 @@ function messagePartFromDeltaEvent(
     type,
     id,
     messageID,
-    sessionID: stringValue(partPayload.sessionID) || stringValue(properties.sessionID) || currentSessionID,
+    sessionID: stringValue(partPayload.sessionID) || stringValue(properties.sessionID) || sessionID,
   } as ChipMateMessagePart
 }
 

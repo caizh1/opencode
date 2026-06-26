@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from "bun:test"
+import { afterAll, describe, expect, test } from "bun:test"
 import * as http from "node:http"
 import { CompletionModelClient, CompletionModelRequestError, chatCompletionsUrl, completionModel, completionsUrl, directCompletionRequestDiagnostic } from "../src/completion-model-client"
 import { completionInsertText } from "../src/completion-text"
@@ -6,7 +6,7 @@ import type { RemoteSettings } from "../src/types"
 
 let servers: http.Server[] = []
 
-afterEach(async () => {
+afterAll(async () => {
   await Promise.all(
     servers.map(
       (server) =>
@@ -273,15 +273,27 @@ function settings(baseUrl: string, input: { completionModel?: string; defaultMod
       includeGitDiff: false,
       localOnlyMode: true,
       strictLocalOnlyAgent: true,
+      maxHistoryTurns: 10,
+      maxHistoryBytes: 40000,
+      memorySummary: {
+        enabled: true,
+        maxBytes: 12000,
+        triggerOverflowTurns: 2,
+      },
     },
     permissions: {
       mode: "ask",
     },
     tools: {
       enabled: false,
+      maxAgentSteps: 25,
     },
     skills: {
       enabled: [],
+      overrides: {},
+      scanUserSkills: false,
+      scanClaudeSkills: true,
+      maxCatalogBytes: 8000,
     },
     mcp: {
       enabled: false,

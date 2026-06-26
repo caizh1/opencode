@@ -1,9 +1,10 @@
-import { afterEach, describe, expect, test } from "bun:test"
+import { afterAll, describe, expect, test } from "bun:test"
 import * as http from "node:http"
 import {
   checkRagEndpoint,
   createHttpEmbeddingProvider,
   createHttpRerankProvider,
+  describeRagFetchFailureForDiagnostics,
   normalizeEmbeddingResponse,
   normalizeRerankResponse,
   probeRagRerankProvider,
@@ -13,7 +14,7 @@ import type { RagSettings } from "../src/types"
 
 let servers: http.Server[] = []
 
-afterEach(async () => {
+afterAll(async () => {
   await Promise.all(
     servers.map(
       (server) =>
@@ -234,6 +235,32 @@ describe("offline RAG HTTP provider policy", () => {
       errorPreview: '{"error":"invalid token"}',
     })
     expect(JSON.stringify(events)).not.toContain("bad-secret")
+  })
+
+  test("extracts fetch failure diagnostics with transport cause details", () => {
+    const cause = Object.assign(new Error("Connect Timeout Error"), {
+      name: "ConnectTimeoutError",
+      code: "UND_ERR_CONNECT_TIMEOUT",
+      syscall: "connect",
+      hostname: "embedding.example.test",
+      port: 443,
+      address: "203.0.113.10",
+    })
+    const error = Object.assign(new TypeError("fetch failed"), { cause })
+
+    const diagnostic = describeRagFetchFailureForDiagnostics(error)
+
+    expect(diagnostic).toMatchObject({
+      message: "fetch failed",
+      errorName: "TypeError",
+      errorMessage: "fetch failed",
+      causeName: "ConnectTimeoutError",
+      causeCode: "UND_ERR_CONNECT_TIMEOUT",
+      causeSyscall: "connect",
+      causeHostname: "embedding.example.test",
+      causePort: "443",
+      causeAddress: "203.0.113.10",
+    })
   })
 
   test("probes rerank providers with a real authenticated request", async () => {

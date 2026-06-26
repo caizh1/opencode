@@ -58,18 +58,21 @@ describe("model selection flow", () => {
     expect(chatHtmlSource).toContain("Manual...")
   })
 
-  test("renders completion model selection from provider-returned Qwen Coder models only", () => {
+  test("renders completion model selection from profile-aware provider models", () => {
     expect(chatHtmlSource).toContain('<label class="field">Model<select id="completionModel"></select></label>')
     expect(chatHtmlSource).toContain('id="completionContextLength"')
     expect(chatHtmlSource).toContain('title="0 = auto detect via /models"')
     expect(chatHtmlSource).toContain('id="refreshCompletionModels"')
     expect(chatHtmlSource).toContain('type: "refreshModels"')
-    expect(chatHtmlSource).toContain("function qwenCoderCompletionModels()")
+    expect(chatHtmlSource).toContain("function completionCandidateModels(profile, savedModel)")
     expect(chatHtmlSource).toContain('model.source !== "provider"')
-    expect(chatHtmlSource).toContain('!text.includes("qwen") || !text.includes("coder")')
+    expect(chatHtmlSource).toContain('if (profile === "deepseek-fim") return text.includes("deepseek")')
+    expect(chatHtmlSource).toContain('return text.includes("qwen") && text.includes("coder")')
+    expect(chatHtmlSource).toContain('configured.toLowerCase().includes("deepseek")')
     expect(chatHtmlSource).toContain(".sort((left, right) => (left.providerIndex ?? 1e9) - (right.providerIndex ?? 1e9))")
     expect(chatHtmlSource).toContain("completionModelId(candidates[0])")
     expect(chatHtmlSource).toContain("No Qwen Coder completion model")
+    expect(chatHtmlSource).toContain("No DeepSeek FIM completion model")
     expect(chatHtmlSource).toContain("无可用补全模型，补全暂不可用")
     expect(chatHtmlSource).toContain('numberInputValue("completionContextLength", 200000)')
     expect(chatHtmlSource).toContain('el("completionContextLength").value = String(completion.contextLength ?? 200000);')
@@ -77,7 +80,7 @@ describe("model selection flow", () => {
     expect(chatHtmlSource).toContain("el(\"testCompletionApi\").disabled = !direct || unavailable")
   })
 
-  test("derives Complete status from inline completion config and Qwen Coder candidates only", () => {
+  test("derives Complete status from inline completion config and profile-aware candidates", () => {
     const statusStart = chatHtmlSource.indexOf("function completionStatusInfo()")
     const statusEnd = chatHtmlSource.indexOf("function completionStatusModel", statusStart)
     const statusBody = chatHtmlSource.slice(statusStart, statusEnd)
@@ -88,9 +91,10 @@ describe("model selection flow", () => {
     expect(chatHtmlSource).toContain("function renderCompletionStatusPopover")
     expect(statusBody).toContain("const completion = state.completion || {}")
     expect(statusBody).toContain('const provider = completion.provider || "qwen-direct"')
-    expect(statusBody).toContain("const candidates = qwenCoderCompletionModels()")
+    expect(statusBody).toContain('const profile = completion.profile || "qwen-coder-fim"')
+    expect(statusBody).toContain("const candidates = completionCandidateModels(profile, completion.model)")
     expect(statusBody).toContain('if (!enabled || provider === "none")')
-    expect(statusBody).toContain('if (provider !== "qwen-direct")')
+    expect(statusBody).toContain('if (provider !== "qwen-direct" && provider !== "fim-direct")')
     expect(statusBody).toContain("if (!candidates.length)")
     expect(statusBody).toContain('label: "Complete on"')
     expect(statusBody).toContain('label: "Complete off"')
@@ -110,7 +114,7 @@ describe("model selection flow", () => {
     expect(statusBody).not.toContain("state.selectedModel")
     expect(chatHtmlSource).toContain("Autocomplete enabled · inline code completion is available")
     expect(chatHtmlSource).toContain("Autocomplete disabled · inline code completion is off")
-    expect(chatHtmlSource).toContain("Autocomplete unavailable · no Qwen Coder completion model was returned by the provider")
+    expect(chatHtmlSource).toContain('"Autocomplete unavailable · no " + (profile === "deepseek-fim" ? "DeepSeek FIM" : "Qwen Coder") + " completion model was returned by the provider"')
   })
 
   test("keeps the custom model menu visible and discoverable", () => {
@@ -183,9 +187,28 @@ describe("model selection flow", () => {
       chatHtmlSource.indexOf("    .send {"),
       chatHtmlSource.indexOf("    .composerHint"),
     )
+    const popupLayerRule = chatHtmlSource.slice(
+      chatHtmlSource.indexOf("    .composerPopupLayer {"),
+      chatHtmlSource.indexOf("    .modelMenu {"),
+    )
     const menuRule = chatHtmlSource.slice(
       chatHtmlSource.indexOf("    .modelMenu {"),
       chatHtmlSource.indexOf("    .modelMenu.open"),
+    )
+    const composerMarkupStart = chatHtmlSource.indexOf('<div class="composer">')
+    const composerMarkup = chatHtmlSource.slice(
+      composerMarkupStart,
+      chatHtmlSource.indexOf('<div class="composerActionRow toggles composerContextRail"', composerMarkupStart),
+    )
+    const actionRowMarkupStart = chatHtmlSource.indexOf('<div class="composerActionRow toggles composerContextRail"')
+    const actionRowMarkup = chatHtmlSource.slice(
+      actionRowMarkupStart,
+      chatHtmlSource.indexOf('<div id="composerProgress"', actionRowMarkupStart),
+    )
+    const popupLayerMarkupStart = chatHtmlSource.indexOf('<div id="composerPopupLayer" class="composerPopupLayer">')
+    const popupLayerMarkup = chatHtmlSource.slice(
+      popupLayerMarkupStart,
+      chatHtmlSource.indexOf('${mermaidScriptTag}', popupLayerMarkupStart),
     )
 
     expect(composerRule).toContain("overflow: visible;")
@@ -298,13 +321,26 @@ describe("model selection flow", () => {
     expect(chatHtmlSource).toContain('root.setAttribute("aria-hidden", modelMenuOpen ? "false" : "true")')
     expect(chatHtmlSource).toContain('button.setAttribute("role", "option")')
     expect(chatHtmlSource).toContain('button.setAttribute("aria-selected", isActive ? "true" : "false")')
+    expect(popupLayerRule).toContain("position: fixed;")
+    expect(popupLayerRule).toContain("inset: 0;")
+    expect(popupLayerRule).toContain("z-index: 10000;")
+    expect(popupLayerRule).toContain("pointer-events: none;")
+    expect(popupLayerRule).toContain("overflow: visible;")
     expect(menuRule).toContain("position: fixed;")
     expect(menuRule).toContain("z-index: 1000;")
+    expect(menuRule).toContain("pointer-events: auto;")
     expect(menuRule).toContain("overflow-y: auto;")
     expect(menuRule).toContain("overscroll-behavior: contain;")
     expect(menuRule).toContain("scrollbar-gutter: stable;")
     expect(menuRule).not.toContain("right: 36px;")
     expect(menuRule).not.toContain("bottom: calc(100% + 6px);")
+    expect(composerMarkup).not.toContain('id="modelMenu"')
+    expect(composerMarkup).not.toContain('id="agentMenu"')
+    expect(actionRowMarkup).not.toContain('id="composerMoreMenu"')
+    expect(popupLayerMarkup).toContain('id="modelMenu" class="modelMenu" role="listbox" aria-label="Model" aria-hidden="true"')
+    expect(popupLayerMarkup).toContain('id="agentMenu" class="modelMenu agentMenu" role="listbox" aria-label="Agent" aria-hidden="true"')
+    expect(popupLayerMarkup).toContain('id="composerMoreMenu" class="modelMenu composerMoreMenu" role="menu" aria-label="More composer actions" aria-hidden="true"')
+    expect(popupLayerMarkupStart).toBeGreaterThan(actionRowMarkupStart)
     expect(chatHtmlSource).toContain("function positionPopupMenu")
     expect(chatHtmlSource).toContain('positionPopupMenu("modelMenu", "modelTrigger", modelMenuOpen)')
     expect(chatHtmlSource).toContain('root.style.maxHeight = Math.floor(maxHeight) + "px";')

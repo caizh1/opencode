@@ -1,15 +1,8 @@
 import { createHash } from "node:crypto"
 import * as vscode from "vscode"
 import { collectCommentInsertionAnchors } from "./commentAnchors"
+import { commentSyntaxForLanguage, isHashCommentLanguage, SUPPORTED_COMMENT_LANGUAGE_IDS } from "./commentLanguage"
 import type { CommentGenerationContext, CommentGroundingConfidence, CommentInsertionAnchor, CommentLineSpan, CommentPrimaryAnchorPolicy, CommentProposal, CommentReviewSource, CommentSelectionIntent, CommentWorkspaceReviewUnitKind } from "./commentTypes"
-
-export const SUPPORTED_COMMENT_LANGUAGE_IDS = new Set([
-  "c",
-  "cpp",
-  "cuda-cpp",
-  "objective-c",
-  "objective-cpp",
-])
 
 const CONTEXT_LINE_LIMIT = 20
 const COMMENT_STYLE_LOOKBACK_LINES = 100
@@ -44,8 +37,8 @@ export function buildCommentGenerationContext(
     selectionRange.endLine + 1,
     Math.min(document.lineCount, selectionRange.endLine + 1 + CONTEXT_LINE_LIMIT),
   )
-  const existingCommentExamples = extractExistingCommentExamples(document, selectionRange.startLine)
-  const allowedInsertionAnchors = collectCommentInsertionAnchors(document, selectionRange.startLine, selectionRange.endLine)
+  const existingCommentExamples = extractExistingCommentExamples(document, selectionRange.startLine, document.languageId)
+  const allowedInsertionAnchors = collectCommentInsertionAnchors(document, selectionRange.startLine, selectionRange.endLine, document.languageId)
   const selectionPolicy = commentSelectionPolicy(selectionRange.startLine, selectionRange.endLine, allowedInsertionAnchors, source)
   const hashInput = {
     source,
@@ -75,6 +68,7 @@ export function buildCommentGenerationContext(
     filePath: document.uri.fsPath || document.uri.toString(),
     workspacePath: document.uri.scheme === "file" ? vscode.workspace.asRelativePath(document.uri, false) : document.uri.toString(),
     languageId: document.languageId,
+    commentSyntax: commentSyntaxForLanguage(document.languageId),
     documentVersion: document.version,
     selectionStartLine: selectionRange.startLine,
     selectionEndLine: selectionRange.endLine,
@@ -224,9 +218,16 @@ function lineSliceText(document: vscode.TextDocument, startLine: number, endLine
   return lines.join("\n")
 }
 
-function extractExistingCommentExamples(document: vscode.TextDocument, selectionStartLine: number) {
+function extractExistingCommentExamples(document: vscode.TextDocument, selectionStartLine: number, languageId: string) {
   const examples: string[] = []
   const startLine = Math.max(0, selectionStartLine - COMMENT_STYLE_LOOKBACK_LINES)
+  if (isHashCommentLanguage(languageId)) {
+    for (let line = startLine; line < selectionStartLine && examples.length < COMMENT_STYLE_EXAMPLE_LIMIT; line += 1) {
+      const trimmed = document.lineAt(line).text.trim()
+      if (trimmed.startsWith("#")) examples.push(trimmed)
+    }
+    return examples.join("\n")
+  }
   let inBlock = false
   for (let line = startLine; line < selectionStartLine && examples.length < COMMENT_STYLE_EXAMPLE_LIMIT; line += 1) {
     const trimmed = document.lineAt(line).text.trim()

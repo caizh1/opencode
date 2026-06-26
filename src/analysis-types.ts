@@ -154,6 +154,7 @@ export type AnalysisToolName =
   | "getCallers"
   | "getCallees"
   | "getCallChain"
+  | "getFunctionCfg"
   | "getModuleMap"
   | "getStateMachines"
   | "getStatePath"

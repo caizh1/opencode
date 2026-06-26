@@ -1,30 +1,92 @@
 import { spawn } from "node:child_process"
+import * as nodePath from "node:path"
 import * as vscode from "vscode"
 import type { AnalysisToolName, AnalysisToolResult, EvidenceRef, QueryEvidenceResult } from "./analysis-types"
 import { AuditLog } from "./audit-log"
 import type { CodeGraphContextProvider } from "./codegraph-types"
 import type { DocumentRagContextProvider } from "./document-rag"
+import { validateDiagramIr } from "./diagram-ir"
 import { parseSupportedDocument } from "./document-parser"
+import { generateDrawioDiagram, type DrawioGeneratedDiagram } from "./drawio-diagram-generator"
+import { createWordDocument } from "./tools/createWordDocumentTool"
+import { readDocx } from "./tools/readDocxTool"
 import { decidePermission, type PermissionDecision, type ToolRequest } from "./permissions"
+import type { ActiveSkillPolicy } from "./skills"
 import type { PermissionMode, RemoteSettings } from "./types"
+
+export type ToolApprovalRequest = {
+  id: string
+  sessionID?: string
+  mode: PermissionMode
+  tool: string
+  title: string
+  summary: string
+  risk: string
+  reason: string
+  request: ToolRequest
+  arguments: Record<string, unknown>
+  detail: unknown
+}
+
+export type ToolApprovalDecision = {
+  approved: boolean
+  reason?: string
+}
+
+export type ToolApprovalHandler = (request: ToolApprovalRequest) => Promise<ToolApprovalDecision>
 
 export type ToolRuntimeInput = {
   sessionID?: string
   mode: PermissionMode
   name: string
   arguments: Record<string, unknown>
+  activeSkills?: ActiveSkillPolicy[]
   signal?: AbortSignal
+  approve?: ToolApprovalHandler
 }
 
 export type ToolRuntimeResult = {
   title: string
   output: string
   approved: boolean
-  status?: "completed" | "failed" | "blocked" | "approval-required"
+  status?: "completed" | "failed" | "blocked" | "approval-required" | "user-input-required"
   error?: string
   requiresApproval?: boolean
   risk?: string
+  artifacts?: ToolRuntimeArtifact[]
 }
+
+export type ClarificationChoice = {
+  id: string
+  label: string
+  description?: string
+}
+
+export type ClarificationQuestion = {
+  id: string
+  question: string
+  choices: ClarificationChoice[]
+  allowFreeText?: boolean
+}
+
+export type ClarificationRequest = {
+  kind: "clarification"
+  clarificationId: string
+  title: string
+  reason: string
+  questions: ClarificationQuestion[]
+  blocking: boolean
+}
+
+export type ToolRuntimeArtifact =
+  | {
+      kind: "drawio"
+      payload: DrawioGeneratedDiagram
+    }
+  | {
+      kind: "clarification"
+      payload: ClarificationRequest
+    }
 
 const MAX_OUTPUT_BYTES = 64 * 1024
 const MAX_TEXT_SEARCH_FILES = 800
@@ -32,7 +94,11 @@ const MAX_TEXT_SEARCH_RESULTS = 80
 const MAX_LIST_FILES = 200
 const MAX_EVIDENCE_SNIPPET_BYTES = 8 * 1024
 const MAX_READ_TEXT_BYTES = 48 * 1024
+const MAX_CREATE_FILE_BYTES = 256 * 1024
+const MAX_EDIT_FILE_BYTES = 512 * 1024
+const MAX_EDIT_TEXT_BYTES = 64 * 1024
 const DEFAULT_SESSION_ID = "__default__"
+const SENSITIVE_CREATE_FILE_NAMES = new Set([".env", ".env.local", ".npmrc", ".pypirc", "id_rsa", "id_ed25519"])
 
 type ToolRuntimeProviders = {
   codeGraph?: Pick<CodeGraphContextProvider, "runAnalysisTool" | "queryEvidence" | "findSymbols" | "status">
@@ -94,6 +160,8 @@ export class ToolRuntime {
     switch (input.name) {
       case "chipmate_read":
         return this.readFile(input)
+      case "chipmate_read_skill_resource":
+        return this.readSkillResource(input)
       case "chipmate_list_files":
         return this.executeReadOnly(input, "List files", () => this.listFiles(input))
       case "chipmate_search_text":
@@ -118,10 +186,32 @@ export class ToolRuntime {
         return this.executeReadOnly(input, "Find code graph state machines", () => this.graphFindStateMachines(input))
       case "chipmate_graph_trace_state_path":
         return this.executeReadOnly(input, "Trace code graph state path", () => this.graphTraceStatePath(input))
+      case "chipmate_graph_function_cfg":
+        return this.executeReadOnly(input, "Build function CFG evidence", () => this.graphFunctionCfg(input))
+      case "chipmate_graph_expand_flow_slice":
+        return this.executeReadOnly(input, "Expand code flow slice", () => this.graphExpandFlowSlice(input))
+      case "chipmate_graph_state_flow_detail":
+        return this.executeReadOnly(input, "Expand state flow detail", () => this.graphStateFlowDetail(input))
       case "chipmate_search_documents":
         return this.executeReadOnly(input, "Search Document RAG", () => this.searchDocuments(input))
       case "chipmate_read_evidence":
         return this.executeReadOnly(input, "Read evidence", () => this.readEvidence(input))
+      case "read_docx":
+        return this.readDocxTool(input)
+      case "chipmate_ask_user_clarification":
+        return this.askUserClarification(input)
+      case "chipmate_validate_diagram_ir":
+        return this.validateDiagramIrTool(input)
+      case "chipmate_create_drawio_diagram":
+        return this.createDrawioDiagram(input)
+      case "create_word_document":
+        return this.createWordDocument(input)
+      case "chipmate_create_file":
+        return this.createFile(input)
+      case "chipmate_create_directory":
+        return this.createDirectory(input)
+      case "chipmate_edit_file":
+        return this.editFile(input)
       case "chipmate_write_file":
         return this.writeFile(input)
       case "chipmate_run_command":
@@ -259,6 +349,41 @@ export class ToolRuntime {
       {
         type: "function",
         function: {
+          name: "chipmate_graph_function_cfg",
+          description: "Use when an evidence-backed code-flow diagram needs function-level branch, call, return, or error-path evidence for a known entry function. Do not use for pure visual style choices or simple non-code diagrams. Returns bounded CFG-oriented evidence refs, coverage, gaps, and follow-up read actions.",
+          parameters: objectSchema({
+            symbol: { type: "string", description: "Entry function or method name to analyze." },
+            path: { type: "string", description: "Optional workspace-relative path to bias evidence retrieval." },
+          }, ["symbol"]),
+        },
+      },
+      {
+        type: "function",
+        function: {
+          name: "chipmate_graph_expand_flow_slice",
+          description: "Use when a detailed code-flow diagram needs entry-to-exit or entry-to-target evidence across functions, branches, states, or error paths. Do not use as the final renderer; validate DiagramIR and call chipmate_create_drawio_diagram after evidence is organized. Returns bounded flow-slice evidence, gaps, and next actions.",
+          parameters: objectSchema({
+            entry: { type: "string", description: "Entry symbol, handler, command, API, or module flow start." },
+            target: { type: "string", description: "Optional target/end symbol, state, file, or behavior." },
+            scope: { type: "string", description: "Optional module, directory, subsystem, or document scope." },
+          }, ["entry"]),
+        },
+      },
+      {
+        type: "function",
+        function: {
+          name: "chipmate_graph_state_flow_detail",
+          description: "Use when a diagram must show detailed state-machine branches, guards, actions, or state-to-state paths. Do not use for ordinary architecture diagrams without state behavior. Returns state-machine transition evidence, path coverage, gaps, and follow-up read actions.",
+          parameters: objectSchema({
+            query: { type: "string", description: "State-machine topic, module, state variable, or subsystem." },
+            source: { type: "string", description: "Optional start state for path tracing." },
+            target: { type: "string", description: "Optional target state for path tracing." },
+          }, ["query"]),
+        },
+      },
+      {
+        type: "function",
+        function: {
           name: "chipmate_search_documents",
           description: "Use when the evidence pack lacks Word, Excel, or PDF document evidence. Do not use for code symbols or call chains. Returns Document RAG evidence, lexical candidates, gaps, and refId values for follow-up reading.",
           parameters: objectSchema({
@@ -285,6 +410,168 @@ export class ToolRuntime {
           parameters: objectSchema({
             path: { type: "string", description: "Absolute or workspace-relative path to read." },
           }, ["path"]),
+        },
+      },
+      {
+        type: "function",
+        function: {
+          name: "chipmate_read_skill_resource",
+          description: "Use when an active ChipMate skill lists a references/, assets/, or scripts/ resource that you need to read. Do not use for ordinary workspace files, and do not execute scripts. Returns bounded UTF-8 resource text from the active skill directory.",
+          parameters: objectSchema({
+            skill: { type: "string", description: "Active skill name or id." },
+            path: { type: "string", description: "Skill-root relative resource path, such as references/guide.md." },
+          }, ["skill", "path"]),
+        },
+      },
+      {
+        type: "function",
+        function: {
+          name: "read_docx",
+          description: "Use when a local DOCX file must be read as semantic document structure. Do not use for PDF, legacy DOC, web pages, or style/template inheritance. Returns headings, paragraphs, lists, tables, heading paths, source locations, and bounded previews.",
+          parameters: objectSchema({
+            path: { type: "string", description: "Absolute or workspace-relative path to a .docx file." },
+          }, ["path"]),
+        },
+      },
+      {
+        type: "function",
+        function: {
+          name: "chipmate_ask_user_clarification",
+          description: "Use when the current user request is blocked by missing goal, scope, format, or diagram detail and a bounded user choice is necessary before continuing the same turn. Do not use when the user already clearly specified draw.io/Mermaid, the target, or a safe default can be inferred. Returns a pending structured clarification request that the host resolves with user answers as this tool call's result.",
+          parameters: objectSchema({
+            reason: { type: "string", description: "Short reason why the answer is needed before continuing." },
+            questions: {
+              type: "array",
+              description: "One to three concise questions. Each question may include up to five choices.",
+              maxItems: 3,
+              items: {
+                type: "object",
+                additionalProperties: false,
+                properties: {
+                  id: { type: "string", description: "Stable short id such as diagram_type or scope." },
+                  question: { type: "string", description: "User-facing question." },
+                  choices: {
+                    type: "array",
+                    maxItems: 5,
+                    items: {
+                      type: "object",
+                      additionalProperties: false,
+                      properties: {
+                        id: { type: "string", description: "Stable choice id." },
+                        label: { type: "string", description: "Short button label." },
+                        description: { type: "string", description: "Optional one-sentence explanation." },
+                      },
+                      required: ["label"],
+                    },
+                  },
+                  allowFreeText: { type: "boolean", description: "Whether the user may type a free-form answer for this question." },
+                },
+                required: ["question"],
+              },
+            },
+            choices: {
+              type: "array",
+              description: "Optional shorthand choices for a single implicit question when questions is omitted.",
+              maxItems: 5,
+              items: {
+                type: "object",
+                additionalProperties: false,
+                properties: {
+                  id: { type: "string" },
+                  label: { type: "string" },
+                  description: { type: "string" },
+                },
+                required: ["label"],
+              },
+            },
+            allowFreeText: { type: "boolean", description: "Optional shorthand free-text flag for a single implicit question." },
+            blocking: { type: "boolean", description: "Whether the turn should wait for the user's answer. Defaults to true." },
+          }, ["reason"]),
+        },
+      },
+      {
+        type: "function",
+        function: {
+          name: "chipmate_validate_diagram_ir",
+          description: "Use when evidence, skill instructions, or user requirements have been organized into DiagramIR and you need coverage/gap/style-hint validation before rendering. Do not use as a renderer, file writer, XML passthrough, or evidence extractor. Returns normalized DiagramIR, draw.io-ready spec, coverageReport, visualProfileSuggestion, warnings, gaps, and next evidence suggestions.",
+          parameters: objectSchema({
+            diagramIr: { type: "object", description: "DiagramIR v1 with title, diagramType, composition, nodes, edges, regions, containers, lanes, buses, ports, arrays, evidenceRefs, layoutHints, styleHints, semanticHints, sourceArtifacts, and referenceDiagrams. The model/skill chooses diagramType from user intent; code-backed business process diagrams should remain business-flow, not code-flow, unless the user asks for entry/function/branch execution detail. Treat regions/containers/lanes/groups as ownership areas, not execution steps: assign child nodes with parent/container/lane/region/group, or mark intentional empty areas with allowEmpty/placeholder. For business-flow/code-flow embedded FSM diagrams, ownership areas render as weak background bands by default so edges stay readable; use containerMode='strong' only for true compound structure. Use semanticHints.domain, primaryPerspective, containsStateMachines, stateMachineCount, and processPhases for embedded FSM/process diagrams. Use composition.mode=single by default; only use multi when the user or active skill explicitly asks for or allows multiple diagrams.", additionalProperties: true },
+          }, ["diagramIr"]),
+        },
+      },
+      {
+        type: "function",
+        function: {
+          name: "chipmate_create_drawio_diagram",
+          description: "Use when a validated DiagramIR or a simple structured draw.io spec is ready for final Design Compiler + ELKJS layout and draw.io rendering in chat. Do not use to extract code evidence, write files, call remote draw.io services, embed external images/fonts/URLs, bypass the Design Compiler/ELK layout, or hand-author arbitrary XML. Returns deterministic draw.io mxGraphModel XML, a diagramId, normalized spec, visualPlan metadata, coverage metadata, layoutEngine='elk', and bounded warnings for the chat renderer.",
+          parameters: objectSchema({
+            title: { type: "string", description: "Short diagram title used for the chat diagram block and export filename." },
+            diagramType: { type: "string", description: "User-visible diagram family. Use business-flow for business/process perspective, code-flow for entry/function/branch/return execution paths, state-machine for pure state transitions, architecture for module boundaries, soc-block for chip/module/bus/port diagrams, plus flowchart/swimlane/sequence/freeform when appropriate. Code evidence alone does not require code-flow." },
+            composition: { type: "object", description: "Optional DiagramIR composition decision. Defaults to {mode:'single'}; set mode:'multi' only when the model/skill has explicitly decided the user asked for or allowed multiple diagrams.", additionalProperties: true },
+            diagramIr: { type: "object", description: "Optional DiagramIR v1. Use this for evidence-backed or skill-orchestrated diagrams; the Design Compiler converts semantic nodes/edges/regions/buses/ports plus layoutHints/styleHints/semanticHints into a readable VisualPlan before drawing. For embedded module flows with FSM states/events, keep diagramType at the user intent layer and provide semanticHints plus visualRole/edgeKind/pathRole so the compiler can select its internal embedded-fsm-flow profile. Containers/regions/lanes/groups are ownership areas; assign owned nodes with parent/container/lane/region/group. In embedded FSM business/code flows they render as weak background bands by default; set containerMode='strong' only for true compound structural nesting, and mark intentional empty regions allowEmpty/placeholder.", additionalProperties: true },
+            ir: { type: "object", description: "Alias for diagramIr.", additionalProperties: true },
+            nodes: { type: "array", description: "Core nodes. Each item may include id, label/text, shape/type, parent/group/container/lane/layer, visualRole such as module/phase/state/action/decision/event/evidence-note, importance, textParts, geometry, style, and drawioStyle. Use parent/container/lane/region/group to declare ownership; embedded FSM flows render that ownership as weak background bands unless the container is explicitly strong.", items: { type: "object", additionalProperties: true } },
+            edges: { type: "array", description: "Core edges. Each item may include id, label/text, source/from, target/to, edgeKind such as control/transition/event/data/error/bus, pathRole such as primary/local-transition/cross-module/feedback/exception/secondary, labelPriority, parent/layer, points, style, and drawioStyle.", items: { type: "object", additionalProperties: true } },
+            groups: { type: "array", description: "Optional grouping boxes with id, label/title, parent, geometry, style, and drawioStyle.", items: { type: "object", additionalProperties: true } },
+            containers: { type: "array", description: "Optional architecture/container boxes with id, label/title, parent, geometry, style, drawioStyle, optional containerMode/layoutMode, and optional allowEmpty/placeholder. Containers are ownership/background areas, not flow steps. In embedded-FSM business/code flows, assigned containers render as weak background bands by default; architecture/soc-block and explicit containerMode='strong' use compound containers. Empty embedded-FSM containers are not rendered unless connected or explicitly allowed.", items: { type: "object", additionalProperties: true } },
+            regions: { type: "array", description: "Optional DiagramIR region boxes for SoC/architecture diagrams.", items: { type: "object", additionalProperties: true } },
+            swimlanes: { type: "array", description: "Optional swimlanes with id, label/title, parent, geometry, style, and drawioStyle.", items: { type: "object", additionalProperties: true } },
+            buses: { type: "array", description: "Optional DiagramIR bus edges for SoC/architecture diagrams.", items: { type: "object", additionalProperties: true } },
+            ports: { type: "array", description: "Optional DiagramIR port nodes for SoC/architecture diagrams.", items: { type: "object", additionalProperties: true } },
+            arrays: { type: "array", description: "Optional DiagramIR repeated module arrays with rows, columns, itemLabel, cellWidth, and cellHeight.", items: { type: "object", additionalProperties: true } },
+            sequence: { type: "object", description: "Optional sequence diagram data with participants and messages arrays. Messages use from/to or source/target.", additionalProperties: true },
+            layout: { description: "Layout strategy: layered, flow, grid, swimlane, architecture, soc-block, sequence, or freeform. May also be an object with kind/type.", anyOf: [{ type: "string" }, { type: "object", additionalProperties: true }] },
+            theme: { description: "Theme name such as default, light, dark, or colorful, or a future theme object.", anyOf: [{ type: "string" }, { type: "object", additionalProperties: true }] },
+            style: { description: "Optional safe global draw.io style string or object applied to generated cells.", anyOf: [{ type: "string" }, { type: "object", additionalProperties: true }] },
+          }, ["title"]),
+        },
+      },
+      {
+        type: "function",
+        function: {
+          name: "create_word_document",
+          description: "Use when a complete generic WordDocSpec is ready and a .docx report should be generated. Do not use as a generic file writer or for non-docx output. Returns the generated .docx path, source count, warnings, and render quality status.",
+          parameters: objectSchema({
+            filename: { type: "string", description: "Suggested output filename; it will be sanitized and written under .chipmate/docs." },
+            spec: { type: "object", description: "Generic WordDocSpec containing metadata, sources, sections, references, and optional rule cards." },
+          }, ["spec"]),
+        },
+      },
+      {
+        type: "function",
+        function: {
+          name: "chipmate_create_file",
+          description: "Use when the user explicitly asks you to create a new local workspace text/code file from scratch. Do not use to edit, overwrite, delete, rename, patch, or append to existing files, and do not use outside the current workspace. Returns the created workspace path and byte count or a blocked/failed reason.",
+          parameters: objectSchema({
+            path: { type: "string", description: "Workspace-relative path for a new file that must not already exist." },
+            content: { type: "string", description: "Complete UTF-8 text content for the new file." },
+            reason: { type: "string", description: "Optional short user-facing reason for creating this file." },
+          }, ["path", "content"]),
+        },
+      },
+      {
+        type: "function",
+        function: {
+          name: "chipmate_create_directory",
+          description: "Use when the user explicitly asks you to create a new local workspace folder, especially before creating multiple new files inside it. Do not use to edit, overwrite, delete, rename, move, or create outside the current workspace. Returns the created workspace folder path or a blocked/failed reason.",
+          parameters: objectSchema({
+            path: { type: "string", description: "Workspace-relative path for a new directory that must not already exist; a trailing slash is allowed." },
+            reason: { type: "string", description: "Optional short user-facing reason for creating this folder." },
+          }, ["path"]),
+        },
+      },
+      {
+        type: "function",
+        function: {
+          name: "chipmate_edit_file",
+          description: "Use when the user explicitly asks you to modify an existing local workspace text/code file by exact string replacement. Do not use to create, overwrite, delete, rename, move, patch fuzzily, edit binary files, or edit outside the current workspace. Returns the edited workspace path, exact replacement count, byte counts, and a blocked/failed reason when the oldString is missing or ambiguous.",
+          parameters: objectSchema({
+            path: { type: "string", description: "Workspace-relative path for an existing text/code file." },
+            oldString: { type: "string", description: "Exact existing text to replace; must be non-empty and match file content exactly." },
+            newString: { type: "string", description: "Replacement text, which must differ from oldString." },
+            replaceAll: { type: "boolean", description: "Replace all exact occurrences of oldString. Defaults to false; when false, oldString must match exactly once." },
+            reason: { type: "string", description: "Optional short user-facing reason for editing this file." },
+          }, ["path", "oldString", "newString"]),
         },
       },
     ]
@@ -487,6 +774,55 @@ export class ToolRuntime {
     return payload
   }
 
+  private async graphFunctionCfg(input: ToolRuntimeInput): Promise<ToolPayload> {
+    const symbol = requiredString(input.arguments, "symbol")
+    const payload = await this.analysisToolPayload(input, "getFunctionCfg", { symbol }, {
+      summary: `Retrieved bounded function-CFG structure for ${symbol}.`,
+      coverage: "partial",
+    })
+    payload.gaps.push("Function CFG is reconstructed from indexed snippets and call summaries; inspect refs and expand flow slices for callbacks, dynamic dispatch, generated code, and macro-expanded branches.")
+    return payload
+  }
+
+  private async graphExpandFlowSlice(input: ToolRuntimeInput): Promise<ToolPayload> {
+    const entry = requiredString(input.arguments, "entry")
+    const target = stringArg(input.arguments.target)
+    const scope = stringArg(input.arguments.scope)
+    const payload = await this.searchCode({
+      ...input,
+      arguments: {
+        query: `entry to exit detailed flow slice from ${entry}${target ? ` to ${target}` : ""}${scope ? ` in ${scope}` : ""} branches state changes error paths cross function calls`,
+        path: scope,
+      },
+    })
+    payload.answerSummary = `Retrieved bounded flow-slice evidence from ${entry}${target ? ` to ${target}` : ""}.`
+    payload.coverage = payload.truncated ? "partial" : "partial"
+    payload.gaps.push("Flow-slice evidence may be incomplete for dynamic dispatch, callbacks, generated code, function pointers, or unindexed files; continue with callers/callees/state tools when gaps remain.")
+    payload.data = {
+      mode: "bounded-flow-slice-evidence",
+      entry,
+      target,
+      scope,
+      result: payload.data,
+    }
+    return payload
+  }
+
+  private async graphStateFlowDetail(input: ToolRuntimeInput): Promise<ToolPayload> {
+    const query = requiredString(input.arguments, "query")
+    const source = stringArg(input.arguments.source)
+    const target = stringArg(input.arguments.target)
+    if (source && target) {
+      const payload = await this.graphTraceStatePath({ ...input, arguments: { query, source, target } })
+      payload.answerSummary = `Retrieved detailed state-flow path evidence for ${query}: ${source} -> ${target}.`
+      return payload
+    }
+    const payload = await this.graphFindStateMachines({ ...input, arguments: { query } })
+    payload.answerSummary = `Retrieved detailed state-machine evidence for ${query}.`
+    payload.gaps.push("For a complete state-flow diagram, call chipmate_graph_trace_state_path or chipmate_graph_state_flow_detail with source and target states for critical paths.")
+    return payload
+  }
+
   private async searchDocuments(input: ToolRuntimeInput): Promise<ToolPayload> {
     const query = requiredString(input.arguments, "query")
     const path = stringArg(input.arguments.path)
@@ -615,6 +951,231 @@ export class ToolRuntime {
     }
   }
 
+  private async readSkillResource(input: ToolRuntimeInput): Promise<ToolRuntimeResult> {
+    const skillName = requiredString(input.arguments, "skill")
+    const resourcePath = normalizeSkillResourcePath(requiredString(input.arguments, "path"))
+    const skill = (input.activeSkills ?? []).find((candidate) =>
+      candidate.id === skillName || candidate.name === skillName || candidate.name.toLowerCase() === skillName.toLowerCase()
+    )
+    if (!skill) {
+      return failed("Read skill resource", `Skill resource read blocked: active skill not found for ${skillName}`, `Active skill not found: ${skillName}`)
+    }
+    if (!isAllowedSkillResourcePath(resourcePath)) {
+      return failed("Read skill resource", `Skill resource read blocked: unsupported resource path ${resourcePath}`, `Unsupported skill resource path: ${resourcePath}`)
+    }
+    const target = nodePath.join(skill.skillRoot, ...resourcePath.split("/"))
+    if (!isSubpath(skill.skillRoot, target)) {
+      return failed("Read skill resource", `Skill resource read blocked: path escapes skill root ${resourcePath}`, `Skill resource path escapes root: ${resourcePath}`)
+    }
+    const request: ToolRequest = {
+      id: randomId(),
+      kind: "read",
+      title: "Read skill resource",
+      summary: `${skill.name}:${resourcePath}`,
+      target,
+    }
+    const decision = await this.resolvePermission(input, request, {
+      skillResourcePath: resourcePath,
+      path: target,
+      tool: input.name,
+    })
+    if (!decision.approved) return blocked("Read skill resource", decision)
+    try {
+      const bytes = await vscode.workspace.fs.readFile(vscode.Uri.file(target))
+      const text = new TextDecoder().decode(bytes)
+      const outputText = truncateBytes(text, MAX_READ_TEXT_BYTES)
+      const payload: ToolPayload = {
+        answerSummary: `Read skill resource ${skill.name}:${resourcePath}.`,
+        evidence: [{
+          refId: `${skill.name}:${resourcePath}`,
+          path: `${skill.name}/${resourcePath}`,
+          lines: "1-1",
+          sourceKind: "skill-resource",
+          snippet: outputText,
+        }],
+        gaps: [],
+        nextActions: [],
+        truncated: Buffer.byteLength(text, "utf8") > MAX_READ_TEXT_BYTES,
+        coverage: "complete",
+        data: {
+          skill: skill.name,
+          path: resourcePath,
+          bytes: Buffer.byteLength(text, "utf8"),
+          text: outputText,
+        },
+      }
+      return {
+        title: `Read skill resource: ${skill.name}:${resourcePath}`,
+        output: truncateBytes(JSON.stringify(payload, null, 2), MAX_OUTPUT_BYTES),
+        approved: true,
+        status: "completed",
+        risk: decision.risk,
+      }
+    } catch (error) {
+      if (input.signal?.aborted) throw error
+      const message = isFileNotFoundError(error) ? `Skill resource not found: ${resourcePath}` : formatErrorMessage(error)
+      return failed("Read skill resource", `Read skill resource failed: ${message}`, message, decision.risk)
+    }
+  }
+
+  private async readDocxTool(input: ToolRuntimeInput): Promise<ToolRuntimeResult> {
+    const target = resolveWorkspacePath(stringArg(input.arguments.path))
+    const request: ToolRequest = {
+      id: randomId(),
+      kind: "read",
+      title: "Read DOCX",
+      summary: target,
+      target,
+    }
+    const decision = await this.resolvePermission(input, request, { path: target, tool: input.name })
+    if (!decision.approved) return blocked("Read DOCX", decision)
+    try {
+      if (!target.toLowerCase().endsWith(".docx")) {
+        return failed("Read DOCX", `read_docx only supports .docx files: ${target}`, `Unsupported file extension: ${target}`, decision.risk)
+      }
+      const bytes = await vscode.workspace.fs.readFile(vscode.Uri.file(target))
+      const result = await readDocx({
+        path: workspaceRelativePath(target),
+        bytes,
+      })
+      return {
+        title: `Read DOCX: ${target}`,
+        output: truncateBytes(JSON.stringify({
+          answerSummary: `Read DOCX ${result.metadata.path}: ${result.blocks.length} semantic block(s).`,
+          evidence: [],
+          gaps: result.metadata.readWarnings,
+          nextActions: [],
+          truncated: result.metadata.truncated,
+          coverage: result.metadata.truncated ? "partial" : "complete",
+          data: result,
+        }, null, 2), MAX_OUTPUT_BYTES),
+        approved: true,
+        status: "completed",
+        risk: decision.risk,
+      }
+    } catch (error) {
+      if (input.signal?.aborted) throw error
+      const message = formatErrorMessage(error)
+      return failed(`Read DOCX: ${target}`, `Read DOCX failed: ${target}\n${message}`, message, decision.risk)
+    }
+  }
+
+  private async askUserClarification(input: ToolRuntimeInput): Promise<ToolRuntimeResult> {
+    input.signal?.throwIfAborted()
+    const request = normalizedClarificationRequest(input.arguments)
+    if (!request) {
+      return failed(
+        "Ask user clarification",
+        "Clarification request must include at least one valid question or shorthand choice.",
+        "Clarification request must include at least one valid question or shorthand choice.",
+        "low",
+      )
+    }
+    return {
+      title: request.title,
+      output: JSON.stringify({
+        kind: "clarification",
+        status: "waiting_for_user",
+        clarificationId: request.clarificationId,
+        questionCount: request.questions.length,
+        blocking: request.blocking,
+        assistantInstruction: "Wait for the user's structured answer. The host will return it as this tool call's result; do not continue this turn until then.",
+      }),
+      approved: true,
+      status: "user-input-required",
+      risk: "low",
+      artifacts: [{ kind: "clarification", payload: request }],
+    }
+  }
+
+  private async validateDiagramIrTool(input: ToolRuntimeInput): Promise<ToolRuntimeResult> {
+    try {
+      input.signal?.throwIfAborted()
+      const result = validateDiagramIr(input.arguments)
+      return {
+        title: `Validated DiagramIR: ${result.diagramIr.title || "Diagram"}`,
+        output: truncateBytes(JSON.stringify({
+          answerSummary: result.ok
+            ? `DiagramIR "${result.diagramIr.title || "Diagram"}" is ready for draw.io rendering.`
+            : `DiagramIR "${result.diagramIr.title || "Diagram"}" needs additional evidence or fixes before claiming completeness.`,
+          assistantInstruction: result.ok
+            ? "If the user asked for a diagram, call chipmate_create_drawio_diagram with this normalized DiagramIR or drawioSpec next."
+            : "Address gaps by collecting evidence or revising DiagramIR before rendering, unless the user explicitly accepts a partial diagram.",
+          ...result,
+        }, null, 2), MAX_OUTPUT_BYTES),
+        approved: true,
+        status: "completed",
+        risk: "low",
+      }
+    } catch (error) {
+      if (input.signal?.aborted) throw error
+      const message = formatErrorMessage(error)
+      return failed("Validate DiagramIR", `Validate DiagramIR failed: ${message}`, message, "low")
+    }
+  }
+
+  private async createDrawioDiagram(input: ToolRuntimeInput): Promise<ToolRuntimeResult> {
+    try {
+      input.signal?.throwIfAborted()
+      const result = await generateDrawioDiagram(input.arguments)
+      return {
+        title: `Created draw.io diagram: ${result.title}`,
+        output: JSON.stringify(drawioToolOutputSummary(result), null, 2),
+        approved: true,
+        status: "completed",
+        risk: "low",
+        artifacts: [{ kind: "drawio", payload: result }],
+      }
+    } catch (error) {
+      if (input.signal?.aborted) throw error
+      const message = formatErrorMessage(error)
+      return failed("Create draw.io diagram", `Create draw.io diagram failed: ${message}`, message, "low")
+    }
+  }
+
+  private async createWordDocument(input: ToolRuntimeInput): Promise<ToolRuntimeResult> {
+    const filename = stringArg(input.arguments.filename) || "generated-document"
+    const target = resolveWorkspacePath(`.chipmate/docs/${filename.replace(/\.docx$/i, "")}.docx`)
+    const request: ToolRequest = {
+      id: randomId(),
+      kind: "write",
+      title: "Create Word document",
+      summary: target,
+      target,
+    }
+    const decision = await this.resolvePermission(input, request, { path: target, tool: input.name })
+    if (!decision.approved) return blocked("Create Word document", decision)
+    const spec = input.arguments.spec
+    if (!spec || typeof spec !== "object") {
+      return failed("Create Word document", "Missing or invalid WordDocSpec.", "Missing or invalid WordDocSpec.", decision.risk)
+    }
+    try {
+      const result = await createWordDocument({
+        spec: spec as never,
+        filename,
+      })
+      return {
+        title: `Created Word document: ${result.path}`,
+        output: truncateBytes(JSON.stringify({
+          answerSummary: `Created Word document: ${result.path}`,
+          evidence: [],
+          gaps: result.warnings,
+          nextActions: [],
+          truncated: false,
+          coverage: "complete",
+          data: result,
+        }, null, 2), MAX_OUTPUT_BYTES),
+        approved: true,
+        status: "completed",
+        risk: decision.risk,
+      }
+    } catch (error) {
+      if (input.signal?.aborted) throw error
+      const message = formatErrorMessage(error)
+      return failed("Create Word document", `Create Word document failed: ${message}`, message, decision.risk)
+    }
+  }
+
   private async writeFile(input: ToolRuntimeInput): Promise<ToolRuntimeResult> {
     const target = resolveWorkspacePath(stringArg(input.arguments.path))
     const content = stringArg(input.arguments.content)
@@ -634,6 +1195,185 @@ export class ToolRuntime {
       approved: true,
       status: "completed",
       risk: decision.risk,
+    }
+  }
+
+  private async editFile(input: ToolRuntimeInput): Promise<ToolRuntimeResult> {
+    const pathInput = requiredString(input.arguments, "path")
+    const target = resolveWorkspacePath(pathInput)
+    const oldInput = requiredStringValue(input.arguments, "oldString")
+    const newInput = requiredStringValue(input.arguments, "newString")
+    const replaceAll = booleanArg(input.arguments.replaceAll)
+    const reason = stringArg(input.arguments.reason).trim()
+    try {
+      validateEditFileTarget(target, pathInput)
+      validateEditStrings(oldInput, newInput)
+      const relativePath = workspaceRelativePath(target)
+      const kind = await workspacePathKind(target)
+      if (kind === "missing") return failed("Edit file", `File does not exist: ${relativePath}`, `File does not exist: ${relativePath}`)
+      if (kind === "directory") return failed("Edit file", `Edit file target is a directory: ${relativePath}`, `Edit file target is a directory: ${relativePath}`)
+
+      const initial = await readEditableTextFile(target)
+      const preview = exactReplacementPreview(initial.text, oldInput, newInput, replaceAll)
+      if (!preview.ok) return failed("Edit file", preview.message, preview.message)
+      const detail = {
+        path: relativePath,
+        absolutePath: target,
+        bytes: Buffer.byteLength(preview.newString, "utf8"),
+        beforeBytes: initial.bytes.length,
+        oldBytes: Buffer.byteLength(preview.oldString, "utf8"),
+        newBytes: Buffer.byteLength(preview.newString, "utf8"),
+        replacements: preview.replacements,
+        replaceAll,
+        oldHash: hashText(preview.oldString),
+        newHash: hashText(preview.newString),
+        reason: reason ? truncateString(reason, 500) : undefined,
+        tool: input.name,
+      }
+      const request: ToolRequest = {
+        id: randomId(),
+        kind: "write",
+        title: "Edit file",
+        summary: `${relativePath}\nReplacements: ${preview.replacements}${reason ? `\nReason: ${truncateString(reason, 240)}` : ""}`,
+        target,
+      }
+      const decision = await this.resolvePermission(input, request, detail)
+      if (!decision.approved) return blocked("Edit file", decision)
+
+      const current = await readEditableTextFile(target)
+      const currentPreview = exactReplacementPreview(current.text, oldInput, newInput, replaceAll)
+      if (!currentPreview.ok) return failed("Edit file", currentPreview.message, currentPreview.message, decision.risk)
+      const nextText = replaceAll
+        ? current.text.split(currentPreview.oldString).join(currentPreview.newString)
+        : replaceFirstExact(current.text, currentPreview.oldString, currentPreview.newString)
+      const afterBytes = Buffer.byteLength(nextText, "utf8")
+      if (afterBytes > MAX_EDIT_FILE_BYTES) {
+        return failed("Edit file", `Edited file content is too large: ${afterBytes} byte(s), maximum ${MAX_EDIT_FILE_BYTES}.`, `Edited file content is too large: ${afterBytes} byte(s), maximum ${MAX_EDIT_FILE_BYTES}.`, decision.risk)
+      }
+      await vscode.workspace.fs.writeFile(vscode.Uri.file(target), new TextEncoder().encode(nextText))
+      return {
+        title: `Edited file: ${relativePath}`,
+        output: JSON.stringify({
+          answerSummary: `Edited file: ${relativePath}`,
+          path: relativePath,
+          absolutePath: target,
+          replacements: currentPreview.replacements,
+          replaceAll,
+          beforeBytes: current.bytes.length,
+          afterBytes,
+          oldBytes: Buffer.byteLength(currentPreview.oldString, "utf8"),
+          newBytes: Buffer.byteLength(currentPreview.newString, "utf8"),
+          oldHash: hashText(currentPreview.oldString),
+          newHash: hashText(currentPreview.newString),
+          reason: reason || undefined,
+        }, null, 2),
+        approved: true,
+        status: "completed",
+        risk: decision.risk,
+      }
+    } catch (error) {
+      if (input.signal?.aborted) throw error
+      const message = formatErrorMessage(error)
+      return failed("Edit file", `Edit file failed: ${message}`, message)
+    }
+  }
+
+  private async createFile(input: ToolRuntimeInput): Promise<ToolRuntimeResult> {
+    const pathInput = requiredString(input.arguments, "path")
+    const target = resolveWorkspacePath(pathInput)
+    const content = requiredStringValue(input.arguments, "content")
+    const reason = stringArg(input.arguments.reason).trim()
+    try {
+      validateCreateFileTarget(target, pathInput)
+      const bytes = validateCreateFileContent(content)
+      const relativePath = workspaceRelativePath(target)
+      if (await workspacePathExists(target)) {
+        return failed("Create file", `File already exists: ${relativePath}`, `File already exists: ${relativePath}`)
+      }
+      const request: ToolRequest = {
+        id: randomId(),
+        kind: "write",
+        title: "Create file",
+        summary: `${relativePath}${reason ? `\nReason: ${truncateString(reason, 240)}` : ""}`,
+        target,
+      }
+      const decision = await this.resolvePermission(input, request, {
+        path: relativePath,
+        absolutePath: target,
+        bytes,
+        reason: reason ? truncateString(reason, 500) : undefined,
+        tool: input.name,
+      })
+      if (!decision.approved) return blocked("Create file", decision)
+      await vscode.workspace.fs.createDirectory(vscode.Uri.file(nodePath.dirname(target)))
+      if (await workspacePathExists(target)) {
+        return failed("Create file", `File already exists: ${relativePath}`, `File already exists: ${relativePath}`, decision.risk)
+      }
+      await vscode.workspace.fs.writeFile(vscode.Uri.file(target), new TextEncoder().encode(content))
+      return {
+        title: `Created file: ${relativePath}`,
+        output: JSON.stringify({
+          answerSummary: `Created file: ${relativePath}`,
+          path: relativePath,
+          absolutePath: target,
+          bytes,
+          reason: reason || undefined,
+        }, null, 2),
+        approved: true,
+        status: "completed",
+        risk: decision.risk,
+      }
+    } catch (error) {
+      if (input.signal?.aborted) throw error
+      const message = formatErrorMessage(error)
+      return failed("Create file", `Create file failed: ${message}`, message)
+    }
+  }
+
+  private async createDirectory(input: ToolRuntimeInput): Promise<ToolRuntimeResult> {
+    try {
+      const pathInput = normalizeCreateDirectoryPathInput(requiredString(input.arguments, "path"))
+      const target = resolveWorkspacePath(pathInput)
+      const reason = stringArg(input.arguments.reason).trim()
+      validateCreateDirectoryTarget(target, pathInput)
+      const relativePath = workspaceRelativePath(target)
+      if (await workspacePathExists(target)) {
+        return failed("Create folder", `Folder path already exists: ${relativePath}`, `Folder path already exists: ${relativePath}`)
+      }
+      const request: ToolRequest = {
+        id: randomId(),
+        kind: "write",
+        title: "Create folder",
+        summary: `${relativePath}${reason ? `\nReason: ${truncateString(reason, 240)}` : ""}`,
+        target,
+      }
+      const decision = await this.resolvePermission(input, request, {
+        path: relativePath,
+        absolutePath: target,
+        reason: reason ? truncateString(reason, 500) : undefined,
+        tool: input.name,
+      })
+      if (!decision.approved) return blocked("Create folder", decision)
+      if (await workspacePathExists(target)) {
+        return failed("Create folder", `Folder path already exists: ${relativePath}`, `Folder path already exists: ${relativePath}`, decision.risk)
+      }
+      await vscode.workspace.fs.createDirectory(vscode.Uri.file(target))
+      return {
+        title: `Created folder: ${relativePath}`,
+        output: JSON.stringify({
+          answerSummary: `Created folder: ${relativePath}`,
+          path: relativePath,
+          absolutePath: target,
+          reason: reason || undefined,
+        }, null, 2),
+        approved: true,
+        status: "completed",
+        risk: decision.risk,
+      }
+    } catch (error) {
+      if (input.signal?.aborted) throw error
+      const message = formatErrorMessage(error)
+      return failed("Create folder", `Create folder failed: ${message}`, message)
     }
   }
 
@@ -793,7 +1533,7 @@ export class ToolRuntime {
   private async documentLexicalEvidence(query: string, path: string): Promise<EvidenceRef[]> {
     const root = resolveWorkspacePath(path || ".")
     const files = (await listWorkspaceFiles({ root, recursive: true, maxFiles: MAX_TEXT_SEARCH_FILES + 1 }))
-      .filter((item) => item.kind === "file" && /\.(?:docx|xlsx|xlsm|pdf)$/i.test(item.path))
+      .filter((item) => item.kind === "file" && /\.(?:doc|docx|xlsx|xlsm|pdf)$/i.test(item.path))
     const lowerQuery = query.toLowerCase()
     const refs: EvidenceRef[] = []
     for (const file of files) {
@@ -820,21 +1560,36 @@ export class ToolRuntime {
   private async resolvePermission(input: ToolRuntimeInput, request: ToolRequest, detail: unknown): Promise<PermissionDecision> {
     let decision = decidePermission({ mode: input.mode, request })
     if (!decision.approved && decision.requiresApproval) {
-      const approveLabel = "批准一次"
-      const picked = await vscode.window.showWarningMessage(
-        `ChipMate 请求执行：${request.title}`,
-        {
-          modal: true,
-          detail: `${request.summary}\n\n风险等级：${decision.risk}\n原因：${decision.reason}`,
-        },
-        approveLabel,
-        "拒绝",
-      )
-      decision = picked === approveLabel
-        ? { ...decision, approved: true, requiresApproval: false, reason: `user approved once; ${decision.reason}` }
-        : { ...decision, approved: false, reason: `user denied approval; ${decision.reason}` }
+      if (!input.approve) {
+        decision = {
+          ...decision,
+          approved: false,
+          reason: `QA inline approval unavailable; ${decision.reason}`,
+        }
+      } else {
+        const approval = await input.approve({
+          id: request.id,
+          sessionID: input.sessionID,
+          mode: input.mode,
+          tool: input.name,
+          title: request.title,
+          summary: request.summary,
+          risk: decision.risk,
+          reason: decision.reason,
+          request,
+          arguments: input.arguments,
+          detail,
+        })
+        decision = approval.approved
+          ? { ...decision, approved: true, requiresApproval: false, reason: approval.reason ? `user approved once: ${approval.reason}; ${decision.reason}` : `user approved once; ${decision.reason}` }
+          : { ...decision, approved: false, reason: approval.reason ? `user denied approval: ${approval.reason}; ${decision.reason}` : `user denied approval; ${decision.reason}` }
+      }
     }
-    await this.auditDecision(input, decision, detail)
+    const auditDetail = skillAuditDetail(input, detail)
+    if (input.activeSkills?.length) {
+      this.output?.appendLine(`[skills] tool name=${input.name} active=${input.activeSkills.map((skill) => skill.name).join(",")} allowedBySkill=${auditDetail.toolAllowedBySkill === true}`)
+    }
+    await this.auditDecision(input, decision, auditDetail)
     return decision
   }
 
@@ -883,6 +1638,130 @@ function failed(title: string, output: string, error: string, risk?: string): To
     error,
     risk,
   }
+}
+
+function normalizedClarificationRequest(input: Record<string, unknown>): ClarificationRequest | undefined {
+  const reason = truncateString(compactText(stringArg(input.reason) || "Need user clarification before continuing."), 360)
+  const explicitQuestions = Array.isArray(input.questions) ? input.questions : []
+  let questions = explicitQuestions
+    .slice(0, 3)
+    .map((item, index) => normalizedClarificationQuestion(item, index, input.allowFreeText === true))
+    .filter((item): item is ClarificationQuestion => Boolean(item))
+  if (questions.length === 0) {
+    const shorthandChoices = normalizedClarificationChoices(input.choices, 0)
+    const fallbackQuestion = truncateString(compactText(reason || "Which option should ChipMate use?"), 240)
+    if (shorthandChoices.length > 0 || input.allowFreeText === true) {
+      questions = [{
+        id: "q1",
+        question: fallbackQuestion,
+        choices: shorthandChoices,
+        allowFreeText: input.allowFreeText === true,
+      }]
+    }
+  }
+  if (questions.length === 0) return undefined
+  const clarificationId = `clarification-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
+  return {
+    kind: "clarification",
+    clarificationId,
+    title: `Clarification needed: ${truncateString(questions[0]?.question || "Question", 80)}`,
+    reason,
+    questions,
+    blocking: input.blocking !== false,
+  }
+}
+
+function normalizedClarificationQuestion(input: unknown, index: number, fallbackAllowFreeText: boolean): ClarificationQuestion | undefined {
+  if (!input || typeof input !== "object") return undefined
+  const record = input as Record<string, unknown>
+  const question = truncateString(compactText(stringArg(record.question)), 240)
+  if (!question) return undefined
+  const choices = normalizedClarificationChoices(record.choices, index)
+  return {
+    id: safeClarificationId(stringArg(record.id), `q${index + 1}`),
+    question,
+    choices,
+    allowFreeText: typeof record.allowFreeText === "boolean" ? record.allowFreeText : fallbackAllowFreeText || choices.length === 0,
+  }
+}
+
+function normalizedClarificationChoices(input: unknown, questionIndex: number): ClarificationChoice[] {
+  if (!Array.isArray(input)) return []
+  return input
+    .slice(0, 5)
+    .map((item, index) => {
+      if (typeof item === "string") {
+        const label = truncateString(compactText(item), 80)
+        return label ? { id: `c${index + 1}`, label } : undefined
+      }
+      if (!item || typeof item !== "object") return undefined
+      const record = item as Record<string, unknown>
+      const label = truncateString(compactText(stringArg(record.label)), 80)
+      if (!label) return undefined
+      const description = truncateString(compactText(stringArg(record.description)), 160)
+      return {
+        id: safeClarificationId(stringArg(record.id), `q${questionIndex + 1}c${index + 1}`),
+        label,
+        ...(description ? { description } : {}),
+      }
+    })
+    .filter((item): item is ClarificationChoice => Boolean(item))
+}
+
+function safeClarificationId(input: string, fallback: string) {
+  const normalized = input.trim().toLowerCase().replace(/[^a-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "")
+  return truncateString(normalized || fallback, 40)
+}
+
+function compactText(input: string) {
+  return input.replace(/\s+/g, " ").trim()
+}
+
+function drawioToolOutputSummary(result: DrawioGeneratedDiagram) {
+  const warnings = boundedStringList(result.warnings, 20, 360)
+  const gaps = boundedStringList(result.gaps, 12, 360)
+  return {
+    kind: "drawio",
+    answerSummary: `Created draw.io diagram "${result.title}" for direct chat rendering.`,
+    assistantInstruction: result.gaps?.length
+      ? "The partial diagram has been inserted as a rendered chat diagram part. Briefly describe it, mention remaining evidence gaps, and do not repeat the XML unless the user explicitly asks for source."
+      : "The diagram has been inserted as a rendered chat diagram part. In the final answer, briefly describe it; do not repeat the XML unless the user explicitly asks for source.",
+    diagramId: result.diagramId,
+    title: result.title,
+    layoutEngine: result.normalizedSpec.layoutEngine,
+    visualCompiler: {
+      version: result.normalizedSpec.visualPlan?.compilerVersion,
+      profile: result.normalizedSpec.visualPlan?.profile,
+      textOverflowRepairs: result.normalizedSpec.visualPlan?.qualityGate.textOverflowRepairs ?? 0,
+      edgeLabelRepairs: result.normalizedSpec.visualPlan?.qualityGate.edgeLabelRepairs ?? 0,
+      labelSanitizationRepairs: result.normalizedSpec.visualPlan?.qualityGate.labelSanitizationRepairs ?? 0,
+      edgeOverlapRepairs: result.normalizedSpec.visualPlan?.qualityGate.edgeOverlapRepairs ?? 0,
+      edgePassThroughRepairs: result.normalizedSpec.visualPlan?.qualityGate.edgePassThroughRepairs ?? 0,
+      repairPasses: result.normalizedSpec.visualPlan?.qualityGate.repairPasses ?? 0,
+      legendItems: result.normalizedSpec.visualPlan?.qualityGate.legendItems ?? 0,
+    },
+    diagramType: result.normalizedSpec.diagramType,
+    counts: {
+      nodes: result.normalizedSpec.nodes.length,
+      edges: result.normalizedSpec.edges.length,
+      containers: result.normalizedSpec.containers.length,
+      additionalDiagrams: result.additionalDiagrams?.length ?? 0,
+      xmlBytes: Buffer.byteLength(result.mxGraphModelXml, "utf8"),
+    },
+    warnings,
+    gaps,
+    truncatedWarnings: result.warnings.length > warnings.length,
+    truncatedGaps: (result.gaps?.length ?? 0) > gaps.length,
+    coverage: result.coverageReport?.coverage ?? result.normalizedSpec.coverageReport?.coverage,
+    hasChatDiagramArtifact: true,
+  }
+}
+
+function boundedStringList(input: string[] | undefined, maxItems: number, maxChars: number) {
+  return (input ?? [])
+    .filter((item) => typeof item === "string" && item.trim())
+    .slice(0, maxItems)
+    .map((item) => truncateString(item.replace(/\s+/g, " ").trim(), maxChars))
 }
 
 function unavailablePayload(message: string): ToolPayload {
@@ -946,12 +1825,217 @@ function isSubpath(root: string, candidate: string) {
   return normalizedCandidate === normalizedRoot || normalizedCandidate.startsWith(`${normalizedRoot}/`)
 }
 
+function normalizeSkillResourcePath(input: string) {
+  return input.trim().replace(/\\/g, "/").replace(/^\/+/g, "").replace(/\/+/g, "/")
+}
+
+function isAllowedSkillResourcePath(input: string) {
+  if (!input || /^(?:[A-Za-z]:|\/)/.test(input)) return false
+  const segments = input.split("/")
+  if (segments.some((segment) => !segment || segment === "." || segment === "..")) return false
+  return segments[0] === "references" || segments[0] === "assets" || segments[0] === "scripts"
+}
+
+function skillAuditDetail(input: ToolRuntimeInput, detail: unknown): Record<string, unknown> {
+  const base = detail && typeof detail === "object" && !Array.isArray(detail)
+    ? { ...(detail as Record<string, unknown>) }
+    : { detail }
+  const activeSkills = input.activeSkills ?? []
+  if (activeSkills.length === 0) return base
+  const allowed = activeSkills.find((skill) => skill.allowedTools.includes(input.name))
+  const skill = allowed ?? activeSkills[0]
+  return {
+    ...base,
+    skillId: skill.id,
+    skillName: skill.name,
+    invocationMode: skill.invocationMode,
+    toolAllowedBySkill: Boolean(allowed),
+  }
+}
+
 function workspaceRelativePath(input: string) {
   const normalized = normalizePath(input)
   const root = normalizePath(workspaceRoot()).replace(/\/+$/, "")
   if (normalized === root) return "."
   if (normalized.startsWith(`${root}/`)) return normalized.slice(root.length + 1)
   return normalized
+}
+
+async function workspacePathExists(target: string) {
+  const uri = vscode.Uri.file(target)
+  try {
+    await vscode.workspace.fs.readFile(uri)
+    return true
+  } catch {
+    // Fall through: the target may be a directory or may not exist.
+  }
+  try {
+    await vscode.workspace.fs.readDirectory(uri)
+    return true
+  } catch {
+    return false
+  }
+}
+
+async function workspacePathKind(target: string): Promise<"file" | "directory" | "missing"> {
+  const uri = vscode.Uri.file(target)
+  try {
+    await vscode.workspace.fs.readFile(uri)
+    return "file"
+  } catch {
+    // Fall through: the target may be a directory or may not exist.
+  }
+  try {
+    await vscode.workspace.fs.readDirectory(uri)
+    return "directory"
+  } catch {
+    return "missing"
+  }
+}
+
+function validateCreateFileTarget(target: string, originalPath: string) {
+  if (!isWithinWorkspace(target)) throw new Error(`Create file path is outside the current workspace: ${originalPath}`)
+  const relativePath = workspaceRelativePath(target)
+  if (/[\\/]$/.test(originalPath.trim())) throw new Error("Create file path must include a filename, not end with a directory separator.")
+  if (relativePath === "." || !nodePath.basename(target)) throw new Error("Create file path must point to a new file, not the workspace root.")
+  const normalized = normalizePath(target)
+  const basename = normalized.split("/").pop()?.toLowerCase() ?? ""
+  if (SENSITIVE_CREATE_FILE_NAMES.has(basename) || /(?:^|\/)\.(?:git|ssh)(?:\/|$)/.test(normalized)) {
+    throw new Error(`Create file path is blocked because it targets a sensitive path: ${relativePath}`)
+  }
+}
+
+function validateEditFileTarget(target: string, originalPath: string) {
+  if (originalPath.includes("\0")) throw new Error("Edit file path contains a NUL byte.")
+  if (!isWithinWorkspace(target)) throw new Error(`Edit file path is outside the current workspace: ${originalPath}`)
+  const relativePath = workspaceRelativePath(target)
+  if (/[\\/]$/.test(originalPath.trim())) throw new Error("Edit file path must include a filename, not end with a directory separator.")
+  if (relativePath === "." || !nodePath.basename(target)) throw new Error("Edit file path must point to an existing file, not the workspace root.")
+  const normalized = normalizePath(target)
+  const basename = normalized.split("/").pop()?.toLowerCase() ?? ""
+  if (SENSITIVE_CREATE_FILE_NAMES.has(basename) || /(?:^|\/)\.(?:git|ssh)(?:\/|$)/.test(normalized)) {
+    throw new Error(`Edit file path is blocked because it targets a sensitive path: ${relativePath}`)
+  }
+}
+
+function normalizeCreateDirectoryPathInput(input: string) {
+  return normalizePath(input).replace(/\/+$/g, "")
+}
+
+function validateCreateDirectoryTarget(target: string, originalPath: string) {
+  if (originalPath.includes("\0")) throw new Error("Create folder path contains a NUL byte.")
+  if (!isWithinWorkspace(target)) throw new Error(`Create folder path is outside the current workspace: ${originalPath}`)
+  const relativePath = workspaceRelativePath(target)
+  if (relativePath === "." || !nodePath.basename(target)) throw new Error("Create folder path must point to a new directory, not the workspace root.")
+  const originalSegments = normalizePath(originalPath).split("/").filter(Boolean)
+  if (originalSegments.some((segment) => segment === "." || segment === "..")) {
+    throw new Error(`Create folder path contains an unsupported path segment: ${relativePath}`)
+  }
+  const normalized = normalizePath(target)
+  const segments = normalized.split("/").filter(Boolean).map((segment) => segment.toLowerCase())
+  if (segments.some((segment) => SENSITIVE_CREATE_FILE_NAMES.has(segment)) || /(?:^|\/)\.(?:git|ssh)(?:\/|$)/.test(normalized)) {
+    throw new Error(`Create folder path is blocked because it targets a sensitive path: ${relativePath}`)
+  }
+}
+
+function validateCreateFileContent(content: string) {
+  const bytes = Buffer.byteLength(content, "utf8")
+  if (bytes > MAX_CREATE_FILE_BYTES) {
+    throw new Error(`Create file content is too large: ${bytes} byte(s), maximum ${MAX_CREATE_FILE_BYTES}.`)
+  }
+  if (content.includes("\0")) throw new Error("Create file content appears to be binary: NUL byte detected.")
+  const sample = content.slice(0, 4096)
+  let controlCount = 0
+  for (let index = 0; index < sample.length; index += 1) {
+    const code = sample.charCodeAt(index)
+    if (code < 32 && code !== 9 && code !== 10 && code !== 13) controlCount += 1
+  }
+  if (controlCount >= 16 || (sample.length > 0 && controlCount / sample.length > 0.02)) {
+    throw new Error("Create file content appears to be binary or non-text.")
+  }
+  return bytes
+}
+
+function validateEditStrings(oldString: string, newString: string) {
+  if (oldString.length === 0) throw new Error("oldString must not be empty.")
+  if (oldString === newString) throw new Error("No changes to apply: oldString and newString are identical.")
+  validateTextContent(oldString, "oldString", MAX_EDIT_TEXT_BYTES)
+  validateTextContent(newString, "newString", MAX_EDIT_TEXT_BYTES)
+}
+
+function validateTextContent(content: string, label: string, maxBytes: number) {
+  const bytes = Buffer.byteLength(content, "utf8")
+  if (bytes > maxBytes) throw new Error(`${label} is too large: ${bytes} byte(s), maximum ${maxBytes}.`)
+  if (content.includes("\0")) throw new Error(`${label} appears to be binary: NUL byte detected.`)
+  const sample = content.slice(0, 4096)
+  let controlCount = 0
+  for (let index = 0; index < sample.length; index += 1) {
+    const code = sample.charCodeAt(index)
+    if (code < 32 && code !== 9 && code !== 10 && code !== 13) controlCount += 1
+  }
+  if (controlCount >= 16 || (sample.length > 0 && controlCount / sample.length > 0.02)) {
+    throw new Error(`${label} appears to be binary or non-text.`)
+  }
+  return bytes
+}
+
+async function readEditableTextFile(target: string) {
+  const bytes = await vscode.workspace.fs.readFile(vscode.Uri.file(target))
+  if (bytes.length > MAX_EDIT_FILE_BYTES) {
+    throw new Error(`Edit file target is too large: ${bytes.length} byte(s), maximum ${MAX_EDIT_FILE_BYTES}.`)
+  }
+  let text: string
+  try {
+    text = new TextDecoder("utf-8", { fatal: true }).decode(bytes)
+  } catch {
+    throw new Error("Edit file target is not valid UTF-8 text.")
+  }
+  validateTextContent(text, "Edit file target content", MAX_EDIT_FILE_BYTES)
+  return { bytes, text }
+}
+
+function exactReplacementPreview(source: string, oldInput: string, newInput: string, replaceAll: boolean):
+  | { ok: true; oldString: string; newString: string; replacements: number }
+  | { ok: false; message: string } {
+  const ending = detectLineEnding(source)
+  const oldString = convertToLineEnding(oldInput, ending)
+  const newString = convertToLineEnding(newInput, ending)
+  if (oldString === newString) {
+    return { ok: false, message: "No changes to apply: oldString and newString are identical." }
+  }
+  const replacements = countOccurrences(source, oldString)
+  if (replacements === 0) {
+    return { ok: false, message: "Could not find oldString in the file. It must match exactly, including whitespace and indentation." }
+  }
+  if (replacements > 1 && !replaceAll) {
+    return { ok: false, message: "Found multiple exact matches for oldString. Provide more surrounding context or set replaceAll to true." }
+  }
+  return { ok: true, oldString, newString, replacements }
+}
+
+function detectLineEnding(text: string): "\n" | "\r\n" {
+  return text.includes("\r\n") ? "\r\n" : "\n"
+}
+
+function convertToLineEnding(text: string, ending: "\n" | "\r\n") {
+  const normalized = text.replace(/\r\n/g, "\n")
+  return ending === "\r\n" ? normalized.replace(/\n/g, "\r\n") : normalized
+}
+
+function countOccurrences(content: string, search: string) {
+  let count = 0
+  let offset = 0
+  while ((offset = content.indexOf(search, offset)) !== -1) {
+    count += 1
+    offset += search.length
+  }
+  return count
+}
+
+function replaceFirstExact(content: string, search: string, replacement: string) {
+  const index = content.indexOf(search)
+  if (index === -1) return content
+  return `${content.slice(0, index)}${replacement}${content.slice(index + search.length)}`
 }
 
 async function readTextFileIfSmall(path: string, maxBytes: number) {
@@ -1081,6 +2165,13 @@ function requiredString(args: Record<string, unknown>, key: string) {
   return value.trim()
 }
 
+function requiredStringValue(args: Record<string, unknown>, key: string) {
+  if (!Object.prototype.hasOwnProperty.call(args, key) || typeof args[key] !== "string") {
+    throw new Error(`Missing required argument: ${key}`)
+  }
+  return args[key] as string
+}
+
 function booleanArg(input: unknown) {
   return input === true || input === "true"
 }
@@ -1138,6 +2229,10 @@ function workspaceRoot() {
 
 function stringArg(input: unknown) {
   return typeof input === "string" ? input : ""
+}
+
+function truncateString(input: string, maxLength: number) {
+  return input.length <= maxLength ? input : `${input.slice(0, maxLength)}...`
 }
 
 function truncateBytes(input: string, maxBytes: number) {

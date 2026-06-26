@@ -1,0 +1,9 @@
+{
+  "chipmate.codeGraph.promptOnWorkspaceOpen": false,
+  "chipmate.rag.embedding.resumeAutomatically": false,
+  "chipmate.completion.logLevel": "debug",
+  "editor.inlineSuggest.enabled": true,
+  "editor.tabCompletion": "off",
+  "editor.acceptSuggestionOnEnter": "off",
+  "files.autoSave": "off"
+}

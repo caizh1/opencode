@@ -15,7 +15,7 @@ import { completionContextDebugSummary, type CompletionContextPack } from "./com
 import { buildCEmbeddedCompletionEvidence, shouldBuildCEmbeddedCompletionEvidence, type CEmbeddedFullRetrievalDebugDump } from "./completion-c-embedded-evidence"
 import { scoreCEmbeddedCompletionQuality, type CEmbeddedCompletionFixture, type CEmbeddedTriggerKind } from "./completion-c-embedded-quality"
 import { inferCompletionIndent } from "./completion-indent"
-import { CompletionModelClient, completionModel, directCompletionRequestDiagnostic } from "./completion-model-client"
+import { CompletionModelClient, completionApiBaseUrl, completionModel, directCompletionRequestDiagnostic } from "./completion-model-client"
 import { runCompletionCandidatePipeline, type CompletionCandidatePipelineResult } from "./completion-candidate-pipeline"
 import { planCompletion } from "./completion-plan"
 import { resolveCompletionPlanAfterSymbolRetrieval, routeCompletionModel, routeLogValue, shouldRetryCompletionRejection, type CompletionModelRoute } from "./completion-router"
@@ -106,7 +106,7 @@ export class RemoteCompletionProvider implements vscode.InlineCompletionItemProv
       line: position.line,
       triggerKind: completionTriggerKind(context.triggerKind),
     })
-    if (!settings.completion.apiBaseUrl) {
+    if (!completionApiBaseUrl(settings)) {
       this.logDebug(settings, `skip: direct completion API base URL is not configured ${details}`)
       return
     }
@@ -1549,7 +1549,9 @@ function requestDetails(document: vscode.TextDocument, position: vscode.Position
 
 function routeRequestDetails(route: CompletionModelRoute, settings: RemoteSettings) {
   if (route.kind !== "model") return ""
-  const transport = route.modelProfile === "qwen-coder-fim" ? "raw-completions" : "chat-completions"
+  const transport = route.modelProfile === "qwen-coder-fim" || route.modelProfile === "deepseek-fim"
+    ? "raw-completions"
+    : "chat-completions"
   return [
     `configuredProfile=${settings.completion.profile}`,
     `effectiveProfile=${route.modelProfile}`,

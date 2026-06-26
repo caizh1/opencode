@@ -48,9 +48,13 @@ export function decidePermission(input: {
 
 export function classifyToolRisk(request: ToolRequest, workspaceFolders = vscode.workspace.workspaceFolders ?? []): ToolRisk {
   if (request.kind === "network") return isIntranetUrl(request.url ?? "") ? "low" : "high"
-  if (request.kind === "command") return commandRisk(request.command ?? "")
+  if (request.kind === "command") return classifyCommandRisk(request.command ?? "")
   if (request.kind === "write") return fileRisk(request.target ?? "", workspaceFolders, true)
   return fileRisk(request.target ?? "", workspaceFolders, false)
+}
+
+export function classifyCommandRisk(command: string): ToolRisk {
+  return commandRisk(command)
 }
 
 export function isIntranetUrl(input: string) {

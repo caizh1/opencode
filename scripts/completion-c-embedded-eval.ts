@@ -587,6 +587,13 @@ function settings(): RemoteSettings {
       includeGitDiff: false,
       localOnlyMode: true,
       strictLocalOnlyAgent: true,
+      maxHistoryTurns: 10,
+      maxHistoryBytes: 40000,
+      memorySummary: {
+        enabled: true,
+        maxBytes: 12000,
+        triggerOverflowTurns: 2,
+      },
     },
     provider: {
       apiBaseUrl: "http://localhost:8000/v1",
@@ -603,6 +610,10 @@ function settings(): RemoteSettings {
     },
     skills: {
       enabled: [],
+      overrides: {},
+      scanUserSkills: false,
+      scanClaudeSkills: true,
+      maxCatalogBytes: 8000,
     },
     mcp: {
       enabled: false,

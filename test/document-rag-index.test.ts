@@ -10,12 +10,14 @@ import {
 
 describe("document RAG index helpers", () => {
   test("only accepts Word, Excel, and PDF document paths", () => {
+    expect(isSupportedDocumentRagPath("docs/legacy.doc")).toBe(true)
     expect(isSupportedDocumentRagPath("docs/spec.docx")).toBe(true)
     expect(isSupportedDocumentRagPath("docs/table.xlsx")).toBe(true)
     expect(isSupportedDocumentRagPath("docs/macro.xlsm")).toBe(true)
     expect(isSupportedDocumentRagPath("docs/manual.pdf")).toBe(true)
     expect(isSupportedDocumentRagPath("src/index.ts")).toBe(false)
     expect(isSupportedDocumentRagPath("docs/archive.zip")).toBe(false)
+    expect(documentRagKindFromPath("A/B/LEGACY.DOC")).toBe("doc")
     expect(documentRagKindFromPath("A/B/REPORT.PDF")).toBe("pdf")
   })
 
@@ -27,6 +29,7 @@ describe("document RAG index helpers", () => {
     expect(isDocumentRagExcludedPath("packages/app/out/report.xlsx")).toBe(true)
     expect(isDocumentRagExcludedPath("packages/app/build/report.xlsm")).toBe(true)
     expect(isDocumentRagExcludedPath("tmp\\.vscode-test\\fixture.pdf")).toBe(true)
+    expect(isDocumentRagExcludedPath("docs/~$legacy.doc")).toBe(true)
     expect(isDocumentRagExcludedPath("docs/~$guar6030v100.xlsx")).toBe(true)
     expect(isDocumentRagExcludedPath("nested/~$foo.docx")).toBe(true)
     expect(isDocumentRagExcludedPath("private/spec.docx", ["private/**"])).toBe(true)

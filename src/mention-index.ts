@@ -25,10 +25,10 @@ export type MentionSearchResult = {
 }
 
 const MAX_SCORE = 100000
-const MENTION_INDEX_EXCLUDED_SEGMENTS = new Set(["node_modules", ".git", "dist", "out", "build", ".vscode-test"])
+const MENTION_INDEX_EXCLUDED_SEGMENTS = new Set(["node_modules", ".git", "dist", "out", ".vscode-test"])
 
 export function buildMentionIndex(files: MentionSourceFile[]) {
-  const folderLabels = new Set<string>()
+  const folderUris = new Map<string, string | undefined>()
   const fileEntries: MentionIndexEntry[] = []
 
   for (const file of files) {
@@ -39,13 +39,16 @@ export function buildMentionIndex(files: MentionSourceFile[]) {
     if (segments.length === 0) continue
 
     for (let index = 1; index < segments.length; index++) {
-      folderLabels.add(segments.slice(0, index).join("/"))
+      const folderLabel = segments.slice(0, index).join("/")
+      if (!folderUris.has(folderLabel)) {
+        folderUris.set(folderLabel, trimUriSegments(file.uri, segments.length - index))
+      }
     }
 
     fileEntries.push(entryFor("file", label, file.uri))
   }
 
-  const folderEntries = [...folderLabels].map((label) => entryFor("folder", label))
+  const folderEntries = [...folderUris.entries()].map(([label, uri]) => entryFor("folder", label, uri))
   return [...folderEntries, ...fileEntries]
 }
 
@@ -162,4 +165,11 @@ function cleanPath(input: string) {
 
 function hasTrailingSlash(input: string) {
   return /[\\/]$/.test(input.trim())
+}
+
+function trimUriSegments(uri: string, count: number) {
+  if (!uri || count <= 0) return uri
+  const parts = uri.split("/")
+  if (parts.length <= count) return uri
+  return parts.slice(0, -count).join("/")
 }

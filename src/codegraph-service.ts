@@ -3341,6 +3341,23 @@ function formatRagHttpDiagnosticEvent(event: RagHttpDiagnosticEvent) {
     if (event.normalizeElapsedMs !== undefined) common.push(`normalizeSec=${formatSeconds(event.normalizeElapsedMs)}`)
   } else if (event.phase === "encoding") {
     if (event.message) common.push(`message=${compactLogValue(event.message)}`)
+  } else if (event.phase === "error") {
+    if (event.elapsedMs !== undefined) common.push(`requestSec=${formatSeconds(event.elapsedMs)}`)
+    if (event.message) common.push(`message=${compactLogValue(event.message)}`)
+    if (event.errorName) common.push(`errorName=${compactLogValue(event.errorName)}`)
+    if (event.errorMessage) common.push(`errorMessage=${compactLogValue(event.errorMessage)}`)
+    if (event.errorCode) common.push(`errorCode=${compactLogValue(event.errorCode)}`)
+    if (event.causeName) common.push(`causeName=${compactLogValue(event.causeName)}`)
+    if (event.causeCode) common.push(`causeCode=${compactLogValue(event.causeCode)}`)
+    if (event.causeErrno) common.push(`causeErrno=${compactLogValue(event.causeErrno)}`)
+    if (event.causeSyscall) common.push(`causeSyscall=${compactLogValue(event.causeSyscall)}`)
+    if (event.causeHostname) common.push(`causeHostname=${compactLogValue(event.causeHostname)}`)
+    if (event.causeHost) common.push(`causeHost=${compactLogValue(event.causeHost)}`)
+    if (event.causePort) common.push(`causePort=${compactLogValue(event.causePort)}`)
+    if (event.causeAddress) common.push(`causeAddress=${compactLogValue(event.causeAddress)}`)
+    if (event.causeMessage) common.push(`causeMessage=${compactLogValue(event.causeMessage)}`)
+    if (event.causeStackFirstLine) common.push(`causeStack=${compactLogValue(event.causeStackFirstLine)}`)
+    if (event.causeDetails?.length) common.push(`causeDetails=${compactLogValue(event.causeDetails.join(" | "))}`)
   }
   return common.join(" ")
 }

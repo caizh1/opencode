@@ -97,6 +97,13 @@ function settings(input: { localOnlyMode: boolean; defaultAgent?: string }): Rem
       includeGitDiff: false,
       localOnlyMode: input.localOnlyMode,
       strictLocalOnlyAgent: true,
+      maxHistoryTurns: 10,
+      maxHistoryBytes: 40000,
+      memorySummary: {
+        enabled: true,
+        maxBytes: 12000,
+        triggerOverflowTurns: 2,
+      },
     },
     completion: {
       enabled: false,
@@ -118,9 +125,14 @@ function settings(input: { localOnlyMode: boolean; defaultAgent?: string }): Rem
     },
     tools: {
       enabled: false,
+      maxAgentSteps: 25,
     },
     skills: {
       enabled: [],
+      overrides: {},
+      scanUserSkills: false,
+      scanClaudeSkills: true,
+      maxCatalogBytes: 8000,
     },
     mcp: {
       enabled: false,

@@ -1,0 +1,3 @@
+ChipMate offline UI test plain text fixture.
+
+The expected behavior is that Document RAG can scan ordinary text files without requiring a network download.

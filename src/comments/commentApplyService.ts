@@ -76,7 +76,7 @@ export function validateApplyTarget(proposal: CommentProposal, document: vscode.
   if (currentLineText !== proposal.anchor.targetLineText.trim()) return "锚点行已变化"
   if (isMacroContinuationBoundary(document, proposal.insertBeforeLine)) return "插入位置位于宏续行中"
   if (isInsideBlockComment(document, proposal.insertBeforeLine)) return "插入位置位于块注释中"
-  const allowedAnchors = collectCommentInsertionAnchors(document, proposal.selectionStartLine, proposal.selectionEndLine)
+  const allowedAnchors = collectCommentInsertionAnchors(document, proposal.selectionStartLine, proposal.selectionEndLine, document.languageId)
   if (!allowedAnchors.some((anchor) => anchor.line === proposal.insertBeforeLine)) {
     return "插入位置不再是允许的结构锚点"
   }

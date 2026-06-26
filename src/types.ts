@@ -1,7 +1,7 @@
 export type ConnectionState = "disconnected" | "connecting" | "connected" | "authFailed" | "error"
 export type CompletionLogLevel = "off" | "info" | "debug"
-export type CompletionProfile = "generic-chat" | "qwen-coder-fim"
-export type CompletionProvider = "openai-compatible" | "qwen-direct" | "none"
+export type CompletionProfile = "generic-chat" | "qwen-coder-fim" | "deepseek-fim"
+export type CompletionProvider = "openai-compatible" | "qwen-direct" | "fim-direct" | "none"
 export type CompletionCommentGuidedRetrievalMode = "qa-exact" | "completion"
 export type CodeGraphAnalysisMode = "auto" | "fast" | "ast" | "semantic"
 export type PermissionMode = "ask" | "auto" | "full-access"
@@ -186,6 +186,20 @@ export type DocumentRagStatus = {
   progress?: DocumentRagProgress
 }
 
+export type EvidenceLedgerStaleness = "current" | "unknown" | "stale"
+
+export type EvidenceLedgerEntry = {
+  source: string
+  kind: string
+  path?: string
+  symbol?: string
+  range?: string
+  query?: string
+  summary: string
+  truncated: boolean
+  staleness: EvidenceLedgerStaleness
+}
+
 export type RemoteSettings = {
   provider: {
     apiBaseUrl: string
@@ -208,15 +222,25 @@ export type RemoteSettings = {
     strictLocalOnlyAgent: boolean
     maxHistoryTurns: number
     maxHistoryBytes: number
+    memorySummary: {
+      enabled: boolean
+      maxBytes: number
+      triggerOverflowTurns: number
+    }
   }
   permissions: {
     mode: PermissionMode
   }
   tools: {
     enabled: boolean
+    maxAgentSteps: number
   }
   skills: {
     enabled: string[]
+    overrides: Record<string, "on" | "name-only" | "user-invocable-only" | "off">
+    scanUserSkills: boolean
+    scanClaudeSkills: boolean
+    maxCatalogBytes: number
   }
   mcp: {
     enabled: boolean
@@ -280,6 +304,8 @@ export type HealthResponse = {
 export type ChipMateSession = {
   id: string
   title?: string
+  displayTitle?: string
+  displayTitleSource?: "model" | "fallback"
   directory?: string
   time?: {
     created?: number
@@ -384,6 +410,39 @@ export type ChipMatePart =
         error?: unknown
         metadata?: unknown
       }
+    }
+  | {
+      type: "diagram"
+      kind: "drawio"
+      title?: string
+      xml: string
+      warnings?: string[]
+      source?: "tool" | "fence"
+      diagramId?: string
+      toolCallID?: string
+    }
+  | {
+      type: "clarification"
+      clarificationId: string
+      status?: "pending" | "answered" | "cancelled"
+      title?: string
+      reason?: string
+      questions: Array<{
+        id: string
+        question: string
+        choices?: Array<{
+          id: string
+          label: string
+          description?: string
+        }>
+        allowFreeText?: boolean
+      }>
+      answers?: Array<{
+        questionId: string
+        choiceId?: string
+        text?: string
+      }>
+      toolCallID?: string
     }
   | {
       type: string

@@ -23,6 +23,7 @@ describe("mention index", () => {
 
     expect(results[0]).toMatchObject({
       type: "folder",
+      uri: "file:///repo/source/ssd_fw/be/bm/gc",
       label: "source/ssd_fw/be/bm/gc",
       insertText: "source/ssd_fw/be/bm/gc/",
     })
@@ -35,7 +36,8 @@ describe("mention index", () => {
     expect(isMentionIndexExcludedPath("source/.git/config")).toBe(true)
     expect(isMentionIndexExcludedPath("packages/app/dist/index.js")).toBe(true)
     expect(isMentionIndexExcludedPath("packages/app/out/extension.js")).toBe(true)
-    expect(isMentionIndexExcludedPath("packages/app/build/generated.js")).toBe(true)
+    expect(isMentionIndexExcludedPath("packages/app/build/generated.js")).toBe(false)
+    expect(isMentionIndexExcludedPath("build/scripts/analyze.sh")).toBe(false)
     expect(isMentionIndexExcludedPath("tmp\\.vscode-test\\workspace\\fixture.ts")).toBe(true)
   })
 })

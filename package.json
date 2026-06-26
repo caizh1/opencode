@@ -2,7 +2,7 @@
   "name": "chipmate",
   "displayName": "ChipMate",
   "description": "Direct OpenAI-compatible coding agent with workspace skills for VS Code",
-  "version": "0.1.0-build.4",
+  "version": "0.1.0-build.123",
   "icon": "media/chipmate-icon.png",
   "publisher": "local",
   "license": "MIT",
@@ -27,6 +27,8 @@
     "onCommand:chipmate.addFileToContext",
     "onCommand:chipmate.clearContext",
     "onCommand:chipmate.openOutput",
+    "onCommand:chipmate.agentTerminal.open",
+    "onTerminalProfile:chipmate.agentTerminal",
     "onCommand:chipmate.provider.setApiKey",
     "onCommand:chipmate.qwenAutocomplete.regenerate",
     "onCommand:chipmate.qwenAutocomplete.showLogs",
@@ -95,6 +97,11 @@
       {
         "command": "chipmate.openOutput",
         "title": "Open ChipMate Output",
+        "category": "ChipMate"
+      },
+      {
+        "command": "chipmate.agentTerminal.open",
+        "title": "Open ChipMate Agent Terminal",
         "category": "ChipMate"
       },
       {
@@ -289,17 +296,36 @@
         },
         "chipmate.context.maxHistoryTurns": {
           "type": "number",
-          "default": 3,
+          "default": 10,
           "minimum": 0,
           "maximum": 20,
           "description": "Maximum recent chat turns to include before the current ChipMate chat request. Set to 0 to disable chat history context."
         },
         "chipmate.context.maxHistoryBytes": {
           "type": "number",
-          "default": 12000,
+          "default": 40000,
           "minimum": 0,
           "maximum": 200000,
           "description": "Maximum bytes of recent chat history to include before the current ChipMate chat request."
+        },
+        "chipmate.context.memorySummary.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Summarize older same-session ChipMate chat history that falls outside the recent raw history window."
+        },
+        "chipmate.context.memorySummary.maxBytes": {
+          "type": "number",
+          "default": 12000,
+          "minimum": 0,
+          "maximum": 80000,
+          "description": "Maximum bytes of rolling conversation memory summary to include before recent chat history."
+        },
+        "chipmate.context.memorySummary.triggerOverflowTurns": {
+          "type": "number",
+          "default": 2,
+          "minimum": 0,
+          "maximum": 20,
+          "description": "Minimum number of newly overflowed older user turns before ChipMate refreshes the rolling conversation memory summary."
         },
         "chipmate.permissions.mode": {
           "type": "string",
@@ -321,6 +347,13 @@
           "default": false,
           "description": "Allow the direct chat runtime to expose ChipMate workspace tools to the model. When disabled, no tool schemas are sent and returned tool calls are ignored."
         },
+        "chipmate.tools.maxAgentSteps": {
+          "type": "number",
+          "default": 25,
+          "minimum": 1,
+          "maximum": 100,
+          "description": "Maximum number of direct chat agent model-request steps before ChipMate stops executing tools and asks the model to summarize from the bounded tool outputs already collected."
+        },
         "chipmate.skills.enabled": {
           "type": "array",
           "default": [],
@@ -328,6 +361,37 @@
             "type": "string"
           },
           "description": "Enabled workspace skills discovered from .agents/skills/*/SKILL.md."
+        },
+        "chipmate.skills.overrides": {
+          "type": "object",
+          "default": {},
+          "additionalProperties": {
+            "type": "string",
+            "enum": [
+              "on",
+              "name-only",
+              "user-invocable-only",
+              "off"
+            ]
+          },
+          "description": "Per-skill visibility overrides keyed by skill id, name, or command name."
+        },
+        "chipmate.skills.scanUserSkills": {
+          "type": "boolean",
+          "default": true,
+          "description": "Discover user-level skills from ~/.agents/skills and, when Claude-compatible scanning is enabled, ~/.claude/skills. Workspace skills are always discovered."
+        },
+        "chipmate.skills.scanClaudeSkills": {
+          "type": "boolean",
+          "default": true,
+          "description": "Also discover Claude-compatible .claude/skills folders in the workspace."
+        },
+        "chipmate.skills.maxCatalogBytes": {
+          "type": "number",
+          "default": 8000,
+          "minimum": 1000,
+          "maximum": 64000,
+          "description": "Maximum approximate byte budget for the initial enabled skills catalog sent to chat models."
         },
         "chipmate.mcp.enabled": {
           "type": "boolean",
@@ -343,20 +407,27 @@
           "type": "string",
           "enum": [
             "qwen-direct",
+            "fim-direct",
             "none",
             "openai-compatible"
           ],
           "default": "qwen-direct",
-          "description": "Inline completion provider. Qwen Direct uses the shared ChipMate provider base URL and API key with non-streaming /v1/completions."
+          "description": "Inline completion provider. Qwen Direct preserves the existing Qwen raw /completions behavior; FIM Direct enables profile-specific raw FIM providers such as DeepSeek."
         },
         "chipmate.completion.profile": {
           "type": "string",
           "enum": [
             "generic-chat",
-            "qwen-coder-fim"
+            "qwen-coder-fim",
+            "deepseek-fim"
           ],
           "default": "qwen-coder-fim",
-          "description": "Inline completion profile. Generic Chat uses /chat/completions; Qwen Coder FIM uses raw /completions with Qwen fill-in-the-middle tokens."
+          "description": "Inline completion profile. Qwen Coder FIM preserves the existing marker prompt; DeepSeek FIM uses raw /completions with separate prompt and suffix fields."
+        },
+        "chipmate.completion.apiBaseUrl": {
+          "type": "string",
+          "default": "",
+          "description": "Optional base URL override for inline completion. Leave empty to use chipmate.provider.apiBaseUrl. Official DeepSeek FIM can use https://api.deepseek.com or https://api.deepseek.com/beta."
         },
         "chipmate.completion.model": {
           "type": "string",
@@ -999,6 +1070,14 @@
         }
       ]
     },
+    "terminal": {
+      "profiles": [
+        {
+          "id": "chipmate.agentTerminal",
+          "title": "ChipMate Agent Terminal"
+        }
+      ]
+    },
     "menus": {
       "editor/context": [
         {
@@ -1008,12 +1087,12 @@
         },
         {
           "command": "chipmate.comments.generateForSelection",
-          "when": "editorHasSelection && chipmate.comments.supportedEditor",
+          "when": "editorHasSelection && chipmate.comments.selectionSupportedEditor",
           "group": "chipmate@2"
         },
         {
           "command": "chipmate.comments.generateForCurrentFunction",
-          "when": "chipmate.comments.supportedEditor",
+          "when": "chipmate.comments.currentFunctionSupportedEditor",
           "group": "chipmate@2.1"
         },
         {
@@ -1077,14 +1156,20 @@
     "benchmark:completion-quality": "bun scripts/completion-quality-benchmark.ts",
     "benchmark:codegraph": "bun scripts/codegraph-benchmark.ts",
     "verify:document-runtime": "bun scripts/verify-document-runtime.ts",
+    "verify:drawio-runtime": "bun scripts/verify-drawio-runtime.ts",
+    "verify:drawio-webview": "bun scripts/verify-drawio-webview.ts",
     "verify:qwen-vsix": "bun scripts/verify-qwen-vsix.ts",
+    "test:ui-windows:bundle": "bun scripts/package-windows-ui-test.ts",
+    "test:ui-windows:verify-bundle": "bun scripts/verify-windows-ui-test-bundle.ts",
     "test:vscode": "bun run package && node ./dist/test/runTest.js",
     "vsix": "bun scripts/package-vsix.ts"
   },
   "devDependencies": {
+    "@types/js-yaml": "^4.0.9",
     "@types/mocha": "^10.0.10",
     "@types/node": "20.x",
     "@types/vscode": "1.93.0",
+    "@types/word-extractor": "1.0.6",
     "@typescript-eslint/eslint-plugin": "^8.31.1",
     "@typescript-eslint/parser": "^8.31.1",
     "@vscode/test-electron": "^2.5.2",
@@ -1096,16 +1181,20 @@
   },
   "dependencies": {
     "diff": "8.0.4",
+    "elkjs": "^0.11.1",
     "exceljs": "4.4.0",
     "fastest-levenshtein": "^1.0.16",
     "ignore": "^7.0.3",
     "js-tiktoken": "^1.0.18",
+    "js-yaml": "^5.1.0",
+    "jszip": "^3.10.1",
     "mammoth": "1.12.0",
     "mkdirp": "0.5.6",
     "node-html-parser": "7.1.0",
     "pdfjs-dist": "4.8.69",
     "sql.js": "1.14.1",
-    "web-tree-sitter": "^0.24.7"
+    "web-tree-sitter": "^0.24.7",
+    "word-extractor": "1.0.4"
   },
   "overrides": {
     "mkdirp": "0.5.6"

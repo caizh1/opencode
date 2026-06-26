@@ -11,6 +11,7 @@ const QWEN_CODER_FIM_STOP = [
   "<|endoftext|>",
   "<|im_end|>",
 ]
+const DEEPSEEK_FIM_STOP = ["```"]
 
 export class CompletionModelRequestError extends Error {
   constructor(
@@ -47,6 +48,7 @@ export class CompletionModelClient {
     profile?: CompletionProfile
     transport?: CompletionTransport
     seed?: number
+    suffix?: string
   }): Promise<ChipMateMessage> {
     const baseUrl = completionApiBaseUrl(this.settings)
     const model = completionModel(this.settings)
@@ -54,7 +56,7 @@ export class CompletionModelClient {
     if (!model) throw new CompletionModelRequestError(0, "Completion model is required.")
 
     const profile = input.profile ?? this.settings.completion.profile
-    const transport = input.transport ?? (profile === "qwen-coder-fim" ? "raw-completions" : "chat-completions")
+    const transport = input.transport ?? (isRawFimProfile(profile) ? "raw-completions" : "chat-completions")
     if (transport === "raw-completions") {
       return this.completeRawFim({
         prompt: input.prompt,
@@ -65,6 +67,8 @@ export class CompletionModelClient {
         temperature: input.temperature,
         topP: input.topP,
         seed: input.seed,
+        profile,
+        suffix: input.suffix,
       })
     }
 
@@ -95,6 +99,8 @@ export class CompletionModelClient {
     temperature?: number
     topP?: number
     seed?: number
+    profile: CompletionProfile
+    suffix?: string
   }) {
     const requestBody: Record<string, unknown> = {
       model: input.model,
@@ -102,8 +108,9 @@ export class CompletionModelClient {
       max_tokens: input.maxTokens ?? this.settings.completion.maxTokens,
       temperature: input.temperature ?? this.settings.completion.temperature,
       top_p: input.topP ?? this.settings.completion.topP,
-      stop: QWEN_CODER_FIM_STOP,
+      stop: input.profile === "deepseek-fim" ? DEEPSEEK_FIM_STOP : QWEN_CODER_FIM_STOP,
     }
+    if (input.profile === "deepseek-fim") requestBody.suffix = input.suffix ?? ""
     if (Number.isFinite(input.seed)) requestBody.seed = input.seed
 
     const body = await this.postJson(completionsUrl(input.baseUrl), {
@@ -151,8 +158,14 @@ export function completionModel(settings: RemoteSettings) {
   return settings.completion.model.trim() || settings.provider?.chatModel?.trim() || settings.defaultModel.trim()
 }
 
-function completionApiBaseUrl(settings: RemoteSettings) {
-  return settings.provider?.apiBaseUrl?.trim() || settings.completion.apiBaseUrl.trim()
+export function completionApiBaseUrl(settings: RemoteSettings) {
+  const baseUrl = settings.completion.apiBaseUrl.trim() || settings.provider?.apiBaseUrl?.trim() || ""
+  if (settings.completion.profile === "deepseek-fim") return deepseekCompletionBaseUrl(baseUrl)
+  return baseUrl
+}
+
+function isRawFimProfile(profile: CompletionProfile): boolean {
+  return profile === "qwen-coder-fim" || profile === "deepseek-fim"
 }
 
 export function completionMessages(prompt: string) {
@@ -187,11 +200,32 @@ export function completionsUrl(baseUrl: string) {
   return `${trimmed}/completions`
 }
 
+function deepseekCompletionBaseUrl(baseUrl: string) {
+  const trimmed = baseUrl.trim().replace(/\/+$/, "")
+  if (!trimmed) return ""
+  try {
+    const url = new URL(trimmed)
+    if (url.hostname !== "api.deepseek.com") return trimmed
+    const pathname = url.pathname.replace(/\/+$/, "")
+    if (pathname === "" || pathname === "/v1") {
+      url.pathname = "/beta"
+      return url.toString().replace(/\/$/, "")
+    }
+    if (pathname === "/beta" || pathname === "/beta/completions") {
+      url.pathname = "/beta"
+      return url.toString().replace(/\/$/, "")
+    }
+    return trimmed
+  } catch {
+    return trimmed
+  }
+}
+
 export function directCompletionRequestDiagnostic(error: unknown, profile: CompletionProfile) {
   if (!(error instanceof CompletionModelRequestError)) return ""
-  if (profile !== "qwen-coder-fim") return ""
+  if (!isRawFimProfile(profile)) return ""
   if (error.status !== 404 && error.status !== 405) return ""
-  return "Direct completion profile qwen-coder-fim requires an OpenAI-compatible raw /completions endpoint with Qwen FIM token support; this server appears to reject /completions. Use a FIM-compatible endpoint/profile for ordinary code, or use generic-chat only for instruction/comment-to-code completions."
+  return `Direct completion profile ${profile} requires an OpenAI-compatible raw /completions endpoint with FIM support; this server appears to reject /completions. Use a FIM-compatible endpoint/profile for ordinary code, or use generic-chat only for instruction/comment-to-code completions.`
 }
 
 function normalizeChatCompletionMessage(input: unknown): ChipMateMessage {

@@ -3,7 +3,7 @@ import { CHIPMATE_COMMANDS } from "../chipmate-constants"
 import type { CodeGraphContextProvider } from "../codegraph-types"
 import type { RemoteSettings } from "../types"
 import { applyCommentProposal, applyCommentProposals, commentInsertIndent, commentInsertText } from "./commentApplyService"
-import { buildCommentGenerationContext, commentPrimaryAnchorPolicy, isSupportedCommentLanguage } from "./commentContext"
+import { buildCommentGenerationContext, commentPrimaryAnchorPolicy } from "./commentContext"
 import { CommentCodeLensProvider } from "./commentCodeLensProvider"
 import { CommentDecorations } from "./commentDecorations"
 import {
@@ -27,6 +27,13 @@ import { discardReasonHistogram, validateRawCommentProposals } from "./commentPr
 import { buildCommentPrompt } from "./commentPrompt"
 import { commentPreviewDetail } from "./commentPreview"
 import { resolveCurrentFunctionSelection } from "./commentFunctionRange"
+import {
+  COMMENT_DOCUMENT_SELECTOR,
+  isSupportedCommentLanguage,
+  isSupportedCurrentFunctionCommentLanguage,
+  supportedCommentCurrentFunctionLanguageText,
+  supportedCommentSelectionLanguageText,
+} from "./commentLanguage"
 import { CommentReviewPanel, type CommentReviewRegenerateTarget } from "./commentReviewPanel"
 import type { CommentGenerationProgressState, CommentGenerationProgressStep, CommentGenerationStreamState, CommentGenerationTokenUsage, CommentGenerationToolState } from "./commentReviewHtml"
 import type { CommentGenerationContext, CommentLineSpan, CommentProposal, CommentReviewSource, CommentWorkspaceReviewUnitKind, RawCommentProposal } from "./commentTypes"
@@ -35,6 +42,8 @@ import { scanCommentWorkspaceChanges, type CommentWorkspaceChangesScanResult, ty
 
 export const COMMENT_LOG_PREFIX = "[ChipMate Comment]"
 const COMMENT_CONTEXT_SUPPORTED_EDITOR = "chipmate.comments.supportedEditor"
+const COMMENT_CONTEXT_SELECTION_SUPPORTED_EDITOR = "chipmate.comments.selectionSupportedEditor"
+const COMMENT_CONTEXT_CURRENT_FUNCTION_SUPPORTED_EDITOR = "chipmate.comments.currentFunctionSupportedEditor"
 const COMMENT_CONTEXT_HAS_PENDING_FILE = "chipmate.comments.fileHasPendingSuggestions"
 const COMMENT_CONTEXT_HAS_PENDING_CURSOR = "chipmate.comments.cursorHasPendingSuggestion"
 type CommentProgressPanel = { updateGeneration?: (progress: CommentGenerationProgressState) => void }
@@ -184,10 +193,7 @@ export function registerCommentReview(input: RegisterCommentReviewInput) {
     vscode.window.onDidChangeTextEditorSelection((event) => {
       if (event.textEditor === vscode.window.activeTextEditor) refreshCommentContexts()
     }),
-    vscode.languages.registerCodeLensProvider(
-      [{ language: "c" }, { language: "cpp" }, { language: "cuda-cpp" }, { language: "objective-c" }, { language: "objective-cpp" }],
-      codeLensProvider,
-    ),
+    vscode.languages.registerCodeLensProvider(COMMENT_DOCUMENT_SELECTOR, codeLensProvider),
     vscode.commands.registerCommand(CHIPMATE_COMMANDS.commentsGenerateForSelection, () => generateSelectionComments()),
     vscode.commands.registerCommand(CHIPMATE_COMMANDS.commentsGenerateForCurrentFunction, () => generateCurrentFunctionComments()),
     vscode.commands.registerCommand(CHIPMATE_COMMANDS.commentsGenerateForWorkspaceChanges, () => generateWorkspaceChangeComments()),
@@ -270,7 +276,7 @@ export async function generateForWorkspaceChanges(input: {
     })
     input.reviewPanel?.openForWorkspaceChanges?.(scan)
     if (scan.units.length === 0) {
-      vscode.window.setStatusBarMessage("没有发现可分析的 C/C++ 工作区改动。", 3500)
+      vscode.window.setStatusBarMessage("没有发现可分析的工作区改动。", 3500)
     }
     return
   }
@@ -429,15 +435,15 @@ export async function generateForCurrentFunction(input: {
   const editor = input.editor ?? vscode.window.activeTextEditor
   if (!editor) {
     logCommentOutcome(input.output, trace, "selection-invalid", "没有活动编辑器", { source: "currentFunction" })
-    void vscode.window.showErrorMessage("请先打开一个 C/C++ 文件，再生成 AI 注释。")
+    void vscode.window.showErrorMessage(`请先打开一个 ${supportedCommentCurrentFunctionLanguageText()} 文件，再生成 AI 注释。`)
     return
   }
-  if (!isSupportedCommentLanguage(editor.document.languageId)) {
+  if (!isSupportedCurrentFunctionCommentLanguage(editor.document.languageId)) {
     logCommentOutcome(input.output, trace, "unsupported-language", "当前语言暂不支持", {
       languageId: editor.document.languageId,
       source: "currentFunction",
     })
-    void vscode.window.showInformationMessage("当前 AI 注释仅支持 C/C++ 相关语言。")
+    void vscode.window.showInformationMessage(`当前“为当前函数生成 AI 注释”仅支持 ${supportedCommentCurrentFunctionLanguageText()}。`)
     return
   }
   const selection = resolveCurrentFunctionSelection(editor)
@@ -491,7 +497,7 @@ export async function generateForSelection(input: {
   const editor = input.editor ?? vscode.window.activeTextEditor
   if (!editor) {
     logCommentOutcome(input.output, trace, "selection-invalid", "没有活动编辑器")
-    void vscode.window.showErrorMessage("请先打开一个 C/C++ 文件，再生成 AI 注释。")
+    void vscode.window.showErrorMessage(`请先打开一个 ${supportedCommentSelectionLanguageText()} 文件，再生成 AI 注释。`)
     return
   }
   const selection = input.selection ?? editor.selection
@@ -501,7 +507,7 @@ export async function generateForSelection(input: {
       languageId: editor.document.languageId,
       source,
     })
-    void vscode.window.showInformationMessage("请先选中一段 C/C++ 代码，再生成 AI 注释。")
+    void vscode.window.showInformationMessage(`请先选中一段 ${supportedCommentSelectionLanguageText()} 代码，再生成 AI 注释。`)
     return
   }
   if (!isSupportedCommentLanguage(editor.document.languageId)) {
@@ -509,7 +515,7 @@ export async function generateForSelection(input: {
       languageId: editor.document.languageId,
       source,
     })
-    void vscode.window.showInformationMessage("当前 AI 注释 MVP 仅支持 C/C++ 相关语言的选区。")
+    void vscode.window.showInformationMessage(`当前 AI 注释仅支持 ${supportedCommentSelectionLanguageText()} 的选区。`)
     return
   }
 
@@ -820,6 +826,7 @@ export async function generateForSelection(input: {
     allowedAnchors: generationContext.allowedInsertionAnchors,
     maxProposals: generationContext.proposalBudget,
     changedLineSpans: generationContext.changedLineSpans,
+    commentSyntax: generationContext.commentSyntax,
   })
   const discardHistogram = discardReasonHistogram(validated.discarded)
   const evidenceCounts = proposalEvidenceCounts(validated.proposals)
@@ -1974,11 +1981,14 @@ function resolveTargetProposal(store: CommentProposalStore, proposalId?: string)
 
 async function updateCommentContexts(store: CommentProposalStore) {
   const editor = vscode.window.activeTextEditor
-  const supportedEditor = Boolean(editor && isSupportedCommentLanguage(editor.document.languageId))
+  const selectionSupportedEditor = Boolean(editor && isSupportedCommentLanguage(editor.document.languageId))
+  const currentFunctionSupportedEditor = Boolean(editor && isSupportedCurrentFunctionCommentLanguage(editor.document.languageId))
   const pending = editor ? store.pendingForDocument(editor.document.uri.toString()) : []
   const cursorLine = editor?.selection.active.line ?? -1
   const cursorHasPendingSuggestion = pending.some((proposal) => proposal.insertBeforeLine === cursorLine)
-  await vscode.commands.executeCommand("setContext", COMMENT_CONTEXT_SUPPORTED_EDITOR, supportedEditor)
+  await vscode.commands.executeCommand("setContext", COMMENT_CONTEXT_SUPPORTED_EDITOR, selectionSupportedEditor)
+  await vscode.commands.executeCommand("setContext", COMMENT_CONTEXT_SELECTION_SUPPORTED_EDITOR, selectionSupportedEditor)
+  await vscode.commands.executeCommand("setContext", COMMENT_CONTEXT_CURRENT_FUNCTION_SUPPORTED_EDITOR, currentFunctionSupportedEditor)
   await vscode.commands.executeCommand("setContext", COMMENT_CONTEXT_HAS_PENDING_FILE, pending.length > 0)
   await vscode.commands.executeCommand("setContext", COMMENT_CONTEXT_HAS_PENDING_CURSOR, cursorHasPendingSuggestion)
 }

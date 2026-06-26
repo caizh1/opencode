@@ -23,9 +23,13 @@ describe("default current file context", () => {
     expect(chatViewSource).toContain("editorContext: this.deps.getEditorContext()")
   })
 
-  test("warns the model to use only read-only workspace evidence tools", () => {
+  test("warns the model about evidence tools and exact local file edits", () => {
     expect(contextSource).toContain("local VS Code context supplied by the extension")
-    expect(contextSource).toContain("Read-only ChipMate workspace evidence tools may be available")
+    expect(contextSource).toContain("ChipMate workspace evidence tools may be available")
+    expect(contextSource).toContain("chipmate_create_directory may create new workspace folders")
+    expect(contextSource).toContain("chipmate_create_file may create new workspace text/code files")
+    expect(contextSource).toContain("chipmate_edit_file may modify existing workspace text/code files only by exact oldString/newString replacement")
+    expect(contextSource).toContain("read enough exact surrounding text first")
     expect(contextSource).toContain("ChipMate workspace-host tools are disabled for this chat turn")
     expect(contextSource).toContain("ask the user to open, attach, or @mention the file")
     expect(contextSource).toContain("No local file content was captured")

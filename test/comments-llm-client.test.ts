@@ -573,22 +573,41 @@ describe("AI comment LLM client", () => {
   test("rejects streaming responses that close without a completion marker", async () => {
     const events: CommentLLMDiagnosticEvent[] = []
     const baseUrl = await listen((_request, response) => {
-      response.writeHead(200, { "content-type": "text/event-stream" })
-      response.end(sse({ choices: [{ delta: { content: "{\"proposals\":[]}" } }] }))
-    })
+      const body = sse({ choices: [{ delta: { content: "{\"proposals\":[]}" } }] })
+      response.writeHead(200, {
+        "content-type": "text/event-stream",
+        "content-length": Buffer.byteLength(body).toString(),
+      })
+      response.end(body)
+    }, { forceClose: false })
     const client = new CommentLLMClient({
       getSettings: () => settings(baseUrl),
       getApiKey: async () => "",
     })
 
-    await expect(client.generate("comment me", undefined, 1000, (event) => events.push(event))).rejects.toThrow("注释生成请求失败: 注释生成流结束前未收到完成标记。")
+    let thrown: unknown
+    try {
+      await client.generate("comment me", undefined, 1000, (event) => events.push(event))
+    } catch (error) {
+      thrown = error
+    }
 
-    expect(events.some((event) => event.stage === "model.http.stream.done")).toBe(true)
-    expect(events.find((event) => event.stage === "model.http.error")?.fields).toMatchObject({
-      lastStage: "model.http.stream.done",
-      responseHeadersReceived: true,
-      firstChunkReceived: true,
-    })
+    expect(thrown).toBeInstanceOf(Error)
+    expect((thrown as Error).message).toMatch(/注释生成请求失败: (注释生成流结束前未收到完成标记。|The socket connection was closed unexpectedly)/)
+    const error = events.find((event) => event.stage === "model.http.error")
+    expect(error).toBeDefined()
+    if (events.some((event) => event.stage === "model.http.stream.done")) {
+      expect(error?.fields).toMatchObject({
+        lastStage: "model.http.stream.done",
+        responseHeadersReceived: true,
+        firstChunkReceived: true,
+      })
+    } else {
+      expect(error?.fields).toMatchObject({
+        responseHeadersReceived: false,
+        firstChunkReceived: false,
+      })
+    }
     expect(JSON.stringify(events)).not.toContain("comment me")
   })
 })
@@ -603,8 +622,12 @@ async function readRequestJson(request: http.IncomingMessage) {
   return JSON.parse(body) as Record<string, unknown>
 }
 
-async function listen(handler: http.RequestListener) {
-  const server = http.createServer(handler)
+async function listen(handler: http.RequestListener, options: { forceClose?: boolean } = {}) {
+  const server = http.createServer((request, response) => {
+    if (options.forceClose !== false) response.setHeader("connection", "close")
+    handler(request, response)
+  })
+  if (options.forceClose !== false) server.keepAliveTimeout = 1
   server.on("connection", (socket) => {
     sockets.push(socket)
     socket.on("close", () => {

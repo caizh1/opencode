@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+  <defs>
+    <filter id="glow" x="-30%" y="-30%" width="160%" height="160%">
+      <feDropShadow dx="0" dy="0" stdDeviation="0.9" flood-color="currentColor" flood-opacity="0.42"/>
+    </filter>
+  </defs>
+  <g filter="url(#glow)">
+    <path d="M13 5.2h4.3c1 0 1.8.8 1.8 1.8v10c0 1-.8 1.8-1.8 1.8H13"/>
+    <path d="M13 5.2v13.6"/>
+    <path d="M10.8 8.4L7.2 12l3.6 3.6"/>
+    <path d="M7.3 12h8.1"/>
+  </g>
+</svg>

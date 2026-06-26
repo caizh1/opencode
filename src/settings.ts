@@ -35,6 +35,7 @@ export const DOCUMENT_RAG_MAX_EXTRACTED_BYTES_PER_FILE_DEFAULT = 1024 * 1024
 export const DOCUMENT_RAG_MAX_CHUNKS_DEFAULT = 50000
 export const DOCUMENT_RAG_QUERY_TOP_K_DEFAULT = 12
 export const DOCUMENT_RAG_MAX_EVIDENCE_BYTES_DEFAULT = 24000
+export const DEFAULT_TOOLS_MAX_AGENT_STEPS = 25
 
 export type ConnectionSettingsInput = {
   serverUrl: string
@@ -147,17 +148,27 @@ export function readRemoteSettings(): RemoteSettings {
       includeGitDiff: config.get<boolean>("context.includeGitDiff", false),
       localOnlyMode: config.get<boolean>("context.localOnlyMode", true),
       strictLocalOnlyAgent: config.get<boolean>("context.strictLocalOnlyAgent", true),
-      maxHistoryTurns: Math.max(0, Math.min(20, config.get<number>("context.maxHistoryTurns", 3))),
-      maxHistoryBytes: Math.max(0, Math.min(200000, config.get<number>("context.maxHistoryBytes", 12000))),
+      maxHistoryTurns: Math.max(0, Math.min(20, config.get<number>("context.maxHistoryTurns", 10))),
+      maxHistoryBytes: Math.max(0, Math.min(200000, config.get<number>("context.maxHistoryBytes", 40000))),
+      memorySummary: {
+        enabled: config.get<boolean>("context.memorySummary.enabled", true),
+        maxBytes: Math.max(0, Math.min(80000, config.get<number>("context.memorySummary.maxBytes", 12000))),
+        triggerOverflowTurns: Math.max(0, Math.min(20, config.get<number>("context.memorySummary.triggerOverflowTurns", 2))),
+      },
     },
     permissions: {
       mode: readPermissionMode(config.get<string>("permissions.mode", "ask")),
     },
     tools: {
       enabled: config.get<boolean>("tools.enabled", false),
+      maxAgentSteps: clampInteger(config.get<number>("tools.maxAgentSteps", DEFAULT_TOOLS_MAX_AGENT_STEPS), 1, 100, DEFAULT_TOOLS_MAX_AGENT_STEPS),
     },
     skills: {
       enabled: readStringArray(config.get<unknown>("skills.enabled", [])),
+      overrides: readSkillOverrides(config.get<unknown>("skills.overrides", {})),
+      scanUserSkills: config.get<boolean>("skills.scanUserSkills", true),
+      scanClaudeSkills: config.get<boolean>("skills.scanClaudeSkills", true),
+      maxCatalogBytes: clampInteger(config.get<number>("skills.maxCatalogBytes", 8000), 1000, 64000, 8000),
     },
     mcp: {
       enabled: false,
@@ -166,7 +177,7 @@ export function readRemoteSettings(): RemoteSettings {
       enabled: config.get<boolean>("completion.enabled", true),
       provider: readCompletionProvider(config.get<string>("completion.provider", "qwen-direct")),
       profile: readCompletionProfile(config.get<string>("completion.profile", "qwen-coder-fim")),
-      apiBaseUrl: providerApiBaseUrl,
+      apiBaseUrl: normalizeServerUrl(config.get<string>("completion.apiBaseUrl", "")),
       model: readDefaultedString(config.get<string>("completion.model", DEFAULT_COMPLETION_MODEL), DEFAULT_COMPLETION_MODEL),
       maxTokens: Math.max(1, Math.min(4096, config.get<number>("completion.maxTokens", 128))),
       contextLength: clampInteger(config.get<number>("completion.contextLength", DEFAULT_COMPLETION_CONTEXT_LENGTH), 0, 1_000_000, DEFAULT_COMPLETION_CONTEXT_LENGTH),
@@ -365,7 +376,7 @@ export async function saveCompletionSettings(input: CompletionSettingsInput) {
   await config.update("completion.enabled", input.enabled, vscode.ConfigurationTarget.Global)
   await config.update("completion.provider", readCompletionProvider(input.provider), vscode.ConfigurationTarget.Global)
   await config.update("completion.profile", readCompletionProfile(input.profile), vscode.ConfigurationTarget.Global)
-  if (input.apiBaseUrl !== undefined) await config.update("provider.apiBaseUrl", normalizeServerUrl(input.apiBaseUrl), vscode.ConfigurationTarget.Global)
+  if (input.apiBaseUrl !== undefined) await config.update("completion.apiBaseUrl", normalizeServerUrl(input.apiBaseUrl), vscode.ConfigurationTarget.Global)
   await config.update("completion.model", readDefaultedString(input.model, DEFAULT_COMPLETION_MODEL), vscode.ConfigurationTarget.Global)
   await config.update("completion.maxTokens", Math.max(1, Math.min(4096, Math.floor(input.maxTokens))), vscode.ConfigurationTarget.Global)
   await config.update("completion.contextLength", clampInteger(input.contextLength, 0, 1_000_000, DEFAULT_COMPLETION_CONTEXT_LENGTH), vscode.ConfigurationTarget.Global)
@@ -547,7 +558,7 @@ function readCompletionCommentGuidedRetrievalMode(input: string | undefined): Co
 }
 
 function readCompletionProvider(input: string): CompletionProvider {
-  if (input === "openai-compatible" || input === "qwen-direct" || input === "none") return input
+  if (input === "openai-compatible" || input === "qwen-direct" || input === "fim-direct" || input === "none") return input
   return "qwen-direct"
 }
 
@@ -557,7 +568,7 @@ function readPermissionMode(input: string): PermissionMode {
 }
 
 function readCompletionProfile(input: string): CompletionProfile {
-  if (input === "generic-chat" || input === "qwen-coder-fim") return input
+  if (input === "generic-chat" || input === "qwen-coder-fim" || input === "deepseek-fim") return input
   return "generic-chat"
 }
 
@@ -569,6 +580,19 @@ function readCodeGraphAnalysisMode(input: string): CodeGraphAnalysisMode {
 function readStringArray(input: unknown) {
   if (!Array.isArray(input)) return []
   return cleanStringArray(input)
+}
+
+function readSkillOverrides(input: unknown): RemoteSettings["skills"]["overrides"] {
+  if (!input || typeof input !== "object" || Array.isArray(input)) return {}
+  const result: RemoteSettings["skills"]["overrides"] = {}
+  for (const [key, value] of Object.entries(input)) {
+    if (typeof value !== "string") continue
+    if (value !== "on" && value !== "name-only" && value !== "user-invocable-only" && value !== "off") continue
+    const cleanKey = key.trim()
+    if (!cleanKey) continue
+    result[cleanKey] = value
+  }
+  return result
 }
 
 function cleanStringArray(input: unknown[]) {

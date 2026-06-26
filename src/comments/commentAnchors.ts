@@ -1,3 +1,4 @@
+import { commentSyntaxForLanguage } from "./commentLanguage"
 import type { CommentInsertionAnchor, CommentInsertionAnchorKind } from "./commentTypes"
 
 export type AnchorDocument = {
@@ -11,6 +12,7 @@ export function collectCommentInsertionAnchors(
   document: AnchorDocument,
   selectionStartLine: number,
   selectionEndLine: number,
+  languageId = "c",
 ): CommentInsertionAnchor[] {
   const anchors = new Map<number, CommentInsertionAnchor>()
   let firstSafeCodeLine: number | undefined
@@ -18,22 +20,15 @@ export function collectCommentInsertionAnchors(
   const start = Math.max(0, selectionStartLine)
   const end = Math.min(document.lineCount - 1, selectionEndLine)
   for (let line = start; line <= end; line += 1) {
-    if (!isSafeAnchorLine(document, line)) continue
+    if (!isSafeAnchorLine(document, line, languageId)) continue
     const text = document.lineAt(line).text
     const trimmed = text.trim()
     if (!trimmed) continue
     if (firstSafeCodeLine === undefined) firstSafeCodeLine = line
 
-    if (isFunctionStartLine(document, line)) {
-      anchors.set(line, anchorForLine(document, line, "function"))
-      continue
-    }
-    if (isFunctionLikeStartLine(document, line)) {
-      anchors.set(line, anchorForLine(document, line, "functionLikeStart"))
-      continue
-    }
-    if (isControlBlockStart(trimmed)) {
-      anchors.set(line, anchorForLine(document, line, "controlBlock"))
+    const kind = anchorKindForLine(document, line, languageId)
+    if (kind) {
+      anchors.set(line, anchorForLine(document, line, kind))
     }
   }
 
@@ -59,6 +54,26 @@ export function allowedAnchorLines(anchors: CommentInsertionAnchor[]) {
   return anchors.map((anchor) => anchor.line)
 }
 
+function anchorKindForLine(document: AnchorDocument, line: number, languageId: string): CommentInsertionAnchorKind | undefined {
+  switch (languageId) {
+    case "shellscript":
+      if (isShellFunctionStartLine(document, line)) return "function"
+      if (isShellControlBlockStart(document.lineAt(line).text.trim())) return "controlBlock"
+      return undefined
+    case "makefile":
+      if (isMakefileRuleLine(document.lineAt(line).text)) return "function"
+      if (isMakefileConditionalStart(document.lineAt(line).text.trim())) return "controlBlock"
+      return undefined
+    case "yaml":
+      return isYamlStructuralStart(document.lineAt(line).text.trim()) ? "controlBlock" : undefined
+    default:
+      if (isCFunctionStartLine(document, line)) return "function"
+      if (isCFunctionLikeStartLine(document, line)) return "functionLikeStart"
+      if (isCControlBlockStart(document.lineAt(line).text.trim())) return "controlBlock"
+      return undefined
+  }
+}
+
 function anchorForLine(document: AnchorDocument, line: number, kind: CommentInsertionAnchorKind): CommentInsertionAnchor {
   const targetLineText = document.lineAt(line).text
   return {
@@ -69,22 +84,27 @@ function anchorForLine(document: AnchorDocument, line: number, kind: CommentInse
   }
 }
 
-function isSafeAnchorLine(document: AnchorDocument, line: number) {
+function isSafeAnchorLine(document: AnchorDocument, line: number, languageId: string) {
   if (line < 0 || line >= document.lineCount) return false
   const text = document.lineAt(line).text
   const trimmed = text.trim()
   if (!trimmed) return false
-  if (trimmed.startsWith("//")) return false
-  if (trimmed.startsWith("/*") || trimmed.startsWith("*") || trimmed.endsWith("*/")) return false
-  if (isMacroContinuationBoundary(document, line)) return false
-  if (isInsideBlockComment(document, line)) return false
+  const syntax = commentSyntaxForLanguage(languageId)
+  if (syntax === "hash-line") {
+    if (trimmed.startsWith("#")) return false
+  } else {
+    if (trimmed.startsWith("//")) return false
+    if (trimmed.startsWith("/*") || trimmed.startsWith("*") || trimmed.endsWith("*/")) return false
+    if (isInsideBlockComment(document, line)) return false
+  }
+  if (isLineContinuationBoundary(document, line)) return false
   return true
 }
 
-function isFunctionStartLine(document: AnchorDocument, line: number) {
+function isCFunctionStartLine(document: AnchorDocument, line: number) {
   const trimmed = document.lineAt(line).text.trim()
   if (!trimmed.includes("(") || !trimmed.includes(")")) return false
-  if (isControlBlockStart(trimmed)) return false
+  if (isCControlBlockStart(trimmed)) return false
   if (/^#/.test(trimmed)) return false
   if (/[=]/.test(trimmed)) return false
   if (/->|\./.test(trimmed)) return false
@@ -93,10 +113,10 @@ function isFunctionStartLine(document: AnchorDocument, line: number) {
   return /{\s*$/.test(trimmed) || next?.trim() === "{"
 }
 
-function isFunctionLikeStartLine(document: AnchorDocument, line: number) {
+function isCFunctionLikeStartLine(document: AnchorDocument, line: number) {
   const trimmed = document.lineAt(line).text.trim()
   if (!trimmed.includes("(")) return false
-  if (isControlBlockStart(trimmed)) return false
+  if (isCControlBlockStart(trimmed)) return false
   if (/^#/.test(trimmed)) return false
   if (/[=]/.test(trimmed)) return false
   if (/->|\./.test(trimmed)) return false
@@ -119,12 +139,48 @@ function signaturePrefixUntilBraceOrSemicolon(document: AnchorDocument, startLin
   return lines.join(" ")
 }
 
-function isControlBlockStart(trimmed: string) {
+function isCControlBlockStart(trimmed: string) {
   const withoutLeadingBrace = trimmed.replace(/^}\s*/, "")
   return /^(if|switch|for|while)\s*\(/.test(withoutLeadingBrace) ||
     /^do\b/.test(withoutLeadingBrace) ||
     /^else\b/.test(withoutLeadingBrace) ||
     /^(case\b.*:|default\s*:)/.test(withoutLeadingBrace)
+}
+
+function isShellFunctionStartLine(document: AnchorDocument, line: number) {
+  const trimmed = document.lineAt(line).text.trim()
+  if (!trimmed || trimmed.startsWith("#")) return false
+  if (isShellControlBlockStart(trimmed)) return false
+  const next = nextNonEmptyLine(document, line + 1)?.trim()
+  if (!/^(?:function\s+)?[A-Za-z_][\w]*\s*(?:\(\s*\))?\s*(?:\{\s*)?$/.test(trimmed)) return false
+  return trimmed.endsWith("{") || next === "{"
+}
+
+function isShellControlBlockStart(trimmed: string) {
+  const withoutLeadingBrace = trimmed.replace(/^}\s*/, "")
+  return /^(if|elif)\b.*\bthen\b/.test(withoutLeadingBrace) ||
+    /^(for|while|until|select)\b.*\bdo\b/.test(withoutLeadingBrace) ||
+    /^case\b.*\bin\b/.test(withoutLeadingBrace) ||
+    /^do\b/.test(withoutLeadingBrace) ||
+    /^else\b/.test(withoutLeadingBrace)
+}
+
+function isMakefileRuleLine(text: string) {
+  const trimmed = text.trim()
+  if (!trimmed || trimmed.startsWith("#")) return false
+  if (/^\s/.test(text)) return false
+  if (/^[^:=\s][^=]*::?(?![=])/.test(trimmed)) return true
+  return /^\.[A-Za-z0-9_.-]+::?(?![=])/.test(trimmed)
+}
+
+function isMakefileConditionalStart(trimmed: string) {
+  return /^(ifeq|ifneq|ifdef|ifndef|else)\b/.test(trimmed)
+}
+
+function isYamlStructuralStart(trimmed: string) {
+  if (!trimmed || trimmed.startsWith("#")) return false
+  if (trimmed.startsWith("- ")) return true
+  return /:\s*(#.*)?$/.test(trimmed)
 }
 
 function nextNonEmptyLine(document: AnchorDocument, startLine: number) {
@@ -135,7 +191,7 @@ function nextNonEmptyLine(document: AnchorDocument, startLine: number) {
   return undefined
 }
 
-function isMacroContinuationBoundary(document: AnchorDocument, insertBeforeLine: number) {
+function isLineContinuationBoundary(document: AnchorDocument, insertBeforeLine: number) {
   const current = document.lineAt(insertBeforeLine).text.trimEnd()
   if (current.endsWith("\\")) return true
   if (insertBeforeLine === 0) return false

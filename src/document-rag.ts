@@ -17,7 +17,7 @@ import {
   type DocumentRagDocument,
   type DocumentRagSearchHit,
 } from "./document-rag-index"
-import { createHttpEmbeddingProvider, createHttpRerankProvider } from "./rag-provider"
+import { createHttpEmbeddingProvider, createHttpRerankProvider, type RagHttpDiagnosticEvent } from "./rag-provider"
 import { estimateEmbeddingTokens } from "./rag-token"
 import type { EmbeddingProvider, RerankProvider } from "./rag-types"
 import type { CodeGraphStatus, DocumentRagStatus, RemoteSettings } from "./types"
@@ -945,11 +945,38 @@ function formatError(error: unknown) {
   return error instanceof Error ? error.message : String(error)
 }
 
-function formatDocumentRagHttpDiagnostic(event: { phase: string; kind: string; status?: number; elapsedMs?: number; message?: string; errorPreview?: string }) {
+function formatDocumentRagHttpDiagnostic(event: RagHttpDiagnosticEvent) {
   const status = event.status === undefined ? "" : ` status=${event.status}`
   const elapsed = event.elapsedMs === undefined ? "" : ` elapsedMs=${event.elapsedMs}`
-  const detail = event.message || event.errorPreview || ""
+  const detailParts = [
+    event.message ? `message=${compactDocumentRagLogValue(event.message)}` : undefined,
+    event.errorPreview ? `errorPreview=${compactDocumentRagLogValue(event.errorPreview)}` : undefined,
+  ]
+  if (event.phase === "error") {
+    detailParts.push(
+      event.errorName ? `errorName=${compactDocumentRagLogValue(event.errorName)}` : undefined,
+      event.errorMessage ? `errorMessage=${compactDocumentRagLogValue(event.errorMessage)}` : undefined,
+      event.errorCode ? `errorCode=${compactDocumentRagLogValue(event.errorCode)}` : undefined,
+      event.causeName ? `causeName=${compactDocumentRagLogValue(event.causeName)}` : undefined,
+      event.causeCode ? `causeCode=${compactDocumentRagLogValue(event.causeCode)}` : undefined,
+      event.causeErrno ? `causeErrno=${compactDocumentRagLogValue(event.causeErrno)}` : undefined,
+      event.causeSyscall ? `causeSyscall=${compactDocumentRagLogValue(event.causeSyscall)}` : undefined,
+      event.causeHostname ? `causeHostname=${compactDocumentRagLogValue(event.causeHostname)}` : undefined,
+      event.causeHost ? `causeHost=${compactDocumentRagLogValue(event.causeHost)}` : undefined,
+      event.causePort ? `causePort=${compactDocumentRagLogValue(event.causePort)}` : undefined,
+      event.causeAddress ? `causeAddress=${compactDocumentRagLogValue(event.causeAddress)}` : undefined,
+      event.causeMessage ? `causeMessage=${compactDocumentRagLogValue(event.causeMessage)}` : undefined,
+      event.causeStackFirstLine ? `causeStack=${compactDocumentRagLogValue(event.causeStackFirstLine)}` : undefined,
+      event.causeDetails?.length ? `causeDetails=${compactDocumentRagLogValue(event.causeDetails.join(" | "))}` : undefined,
+    )
+  }
+  const detail = detailParts.filter(Boolean).join(" ")
   return `[document-rag-http] ${event.kind}.${event.phase}${status}${elapsed}${detail ? ` ${detail}` : ""}`
+}
+
+function compactDocumentRagLogValue(input: string) {
+  const value = input.replace(/\s+/g, " ").trim()
+  return value.length > 240 ? `${value.slice(0, 240)}...` : value
 }
 
 export function isCodeGraphBusyForDocumentRag(status: CodeGraphStatus | undefined) {

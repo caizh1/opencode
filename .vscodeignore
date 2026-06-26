@@ -9,11 +9,22 @@ script/**
 AGENTS.md
 .DS_Store
 **/.DS_Store
+.chipmate-vsix-defaults.local.json
 .*code/**
 **/.completion-quality/**
 outputs/**
 backend/**
+.chipmate/**
 *.vsix
+chipmate-ui-test-windows-*.zip
+chipmate-ui-test-windows-with-vscode-*.zip
+chipmate-ui-test-windows-*.zip.sha256
+chipmate-ui-test-windows-with-vscode-*.zip.sha256
+chipmate-ui-runner-windows-*.zip
+chipmate-ui-runner-windows-with-vscode-*.zip
+chipmate-ui-runner-windows-*.zip.sha256
+chipmate-ui-runner-windows-with-vscode-*.zip.sha256
+chipmate-ui-report-*.zip
 *code.json
 *_local_vscode_extension_codex_checklist.md
 *_ui_readability_plan.md
@@ -31,6 +42,17 @@ esbuild.js
 **/.vscode-test.*
 
 # VSIX size trimming: keep runtime entrypoints, drop unused package variants.
+node_modules/**/*.map
+node_modules/**/*.d.ts
+node_modules/**/README*
+node_modules/**/Readme*
+node_modules/**/readme*
+node_modules/**/CHANGELOG*
+node_modules/**/ChangeLog*
+node_modules/**/NEWS
+node_modules/**/test/**
+node_modules/**/tests/**
+
 node_modules/js-tiktoken/README.md
 node_modules/js-tiktoken/index.d.ts
 node_modules/js-tiktoken/lite.js
@@ -87,6 +109,18 @@ node_modules/mammoth/bin/**
 node_modules/mammoth/browser/**
 node_modules/mammoth/mammoth.browser*
 node_modules/mammoth/test/**
+
+node_modules/canvas/binding.gyp
+node_modules/canvas/build/*.mk
+node_modules/canvas/build/*Makefile
+node_modules/canvas/build/config.gypi
+node_modules/canvas/build/gyp-mac-tool
+node_modules/canvas/index.d.ts
+node_modules/canvas/src/**
+node_modules/canvas/node_modules/node-addon-api/**
+node_modules/canvas/util/**
+
+node_modules/elkjs/lib/elk-worker.js
 
 vendor/tree-sitter/wasm/tree-sitter-objc.wasm
 vendor/tree-sitter/wasm/tree-sitter-tlaplus.wasm

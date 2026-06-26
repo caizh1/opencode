@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import { parseCFile } from "../src/codegraph-c-parser"
+import { runAnalysisTool } from "../src/codegraph-analysis"
 import { buildCodeGraphContext, classifyQuestion, extractSymbols, retrieveEvidence, searchCodeGraphSymbols } from "../src/codegraph-query"
 import type { CodeGraphIndex } from "../src/codegraph-types"
 
@@ -104,6 +105,24 @@ describe("code graph query context", () => {
     expect(context?.text).toContain("storage_boot")
     expect(context?.text).toContain("nand_read_page")
     expect(context?.text).toContain("ecc_check")
+  })
+
+  test("extracts bounded function CFG data for diagram workflows", async () => {
+    const result = await runAnalysisTool({
+      index: sampleIndex(),
+      tool: "getFunctionCfg",
+      args: { symbol: "nand_read_page" },
+    })
+
+    const data = result.data as { cfg?: { nodes?: Array<{ kind: string }>; edges?: unknown[] } }
+    const kinds = data.cfg?.nodes?.map((node) => node.kind) ?? []
+    expect(result.ok).toBe(true)
+    expect(kinds).toContain("entry")
+    expect(kinds).toContain("branch")
+    expect(kinds).toContain("call")
+    expect(kinds).toContain("return")
+    expect(data.cfg?.edges?.length).toBeGreaterThan(0)
+    expect(result.evidence[0]?.parserKind).toBe("function-cfg")
   })
 
   test("builds impact context through bounded transitive callers", () => {
@@ -237,7 +256,10 @@ typedef unsigned int nand_page_t;
 struct nand_chip { int ready; };
 int ecc_check(void) { return 0; }
 // ECC configuration flow for nand page reads.
-int nand_read_page(void) { return ecc_check(); }
+int nand_read_page(int ready) {
+  if (!ready) return -1;
+  return ecc_check();
+}
 int unused_helper(void) { return 1; }
 `,
     }),

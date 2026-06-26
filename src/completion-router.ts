@@ -50,7 +50,7 @@ export function shouldRetryCompletionRejection(input: {
   if (isRecoverableQualityRejection(input.reason)) return true
   if (isCommentCodeInstructionPlan(input.plan) && input.reason === "low-intent-output") return true
   if (isCommentCodeInstructionPlan(input.plan) && input.reason === "suffix-duplicated-output") return true
-  if (input.textProfile === "qwen-coder-fim") return false
+  if (isFimProfile(input.textProfile)) return false
   if (input.reason === "misaligned-leading-newline") return true
   return input.reason === "low-confidence-output" && input.plan.useInstruction
 }
@@ -184,7 +184,7 @@ export function routeLogValue(route: CompletionModelRoute, settings?: RemoteSett
   if (route.kind === "deterministic-symbol") {
     return `route=deterministic-symbol reason=${route.reason} maxTokens=0`
   }
-  const rawFimTransport = route.modelProfile === "qwen-coder-fim"
+  const rawFimTransport = isFimProfile(route.modelProfile)
   return [
     `route=${route.promptKind}`,
     `reason=${route.reason}`,
@@ -203,6 +203,10 @@ export function routeLogValue(route: CompletionModelRoute, settings?: RemoteSett
     `temperature=${route.temperature}`,
     route.deterministicSymbolSuppressed ? `deterministicSymbolSuppressed=${route.deterministicSymbolSuppressReason}` : "",
   ].filter(Boolean).join(" ")
+}
+
+function isFimProfile(profile: CompletionProfile): boolean {
+  return profile === "qwen-coder-fim" || profile === "deepseek-fim"
 }
 
 function instructionRoute(input: RouteCompletionModelInput, maxTokens: number): CompletionModelRoute {

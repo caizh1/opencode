@@ -2636,6 +2636,13 @@ function benchmarkSettings(options: CompletionQualityBenchmarkOptions): RemoteSe
       includeGitDiff: false,
       localOnlyMode: true,
       strictLocalOnlyAgent: true,
+      maxHistoryTurns: 10,
+      maxHistoryBytes: 40000,
+      memorySummary: {
+        enabled: true,
+        maxBytes: 12000,
+        triggerOverflowTurns: 2,
+      },
     },
     completion: {
       enabled: true,
@@ -2660,6 +2667,10 @@ function benchmarkSettings(options: CompletionQualityBenchmarkOptions): RemoteSe
     },
     skills: {
       enabled: [],
+      overrides: {},
+      scanUserSkills: false,
+      scanClaudeSkills: true,
+      maxCatalogBytes: 8000,
     },
     mcp: {
       enabled: false,

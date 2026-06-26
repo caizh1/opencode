@@ -487,15 +487,27 @@ function settings(input: Partial<RemoteSettings["completion"]> = {}): RemoteSett
       includeGitDiff: false,
       localOnlyMode: true,
       strictLocalOnlyAgent: true,
+      maxHistoryTurns: 10,
+      maxHistoryBytes: 40000,
+      memorySummary: {
+        enabled: true,
+        maxBytes: 12000,
+        triggerOverflowTurns: 2,
+      },
     },
     permissions: {
       mode: "ask",
     },
     tools: {
       enabled: false,
+      maxAgentSteps: 25,
     },
     skills: {
       enabled: [],
+      overrides: {},
+      scanUserSkills: false,
+      scanClaudeSkills: true,
+      maxCatalogBytes: 8000,
     },
     mcp: {
       enabled: false,

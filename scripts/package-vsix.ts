@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process"
-import { readFileSync, writeFileSync } from "node:fs"
+import { existsSync, readFileSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 
 interface PackageManifest {
@@ -19,8 +19,20 @@ interface PackageBuildVersion {
   build: number
 }
 
+type LocalDefaultValue = string | string[]
+
 const CORE_RELEASE_PATTERN = /^\d+\.\d+\.\d+$/
 const BUILD_VERSION_PATTERN = /^(\d+\.\d+\.\d+)-build\.(\d+)$/
+const LOCAL_DEFAULTS_FILENAME = ".chipmate-vsix-defaults.local.json"
+const LOCAL_DEFAULT_SETTING_SPECS = [
+  { setting: "chipmate.provider.apiBaseUrl", path: ["provider", "apiBaseUrl"], kind: "string" },
+  { setting: "chipmate.provider.chatModel", path: ["provider", "chatModel"], kind: "string" },
+  { setting: "chipmate.rag.embedding.endpoint", path: ["rag", "embedding", "endpoint"], kind: "string" },
+  { setting: "chipmate.rag.embedding.model", path: ["rag", "embedding", "model"], kind: "string" },
+  { setting: "chipmate.rag.rerank.endpoint", path: ["rag", "rerank", "endpoint"], kind: "string" },
+  { setting: "chipmate.rag.rerank.model", path: ["rag", "rerank", "model"], kind: "string" },
+  { setting: "chipmate.rag.allowedHosts", path: ["rag", "allowedHosts"], kind: "stringArray" },
+] as const
 
 export function resolvePackageVsixVersion(input: ResolvePackageVsixVersionInput) {
   const current = parsePackageBuildVersion(input.currentVersion)
@@ -99,9 +111,129 @@ function writePackageManifest(packageJsonPath: string, manifest: PackageManifest
   writeFileSync(packageJsonPath, `${JSON.stringify(manifest, null, 2)}\n`)
 }
 
+function clonePackageManifest(manifest: PackageManifest) {
+  return JSON.parse(JSON.stringify(manifest)) as PackageManifest
+}
+
 function requireManifestString(value: unknown, field: string) {
   if (typeof value !== "string" || !value.trim()) throw new Error(`package.json ${field} must be a non-empty string.`)
   return value.trim()
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+}
+
+function readNestedValue(source: unknown, path: readonly string[]) {
+  let current = source
+  for (const segment of path) {
+    if (!isRecord(current)) return undefined
+    current = current[segment]
+  }
+  return current
+}
+
+function requireNonEmptyString(value: unknown, label: string) {
+  if (typeof value !== "string" || !value.trim()) {
+    throw new Error(`${LOCAL_DEFAULTS_FILENAME} ${label} must be a non-empty string.`)
+  }
+  return value.trim()
+}
+
+function requireNonEmptyStringArray(value: unknown, label: string) {
+  if (!Array.isArray(value) || value.length === 0) {
+    throw new Error(`${LOCAL_DEFAULTS_FILENAME} ${label} must be a non-empty string array.`)
+  }
+  return value.map((entry, index) => requireNonEmptyString(entry, `${label}[${index}]`))
+}
+
+export function collectVsixLocalDefaultSettings(rawDefaults: unknown) {
+  if (!isRecord(rawDefaults)) {
+    throw new Error(`${LOCAL_DEFAULTS_FILENAME} must be a JSON object.`)
+  }
+
+  const settings: Record<string, LocalDefaultValue> = {}
+  for (const spec of LOCAL_DEFAULT_SETTING_SPECS) {
+    const value = readNestedValue(rawDefaults, spec.path)
+    settings[spec.setting] = spec.kind === "stringArray"
+      ? requireNonEmptyStringArray(value, spec.path.join("."))
+      : requireNonEmptyString(value, spec.path.join("."))
+  }
+  return settings
+}
+
+function manifestConfigurationProperties(manifest: PackageManifest) {
+  const contributes = manifest.contributes
+  if (!isRecord(contributes)) throw new Error("package.json contributes must be an object.")
+  const configuration = contributes.configuration
+  if (!isRecord(configuration)) throw new Error("package.json contributes.configuration must be an object.")
+  const properties = configuration.properties
+  if (!isRecord(properties)) throw new Error("package.json contributes.configuration.properties must be an object.")
+  return properties
+}
+
+export function applyVsixLocalDefaults(manifest: PackageManifest, rawDefaults: unknown) {
+  const settings = collectVsixLocalDefaultSettings(rawDefaults)
+  const properties = manifestConfigurationProperties(manifest)
+
+  for (const [setting, defaultValue] of Object.entries(settings)) {
+    const property = properties[setting]
+    if (!isRecord(property)) {
+      throw new Error(`package.json setting ${setting} must exist before local VSIX defaults can be injected.`)
+    }
+    property.default = Array.isArray(defaultValue) ? [...defaultValue] : defaultValue
+  }
+
+  return settings
+}
+
+function readLocalDefaults(repoRoot: string) {
+  const defaultsPath = join(repoRoot, LOCAL_DEFAULTS_FILENAME)
+  if (!existsSync(defaultsPath)) return undefined
+  assertGitIgnored(repoRoot, LOCAL_DEFAULTS_FILENAME)
+  return JSON.parse(readFileSync(defaultsPath, "utf8")) as unknown
+}
+
+function assertGitIgnored(repoRoot: string, relativePath: string) {
+  const result = spawnSync("git", ["check-ignore", "--quiet", "--", relativePath], { cwd: repoRoot, stdio: "ignore" })
+  if (result.error) throw result.error
+  if (result.status !== 0) {
+    throw new Error(`${relativePath} must be ignored by git before local VSIX defaults can be used.`)
+  }
+}
+
+function changedDefaultStrings(baseManifest: PackageManifest, settings: Record<string, LocalDefaultValue>) {
+  const properties = manifestConfigurationProperties(baseManifest)
+  const changed: string[] = []
+  for (const [setting, defaultValue] of Object.entries(settings)) {
+    const property = properties[setting]
+    if (!isRecord(property)) continue
+    if (JSON.stringify(property.default) === JSON.stringify(defaultValue)) continue
+    changed.push(...(Array.isArray(defaultValue) ? defaultValue : [defaultValue]))
+  }
+  return Array.from(new Set(changed.filter((value) => value.trim())))
+}
+
+function assertPackageJsonDoesNotContainLocalDefaults(packageJsonPath: string, values: string[]) {
+  if (values.length === 0) return
+  const source = readFileSync(packageJsonPath, "utf8")
+  const leakedCount = values.filter((value) => source.includes(value)).length
+  if (leakedCount > 0) {
+    throw new Error(`package.json still contains ${leakedCount} local VSIX default value(s) after packaging; refusing to leave private defaults in source.`)
+  }
+}
+
+function assertTrackedSourceDoesNotContainLocalDefaults(repoRoot: string, values: string[]) {
+  for (const value of values) {
+    const result = spawnSync("git", ["grep", "--quiet", "--fixed-strings", "-e", value, "--", "."], { cwd: repoRoot, stdio: "ignore" })
+    if (result.error) throw result.error
+    if (result.status === 0) {
+      throw new Error("Tracked source still contains a local VSIX default value after packaging; refusing to leave private defaults in git-tracked files.")
+    }
+    if (result.status !== 1) {
+      throw new Error(`git grep failed while checking local VSIX defaults with exit code ${result.status ?? "unknown"}.`)
+    }
+  }
 }
 
 function run(command: string, args: string[], cwd: string) {
@@ -130,23 +262,40 @@ function main() {
     return
   }
 
-  const manifest = readPackageManifest(packageJsonPath)
-  const name = requireManifestString(manifest.name, "name")
-  const currentVersion = requireManifestString(manifest.version, "version")
+  const sourceManifest = readPackageManifest(packageJsonPath)
+  const name = requireManifestString(sourceManifest.name, "name")
+  const currentVersion = requireManifestString(sourceManifest.version, "version")
   const targetVersion = resolvePackageVsixVersion({
     currentVersion,
     release: args.release,
     build: args.build,
   })
 
-  if (currentVersion !== targetVersion) {
-    manifest.version = targetVersion
-    writePackageManifest(packageJsonPath, manifest)
-  }
-
+  const restoredManifest = clonePackageManifest(sourceManifest)
+  restoredManifest.version = targetVersion
+  const packagedManifest = clonePackageManifest(restoredManifest)
+  const rawLocalDefaults = readLocalDefaults(repoRoot)
+  const localDefaultSettings = rawLocalDefaults === undefined
+    ? undefined
+    : applyVsixLocalDefaults(packagedManifest, rawLocalDefaults)
+  const localDefaultLeakCheckValues = localDefaultSettings
+    ? changedDefaultStrings(restoredManifest, localDefaultSettings)
+    : []
   const outputName = `${name}-${targetVersion}.vsix`
   console.log(`Packaging ChipMate VSIX ${currentVersion} -> ${targetVersion}`)
-  run("vsce", ["package", "--out", outputName], repoRoot)
+  if (localDefaultSettings) {
+    console.log(`Applying local VSIX defaults from ${LOCAL_DEFAULTS_FILENAME} (${Object.keys(localDefaultSettings).length} setting(s)).`)
+  }
+  run("bun", ["scripts/verify-drawio-runtime.ts"], repoRoot)
+
+  writePackageManifest(packageJsonPath, packagedManifest)
+  try {
+    run("vsce", ["package", "--out", outputName], repoRoot)
+  } finally {
+    writePackageManifest(packageJsonPath, restoredManifest)
+    assertPackageJsonDoesNotContainLocalDefaults(packageJsonPath, localDefaultLeakCheckValues)
+    assertTrackedSourceDoesNotContainLocalDefaults(repoRoot, localDefaultLeakCheckValues)
+  }
 }
 
 if (import.meta.main) {

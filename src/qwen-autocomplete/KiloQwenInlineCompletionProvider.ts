@@ -2,7 +2,7 @@ import * as vscode from "vscode"
 import { AutocompleteDebouncer } from "./AutocompleteDebouncer"
 import { emitQwenDiagnostic, errorReason, type QwenCacheStatus, type QwenEmptyReason } from "./diagnostics"
 import { QwenAutocompleteLruCache, type QwenAutocompleteCache } from "./autocompleteLruCache"
-import { getContinueAutocompleteStopTokens } from "./fimTemplates"
+import { getFimStopTokens } from "./fimTemplates"
 import { QwenFimClient } from "./QwenFimClient"
 import { readQwenAutocompleteConfig, qwenAutocompleteEnabled } from "./config"
 import {
@@ -261,11 +261,15 @@ export class KiloQwenInlineCompletionProvider implements vscode.InlineCompletion
       })
       const raw = await this.client.complete({
         endpoint: cfg.endpoint,
+        profile: cfg.profile,
+        requestShape: prompt.requestShape,
         model: cfg.model,
         apiKey,
-        prompt: prompt.prompt,
+        prompt: prompt.requestPrompt,
+        suffix: prompt.requestSuffix,
         maxTokens: cfg.maxTokens,
         temperature: cfg.temperature,
+        topP: cfg.profile === "deepseek-fim" ? cfg.topP : undefined,
         signal: req.abort.signal,
         onResponse: (info) => {
           httpStatus = info.status
@@ -322,7 +326,7 @@ export class KiloQwenInlineCompletionProvider implements vscode.InlineCompletion
       const filtered = filterQwenCompletionDetailed({
         completion: raw,
         suffix: helper.prunedSuffix,
-        stopTokens: getContinueAutocompleteStopTokens(cfg.model),
+        stopTokens: getFimStopTokens(cfg.profile, cfg.model),
         helper,
         position,
         multiline,
@@ -541,7 +545,7 @@ export class KiloQwenInlineCompletionProvider implements vscode.InlineCompletion
     if (!cfg.cacheEnabled) return { hit: false, returned: null, status: "disabled" }
     try {
       await this.cache.setMaxEntries(cfg.cacheMaxEntries)
-      const completion = await this.cache.get(this.cachePrefix(helper, prompt))
+      const completion = await this.cache.get(this.cachePrefix(cfg, helper, prompt))
       if (!completion) return { hit: false, returned: null, status: "miss" }
       return this.renderCached(
         cfg,
@@ -678,6 +682,7 @@ export class KiloQwenInlineCompletionProvider implements vscode.InlineCompletion
       prefilterExtension: result.extension,
       prefilterLanguage: result.languageId,
       prefilterProviderEnabled: qwenAutocompleteEnabled(cfg),
+      fimProfile: cfg.profile,
       prefilterReason: result.reason,
     }
   }
@@ -962,6 +967,8 @@ export class KiloQwenInlineCompletionProvider implements vscode.InlineCompletion
       renderedPromptChars: prompt?.renderedPromptChars ?? null,
       estimatedRenderedPromptTokens: prompt?.estimatedRenderedPromptTokens ?? null,
       snippetsInjectedIntoPrompt: prompt?.snippetsInjectedIntoPrompt ?? false,
+      fimProfile: prompt?.fimProfile ?? cfg.profile,
+      requestShape: prompt?.requestShape ?? "qwen-prompt",
     }
   }
 
@@ -1059,7 +1066,7 @@ export class KiloQwenInlineCompletionProvider implements vscode.InlineCompletion
     if (!cfg.cacheEnabled) return
     try {
       await this.cache.setMaxEntries(cfg.cacheMaxEntries)
-      await this.cache.put(this.cachePrefix(helper, prompt), completion)
+      await this.cache.put(this.cachePrefix(cfg, helper, prompt), completion)
     } catch (err) {
       void err
     }
@@ -1320,8 +1327,10 @@ export class KiloQwenInlineCompletionProvider implements vscode.InlineCompletion
     }
   }
 
-  private cachePrefix(helper: QwenAutocompleteHelperVars, prompt: QwenPromptPlan): string {
-    return prompt.snippetsInjectedIntoPrompt ? prompt.renderedPrefix : helper.prunedPrefix
+  private cachePrefix(cfg: QwenAutocompleteConfig, helper: QwenAutocompleteHelperVars, prompt: QwenPromptPlan): string {
+    const prefix = prompt.snippetsInjectedIntoPrompt ? prompt.renderedPrefix : helper.prunedPrefix
+    if (cfg.provider === "qwen-direct" && cfg.profile === "qwen-coder-fim") return prefix
+    return `${cfg.provider}:${cfg.profile}:${cfg.model}:${prompt.requestShape}:${prefix}`
   }
 
   private emit(cfg: QwenAutocompleteConfig, input: Omit<Parameters<typeof emitQwenDiagnostic>[0], "cfg">): void {

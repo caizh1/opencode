@@ -1,5 +1,6 @@
 import * as vscode from "vscode"
 import { activationMs, activationNow, formatActivationSlowRequireTiming, readActivationEntryTiming } from "./activation-timing"
+import { registerAgentTerminal } from "./agent-terminal-vscode"
 import { AuditLog } from "./audit-log"
 import { RemoteChatViewProvider } from "./chat-view"
 import { CHIPMATE_COMMANDS, CHIPMATE_COMMENT_OUTPUT_CHANNEL, CHIPMATE_OUTPUT_CHANNEL, PROVIDER_API_KEY_SECRET_KEY } from "./chipmate-constants"
@@ -81,7 +82,7 @@ export async function activate(context: vscode.ExtensionContext) {
   phaseStartedAt = activationNow()
   const getSettings = () => readRemoteSettings()
   const audit = new AuditLog(context)
-  const skills = new SkillRegistry(() => getSettings().skills.enabled, output)
+  const skills = new SkillRegistry(() => getSettings().skills, output)
   const tools = new ToolRuntime(audit, output)
   const directClient = new DirectAgentClient({
     context,
@@ -94,6 +95,14 @@ export async function activate(context: vscode.ExtensionContext) {
   client = directClient
   logActivationEnvironment(getSettings)
   logActivationPhase("runtime-services", phaseStartedAt)
+
+  phaseStartedAt = activationNow()
+  registerAgentTerminal({
+    context,
+    output,
+    getClient: () => client,
+  })
+  logActivationPhase("agent-terminal", phaseStartedAt)
 
   let chatProvider: RemoteChatViewProvider
   const setConnectionState = (state: ConnectionState, detail = "") => {
@@ -210,6 +219,9 @@ export async function activate(context: vscode.ExtensionContext) {
     setConnectionState,
     clearClient: (target) => {
       if (client === target) client = directClient
+    },
+    openAgentTerminal: async () => {
+      await vscode.commands.executeCommand(CHIPMATE_COMMANDS.openAgentTerminal)
     },
     openOutput: () => output.show(true),
     suppressNextRagConfigurationApply,

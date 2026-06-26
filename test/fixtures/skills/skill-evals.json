@@ -1,0 +1,22 @@
+[
+  {
+    "id": "explicit-firmware-review",
+    "skill": "firmware-review",
+    "prompt": "$firmware-review inspect src/driver.c",
+    "shouldTrigger": true,
+    "expectedInvocationMode": "explicit"
+  },
+  {
+    "id": "implicit-firmware-review",
+    "skill": "firmware-review",
+    "prompt": "Review this firmware patch for correctness risks.",
+    "shouldTrigger": true,
+    "expectedInvocationMode": "implicit"
+  },
+  {
+    "id": "unrelated-question",
+    "skill": "firmware-review",
+    "prompt": "Summarize the project README.",
+    "shouldTrigger": false
+  }
+]

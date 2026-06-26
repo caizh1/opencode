@@ -1,10 +1,16 @@
-export type QwenAutocompleteProvider = "qwen-direct" | "none"
+export type QwenAutocompleteProvider = "qwen-direct" | "fim-direct" | "none"
+
+export type QwenAutocompleteProfile = "qwen-coder-fim" | "deepseek-fim"
+
+export type QwenFimRequestShape = "qwen-prompt" | "prompt-suffix"
 
 export type QwenMultilineCompletions = "always" | "never" | "auto"
 
 export type QwenAutocompleteLogLevel = "off" | "info" | "debug"
 
 export type QwenPromptRendererMode = "single-file-qwen-fim" | "qwen-multifile-fim" | "disabled" | "blocked"
+  | "single-file-deepseek-fim"
+  | "deepseek-multifile-fim"
 
 export type QwenRootPathBlockedReason =
   | "none"
@@ -29,6 +35,7 @@ export type QwenSnippetInjectionBlockedReason =
 export type QwenAutocompleteConfig = {
   enabled: boolean
   provider: QwenAutocompleteProvider
+  profile: QwenAutocompleteProfile
   endpoint: string
   model: string
   apiKey: string
@@ -39,6 +46,7 @@ export type QwenAutocompleteConfig = {
   maxSuffixPercentage: number
   prefixPercentage: number
   temperature: number
+  topP: number
   cacheEnabled: boolean
   cacheMaxEntries: number
   prefixChars: number
@@ -152,11 +160,15 @@ export type QwenFimParts = {
 
 export type QwenFimCompleteInput = {
   endpoint: string
+  profile?: QwenAutocompleteProfile
+  requestShape?: QwenFimRequestShape
   model: string
   apiKey: string
   prompt: string
+  suffix?: string
   maxTokens: number
   temperature: number
+  topP?: number
   signal?: AbortSignal
   onResponse?: (info: { status: number }) => void
 }

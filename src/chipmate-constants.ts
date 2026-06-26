@@ -2,9 +2,11 @@ export const CHIPMATE_CONFIG_SECTION = "chipmate"
 export const CHIPMATE_DISPLAY_NAME = "ChipMate"
 export const CHIPMATE_VIEW_CONTAINER_ID = "chipmate"
 export const CHIPMATE_CHAT_VIEW_ID = "chipmate.sidebar"
+export const CHIPMATE_AGENT_TERMINAL_PROFILE_ID = "chipmate.agentTerminal"
 export const CHIPMATE_OUTPUT_CHANNEL = "ChipMate"
 export const CHIPMATE_COMMENT_OUTPUT_CHANNEL = "ChipMate Comment"
 export const CHIPMATE_SESSION_TITLE = "ChipMate chat"
+export const CHIPMATE_TERMINAL_SESSION_TITLE = "ChipMate Terminal"
 export const CHIPMATE_LOCAL_AGENT_ID = "chipmate-local"
 
 export const PROVIDER_API_KEY_SECRET_KEY = "chipmate.provider.apiKey"
@@ -19,6 +21,7 @@ export const CHIPMATE_COMMANDS = {
   addFileToContext: "chipmate.addFileToContext",
   clearContext: "chipmate.clearContext",
   openOutput: "chipmate.openOutput",
+  openAgentTerminal: "chipmate.agentTerminal.open",
   setProviderApiKey: "chipmate.provider.setApiKey",
   refreshModels: "chipmate.provider.refreshModels",
   qwenAutocompleteRegenerate: "chipmate.qwenAutocomplete.regenerate",

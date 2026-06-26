@@ -1,4 +1,4 @@
-import { getContinueAutocompleteStopTokens } from "./fimTemplates"
+import { fimRequestShape, getFimStopTokens } from "./fimTemplates"
 import type { QwenFimCompleteInput } from "./types"
 
 export class QwenFimRequestError extends Error {
@@ -18,18 +18,25 @@ export class QwenFimClient {
 
   async complete(input: QwenFimCompleteInput): Promise<string> {
     if (!input.endpoint) throw new QwenFimRequestError(0, "Qwen endpoint is required.")
+    const profile = input.profile ?? "qwen-coder-fim"
+    const requestShape = input.requestShape ?? fimRequestShape(profile)
+    const body: Record<string, unknown> = {
+      model: input.model,
+      prompt: input.prompt,
+      max_tokens: input.maxTokens,
+      temperature: input.temperature,
+      stream: false,
+      stop: getFimStopTokens(profile, input.model),
+    }
+    if (requestShape === "prompt-suffix") {
+      body.suffix = input.suffix ?? ""
+      if (typeof input.topP === "number" && Number.isFinite(input.topP)) body.top_p = input.topP
+    }
     const res = await this.fetcher(input.endpoint, {
       method: "POST",
       signal: input.signal,
       headers: this.headers(input.apiKey),
-      body: JSON.stringify({
-        model: input.model,
-        prompt: input.prompt,
-        max_tokens: input.maxTokens,
-        temperature: input.temperature,
-        stream: false,
-        stop: getContinueAutocompleteStopTokens(input.model),
-      }),
+      body: JSON.stringify(body),
     })
     try {
       input.onResponse?.({ status: res.status })

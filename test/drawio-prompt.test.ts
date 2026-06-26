@@ -1,0 +1,42 @@
+import { describe, expect, test } from "bun:test"
+import { readFileSync } from "node:fs"
+import { join } from "node:path"
+
+describe("draw.io generation prompts", () => {
+  test("routes draw.io requests through the structured tool with XML fallback", () => {
+    const contextSource = readFileSync(join(import.meta.dir, "..", "src", "context.ts"), "utf8")
+    const directClientSource = readFileSync(join(import.meta.dir, "..", "src", "direct-agent-client.ts"), "utf8")
+
+    expect(contextSource).toContain("drawioDiagramOutputGuidance(input.settings.tools.enabled)")
+    expect(contextSource).toContain("Draw.io Diagram Output Contract:")
+    expect(contextSource).toContain("chipmate_validate_diagram_ir")
+    expect(contextSource).toContain("chipmate_create_drawio_diagram as the final renderer")
+    expect(contextSource).toContain("Code evidence does not automatically mean code-flow")
+    expect(contextSource).toContain("internal embedded-fsm-flow visual profile")
+    expect(contextSource).toContain("composition.mode to single by default")
+    expect(contextSource).toContain("Only set composition.mode to multi")
+    expect(contextSource).toContain("always runs the Diagram Design Compiler before ELKJS layout")
+    expect(contextSource).toContain("visualRole")
+    expect(contextSource).toContain("pathRole")
+    expect(contextSource).toContain("Use Mermaid only when the user explicitly asks")
+    expect(contextSource).toContain("Active skills may refine evidence collection")
+    expect(contextSource).toContain("ChipMate tool calling is disabled")
+    expect(contextSource).toContain("fenced `drawio` code block")
+    expect(contextSource).toContain("<mxfile> or <mxGraphModel>")
+    expect(contextSource).toContain("Do not reference external image URLs")
+    expect(directClientSource).toContain("use an evidence-backed DiagramIR workflow")
+    expect(directClientSource).toContain("The model or active skill decides the user-visible diagramType")
+    expect(directClientSource).toContain("Code evidence does not automatically mean code-flow")
+    expect(directClientSource).toContain("internal embedded-fsm-flow visual profile")
+    expect(directClientSource).toContain("call chipmate_validate_diagram_ir")
+    expect(directClientSource).toContain("always runs the Diagram Design Compiler before ELKJS layout")
+    expect(directClientSource).toContain("labelPriority")
+    expect(directClientSource).toContain("Diagram skill precedence")
+    expect(directClientSource).toContain("composition.mode to single by default")
+    expect(directClientSource).toContain("composition.mode to multi")
+    expect(directClientSource).toContain("Use Mermaid only when the user explicitly asks")
+    expect(directClientSource).toContain("Do not handwrite mxCell/mxGeometry XML")
+    expect(directClientSource).toContain("tool calling is disabled")
+    expect(directClientSource).toContain("Do not reference external image/font/style URLs")
+  })
+})

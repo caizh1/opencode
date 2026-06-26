@@ -5,6 +5,7 @@ import {
   type CommentInsertionAnchor,
   type CommentLineSpan,
   type CommentProposalKind,
+  type CommentSyntax,
   type RawCommentEvidence,
   type RawCommentProposal,
 } from "./commentTypes"
@@ -16,6 +17,7 @@ export type CommentProposalValidationContext = {
   allowedAnchors?: Pick<CommentInsertionAnchor, "line" | "targetLineText">[]
   maxProposals?: number
   changedLineSpans?: CommentLineSpan[]
+  commentSyntax?: CommentSyntax
 }
 
 export type CommentProposalDiscard = {
@@ -116,8 +118,9 @@ export function validateRawCommentProposal(
   }
   if (typeof proposal.commentText !== "string" || !proposal.commentText.trim()) return "commentText 不能为空"
   if (proposal.commentText.length > MAX_COMMENT_TEXT_LENGTH) return "commentText 过长"
-  if (!isCommentOnlyText(proposal.commentText)) return "commentText 只能包含注释"
-  if (looksLikeCodeStatement(proposal.commentText)) return "commentText 看起来像代码"
+  const commentSyntax = context.commentSyntax ?? "c-style"
+  if (!isCommentOnlyText(proposal.commentText, commentSyntax)) return "commentText 只能包含注释"
+  if (looksLikeCodeStatement(proposal.commentText, commentSyntax)) return "commentText 看起来像代码"
   return undefined
 }
 
@@ -166,17 +169,20 @@ function validateCodeEvidenceItem(input: unknown, context: CommentProposalValida
   return undefined
 }
 
-export function isCommentOnlyText(input: string) {
+export function isCommentOnlyText(input: string, commentSyntax: CommentSyntax = "c-style") {
   const text = input.trim()
   if (!text) return false
   const lines = text.split(/\r?\n/)
+  if (commentSyntax === "hash-line") {
+    return lines.every((line) => !line.trim() || line.trimStart().startsWith("#"))
+  }
   if (lines.every((line) => !line.trim() || line.trimStart().startsWith("//"))) return true
   if (text.startsWith("/*") && text.endsWith("*/")) return true
   return false
 }
 
-function looksLikeCodeStatement(input: string) {
-  return commentBodyLines(input).some((line) => looksLikeAssignmentOrBraceCode(line))
+function looksLikeCodeStatement(input: string, commentSyntax: CommentSyntax) {
+  return commentBodyLines(input, commentSyntax).some((line) => looksLikeAssignmentOrBraceCode(line))
 }
 
 function nonEmptyString(input: unknown) {
@@ -222,14 +228,14 @@ function normalizeLine(input: string) {
   return input.replace(/\s+/g, " ").trim()
 }
 
-function commentBodyLines(input: string) {
+function commentBodyLines(input: string, commentSyntax: CommentSyntax) {
   return input
     .split(/\r?\n/)
     .map((line) => line
-      .replace(/^\s*\/\//, "")
-      .replace(/^\s*\/\*+/, "")
-      .replace(/\*\/\s*$/, "")
-      .replace(/^\s*\*/, "")
+      .replace(commentSyntax === "hash-line" ? /^\s*#/ : /^\s*\/\//, "")
+      .replace(commentSyntax === "hash-line" ? /^$/ : /^\s*\/\*+/, "")
+      .replace(commentSyntax === "hash-line" ? /^$/ : /\*\/\s*$/, "")
+      .replace(commentSyntax === "hash-line" ? /^$/ : /^\s*\*/, "")
       .trim())
     .filter(Boolean)
 }

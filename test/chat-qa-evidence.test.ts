@@ -36,6 +36,20 @@ class PositionShim {
   constructor(readonly line: number, readonly character: number) {}
 }
 
+class RelativePatternShim {
+  readonly baseUri: UriShim
+
+  constructor(base: { uri?: UriShim } | UriShim | string, readonly pattern: string) {
+    if (typeof base === "string") {
+      this.baseUri = UriShim.file(base)
+    } else if ("uri" in base && base.uri) {
+      this.baseUri = base.uri
+    } else {
+      this.baseUri = base as UriShim
+    }
+  }
+}
+
 type FakeDocument = {
   uri: UriShim
   languageId: string
@@ -47,7 +61,12 @@ type FakeDocument = {
 mock.module("vscode", () => ({
   Range: RangeShim,
   Position: PositionShim,
+  RelativePattern: RelativePatternShim,
   Uri: UriShim,
+  FileType: {
+    File: 1,
+    Directory: 2,
+  },
   WorkspaceEdit: class WorkspaceEdit {
     readonly inserts: unknown[] = []
     readonly replaces: unknown[] = []
@@ -81,13 +100,27 @@ mock.module("vscode", () => ({
     get textDocuments() {
       return textDocuments
     },
+    getWorkspaceFolder: (uri: UriShim) => workspaceFolders.find((folder) => uri.fsPath === folder.uri.fsPath || uri.fsPath.startsWith(`${folder.uri.fsPath}/`)),
     asRelativePath: (uri: UriShim) => {
       const root = workspaceFolders[0]?.uri.fsPath
       return root && uri.fsPath.startsWith(`${root}/`) ? uri.fsPath.slice(root.length + 1) : uri.fsPath
     },
+    findFiles: async (include: RelativePatternShim | string, _exclude?: unknown, maxResults?: number) => {
+      const base = include instanceof RelativePatternShim ? include.baseUri.fsPath : workspaceFolders[0]?.uri.fsPath ?? "/repo"
+      const files = [...fileBytes.keys()]
+        .filter((file) => file.startsWith(`${base}/`))
+        .sort()
+        .slice(0, maxResults ?? undefined)
+      return files.map((file) => UriShim.file(file))
+    },
     openTextDocument: async (uri: UriShim) => textDocuments.find((document) => document.uri.toString() === uri.toString()),
     fs: {
       readFile: async (uri: UriShim) => fileBytes.get(uri.fsPath) ?? new Uint8Array(),
+      stat: async (uri: UriShim) => {
+        if (fileBytes.has(uri.fsPath)) return { type: 1 }
+        if ([...fileBytes.keys()].some((file) => file.startsWith(`${uri.fsPath}/`))) return { type: 2 }
+        throw new Error("ENOENT")
+      },
     },
   },
   window: {
@@ -100,7 +133,7 @@ mock.module("vscode", () => ({
   },
 }))
 
-const { buildChatPrompt, LocalContextStore } = await import("../src/context")
+const { buildChatPrompt, buildChatPromptWithEvidence, LocalContextStore } = await import("../src/context")
 
 beforeEach(() => {
   workspaceFolders = [{ name: "repo", uri: UriShim.file("/repo") }]
@@ -169,6 +202,99 @@ describe("QA chat evidence retrieval", () => {
     expect(contextSummary).toEqual([
       expect.objectContaining({ path: "bin/blob.dat", skipped: true }),
     ])
+  })
+
+  test("expands mentioned folders recursively while keeping build and excluding out/dist", async () => {
+    const encoder = new TextEncoder()
+    fileBytes.set("/repo/module/main.c", encoder.encode("int module_main(void) { return 0; }\n"))
+    fileBytes.set("/repo/module/include/driver.h", encoder.encode("#pragma once\nint module_main(void);\n"))
+    fileBytes.set("/repo/module/build/check.sh", encoder.encode("#!/bin/sh\necho check\n"))
+    fileBytes.set("/repo/module/build/config.yml", encoder.encode("target: module\n"))
+    fileBytes.set("/repo/module/build/tool.py", encoder.encode("print('tool')\n"))
+    fileBytes.set("/repo/module/build/CMakeLists.txt", encoder.encode("add_library(module main.c)\n"))
+    fileBytes.set("/repo/module/out/generated.c", encoder.encode("int generated_out(void) { return 1; }\n"))
+    fileBytes.set("/repo/module/dist/package.yml", encoder.encode("ignored: true\n"))
+    fileBytes.set("/repo/module/build/blob.o", new Uint8Array([0, 1, 2, 3]))
+    const contextSummary: Array<{ path: string; source: string; skipped: boolean }> = []
+    const localSettings = settings()
+    localSettings.context.localOnlyMode = false
+
+    const prompt = await buildChatPrompt({
+      question: "分析这个模块目录",
+      options: {
+        includeSelection: false,
+        includeCurrentFile: false,
+        includeOpenFiles: false,
+        includeDiagnostics: false,
+        includeGitDiff: false,
+      },
+      settings: localSettings,
+      contextStore: new LocalContextStore(),
+      mentionedContext: [{
+        uri: UriShim.file("/repo/module") as never,
+        type: "folder",
+        label: "module",
+        insertText: "module/",
+      }],
+      onContextSummary: (items) => contextSummary.push(...items),
+    })
+
+    expect(prompt).toContain("int module_main(void)")
+    expect(prompt).toContain("#pragma once")
+    expect(prompt).toContain("#!/bin/sh")
+    expect(prompt).toContain("target: module")
+    expect(prompt).toContain("print('tool')")
+    expect(prompt).toContain("add_library(module main.c)")
+    expect(prompt).toContain('<file path="module/include/driver.h" language="c"')
+    expect(prompt).toContain('<file path="module/build/check.sh" language="shellscript"')
+    expect(prompt).toContain('<file path="module/build/config.yml" language="yaml"')
+    expect(prompt).toContain('<file path="module/build/CMakeLists.txt" language="cmake"')
+    expect(prompt).not.toContain("generated_out")
+    expect(prompt).not.toContain("ignored: true")
+    expect(prompt).not.toContain("[binary file skipped]")
+    expect(contextSummary).toEqual(expect.arrayContaining([
+      expect.objectContaining({ path: "module/build/check.sh", source: "mentioned folder", skipped: false }),
+      expect.objectContaining({ path: "module/build/config.yml", source: "mentioned folder", skipped: false }),
+      expect.objectContaining({ path: "module/build/tool.py", source: "mentioned folder", skipped: false }),
+      expect.objectContaining({ path: "module/include/driver.h", source: "mentioned folder", skipped: false }),
+    ]))
+    expect(contextSummary.some((item) => item.path.includes("/out/") || item.path.includes("/dist/"))).toBe(false)
+  })
+
+  test("limits recursive folder context by the existing maxFiles budget", async () => {
+    const encoder = new TextEncoder()
+    fileBytes.set("/repo/budget/a.c", encoder.encode("int a(void) { return 1; }\n"))
+    fileBytes.set("/repo/budget/b.c", encoder.encode("int b(void) { return 2; }\n"))
+    fileBytes.set("/repo/budget/c.c", encoder.encode("int c(void) { return 3; }\n"))
+    const contextSummary: Array<{ path: string; skipped: boolean }> = []
+    const localSettings = settings()
+    localSettings.context.localOnlyMode = false
+    localSettings.context.maxFiles = 2
+
+    const prompt = await buildChatPrompt({
+      question: "分析这个目录",
+      options: {
+        includeSelection: false,
+        includeCurrentFile: false,
+        includeOpenFiles: false,
+        includeDiagnostics: false,
+        includeGitDiff: false,
+      },
+      settings: localSettings,
+      contextStore: new LocalContextStore(),
+      mentionedContext: [{
+        uri: UriShim.file("/repo/budget") as never,
+        type: "folder",
+        label: "budget",
+        insertText: "budget/",
+      }],
+      onContextSummary: (items) => contextSummary.push(...items),
+    })
+
+    expect(prompt).toContain("int a")
+    expect(prompt).toContain("int b")
+    expect(prompt).not.toContain("int c")
+    expect(contextSummary.map((item) => item.path)).toEqual(["budget/a.c", "budget/b.c"])
   })
 
   test("queries analysis evidence with the raw QA question and related workspace paths", async () => {
@@ -294,6 +420,84 @@ describe("QA chat evidence retrieval", () => {
     expect(prompt).toContain("Local document RAG evidence:")
     expect(prompt).toContain('path="docs/spec.pdf"')
     expect(prompt).toContain("upgrade flow")
+  })
+
+  test("returns compact evidence ledger separately from full prompt evidence", async () => {
+    const document = fakeDocument("src/main.c", "int secret_file_body(void) { return 7; }\n")
+    textDocuments = [document]
+    const localSettings = settings()
+    localSettings.documentRag.enabled = true
+
+    const result = await buildChatPromptWithEvidence({
+      question: "解释 main flow",
+      options: {
+        includeSelection: false,
+        includeCurrentFile: true,
+        includeOpenFiles: false,
+        includeDiagnostics: false,
+        includeGitDiff: false,
+      },
+      settings: localSettings,
+      contextStore: new LocalContextStore(),
+      editorContext: {
+        uri: document.uri as never,
+        selection: { isEmpty: true } as never,
+        position: { line: 0, character: 0 } as never,
+      },
+      codeGraph: {
+        ...codeGraphWithRagStatus(readyRagStatus(), { build: [], query: [] }),
+        buildContext: async () => ({
+          text: '<local-code-graph><evidence path="src/main.c">secret graph evidence</evidence></local-code-graph>',
+          mode: "symbol" as never,
+          symbols: ["secret_file_body"],
+          truncated: false,
+          metrics: {
+            mode: "symbol" as never,
+            tokens: [],
+            symbols: ["secret_file_body"],
+            candidateCount: 1,
+            evidenceCount: 1,
+            omittedCandidates: 0,
+            packedBytes: 96,
+            truncated: false,
+            elapsedMs: 3,
+          },
+        }),
+      },
+      documentRag: {
+        status: () => ({
+          enabled: true,
+          availability: "ready",
+          documentCount: 1,
+          indexedDocuments: 1,
+          skippedDocuments: 0,
+          pendingDocuments: 0,
+          chunks: 1,
+          embeddedChunks: 1,
+        }),
+        query: async () => ({
+          text: '<local-document-rag><evidence path="docs/spec.pdf">secret document evidence</evidence></local-document-rag>',
+          hits: [{ path: "docs/spec.pdf", startLine: 4, endLine: 6, score: 0.9 }],
+          elapsedMs: 2,
+        }),
+      },
+    })
+
+    expect(result.prompt).toContain("secret_file_body")
+    expect(result.prompt).toContain("secret graph evidence")
+    expect(result.prompt).toContain("secret document evidence")
+    expect(result.contextSummary).toEqual(expect.arrayContaining([
+      expect.objectContaining({ path: "src/main.c", skipped: false }),
+    ]))
+    expect(result.evidenceLedgerInput).toEqual(expect.arrayContaining([
+      expect.objectContaining({ source: "local-context", kind: "file", path: "src/main.c", staleness: "current" }),
+      expect.objectContaining({ source: "codegraph", kind: "codegraph", query: "解释 main flow", staleness: "current" }),
+      expect.objectContaining({ source: "document-rag", kind: "document", path: "docs/spec.pdf", range: "4-6", staleness: "current" }),
+    ]))
+    const ledgerText = JSON.stringify(result.evidenceLedgerInput)
+    expect(ledgerText).not.toContain("return 7")
+    expect(ledgerText).not.toContain("secret graph evidence")
+    expect(ledgerText).not.toContain("secret document evidence")
   })
 
   test("packs explicit attached selection before automatic current-file context", async () => {
@@ -534,15 +738,27 @@ function settings(): RemoteSettings {
       includeGitDiff: false,
       localOnlyMode: true,
       strictLocalOnlyAgent: true,
+      maxHistoryTurns: 10,
+      maxHistoryBytes: 40000,
+      memorySummary: {
+        enabled: true,
+        maxBytes: 12000,
+        triggerOverflowTurns: 2,
+      },
     },
     permissions: {
       mode: "full-access",
     },
     tools: {
       enabled: false,
+      maxAgentSteps: 25,
     },
     skills: {
       enabled: [],
+      overrides: {},
+      scanUserSkills: false,
+      scanClaudeSkills: true,
+      maxCatalogBytes: 8000,
     },
     mcp: {
       enabled: false,

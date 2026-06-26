@@ -20,6 +20,7 @@ export type CommentSelectionIntent = "functionOrBlockSummary" | "localBlock"
 export type CommentPrimaryAnchorPolicy = "required-when-supported" | "allow-when-useful"
 export type CommentReviewSource = "selection" | "currentFunction" | "workspaceChanges"
 export type CommentWorkspaceReviewUnitKind = "function" | "block" | "fileChunk"
+export type CommentSyntax = "c-style" | "hash-line"
 
 export type CommentLineSpan = {
   startLine: number
@@ -96,6 +97,7 @@ export type CommentGenerationContext = {
   filePath: string
   workspacePath: string
   languageId: string
+  commentSyntax: CommentSyntax
   documentVersion: number
   selectionStartLine: number
   selectionEndLine: number

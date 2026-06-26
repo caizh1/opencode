@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+  <defs>
+    <filter id="glow" x="-30%" y="-30%" width="160%" height="160%">
+      <feDropShadow dx="0" dy="0" stdDeviation="0.9" flood-color="currentColor" flood-opacity="0.42"/>
+    </filter>
+  </defs>
+  <g filter="url(#glow)">
+    <rect x="4.8" y="5" width="4.1" height="4.1" rx="1"/>
+    <rect x="4.8" y="14.9" width="4.1" height="4.1" rx="1"/>
+    <path d="M5.8 7l1 1 1.7-2"/>
+    <path d="M5.8 16.9l1 1 1.7-2"/>
+    <path d="M11.6 7.1h6.2M11.6 17h4.8"/>
+    <path d="M5.1 5.2l13.8 13.6"/>
+  </g>
+</svg>

@@ -1,3 +1,4 @@
+import { Buffer } from "node:buffer"
 import { randomBytes } from "node:crypto"
 import { liquidIcon, type LiquidIconName } from "./webview/liquid-icons"
 
@@ -9,6 +10,7 @@ const liquidIconNames: LiquidIconName[] = [
   "history",
   "sync",
   "settings",
+  "terminal",
   "server",
   "agent",
   "send",
@@ -18,6 +20,11 @@ const liquidIconNames: LiquidIconName[] = [
   "attach",
   "file",
   "selection",
+  "checkbox",
+  "checkboxChecked",
+  "selectMany",
+  "selectAll",
+  "deselectAll",
   "diagnostics",
   "diff",
   "references",
@@ -38,6 +45,11 @@ const liquidIconNames: LiquidIconName[] = [
   "shield",
   "save",
   "discard",
+  "trash",
+  "historyRefresh",
+  "closePanel",
+  "zoomIn",
+  "zoomOut",
   "close",
   "panelBottomClose",
   "panelBottomOpen",
@@ -61,6 +73,16 @@ const codeGraphStatusGlyph = [
 ].join("")
 const codeGraphStatusGlyphForScript = JSON.stringify(codeGraphStatusGlyph)
 const documentRagStatusCodicon = "file-text"
+export const historyToolbarIconNames = [
+  "enterSelection",
+  "selectAll",
+  "deselectAll",
+  "delete",
+  "refresh",
+  "close",
+] as const
+export type HistoryToolbarIconName = (typeof historyToolbarIconNames)[number]
+export type HistoryToolbarIconUris = Partial<Record<HistoryToolbarIconName, string>>
 
 function autocompleteStatusIcon(state: "enabled" | "disabled") {
   const disabled = state === "disabled"
@@ -125,10 +147,27 @@ function escapeHtmlAttribute(value: string) {
   })
 }
 
-export function createChatViewHtml(cspSource: string, nonce = createNonce(), brandIconUri = "", mermaidScriptUri = "", codiconFontUri = "") {
+function historyToolbarIconGlyph(iconName: HistoryToolbarIconName, icons: HistoryToolbarIconUris) {
+  const iconUri = icons[iconName] || ""
+  const style = iconUri ? ` style="${escapeHtmlAttribute(`--history-toolbar-icon: url(\"${iconUri}\");`)}"` : ""
+  return `<span class="historyToolbarGlyph" data-history-icon="${iconName}" aria-hidden="true"${style}></span>`
+}
+
+export function createChatViewHtml(
+  cspSource: string,
+  nonce = createNonce(),
+  brandIconUri = "",
+  mermaidScriptUri = "",
+  codiconFontUri = "",
+  drawioRuntimeUri = "",
+  drawioRuntimeHtml = "",
+  historyToolbarIconUris: HistoryToolbarIconUris = {},
+) {
   const escapedBrandIconUri = escapeHtmlAttribute(brandIconUri)
   const escapedMermaidScriptUri = escapeHtmlAttribute(mermaidScriptUri)
   const escapedCodiconFontUri = escapeHtmlAttribute(codiconFontUri)
+  const drawioRuntimeHtmlBase64 = drawioRuntimeHtml ? Buffer.from(drawioRuntimeHtml, "utf8").toString("base64") : ""
+  const historyToolbarIconsForScript = JSON.stringify(historyToolbarIconUris)
   const mermaidScriptTag = escapedMermaidScriptUri
     ? `<script nonce="${nonce}" src="${escapedMermaidScriptUri}"></script>`
     : ""
@@ -147,7 +186,7 @@ export function createChatViewHtml(cspSource: string, nonce = createNonce(), bra
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src ${cspSource} data:; style-src ${cspSource} 'unsafe-inline'; font-src ${cspSource} data:; script-src 'nonce-${nonce}' ${cspSource};">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src ${cspSource} data: blob:; style-src ${cspSource} 'unsafe-inline'; font-src ${cspSource} data:; script-src 'nonce-${nonce}' ${cspSource}; frame-src ${cspSource} blob: data:; connect-src 'none';">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>ChipMate</title>
   <style>
@@ -406,6 +445,54 @@ ${codiconFontFace}    .codicon {
       gap: 7px;
       min-width: 0;
     }
+    .skillImportDropZone {
+      display: grid;
+      grid-template-columns: 24px minmax(0, 1fr);
+      align-items: center;
+      gap: 8px;
+      min-width: 0;
+      min-height: 58px;
+      padding: 10px;
+      border: 1px dashed color-mix(in srgb, var(--vscode-focusBorder) 48%, var(--oc-border));
+      border-radius: var(--oc-radius-lg);
+      background:
+        linear-gradient(135deg, color-mix(in srgb, var(--vscode-focusBorder) 10%, transparent), transparent 62%),
+        color-mix(in srgb, var(--oc-soft-bg) 84%, transparent);
+      color: var(--vscode-descriptionForeground);
+      box-shadow: inset 0 1px 0 color-mix(in srgb, white 12%, transparent);
+      transition: border-color 120ms ease, background 120ms ease, box-shadow 120ms ease;
+    }
+    .skillImportDropZone.is-drop-target {
+      border-color: var(--vscode-focusBorder);
+      background:
+        linear-gradient(135deg, color-mix(in srgb, var(--vscode-focusBorder) 18%, transparent), transparent 68%),
+        color-mix(in srgb, var(--vscode-focusBorder) 10%, var(--oc-soft-bg));
+      box-shadow: inset 0 1px 0 color-mix(in srgb, white 18%, transparent), 0 0 0 1px color-mix(in srgb, var(--vscode-focusBorder) 24%, transparent);
+    }
+    .skillImportIcon {
+      display: inline-flex;
+      width: 24px;
+      height: 24px;
+      align-items: center;
+      justify-content: center;
+    }
+    .skillImportCopy { min-width: 0; display: grid; gap: 2px; }
+    .skillImportTitle {
+      min-width: 0;
+      color: var(--vscode-foreground);
+      font-size: 12px;
+      font-weight: 650;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .skillImportHint {
+      min-width: 0;
+      color: var(--vscode-descriptionForeground);
+      font-size: 11px;
+      line-height: 1.35;
+      overflow-wrap: anywhere;
+    }
     .skillItem {
       display: grid;
       grid-template-columns: auto minmax(0, 1fr);
@@ -630,6 +717,82 @@ ${codiconFontFace}    .codicon {
       border-bottom: 1px solid var(--vscode-sideBarSectionHeader-border, var(--vscode-panel-border));
     }
     .historyTitle { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 650; font-size: 12px; }
+    .historyActions {
+      flex: 0 0 auto;
+      justify-content: flex-end;
+      align-items: center;
+      gap: 8px;
+      min-width: 0;
+      flex-wrap: wrap;
+    }
+    .historyToolbarButton {
+      width: 28px;
+      min-width: 28px;
+      height: 28px;
+      min-height: 28px;
+      flex: 0 0 28px;
+      border-radius: 7px;
+      color: var(--history-toolbar-icon-default, var(--vscode-icon-foreground, #b8c7d6));
+      background: transparent;
+      border-color: transparent;
+      box-shadow: none;
+      transition: background 120ms ease, border-color 120ms ease, box-shadow 120ms ease, color 120ms ease, transform 120ms ease;
+    }
+    .historyToolbarButton .historyToolbarGlyph {
+      width: 18px;
+      height: 18px;
+      flex: 0 0 18px;
+      display: inline-block;
+      background: currentColor;
+      -webkit-mask: var(--history-toolbar-icon) center / contain no-repeat;
+      mask: var(--history-toolbar-icon) center / contain no-repeat;
+      filter: drop-shadow(0 0 2px rgba(150, 210, 255, 0.16));
+    }
+    body.vscode-dark .historyToolbarButton,
+    .vscode-dark .historyToolbarButton {
+      --history-toolbar-icon-default: #b8c7d6;
+    }
+    .historyToolbarButton:hover,
+    .historyToolbarButton:focus-visible {
+      color: var(--vscode-foreground, #eaf6ff);
+      background:
+        linear-gradient(rgba(160, 210, 255, 0.10), rgba(160, 210, 255, 0.10)),
+        var(--vscode-toolbar-hoverBackground, transparent);
+      border-color: rgba(210, 235, 255, 0.28);
+      box-shadow: 0 0 10px rgba(150, 210, 255, 0.22), inset 0 1px 0 rgba(255, 255, 255, 0.10);
+    }
+    body.vscode-dark .historyToolbarButton:hover,
+    body.vscode-dark .historyToolbarButton:focus-visible,
+    .vscode-dark .historyToolbarButton:hover,
+    .vscode-dark .historyToolbarButton:focus-visible {
+      color: #eaf6ff;
+    }
+    .historyToolbarButton:active,
+    .historyToolbarButton.is-active,
+    .historyToolbarButton[aria-pressed="true"] {
+      color: #eaf6ff;
+      background:
+        linear-gradient(rgba(160, 210, 255, 0.14), rgba(160, 210, 255, 0.14)),
+        var(--vscode-toolbar-hoverBackground, transparent);
+      border-color: rgba(210, 235, 255, 0.36);
+      box-shadow: 0 0 8px rgba(150, 210, 255, 0.18), inset 0 1px 2px rgba(255, 255, 255, 0.12);
+      transform: translateY(1px);
+    }
+    .historyToolbarButton.danger:hover,
+    .historyToolbarButton.danger:focus-visible {
+      color: #ff8a8a;
+      border-color: rgba(255, 138, 138, 0.34);
+      box-shadow: 0 0 10px rgba(255, 138, 138, 0.22), inset 0 1px 0 rgba(255, 255, 255, 0.08);
+    }
+    .historyToolbarButton[disabled],
+    .historyToolbarButton[disabled]:hover {
+      opacity: 0.45;
+      color: var(--vscode-disabledForeground, var(--vscode-descriptionForeground));
+      background: transparent;
+      border-color: transparent;
+      box-shadow: none;
+      transform: none;
+    }
     .sessionList { flex: 1; min-height: 0; overflow: auto; padding: 6px; }
     .sessionRow {
       width: 100%;
@@ -644,6 +807,12 @@ ${codiconFontFace}    .codicon {
     }
     .sessionRow:hover { background: var(--vscode-list-hoverBackground); }
     .sessionRow.active { background: var(--vscode-list-activeSelectionBackground); color: var(--vscode-list-activeSelectionForeground); }
+    .sessionRow.selecting {
+      grid-template-columns: 26px minmax(0, 1fr);
+    }
+    .sessionRow.selected:not(.active) {
+      background: color-mix(in srgb, var(--vscode-button-background) 18%, transparent);
+    }
     .sessionSelect {
       min-width: 0;
       display: grid;
@@ -663,6 +832,7 @@ ${codiconFontFace}    .codicon {
     }
     .sessionTime { color: var(--vscode-descriptionForeground); font-size: 10px; }
     .sessionRow.active .sessionTime { color: inherit; opacity: 0.75; }
+    .sessionCheck,
     .sessionDelete {
       width: 24px;
       min-width: 24px;
@@ -673,7 +843,21 @@ ${codiconFontFace}    .codicon {
       color: var(--vscode-descriptionForeground);
       opacity: 0.54;
     }
+    .sessionCheck {
+      opacity: 0.8;
+      color: var(--vscode-descriptionForeground);
+    }
+    .sessionCheck[aria-pressed="true"] {
+      color: var(--vscode-button-foreground);
+      background: var(--vscode-button-background);
+      opacity: 1;
+    }
+    .sessionCheck .oc-liquid-icon,
     .sessionDelete .oc-liquid-icon { width: 14px; height: 14px; }
+    .sessionCheck:hover,
+    .sessionCheck:focus-visible {
+      opacity: 1;
+    }
     .sessionDelete:hover,
     .sessionDelete:focus-visible {
       color: var(--vscode-errorForeground, var(--vscode-foreground));
@@ -1083,6 +1267,9 @@ ${codiconFontFace}    .codicon {
       flex: 0 0 auto;
     }
     .copyCode,
+    .diagramZoom,
+    .exportMermaidImage,
+    .exportDrawioImage,
     .toggleDiagramSource {
       width: 24px;
       min-width: 24px;
@@ -1092,16 +1279,52 @@ ${codiconFontFace}    .codicon {
       color: var(--vscode-descriptionForeground);
       opacity: 0.58;
     }
+    .diagramZoom {
+      width: var(--diagram-zoom-button-size, 30px);
+      min-width: var(--diagram-zoom-button-size, 30px);
+      height: var(--diagram-zoom-button-size, 30px);
+      min-height: var(--diagram-zoom-button-size, 30px);
+      flex: 0 0 var(--diagram-zoom-button-size, 30px);
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+    }
     .copyCode .oc-liquid-icon,
+    .diagramZoom .oc-liquid-icon,
+    .exportMermaidImage .oc-liquid-icon,
+    .exportDrawioImage .oc-liquid-icon,
     .toggleDiagramSource .oc-liquid-icon { width: 14px; height: 14px; }
+    .diagramZoom .oc-liquid-icon {
+      width: var(--diagram-zoom-glyph-size, 20px);
+      height: var(--diagram-zoom-glyph-size, 20px);
+      stroke-width: 2.15;
+    }
     .codeBlock:hover .copyCode,
     .diagramBlock:hover .copyCode,
+    .diagramBlock:hover .diagramZoom,
+    .diagramBlock:hover .exportMermaidImage,
+    .diagramBlock:hover .exportDrawioImage,
     .diagramBlock:hover .toggleDiagramSource,
     .copyCode:focus-visible,
     .copyCode:hover,
+    .diagramZoom:focus-visible,
+    .diagramZoom:hover,
+    .exportMermaidImage:focus-visible,
+    .exportMermaidImage:hover,
+    .exportDrawioImage:focus-visible,
+    .exportDrawioImage:hover,
     .toggleDiagramSource:focus-visible,
     .toggleDiagramSource:hover {
       opacity: 1;
+    }
+    .diagramZoom[disabled],
+    .diagramZoom[disabled]:hover,
+    .exportMermaidImage[disabled],
+    .exportMermaidImage[disabled]:hover,
+    .exportDrawioImage[disabled],
+    .exportDrawioImage[disabled]:hover {
+      opacity: 0.28;
+      cursor: default;
     }
     .codeBlock pre {
       margin: 0;
@@ -1124,6 +1347,8 @@ ${codiconFontFace}    .codicon {
       overflow-anchor: none;
     }
     .diagramCanvas {
+      --diagram-zoom: 1;
+      --diagram-zoom-width: 100%;
       min-height: 120px;
       display: grid;
       align-items: center;
@@ -1132,9 +1357,47 @@ ${codiconFontFace}    .codicon {
       color: var(--vscode-foreground);
       background: var(--vscode-editor-background);
     }
+    .diagramCanvas.zoomed-in {
+      align-items: start;
+      justify-items: start;
+      overflow: auto;
+      max-height: min(72vh, 900px);
+      overscroll-behavior: contain;
+      cursor: grab;
+      touch-action: none;
+    }
+    .diagramCanvas.zoomed-in.diagramDragging {
+      cursor: grabbing;
+      user-select: none;
+    }
     .diagramCanvas svg {
-      max-width: 100%;
+      width: var(--diagram-zoom-width, 100%);
+      max-width: none;
       height: auto;
+      justify-self: center;
+    }
+    .diagramCanvas img.drawioImage {
+      display: block;
+      width: var(--diagram-zoom-width, 100%);
+      max-width: none;
+      height: auto;
+      justify-self: center;
+    }
+    .diagramCanvas.zoomed-in svg,
+    .diagramCanvas.zoomed-in img.drawioImage { justify-self: start; }
+    .drawioDiagramBlock .diagramCanvas {
+      color: #111827;
+      background: #ffffff;
+    }
+    .drawioRuntimeFrame {
+      position: fixed;
+      left: -10000px;
+      top: -10000px;
+      width: 1px;
+      height: 1px;
+      border: 0;
+      opacity: 0;
+      pointer-events: none;
     }
     .diagramStatus {
       width: 100%;
@@ -1145,6 +1408,29 @@ ${codiconFontFace}    .codicon {
     .diagramStatus.error {
       color: var(--vscode-errorForeground);
       text-align: left;
+    }
+    .diagramStatus details {
+      margin-top: 6px;
+      color: var(--vscode-descriptionForeground);
+    }
+    .diagramStatus summary {
+      width: max-content;
+      max-width: 100%;
+      margin: 0 auto;
+      cursor: pointer;
+    }
+    .diagramStatus code {
+      display: block;
+      margin-top: 6px;
+      padding: 6px;
+      overflow-x: auto;
+      color: var(--vscode-foreground);
+      background: var(--vscode-textCodeBlock-background, var(--vscode-editor-background));
+      border: 1px solid var(--vscode-panel-border);
+      border-radius: 6px;
+      text-align: left;
+      white-space: pre-wrap;
+      word-break: break-word;
     }
     .diagramSource {
       display: none;
@@ -1242,15 +1528,414 @@ ${codiconFontFace}    .codicon {
       line-height: 1.35;
       white-space: pre-wrap;
     }
+    .toolGroupBody {
+      display: grid;
+      gap: 0;
+      border-top: 1px solid var(--vscode-panel-border);
+    }
+    .toolGroupBody > pre {
+      border-top: 0;
+    }
+    .toolApprovalBanner {
+      display: none;
+      flex: 0 0 auto;
+      margin: 0 10px 8px;
+      padding: 10px;
+      border: 1px solid color-mix(in srgb, var(--vscode-focusBorder) 50%, var(--vscode-panel-border));
+      border-radius: 8px;
+      background: color-mix(in srgb, var(--vscode-button-background) 14%, var(--vscode-sideBar-background) 86%);
+      box-shadow: 0 10px 26px color-mix(in srgb, black 16%, transparent), inset 0 1px 0 color-mix(in srgb, white 12%, transparent);
+    }
+    .toolApprovalBanner.is-visible {
+      display: grid;
+      gap: 9px;
+    }
+    .toolApprovalBannerHead,
+    .toolApprovalBannerMain {
+      display: flex;
+      align-items: center;
+      gap: 9px;
+      min-width: 0;
+    }
+    .toolApprovalBannerHead {
+      justify-content: space-between;
+    }
+    .toolApprovalBannerMain {
+      flex: 1 1 auto;
+    }
+    .toolApprovalBannerIcon {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      flex: 0 0 30px;
+      width: 30px;
+      height: 30px;
+      border: 1px solid color-mix(in srgb, var(--vscode-focusBorder) 42%, var(--vscode-panel-border));
+      border-radius: 8px;
+      color: var(--vscode-foreground);
+      background: color-mix(in srgb, var(--vscode-focusBorder) 14%, transparent);
+      box-shadow: inset 0 1px 0 color-mix(in srgb, white 14%, transparent);
+    }
+    .toolApprovalBannerIcon .oc-liquid-icon {
+      width: 18px;
+      height: 18px;
+    }
+    .toolApprovalBannerCopy {
+      display: grid;
+      gap: 3px;
+      min-width: 0;
+    }
+    .toolApprovalBannerTitle {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      color: var(--vscode-foreground);
+      font-size: 13px;
+      font-weight: 750;
+      line-height: 1.2;
+    }
+    .toolApprovalBannerSummary {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      color: var(--vscode-descriptionForeground);
+      font-size: 11px;
+      line-height: 1.35;
+    }
+    .toolApprovalBannerCount {
+      flex: 0 0 auto;
+      padding: 3px 7px;
+      border: 1px solid color-mix(in srgb, var(--vscode-focusBorder) 34%, var(--vscode-panel-border));
+      border-radius: 999px;
+      color: var(--vscode-foreground);
+      background: color-mix(in srgb, var(--vscode-editor-background) 76%, transparent);
+      font-size: 10px;
+      font-weight: 650;
+      line-height: 1.2;
+    }
+    .toolApprovalBannerActions {
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 7px;
+      min-width: 0;
+    }
+    .toolApprovalBannerActions .statusActionButton,
+    .toolApprovalActions .statusActionButton {
+      min-height: 34px;
+      padding: 6px 12px;
+      border: 1px solid color-mix(in srgb, var(--vscode-panel-border) 82%, transparent);
+      border-radius: 8px;
+      font-size: 12px;
+      font-weight: 650;
+      line-height: 1.2;
+      background: color-mix(in srgb, var(--vscode-editor-background) 78%, transparent);
+    }
+    .toolApprovalBannerActions .statusActionButton.primary,
+    .toolApprovalActions .statusActionButton.primary {
+      color: var(--vscode-button-foreground);
+      border-color: color-mix(in srgb, var(--vscode-button-background) 70%, var(--vscode-focusBorder));
+      background: var(--vscode-button-background);
+    }
+    .toolApprovalBannerActions .statusActionButton.primary:hover,
+    .toolApprovalActions .statusActionButton.primary:hover {
+      background: var(--vscode-button-hoverBackground);
+    }
+    .toolApprovalPane {
+      display: grid;
+      gap: 9px;
+      padding: 10px;
+      border-bottom: 1px solid color-mix(in srgb, var(--vscode-focusBorder) 32%, var(--vscode-panel-border));
+      background: color-mix(in srgb, var(--vscode-button-background) 12%, transparent);
+    }
+    .toolApprovalPane.is-focused {
+      outline: 2px solid color-mix(in srgb, var(--vscode-focusBorder) 72%, transparent);
+      outline-offset: -3px;
+      background: color-mix(in srgb, var(--vscode-focusBorder) 14%, var(--vscode-sideBar-background));
+    }
+    .toolApprovalHead {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      min-width: 0;
+    }
+    .toolApprovalTitle {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      color: var(--vscode-foreground);
+      font-size: 13px;
+      font-weight: 750;
+    }
+    .toolApprovalRisk,
+    .toolApprovalStat {
+      flex: 0 0 auto;
+      padding: 2px 6px;
+      border: 1px solid var(--vscode-panel-border);
+      border-radius: 999px;
+      color: var(--vscode-descriptionForeground);
+      font-size: 10px;
+      line-height: 1.2;
+      background: color-mix(in srgb, var(--vscode-sideBar-background) 85%, transparent);
+    }
+    .toolApprovalSummary,
+    .toolApprovalReason {
+      color: var(--vscode-descriptionForeground);
+      font-size: 12px;
+      line-height: 1.35;
+      overflow-wrap: anywhere;
+    }
+    .toolApprovalMeta,
+    .toolApprovalActions {
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 6px;
+      min-width: 0;
+    }
+    .clarificationCard {
+      display: grid;
+      gap: 12px;
+      margin: 10px 0;
+      padding: 12px 14px;
+      border-radius: 8px;
+      border: 1px solid color-mix(in srgb, var(--vscode-focusBorder) 38%, var(--vscode-panel-border));
+      border-left: 4px solid var(--vscode-focusBorder);
+      background: color-mix(in srgb, var(--vscode-button-background) 14%, var(--vscode-editor-background) 86%);
+      box-shadow: 0 14px 30px color-mix(in srgb, black 14%, transparent), inset 0 1px 0 color-mix(in srgb, white 12%, transparent);
+    }
+    .clarificationHead {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      min-width: 0;
+    }
+    .clarificationTitle {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      font-size: 15px;
+      font-weight: 700;
+      line-height: 1.3;
+    }
+    .clarificationStatus {
+      flex: 0 0 auto;
+      color: var(--vscode-button-foreground);
+      font-size: 12px;
+      font-weight: 650;
+      line-height: 1;
+      padding: 5px 8px;
+      border-radius: 999px;
+      background: color-mix(in srgb, var(--vscode-button-background) 78%, transparent);
+    }
+    .clarificationReason,
+    .clarificationAnswerSummary {
+      color: var(--vscode-descriptionForeground);
+      font-size: 12.5px;
+      line-height: 1.45;
+      overflow-wrap: anywhere;
+    }
+    .clarificationQuestion {
+      display: grid;
+      gap: 6px;
+    }
+    .clarificationQuestionText {
+      font-size: 14px;
+      font-weight: 600;
+      line-height: 1.45;
+    }
+    .clarificationChoices,
+    .clarificationActions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+    }
+    .clarificationChoice {
+      padding: 6px 10px;
+      border: 1px solid var(--vscode-panel-border);
+      background: color-mix(in srgb, var(--vscode-button-secondaryBackground, var(--vscode-button-background)) 16%, transparent);
+      color: var(--vscode-foreground);
+      font-size: 13px;
+      line-height: 1.25;
+    }
+    .clarificationChoice.is-selected {
+      border-color: var(--vscode-focusBorder);
+      background: color-mix(in srgb, var(--vscode-button-background) 42%, transparent);
+    }
+    .clarificationFreeText {
+      width: 100%;
+      min-width: 0;
+      min-height: 64px;
+      resize: vertical;
+      border-radius: 8px;
+      border: 1px solid var(--vscode-input-border, var(--vscode-panel-border));
+      background: var(--vscode-input-background);
+      color: var(--vscode-input-foreground);
+      padding: 8px 10px;
+      font-size: 13px;
+      line-height: 1.4;
+    }
+    .clarificationActions .statusActionButton.primary {
+      padding: 7px 12px;
+      font-size: 13px;
+      font-weight: 650;
+    }
     .toolCard.reasoning pre { color: var(--vscode-descriptionForeground); }
-    .timelineItem.thinking .messageBody {
+    .docAgentTimelineCard,
+    .docAgentConflictCard {
+      border-color: color-mix(in srgb, var(--vscode-focusBorder) 30%, var(--vscode-panel-border));
+      background: color-mix(in srgb, var(--vscode-sideBar-background) 78%, var(--vscode-focusBorder) 7%);
+    }
+    .docAgentTimelineBody,
+    .docAgentConflictBody {
+      display: grid;
+      gap: 8px;
+      padding: 8px;
+      border-top: 1px solid var(--vscode-panel-border);
+    }
+    .docAgentStats,
+    .docAgentBulkActions,
+    .docAgentChoiceRow {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex-wrap: wrap;
+      min-width: 0;
+    }
+    .docAgentStat,
+    .docAgentEventStatus,
+    .docAgentChoiceState {
+      padding: 2px 6px;
+      border: 1px solid var(--vscode-panel-border);
+      border-radius: 6px;
+      color: var(--vscode-descriptionForeground);
+      background: color-mix(in srgb, var(--vscode-input-background) 74%, transparent);
+      font-size: 10px;
+      line-height: 1.3;
+    }
+    .docAgentEventList,
+    .docAgentConflictList {
+      display: grid;
+      gap: 6px;
+    }
+    .docAgentEvent,
+    .docAgentConflictItem {
+      display: grid;
+      gap: 4px;
+      min-width: 0;
+      padding: 7px;
+      border: 1px solid var(--vscode-panel-border);
+      border-radius: 7px;
+      background: color-mix(in srgb, var(--vscode-input-background) 65%, transparent);
+    }
+    .docAgentEventHead,
+    .docAgentConflictHead {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      min-width: 0;
+      color: var(--vscode-foreground);
+      font-size: 11px;
+      font-weight: 650;
+      line-height: 1.35;
+    }
+    .docAgentEventDetail,
+    .docAgentConflictMeta {
+      color: var(--vscode-descriptionForeground);
+      font-size: 10px;
+      line-height: 1.35;
+      overflow-wrap: anywhere;
+      white-space: pre-wrap;
+    }
+    .docAgentChoiceButton.is-selected {
+      color: var(--vscode-button-foreground);
+      background: var(--vscode-button-background);
+      border-color: var(--vscode-button-background);
+    }
+    .docAgentConfirm[disabled] {
+      opacity: .55;
+      cursor: default;
+    }
+    .generatedDocumentCard {
+      display: grid;
+      gap: 8px;
+      padding: 9px;
+      border-color: color-mix(in srgb, var(--vscode-focusBorder) 36%, var(--vscode-panel-border));
+      background: color-mix(in srgb, var(--vscode-sideBar-background) 72%, var(--vscode-focusBorder) 9%);
+    }
+    .generatedDocumentTitle {
+      color: var(--vscode-foreground);
+      font-size: 12px;
+      font-weight: 700;
+      line-height: 1.35;
+    }
+    .generatedDocumentMeta {
+      color: var(--vscode-descriptionForeground);
+      font-size: 11px;
+      line-height: 1.35;
+      overflow-wrap: anywhere;
+    }
+    .generatedDocumentActions {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+      min-width: 0;
+    }
+    .generatedDocumentWarnings {
+      margin: 0;
+      padding: 7px;
+      border: 1px solid var(--vscode-inputValidation-warningBorder, var(--vscode-panel-border));
+      border-radius: 6px;
+      color: var(--vscode-descriptionForeground);
+      background: color-mix(in srgb, var(--vscode-inputValidation-warningBackground, transparent) 55%, transparent);
+      font-size: 10px;
+      line-height: 1.35;
+      white-space: pre-wrap;
+    }
+    .activityRow {
       min-height: 22px;
       display: flex;
       align-items: center;
       gap: 6px;
+      flex-wrap: wrap;
       color: var(--vscode-descriptionForeground);
       font-size: 10px;
       line-height: 1.2;
+    }
+    .activityLabel {
+      min-width: 0;
+      max-width: 100%;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .activityElapsed {
+      flex: 0 0 auto;
+      color: color-mix(in srgb, var(--vscode-descriptionForeground) 82%, var(--vscode-focusBorder));
+      font-variant-numeric: tabular-nums;
+    }
+    .activityElapsed.is-empty,
+    .activitySeparator:empty {
+      display: none;
+    }
+    .activitySeparator {
+      flex: 0 0 auto;
+      color: color-mix(in srgb, var(--vscode-descriptionForeground) 58%, transparent);
+    }
+    .toolLiveActivityRow {
+      margin-top: 4px;
+      padding: 2px 7px;
+      border: 1px solid var(--vscode-panel-border);
+      border-radius: 6px;
+      background: color-mix(in srgb, var(--vscode-sideBar-background) 82%, transparent);
     }
     .dots { display: inline-flex; gap: 4px; }
     .dots span { width: 5px; height: 5px; border-radius: 999px; background: var(--vscode-descriptionForeground); opacity: 0.45; }
@@ -1994,12 +2679,20 @@ ${codiconFontFace}    .codicon {
       color: var(--vscode-editorWarning-foreground);
       border-color: var(--vscode-inputValidation-warningBorder, var(--vscode-editorWarning-foreground));
     }
+    .composerPopupLayer {
+      position: fixed;
+      inset: 0;
+      z-index: 10000;
+      pointer-events: none;
+      overflow: visible;
+    }
     .modelMenu {
       display: none;
       position: fixed;
       left: 0;
       bottom: auto;
       z-index: 1000;
+      pointer-events: auto;
       width: auto;
       max-height: calc(100vh - 16px);
       overflow-x: hidden;
@@ -2239,6 +2932,8 @@ ${codiconFontFace}    .codicon {
       --composer-toolbar-glyph-size: 17px;
       --composer-toolbar-status-glyph-size: 13px;
       --composer-send-button-size: 34px;
+      --diagram-zoom-button-size: 30px;
+      --diagram-zoom-glyph-size: 20px;
     }
     .topbar {
       min-height: 48px;
@@ -2851,6 +3546,49 @@ ${codiconFontFace}    .codicon {
       font-weight: 650;
       line-height: 1;
     }
+    .messageSendStatus {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      min-width: 0;
+      max-width: 220px;
+      padding: 2px 7px;
+      border: 1px solid color-mix(in srgb, var(--vscode-focusBorder) 28%, transparent);
+      border-radius: 999px;
+      color: var(--vscode-descriptionForeground);
+      background: color-mix(in srgb, var(--vscode-editor-background) 68%, transparent);
+      box-shadow: inset 0 1px 0 color-mix(in srgb, white 9%, transparent);
+      white-space: nowrap;
+      text-transform: none;
+    }
+    .messageSendStatus::before {
+      content: "";
+      flex: 0 0 6px;
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--vscode-progressBar-background, var(--vscode-focusBorder));
+      box-shadow: 0 0 0 3px color-mix(in srgb, var(--vscode-progressBar-background, var(--vscode-focusBorder)) 14%, transparent);
+    }
+    .messageSendStatus.summarizing::before,
+    .messageSendStatus.preparing::before {
+      animation: ocSendStatusPulse 1.1s ease-in-out infinite;
+    }
+    .messageSendStatusText {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    @keyframes ocSendStatusPulse {
+      0%, 100% { transform: scale(0.84); opacity: 0.58; }
+      50% { transform: scale(1); opacity: 1; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .messageSendStatus.summarizing::before,
+      .messageSendStatus.preparing::before {
+        animation: none;
+      }
+    }
     .messageBody {
       padding: 0;
       line-height: 1.55;
@@ -2877,7 +3615,10 @@ ${codiconFontFace}    .codicon {
     }
     .messageAction,
     .copyCode,
+    .diagramZoom,
     .copyTable,
+    .exportMermaidImage,
+    .exportDrawioImage,
     .toggleTableRaw,
     .toggleDiagramSource {
       width: 24px;
@@ -2891,9 +3632,27 @@ ${codiconFontFace}    .codicon {
       background: transparent;
       opacity: 1;
     }
+    .diagramZoom {
+      width: var(--diagram-zoom-button-size);
+      min-width: var(--diagram-zoom-button-size);
+      height: var(--diagram-zoom-button-size);
+      min-height: var(--diagram-zoom-button-size);
+      flex: 0 0 var(--diagram-zoom-button-size);
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .diagramZoom .oc-liquid-icon {
+      width: var(--diagram-zoom-glyph-size);
+      height: var(--diagram-zoom-glyph-size);
+      stroke-width: 2.15;
+    }
     .messageAction:hover,
     .copyCode:hover,
+    .diagramZoom:hover,
     .copyTable:hover,
+    .exportMermaidImage:hover,
+    .exportDrawioImage:hover,
     .toggleTableRaw:hover,
     .toggleDiagramSource:hover {
       color: var(--vscode-foreground);
@@ -2916,15 +3675,43 @@ ${codiconFontFace}    .codicon {
       background: var(--vscode-sideBar-background);
     }
     .copyCode,
+    .diagramZoom,
+    .exportMermaidImage,
+    .exportDrawioImage,
     .toggleDiagramSource { opacity: 0; }
     .codeBlock:hover .copyCode,
     .codeBlock:focus-within .copyCode,
     .diagramBlock:hover .copyCode,
     .diagramBlock:focus-within .copyCode,
+    .diagramBlock:hover .diagramZoom,
+    .diagramBlock:focus-within .diagramZoom,
+    .diagramBlock:hover .exportMermaidImage,
+    .diagramBlock:focus-within .exportMermaidImage,
+    .diagramBlock:hover .exportDrawioImage,
+    .diagramBlock:focus-within .exportDrawioImage,
     .diagramBlock:hover .toggleDiagramSource,
     .diagramBlock:focus-within .toggleDiagramSource,
     .copyCode:focus-visible,
+    .diagramZoom:focus-visible,
+    .exportMermaidImage:focus-visible,
+    .exportDrawioImage:focus-visible,
     .toggleDiagramSource:focus-visible { opacity: 1; }
+    .diagramZoom[disabled],
+    .diagramZoom[disabled]:hover,
+    .diagramBlock:hover .diagramZoom[disabled],
+    .diagramBlock:focus-within .diagramZoom[disabled],
+    .exportMermaidImage[disabled],
+    .exportMermaidImage[disabled]:hover,
+    .diagramBlock:hover .exportMermaidImage[disabled],
+    .diagramBlock:focus-within .exportMermaidImage[disabled],
+    .exportDrawioImage[disabled],
+    .exportDrawioImage[disabled]:hover,
+    .diagramBlock:hover .exportDrawioImage[disabled],
+    .diagramBlock:focus-within .exportDrawioImage[disabled] {
+      color: var(--oc-muted);
+      background: transparent;
+      opacity: 0.28;
+    }
     .composerWrap {
       position: relative;
       container-name: composer-shell;
@@ -3727,6 +4514,26 @@ ${codiconFontFace}    .codicon {
         border: 1px solid CanvasText;
         box-shadow: none;
       }
+      .historyToolbarButton,
+      .historyToolbarButton:hover,
+      .historyToolbarButton:focus-visible,
+      .historyToolbarButton.danger:hover,
+      .historyToolbarButton.danger:focus-visible {
+        color: CanvasText;
+        background: transparent;
+        border-color: CanvasText;
+        box-shadow: none;
+        forced-color-adjust: auto;
+      }
+      .historyToolbarButton:hover,
+      .historyToolbarButton:focus-visible {
+        color: HighlightText;
+        background: Highlight;
+      }
+      .historyToolbarButton .historyToolbarGlyph {
+        background: currentColor;
+        filter: none;
+      }
     }
   </style>
 </head>
@@ -3741,6 +4548,7 @@ ${codiconFontFace}    .codicon {
         </div>
       </div>
       <div class="iconbar">
+        <button id="openAgentTerminal" class="oc-icon-btn oc-liquid-btn" type="button" title="Open ChipMate Agent Terminal" aria-label="Open ChipMate Agent Terminal">${liquidIcons.terminal}<span class="srOnly">Open ChipMate Agent Terminal</span></button>
         <button id="historyToggle" class="oc-icon-btn oc-liquid-btn headerHistoryAction" type="button" title="History" aria-label="History">${liquidIcons.history}<span class="srOnly">History</span></button>
         <button id="newSession" class="oc-icon-btn oc-liquid-btn" type="button" title="New session" aria-label="New session">${liquidIcons.add}<span class="srOnly">New session</span></button>
         <button id="syncState" class="oc-icon-btn oc-liquid-btn" type="button" title="Refresh chat state" aria-label="Refresh chat state">${liquidIcons.refresh}<span class="srOnly">Refresh chat state</span></button>
@@ -3787,6 +4595,7 @@ ${codiconFontFace}    .codicon {
           <label class="field checkbox"><input id="completionEnabled" type="checkbox"><span>Enable inline completion</span></label>
           <label class="field">Provider<select id="completionProvider">
             <option value="qwen-direct">Qwen Direct</option>
+            <option value="fim-direct">FIM Direct</option>
             <option value="none">None</option>
             <option value="openai-compatible">OpenAI-compatible</option>
           </select></label>
@@ -3794,6 +4603,7 @@ ${codiconFontFace}    .codicon {
             <label class="field">Profile<select id="completionProfile">
               <option value="generic-chat">Generic Chat</option>
               <option value="qwen-coder-fim">Qwen Coder FIM</option>
+              <option value="deepseek-fim">DeepSeek FIM</option>
             </select></label>
             <input id="completionApiBaseUrl" type="hidden">
             <label class="field">Model<select id="completionModel"></select></label>
@@ -3817,11 +4627,19 @@ ${codiconFontFace}    .codicon {
           <div class="settingsCompactLine">${liquidIcons.references}<div class="sectionTitle">Skills</div></div>
           <div id="skillsSettingsStatus" class="sectionMeta">Workspace</div>
         </div>
+        <div id="skillImportDropZone" class="skillImportDropZone" role="button" tabindex="0" aria-label="Import ChipMate skill by dropping a skill folder or SKILL.md">
+          <span class="skillImportIcon" aria-hidden="true">${liquidIcons.add}</span>
+          <span class="skillImportCopy">
+            <span class="skillImportTitle">Import Skill...</span>
+            <span class="skillImportHint">Drop a skill folder, a parent skills folder, or SKILL.md. Valid skills are copied to ~/.agents/skills.</span>
+          </span>
+        </div>
         <div id="skillsList" class="skillsList"></div>
         <div class="row settingsActions">
+          <button id="importSkill" class="oc-primary-btn oc-liquid-chip" type="button" title="Import a skill into user-level .agents/skills">${liquidIcons.add}<span class="oc-liquid-chip-label">Import Skill...</span></button>
           <button id="saveSkillsSettings" class="oc-icon-btn oc-liquid-btn" type="button" title="Save enabled skills" aria-label="Save enabled skills">${liquidIcons.save}<span class="srOnly">Save enabled skills</span></button>
         </div>
-        <div id="skillsDetail" class="detail visible" aria-live="polite">Skills are discovered from .agents/skills/*/SKILL.md.</div>
+        <div id="skillsDetail" class="detail visible" aria-live="polite">Skills are discovered from workspace and user .agents/skills/*/SKILL.md.</div>
       </div>
       <div id="ragSettingsGroup" class="settingsSection ragSettingsGroup" data-settings-panel="rag" role="tabpanel">
         <div class="settingsHeader">
@@ -3883,13 +4701,16 @@ ${codiconFontFace}    .codicon {
     <div class="body">
       <button id="historyBackdrop" class="historyBackdrop" type="button" title="Close history" aria-label="Close history"></button>
       <aside id="historyPane" class="historyPane">
-        <div class="historyHeader">
-          <div class="historyTitle">History</div>
-          <div class="row">
-            <button id="refreshHistory" class="oc-icon-btn oc-liquid-btn" type="button" title="Refresh sessions" aria-label="Refresh sessions">${liquidIcons.refresh}<span class="srOnly">Refresh sessions</span></button>
-            <button id="closeHistory" class="oc-icon-btn oc-liquid-btn" type="button" title="Close history" aria-label="Close history">${liquidIcons.close}<span class="srOnly">Close history</span></button>
-          </div>
-        </div>
+	        <div class="historyHeader">
+	          <div id="historyTitle" class="historyTitle">History</div>
+	          <div class="row historyActions">
+	            <button id="selectHistorySessions" class="oc-icon-btn oc-liquid-btn historyToolbarButton" type="button" title="Select chat history sessions" aria-label="Select chat history sessions">${historyToolbarIconGlyph("enterSelection", historyToolbarIconUris)}<span class="srOnly">Select chat history sessions</span></button>
+	            <button id="selectAllHistorySessions" class="oc-icon-btn oc-liquid-btn historyToolbarButton" type="button" title="Select all chat history sessions" aria-label="Select all chat history sessions" hidden>${historyToolbarIconGlyph("selectAll", historyToolbarIconUris)}<span class="srOnly">Select all chat history sessions</span></button>
+	            <button id="deleteSelectedHistorySessions" class="oc-icon-btn oc-liquid-btn historyToolbarButton danger" type="button" title="Delete selected chat history sessions" aria-label="Delete selected chat history sessions" hidden>${historyToolbarIconGlyph("delete", historyToolbarIconUris)}<span class="srOnly">Delete selected chat history sessions</span></button>
+	            <button id="refreshHistory" class="oc-icon-btn oc-liquid-btn historyToolbarButton" type="button" title="Refresh history list" aria-label="Refresh history list">${historyToolbarIconGlyph("refresh", historyToolbarIconUris)}<span class="srOnly">Refresh history list</span></button>
+	            <button id="closeHistory" class="oc-icon-btn oc-liquid-btn historyToolbarButton" type="button" title="Close history" aria-label="Close history">${historyToolbarIconGlyph("close", historyToolbarIconUris)}<span class="srOnly">Close history</span></button>
+	          </div>
+	        </div>
         <div id="sessionList" class="sessionList"></div>
       </aside>
       <section class="chatMain">
@@ -3897,6 +4718,7 @@ ${codiconFontFace}    .codicon {
           <div class="empty">Ask with context</div>
         </main>
         <button id="jumpLatest" class="jumpLatest oc-chip oc-liquid-chip" type="button" title="Jump to latest message" aria-label="Jump to latest message" aria-hidden="true" tabindex="-1">${liquidIcons.more}<span class="jumpLatestText">Latest</span></button>
+        <div id="toolApprovalBanner" class="toolApprovalBanner" aria-live="polite" aria-hidden="true"></div>
         <footer class="composerWrap">
           <div id="composerStatusBar" class="composerStatusBar" aria-live="polite">
             <button id="composerStatusToggle" class="composerStatusToggle chat-toolbar-icon-button oc-icon-toggle oc-liquid-toggle" type="button" aria-expanded="true" aria-controls="composerPanel" title="Hide input panel">
@@ -3923,8 +4745,6 @@ ${codiconFontFace}    .codicon {
             <select id="modelSelect" class="modelSelectHidden" title="Model"></select>
             <div class="composer">
               <div id="suggestions" class="suggestions"></div>
-	              <div id="modelMenu" class="modelMenu" role="listbox" aria-label="Model" aria-hidden="true"></div>
-	              <div id="agentMenu" class="modelMenu agentMenu" role="listbox" aria-label="Agent" aria-hidden="true"></div>
 	              <div id="contextChips" class="contextChips" aria-label="Selected ChipMate context"></div>
 	              <div id="queuedSendList" class="queuedSendList" aria-label="Queued ChipMate prompts"></div>
 	              <textarea id="input" placeholder="Ask ChipMate…"></textarea>
@@ -3951,16 +4771,6 @@ ${codiconFontFace}    .codicon {
               <button id="attach" class="composerIconButton chat-toolbar-icon-button oc-icon-btn oc-liquid-btn" type="button" title="Attach workspace file to this message" aria-label="Attach workspace file to this message">${toolbarIconSlotHtml(liquidIcons.attach)}<span class="srOnly">Attach workspace file to this message</span></button>
               <button id="refreshModels" class="composerIconButton chat-toolbar-icon-button oc-icon-btn oc-liquid-btn" type="button" title="Refresh models" aria-label="Refresh models">${toolbarIconSlotHtml(liquidIcons.refresh)}<span class="srOnly">Refresh models</span></button>
               <button id="composerMore" class="composerIconButton composerMoreButton chat-toolbar-icon-button oc-icon-btn oc-liquid-btn" type="button" title="More actions" aria-label="More actions" aria-haspopup="menu" aria-expanded="false" aria-controls="composerMoreMenu">${toolbarIconSlotHtml(liquidIcons.more)}<span class="srOnly">More actions</span></button>
-              <div id="composerMoreMenu" class="modelMenu composerMoreMenu" role="menu" aria-label="More composer actions" aria-hidden="true">
-                <button id="addPersistentContext" class="modelMenuItem composerMoreItem" type="button" role="menuitem" title="Add persistent context file" aria-label="Add persistent context file">
-                  <span class="modelMenuName">Add Persistent Context</span>
-                  <span class="modelMenuMeta">Keep a file in context across prompts</span>
-                </button>
-                <button id="exportMarkdown" class="modelMenuItem composerMoreItem" type="button" role="menuitem" title="Export current chat to Markdown" aria-label="Export current chat to Markdown">
-                  <span class="modelMenuName">Export Markdown</span>
-                  <span class="modelMenuMeta">Save current chat</span>
-                </button>
-              </div>
             </div>
             <div id="composerProgress" class="composerProgress" aria-hidden="true">
               <div class="composerProgressTrack"><div id="composerProgressFill" class="composerProgressFill"></div></div>
@@ -3976,16 +4786,65 @@ ${codiconFontFace}    .codicon {
       </section>
     </div>
   </div>
+  <div id="composerPopupLayer" class="composerPopupLayer">
+    <div id="modelMenu" class="modelMenu" role="listbox" aria-label="Model" aria-hidden="true"></div>
+    <div id="agentMenu" class="modelMenu agentMenu" role="listbox" aria-label="Agent" aria-hidden="true"></div>
+    <div id="composerMoreMenu" class="modelMenu composerMoreMenu" role="menu" aria-label="More composer actions" aria-hidden="true">
+      <button id="addPersistentContext" class="modelMenuItem composerMoreItem" type="button" role="menuitem" title="Add persistent context file" aria-label="Add persistent context file">
+        <span class="modelMenuName">Add Persistent Context</span>
+        <span class="modelMenuMeta">Keep a file in context across prompts</span>
+      </button>
+      <button id="exportMarkdown" class="modelMenuItem composerMoreItem" type="button" role="menuitem" title="Export current chat to Markdown" aria-label="Export current chat to Markdown">
+        <span class="modelMenuName">Export Markdown</span>
+        <span class="modelMenuMeta">Save current chat</span>
+      </button>
+    </div>
+  </div>
   ${mermaidScriptTag}
   <script nonce="${nonce}">
 	    const vscode = acquireVsCodeApi();
 	    const el = (id) => document.getElementById(id);
 	    const LIQUID_ICONS = ${liquidIconForScript};
+	    const HISTORY_TOOLBAR_ICONS = ${historyToolbarIconsForScript};
 	    const AUTOCOMPLETE_STATUS_ICONS = ${autocompleteStatusIconsForScript};
 	    const BRAND_ICON_URI = ${JSON.stringify(brandIconUri)};
+    const DRAWIO_RUNTIME_URI = ${JSON.stringify(drawioRuntimeUri)};
+    const DRAWIO_RUNTIME_HTML_B64 = ${JSON.stringify(drawioRuntimeHtmlBase64)};
     const MERMAID_MAX_SOURCE_BYTES = 100000;
+    const DRAWIO_MAX_SOURCE_BYTES = 250000;
+    const DRAWIO_RENDER_TIMEOUT_MS = 20000;
+    const DRAWIO_EXPORT_SCALE = 2;
+    const DRAWIO_EXPORT_BORDER = 16;
+    const DRAWIO_RENDER_BACKGROUND_MODE = "white-bg";
+    const DIAGRAM_ZOOM_MIN = 0.25;
+    const DIAGRAM_ZOOM_MAX = 6;
+    const DIAGRAM_ZOOM_STEP = 0.25;
+    const DIAGRAM_ZOOM_DEFAULT = 1;
     let mermaidInitialized = false;
     let mermaidRenderSerial = 0;
+    let drawioRuntimeFrame;
+    let drawioRuntimeReadyPromise;
+    let drawioRuntimeHandshakePromise;
+    let drawioRuntimeInitResolve;
+    let drawioRuntimeInitReject;
+    let drawioRuntimeInitTimer;
+    let drawioDiagramSerial = 0;
+    let drawioRuntimeRequestSerial = 0;
+    let drawioRuntimeQueue = Promise.resolve();
+    const drawioRuntimePending = new Map();
+    const drawioRenderedPngCache = new Map();
+    const drawioRenderedPngInflight = new Map();
+    const registeredDiagramVisualEvidence = new Set();
+	    const DIAGRAM_VISUAL_NORMAL_MAX_SIDE = 1280;
+	    const DIAGRAM_VISUAL_DENSE_MAX_SIDE = 2048;
+	    const DIAGRAM_VISUAL_READABLE_MIN_SIDE = 1024;
+	    const DIAGRAM_VISUAL_SOFT_MAX_BYTES = 1024 * 1024;
+	    const DIAGRAM_VISUAL_HARD_MAX_BYTES = 2 * 1024 * 1024;
+	    const DIAGRAM_VISUAL_DENSE_SOURCE_BYTES = 8 * 1024;
+	    const DIAGRAM_VISUAL_DENSE_LABEL_COUNT = 24;
+	    const DIAGRAM_VISUAL_DENSE_EDGE_COUNT = 24;
+	    const DIAGRAM_VISUAL_DENSE_DRAWIO_CELL_COUNT = 40;
+    const DRAWIO_HANDSHAKE_XML = '<mxGraphModel dx="140" dy="90" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="160" pageHeight="100" math="0" shadow="0"><root><mxCell id="0"/><mxCell id="1" parent="0"/><mxCell id="2" value="Offline" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#eaf4ff;strokeColor=#5b8def;fontColor=#172033;" vertex="1" parent="1"><mxGeometry x="20" y="20" width="100" height="44" as="geometry"/></mxCell></root></mxGraphModel>';
 	    const STATUS_ICONS = {
 		      context: LIQUID_ICONS.references,
 		      database: LIQUID_ICONS.database,
@@ -4027,12 +4886,18 @@ ${codiconFontFace}    .codicon {
 	    let userEditedRagSettings = false;
 	    let historyTouched = false;
 	    let historyOpen = false;
+	    let historyBulkSelectMode = false;
+	    let selectedHistorySessionIds = new Set();
+      let newSessionPending = false;
+      let newSessionPendingSourceSessionID = "";
+      let newSessionPendingTimer = 0;
 	    let userNearBottom = true;
 	    let autoFollowMessages = true;
 	    let forceNextMessageFollow = false;
 	    let lastMessagesScrollTop = 0;
 	    let mentionedFiles = [];
     let composerDragDepth = 0;
+    let skillImportDragDepth = 0;
     let mentionResults = [];
     let activeSuggestion = 0;
     let searchTimer = 0;
@@ -4049,6 +4914,7 @@ ${codiconFontFace}    .codicon {
     let promptHistoryDraft = "";
     let restoringPromptHistory = false;
     let optimisticQueuedSends = [];
+    let activeActivityElapsedTimer = 0;
     const restoredComposerDraft = composerDraftFromWebviewState();
     let modelMenuOpen = false;
     let agentMenuOpen = false;
@@ -4103,6 +4969,8 @@ ${codiconFontFace}    .codicon {
       if (redirectNestedVerticalWheel(event, messagesRoot)) return;
       if (isNestedMessageScroller(event.target) || event.deltaY < 0) pauseAutoFollowForUser();
     }, { capture: true, passive: false });
+    messagesRoot.addEventListener("click", onMessagesClick);
+    el("toolApprovalBanner").addEventListener("click", onMessagesClick);
     messagesRoot.addEventListener("touchstart", (event) => {
       if (isNestedMessageScroller(event.target)) pauseAutoFollowForUser();
     }, { capture: true, passive: true });
@@ -4113,14 +4981,30 @@ ${codiconFontFace}    .codicon {
       positionAgentMenu();
       positionComposerMoreMenu();
     });
-    el("historyToggle").addEventListener("click", () => {
-      historyTouched = true;
-      historyOpen = !historyOpen;
-      renderShell();
-    });
-    el("closeHistory").addEventListener("click", () => {
-      historyTouched = true;
-      historyOpen = false;
+	    el("historyToggle").addEventListener("click", () => {
+	      historyTouched = true;
+	      historyOpen = !historyOpen;
+	      renderShell();
+	    });
+	    el("selectHistorySessions").addEventListener("click", () => {
+	      historyBulkSelectMode = !historyBulkSelectMode;
+	      selectedHistorySessionIds.clear();
+	      render();
+	    });
+	    el("selectAllHistorySessions").addEventListener("click", () => {
+	      const sessionIDs = historySessionIds();
+	      if (selectedHistorySessionIds.size === sessionIDs.length) selectedHistorySessionIds.clear();
+	      else selectedHistorySessionIds = new Set(sessionIDs);
+	      render();
+	    });
+	    el("deleteSelectedHistorySessions").addEventListener("click", () => {
+	      const sessionIDs = Array.from(selectedHistorySessionIds);
+	      if (sessionIDs.length === 0) return;
+	      vscode.postMessage({ type: "deleteSessions", sessionIDs });
+	    });
+	    el("closeHistory").addEventListener("click", () => {
+	      historyTouched = true;
+	      historyOpen = false;
       renderShell();
     });
     el("historyBackdrop").addEventListener("click", () => {
@@ -4142,9 +5026,10 @@ ${codiconFontFace}    .codicon {
       }
 		    el("connect").addEventListener("click", () => connectOrTest("connectWithSettings"));
 		    el("test").addEventListener("click", () => connectOrTest("testWithSettings"));
-		    el("saveCompletionSettings").addEventListener("click", saveCompletionSettings);
+        el("saveCompletionSettings").addEventListener("click", saveCompletionSettings);
 		    el("testCompletionApi").addEventListener("click", testCompletionApi);
         el("refreshCompletionModels").addEventListener("click", () => vscode.postMessage({ type: "refreshModels" }));
+        el("importSkill").addEventListener("click", () => vscode.postMessage({ type: "pickSkillImport" }));
         el("saveSkillsSettings").addEventListener("click", saveSkillsSettings);
 			    el("saveRagSettings").addEventListener("click", saveRagSettings);
 			    el("testRagSettings").addEventListener("click", testRagSettings);
@@ -4152,8 +5037,9 @@ ${codiconFontFace}    .codicon {
     el("discardRagSettings").addEventListener("click", discardRagSettings);
 	    el("refresh").addEventListener("click", () => vscode.postMessage({ type: "refresh" }));
     el("syncState").addEventListener("click", () => vscode.postMessage({ type: "refresh" }));
+	    el("openAgentTerminal").addEventListener("click", () => vscode.postMessage({ type: "openAgentTerminal" }));
 	    el("openOutput").addEventListener("click", () => vscode.postMessage({ type: "openOutput" }));
-	    el("newSession").addEventListener("click", () => vscode.postMessage({ type: "newSession" }));
+		    el("newSession").addEventListener("click", requestNewSession);
     el("composerStatusToggle").addEventListener("click", toggleComposerPanel);
     bindComposerStatusPill("contextStatusPill", "context", true);
     bindComposerStatusPill("indexStatusPill", "index", true);
@@ -4257,6 +5143,7 @@ ${codiconFontFace}    .codicon {
 	    el("input").addEventListener("keydown", onComposerKeydown);
 	    el("sel").addEventListener("change", renderMentionChips);
 	    el("file").addEventListener("change", renderMentionChips);
+    bindSkillImportDropTarget();
     bindComposerDropTarget();
     for (const item of [
       ["file", "fileToggle"],
@@ -4271,14 +5158,17 @@ ${codiconFontFace}    .codicon {
 	    window.addEventListener("message", (event) => {
 	      if (event.data.type === "state") {
 	        const nextState = event.data.state || {};
-	        const nextConnectionState = nextState.connectionState || "disconnected";
-	        const shouldCloseSettings = !pendingAction && nextConnectionState === "connected" && lastConnectionState !== "connected";
-	        state = nextState;
-	        reconcileOptimisticQueuedSends(state.queuedSends);
+		        const nextConnectionState = nextState.connectionState || "disconnected";
+		        const shouldCloseSettings = !pendingAction && nextConnectionState === "connected" && lastConnectionState !== "connected";
+            reconcileNewSessionPending(nextState);
+		        state = nextState;
+		        reconcileHistorySelection();
+		        reconcileOptimisticQueuedSends(state.queuedSends);
 	        syncPromptHistoryFromState();
 	        if (shouldCloseSettings) settingsOpen = false;
 	        lastConnectionState = nextConnectionState;
 	        render();
+	        syncActiveActivityElapsedTimer();
 	        return;
 	      }
 	      if (event.data.type === "connectionStatus") {
@@ -4343,6 +5233,9 @@ ${codiconFontFace}    .codicon {
 	        renderCompletionStatus(event.data.message || "", event.data.status || "info");
 	      }
         if (event.data.type === "skillsStatus") {
+          renderSkillsStatus(event.data.message || "", event.data.status || "info");
+        }
+        if (event.data.type === "skillsImportStatus") {
           renderSkillsStatus(event.data.message || "", event.data.status || "info");
         }
 	      if (event.data.type === "ragStatus") {
@@ -4447,7 +5340,7 @@ ${codiconFontFace}    .codicon {
 	        enabled: el("completionEnabled").checked,
 	        provider: el("completionProvider").value,
 	        profile: el("completionProfile").value,
-	        apiBaseUrl: el("serverUrl").value,
+	        apiBaseUrl: el("completionApiBaseUrl").value,
 	        model: el("completionModel").value,
 	        maxTokens: numberInputValue("completionMaxTokens", 128),
 	        contextLength: numberInputValue("completionContextLength", 200000),
@@ -4611,6 +5504,70 @@ ${codiconFontFace}    .codicon {
         input.addEventListener("change", renderComposerToggles);
       }
 
+    function bindSkillImportDropTarget() {
+      const dropZone = el("skillImportDropZone");
+      if (!dropZone) return;
+      dropZone.addEventListener("click", () => vscode.postMessage({ type: "pickSkillImport" }));
+      dropZone.addEventListener("keydown", (event) => {
+        if (event.key !== "Enter" && event.key !== " ") return;
+        event.preventDefault();
+        vscode.postMessage({ type: "pickSkillImport" });
+      });
+      dropZone.addEventListener("dragenter", onSkillImportDragEnter);
+      dropZone.addEventListener("dragover", onSkillImportDragOver);
+      dropZone.addEventListener("dragleave", onSkillImportDragLeave);
+      dropZone.addEventListener("drop", onSkillImportDrop);
+    }
+
+    function onSkillImportDragEnter(event) {
+      if (!canDropSkillImportFiles(event.dataTransfer)) return;
+      event.preventDefault();
+      event.stopPropagation();
+      skillImportDragDepth += 1;
+      setSkillImportDropTarget(true);
+    }
+
+    function onSkillImportDragOver(event) {
+      if (!canDropSkillImportFiles(event.dataTransfer)) return;
+      event.preventDefault();
+      event.stopPropagation();
+      if (event.dataTransfer) event.dataTransfer.dropEffect = "copy";
+      setSkillImportDropTarget(true);
+    }
+
+    function onSkillImportDragLeave(event) {
+      if (!canDropSkillImportFiles(event.dataTransfer)) return;
+      event.preventDefault();
+      event.stopPropagation();
+      skillImportDragDepth = Math.max(0, skillImportDragDepth - 1);
+      if (skillImportDragDepth === 0) setSkillImportDropTarget(false);
+    }
+
+    function onSkillImportDrop(event) {
+      if (!canDropSkillImportFiles(event.dataTransfer)) return;
+      event.preventDefault();
+      event.stopPropagation();
+      skillImportDragDepth = 0;
+      setSkillImportDropTarget(false);
+      const candidates = extractDroppedFileCandidates(event.dataTransfer);
+      if (candidates.length > 0) {
+        renderSkillsStatus("Importing dropped skill candidate...", "info");
+        vscode.postMessage({ type: "importSkillCandidates", candidates });
+        return;
+      }
+      renderSkillsStatus("No skill path was found in the drop. Use Import Skill... to choose a directory or SKILL.md.", "error");
+    }
+
+    function canDropSkillImportFiles(dataTransfer) {
+      return canDropComposerFiles(dataTransfer);
+    }
+
+    function setSkillImportDropTarget(active) {
+      const dropZone = el("skillImportDropZone");
+      if (!dropZone) return;
+      dropZone.classList.toggle("is-drop-target", Boolean(active));
+    }
+
     function bindComposerDropTarget() {
       const composer = document.querySelector(".composer");
       if (!composer) return;
@@ -4737,7 +5694,7 @@ ${codiconFontFace}    .codicon {
         el("input").focus();
         return;
       }
-	      const sendMentionedFiles = normalizeDraftMentionedFiles(mentionedFiles);
+	      const sendMentionedFiles = mentionedFilesForHost(mentionedFiles);
 	      const sendOptions = {
 	        includeSelection: el("sel").checked,
 	        includeCurrentFile: el("file").checked,
@@ -4817,7 +5774,7 @@ ${codiconFontFace}    .codicon {
       const clientQueueID = message && typeof message.clientQueueID === "string" ? message.clientQueueID : "";
       const rejected = optimisticQueuedSends.find((item) => item.id === clientQueueID);
       optimisticQueuedSends = optimisticQueuedSends.filter((item) => item.id !== clientQueueID);
-      if (rejected) restoreQueuedSendDraft(rejected);
+      if (rejected && (!message || message.reason !== "duplicate")) restoreQueuedSendDraft(rejected);
       setNotice((message && message.message) || "Queued message was not accepted.");
       renderQueuedSendList();
       renderComposerStatusBar();
@@ -4987,9 +5944,10 @@ ${codiconFontFace}    .codicon {
     function composerDraftFromWebviewState() {
       const draft = webviewState().composerDraft;
       if (!draft || typeof draft !== "object") return { text: "", mentionedFiles: [] };
+      const text = typeof draft.text === "string" ? draft.text : "";
       return {
-        text: typeof draft.text === "string" ? draft.text : "",
-        mentionedFiles: normalizeDraftMentionedFiles(draft.mentionedFiles)
+        text,
+        mentionedFiles: hydrateLinkedMentionFiles(normalizeDraftMentionedFiles(draft.mentionedFiles), text)
       };
     }
 
@@ -5005,8 +5963,9 @@ ${codiconFontFace}    .codicon {
 
     function restoreQueuedSendDraft(message) {
       const options = message && typeof message.options === "object" ? message.options : {};
-      el("input").value = typeof message.text === "string" ? message.text : "";
-      mentionedFiles = normalizeDraftMentionedFiles(message.mentionedFiles);
+      const text = typeof message.text === "string" ? message.text : "";
+      el("input").value = text;
+      mentionedFiles = hydrateLinkedMentionFiles(normalizeDraftMentionedFiles(message.mentionedFiles), text);
       if (Object.prototype.hasOwnProperty.call(options, "includeSelection")) el("sel").checked = Boolean(options.includeSelection);
       if (Object.prototype.hasOwnProperty.call(options, "includeCurrentFile")) el("file").checked = Boolean(options.includeCurrentFile);
       if (Object.prototype.hasOwnProperty.call(options, "includeDiagnostics")) el("diag").checked = Boolean(options.includeDiagnostics);
@@ -5059,14 +6018,37 @@ ${codiconFontFace}    .codicon {
           const item = { uri, label };
           if (file.type === "file" || file.type === "folder") item.type = file.type;
           if (typeof file.insertText === "string") item.insertText = file.insertText;
+          if (typeof file.linkedMentionText === "string" && file.linkedMentionText) item.linkedMentionText = file.linkedMentionText;
+          if (Number.isFinite(file.mentionIndex)) item.mentionIndex = Number(file.mentionIndex);
           return item;
         })
         .filter(Boolean);
     }
 
+    function mentionedFilesForHost(files) {
+      return normalizeDraftMentionedFiles(files).map((file, index) => {
+        const item = { uri: file.uri, label: file.label, mentionIndex: index };
+        if (file.type === "file" || file.type === "folder") item.type = file.type;
+        if (typeof file.insertText === "string") item.insertText = file.insertText;
+        return item;
+      });
+    }
+
+    function hydrateLinkedMentionFiles(files, text) {
+      return normalizeDraftMentionedFiles(files).map((file) => {
+        if (file.linkedMentionText) return file;
+        const mentionText = file.insertText || file.label;
+        return mentionText && findLinkedMentionToken(text, mentionText)
+          ? { ...file, linkedMentionText: mentionText }
+          : file;
+      });
+    }
+
     function onComposerInput() {
       if (!restoringPromptHistory) resetPromptHistoryNavigation();
+      const mentionsChanged = reconcileLinkedMentionFiles();
       saveComposerDraft();
+      if (mentionsChanged) renderMentionChips();
       renderSendButton();
       const mention = currentMention();
       if (!mention) {
@@ -5105,21 +6087,10 @@ ${codiconFontFace}    .codicon {
     function selectMention(file) {
       const input = el("input");
       const mention = currentMention();
-      if (file.type === "folder") {
-        if (mention) {
-          input.value = input.value.slice(0, mention.start) + "@" + file.insertText + input.value.slice(mention.end);
-          const cursor = mention.start + file.insertText.length + 1;
-          input.setSelectionRange(cursor, cursor);
-        }
-        mentionResults = [];
-        renderSuggestions();
-        input.focus();
-        onComposerInput();
-        return;
-      }
-      if (!mentionedFiles.some((item) => item.uri === file.uri)) mentionedFiles.push(file);
+      const insertText = file.insertText || file.label;
+      const linkedFile = mention ? { ...file, linkedMentionText: insertText } : file;
+      upsertMentionedFile(linkedFile);
       if (mention) {
-        const insertText = file.insertText || file.label;
         input.value = input.value.slice(0, mention.start) + "@" + insertText + " " + input.value.slice(mention.end);
         const cursor = mention.start + insertText.length + 2;
         input.setSelectionRange(cursor, cursor);
@@ -5135,22 +6106,81 @@ ${codiconFontFace}    .codicon {
       input.focus();
     }
 
-	    function removeMention(uri) {
+    function upsertMentionedFile(file) {
+      const index = mentionedFiles.findIndex((item) => item.uri === file.uri);
+      if (index === -1) {
+        mentionedFiles.push(file);
+        return;
+      }
+      mentionedFiles = mentionedFiles.map((item, itemIndex) => itemIndex === index ? { ...item, ...file } : item);
+    }
+
+    function reconcileLinkedMentionFiles() {
+      const text = el("input").value;
+      const next = [];
+      let changed = false;
+      for (const file of mentionedFiles) {
+        if (file.linkedMentionText && !findLinkedMentionToken(text, file.linkedMentionText)) {
+          changed = true;
+          continue;
+        }
+        next.push(file);
+      }
+      if (changed) mentionedFiles = next;
+      return changed;
+    }
+
+	    function removeMention(uri, options = {}) {
+      const removed = mentionedFiles.find((file) => file.uri === uri);
+      if (removed && options.removeLinkedText !== false) removeLinkedMentionTextFromInput(removed);
 	      mentionedFiles = mentionedFiles.filter((file) => file.uri !== uri);
 	      saveComposerDraft();
 	      renderMentionChips();
+      renderSendButton();
 	    }
+
+    function removeLinkedMentionTextFromInput(file) {
+      if (!file || !file.linkedMentionText) return false;
+      const input = el("input");
+      const match = findLinkedMentionToken(input.value, file.linkedMentionText);
+      if (!match) return false;
+      const before = input.value.slice(0, match.start);
+      let after = input.value.slice(match.end);
+      if (after.startsWith(" ")) after = after.slice(1);
+      input.value = before + after;
+      const cursor = Math.min(match.start, input.value.length);
+      input.setSelectionRange(cursor, cursor);
+      return true;
+    }
+
+    function findLinkedMentionToken(text, mentionText) {
+      const needle = "@" + String(mentionText || "");
+      if (needle.length <= 1) return undefined;
+      let index = String(text || "").indexOf(needle);
+      while (index !== -1) {
+        const end = index + needle.length;
+        if (isMentionTokenBoundary(text[index - 1]) && isMentionTokenBoundary(text[end])) return { start: index, end };
+        index = String(text || "").indexOf(needle, index + 1);
+      }
+      return undefined;
+    }
+
+    function isMentionTokenBoundary(char) {
+      return !char || /\\s/.test(char);
+    }
 
 	    function hasExplicitContext() {
 	      return mentionedFiles.length > 0 || contextItems().length > 0;
 	    }
 
-    function render() {
-      renderShell();
-      renderConnection();
-      renderSettings();
-      renderSessions();
-      renderMessages();
+	    function render() {
+	      renderShell();
+	      renderConnection();
+	      renderSettings();
+	      renderSessions();
+        renderNewSessionButton();
+	      renderMessages();
+      renderToolApprovalBanner();
 	      renderCodeIntelligence();
 		      renderModelSelector();
 		      renderAgentSelector();
@@ -5167,9 +6197,47 @@ ${codiconFontFace}    .codicon {
 	        renderComposerMoreMenu();
 	      renderSendButton();
 	      renderComposerStatusBar();
-	    }
+		    }
 
-	    function renderSendButton() {
+      function requestNewSession() {
+        if (newSessionPending) return;
+        newSessionPending = true;
+        newSessionPendingSourceSessionID = String(state.currentSessionID || "");
+        if (newSessionPendingTimer) window.clearTimeout(newSessionPendingTimer);
+        newSessionPendingTimer = window.setTimeout(() => {
+          clearNewSessionPending();
+          renderNewSessionButton();
+        }, 8000);
+        renderNewSessionButton();
+        vscode.postMessage({ type: "newSession" });
+      }
+
+      function reconcileNewSessionPending(nextState) {
+        if (!newSessionPending) return;
+        const nextSessionID = String((nextState && nextState.currentSessionID) || "");
+        if (nextSessionID && nextSessionID !== newSessionPendingSourceSessionID) clearNewSessionPending();
+      }
+
+      function clearNewSessionPending() {
+        newSessionPending = false;
+        newSessionPendingSourceSessionID = "";
+        if (newSessionPendingTimer) {
+          window.clearTimeout(newSessionPendingTimer);
+          newSessionPendingTimer = 0;
+        }
+      }
+
+      function renderNewSessionButton() {
+        const button = el("newSession");
+        if (!button) return;
+        button.disabled = Boolean(newSessionPending);
+        button.classList.toggle("is-loading", Boolean(newSessionPending));
+        const label = newSessionPending ? "Creating new session" : "New session";
+        button.title = label;
+        button.setAttribute("aria-label", label);
+      }
+
+		    function renderSendButton() {
 	      const blockedByGuard = localOnlyAgentBlocked() && !looksLikeExportRequest(el("input").value);
         const button = el("send");
         const queueing = Boolean(state.sending && hasComposerDraft());
@@ -5190,6 +6258,71 @@ ${codiconFontFace}    .codicon {
         button.classList.toggle("is-queued", queueing);
         setSendButtonContent(button, cancellable ? "stop" : "send", label, loading);
 	    }
+
+    function renderToolApprovalBanner() {
+      const banner = el("toolApprovalBanner");
+      const approvals = pendingToolApprovalsFromMessages(state.messages || []);
+      if (approvals.length === 0) {
+        banner.className = "toolApprovalBanner";
+        banner.setAttribute("aria-hidden", "true");
+        banner.removeAttribute("data-tool-approval-banner");
+        banner.replaceChildren();
+        return;
+      }
+      const part = approvals[approvals.length - 1];
+      banner.className = "toolApprovalBanner is-visible";
+      banner.setAttribute("aria-hidden", "false");
+      banner.setAttribute("data-tool-approval-banner", part.approvalRequestId);
+
+      const head = document.createElement("div");
+      head.className = "toolApprovalBannerHead";
+      const main = document.createElement("div");
+      main.className = "toolApprovalBannerMain";
+      const icon = document.createElement("span");
+      icon.className = "toolApprovalBannerIcon";
+      icon.setAttribute("aria-hidden", "true");
+      appendLiquidIcon(icon, "shield");
+      const copy = document.createElement("div");
+      copy.className = "toolApprovalBannerCopy";
+      const title = document.createElement("div");
+      title.className = "toolApprovalBannerTitle";
+      title.textContent = "需要批准工具调用";
+      const summary = document.createElement("div");
+      summary.className = "toolApprovalBannerSummary";
+      summary.textContent = toolApprovalBannerSummary(part);
+      summary.title = summary.textContent;
+      copy.append(title, summary);
+      main.append(icon, copy);
+      const count = document.createElement("span");
+      count.className = "toolApprovalBannerCount";
+      count.textContent = approvals.length > 1 ? String(approvals.length) + " 个待审批" : "Risk: " + (part.approvalRisk || "unknown");
+      head.append(main, count);
+
+      const actions = document.createElement("div");
+      actions.className = "toolApprovalBannerActions";
+      actions.append(
+        toolApprovalButton(part.approvalRequestId, true, "批准一次", true),
+        toolApprovalButton(part.approvalRequestId, false, "拒绝", false),
+        toolApprovalFocusButton(part.approvalRequestId),
+      );
+      banner.replaceChildren(head, actions);
+    }
+
+    function pendingToolApprovalsFromMessages(messages) {
+      const approvals = [];
+      for (const message of messages || []) {
+        for (const part of message.parts || []) {
+          if (part && part.type === "tool" && isPendingToolApproval(part)) approvals.push(part);
+        }
+      }
+      return approvals;
+    }
+
+    function toolApprovalBannerSummary(part) {
+      const title = part.approvalTitle || part.title || "Tool approval";
+      const summary = part.approvalSummary || "ChipMate is waiting for permission to continue.";
+      return title + " · " + summary;
+    }
 
     function renderShell() {
       const widthClass = window.innerWidth >= 760 ? "history-wide" : "history-narrow";
@@ -5236,7 +6369,7 @@ ${codiconFontFace}    .codicon {
 	        el("completionEnabled").checked = Boolean(completion.enabled);
 		        el("completionProvider").value = completion.provider || "qwen-direct";
 	        el("completionProfile").value = completion.profile || "qwen-coder-fim";
-	        el("completionApiBaseUrl").value = (state.provider && state.provider.apiBaseUrl) || completion.apiBaseUrl || "";
+	        el("completionApiBaseUrl").value = completion.apiBaseUrl || "";
 	        el("completionMaxTokens").value = String(completion.maxTokens || 128);
 	        el("completionContextLength").value = String(completion.contextLength ?? 200000);
 	        el("completionTemperature").value = String(completion.temperature ?? 0.1);
@@ -5261,7 +6394,8 @@ ${codiconFontFace}    .codicon {
 
 	    function renderCompletionModelSelect(savedModel) {
 	      const select = el("completionModel");
-	      const candidates = qwenCoderCompletionModels();
+	      const profile = el("completionProfile").value || "qwen-coder-fim";
+	      const candidates = completionCandidateModels(profile, savedModel);
 	      const current = (select.value || savedModel || "").trim();
 	      const selected = candidates.some((model) => completionModelId(model) === current)
 	        ? current
@@ -5274,29 +6408,48 @@ ${codiconFontFace}    .codicon {
 	          select.appendChild(modelOption(completionModelId(model), completionModelLabel(model)));
 	        }
 	      } else {
-	        select.appendChild(modelOption("", state.loadingModels ? "Loading Qwen Coder models..." : "No Qwen Coder completion model"));
+	        select.appendChild(modelOption("", state.loadingModels ? completionLoadingLabel(profile) : noCompletionModelLabel(profile)));
 	      }
 	      select.value = selected;
 	      return { available: candidates.length > 0, selected };
 	    }
 
 	    function completionModelUnavailable() {
-	      return el("completionProvider").value !== "none" && qwenCoderCompletionModels().length === 0;
+	      const profile = el("completionProfile").value || "qwen-coder-fim";
+	      return el("completionProvider").value !== "none" && completionCandidateModels(profile, el("completionModel").value).length === 0;
 	    }
 
-	    function qwenCoderCompletionModels() {
+	    function completionCandidateModels(profile, savedModel) {
 	      const seen = new Set();
-	      return (state.models || [])
+	      const candidates = (state.models || [])
 	        .filter((model) => {
 	          if (!model || model.source !== "provider") return false;
 	          const id = completionModelId(model);
 	          if (!id || seen.has(id)) return false;
 	          const text = [model.id, model.name, model.modelID].filter(Boolean).join(" ").toLowerCase();
-	          if (!text.includes("qwen") || !text.includes("coder")) return false;
+	          if (!completionModelMatchesProfile(text, profile)) return false;
 	          seen.add(id);
 	          return true;
 	        })
 	        .sort((left, right) => (left.providerIndex ?? 1e9) - (right.providerIndex ?? 1e9));
+	      const configured = String(savedModel || "").trim();
+	      if (profile === "deepseek-fim" && configured && !seen.has(configured) && configured.toLowerCase().includes("deepseek")) {
+	        candidates.push({ id: configured, name: configured, modelID: configured, source: "configured", providerIndex: 1e9 });
+	      }
+	      return candidates;
+	    }
+
+	    function completionModelMatchesProfile(text, profile) {
+	      if (profile === "deepseek-fim") return text.includes("deepseek");
+	      return text.includes("qwen") && text.includes("coder");
+	    }
+
+	    function completionLoadingLabel(profile) {
+	      return profile === "deepseek-fim" ? "Loading DeepSeek FIM models..." : "Loading Qwen Coder models...";
+	    }
+
+	    function noCompletionModelLabel(profile) {
+	      return profile === "deepseek-fim" ? "No DeepSeek FIM completion model" : "No Qwen Coder completion model";
 	    }
 
 	    function completionModelId(model) {
@@ -5320,11 +6473,13 @@ ${codiconFontFace}    .codicon {
         const enabled = new Set(Array.isArray(state.skills && state.skills.enabled) ? state.skills.enabled : []);
         const list = el("skillsList");
         list.textContent = "";
-        el("skillsSettingsStatus").textContent = skills.length ? enabled.size + "/" + skills.length + " enabled" : "No skills";
+        const enabledCount = skills.filter((skill) => skill && skill.enabled).length;
+        const invalidCount = skills.filter((skill) => skill && skill.invalid).length;
+        el("skillsSettingsStatus").textContent = skills.length ? enabledCount + "/" + skills.length + " enabled" + (invalidCount ? " · " + invalidCount + " invalid" : "") : "No skills";
         if (!skills.length) {
           const empty = document.createElement("div");
           empty.className = "comingSoonText";
-          empty.textContent = "No workspace skills found. Add SKILL.md files under .agents/skills/<name>/ to make them appear here.";
+          empty.textContent = "No skills found. Import SKILL.md files or add them under ~/.agents/skills/<name>/, workspace .agents/skills/<name>/, or .claude/skills/<name>/.";
           list.appendChild(empty);
           return;
         }
@@ -5333,7 +6488,8 @@ ${codiconFontFace}    .codicon {
           label.className = "skillItem";
           const checkbox = document.createElement("input");
           checkbox.type = "checkbox";
-          checkbox.checked = Boolean(skill.enabled || enabled.has(skill.id) || enabled.has(skill.name));
+          checkbox.checked = Boolean(skill.enabled || enabled.has(skill.id) || enabled.has(skill.name) || enabled.has(skill.commandName));
+          checkbox.disabled = Boolean(skill.invalid);
           checkbox.setAttribute("data-skill-id", skill.id || skill.name);
           const main = document.createElement("span");
           main.className = "skillMain";
@@ -5346,7 +6502,10 @@ ${codiconFontFace}    .codicon {
           const meta = document.createElement("span");
           meta.className = "skillMeta";
           const tools = Array.isArray(skill.allowedTools) && skill.allowedTools.length ? " · allowed-tools: " + skill.allowedTools.join(", ") : "";
-          meta.textContent = (skill.path || ".agents/skills") + tools;
+          const source = [skill.scope, skill.sourceKind, skill.visibility].filter(Boolean).join("/");
+          const errors = Array.isArray(skill.validationErrors) && skill.validationErrors.length ? " · invalid: " + skill.validationErrors.join("; ") : "";
+          const warnings = Array.isArray(skill.validationWarnings) && skill.validationWarnings.length ? " · warnings: " + skill.validationWarnings.join("; ") : "";
+          meta.textContent = (skill.path || ".agents/skills") + (source ? " · " + source : "") + tools + errors + warnings;
           main.append(name, description, meta);
           label.append(checkbox, main);
           list.appendChild(label);
@@ -5356,7 +6515,7 @@ ${codiconFontFace}    .codicon {
       function renderSkillsStatus(message, status) {
         const detail = el("skillsDetail");
         detail.className = "detail " + detailStatusClass(status) + " visible";
-        detail.textContent = message || "Skills are discovered from .agents/skills/*/SKILL.md.";
+        detail.textContent = message || "Skills are discovered from workspace and user .agents/skills/*/SKILL.md.";
       }
 
 		    function renderRagSettings() {
@@ -5591,6 +6750,26 @@ ${codiconFontFace}    .codicon {
         button.textContent = "";
         if (button.tagName === "BUTTON" && !button.getAttribute("type")) button.type = "button";
         appendLiquidIcon(button, iconName, usesComposerToolbarIconLayout(button));
+        const sr = document.createElement("span");
+        sr.className = "srOnly";
+        sr.textContent = label;
+        button.appendChild(sr);
+        button.title = label;
+        button.setAttribute("aria-label", label);
+      }
+
+      function setHistoryToolbarButton(button, iconName, label) {
+        if (!button) return;
+        button.textContent = "";
+        if (button.tagName === "BUTTON" && !button.getAttribute("type")) button.type = "button";
+        button.classList.add("historyToolbarButton");
+        const glyph = document.createElement("span");
+        glyph.className = "historyToolbarGlyph";
+        glyph.setAttribute("data-history-icon", iconName);
+        glyph.setAttribute("aria-hidden", "true");
+        const iconUri = HISTORY_TOOLBAR_ICONS[iconName] || "";
+        if (iconUri) glyph.style.setProperty("--history-toolbar-icon", 'url("' + iconUri + '")');
+        button.appendChild(glyph);
         const sr = document.createElement("span");
         sr.className = "srOnly";
         sr.textContent = label;
@@ -6039,9 +7218,9 @@ ${codiconFontFace}    .codicon {
     }
 
     function permissionModeDetail(mode) {
-      if (mode === "auto") return "低风险工具操作自动放行，高风险操作会被阻止或要求确认，并写入审计日志。";
-      if (mode === "full-access") return "工具操作不拦截、不询问，只写入审计日志。";
-      return "读取 workspace 文件自动允许；写文件、命令和网络操作按次审批或阻止，并写入审计日志。";
+      if (mode === "auto") return "低风险读取和新建 workspace 文件可自动放行；高风险目标会被阻止或要求确认，并写入审计日志。";
+      if (mode === "full-access") return "读取和新建 workspace 文件不拦截、不询问，只写入审计日志；编辑已有文件仍不开放。";
+      return "读取 workspace 文件自动允许；新建文件按次审批，编辑已有文件、命令和网络操作不开放，并写入审计日志。";
     }
 
     function composerPermissionStatus() {
@@ -6180,7 +7359,8 @@ ${codiconFontFace}    .codicon {
       const completion = state.completion || {};
       const enabled = Boolean(completion.enabled);
       const provider = completion.provider || "qwen-direct";
-      const candidates = qwenCoderCompletionModels();
+      const profile = completion.profile || "qwen-coder-fim";
+      const candidates = completionCandidateModels(profile, completion.model);
       const savedModel = String(completion.model || "qwen-coder-30b0").trim();
       const model = completionStatusModel(savedModel, candidates);
       if (!enabled || provider === "none") {
@@ -6197,7 +7377,7 @@ ${codiconFontFace}    .codicon {
           reason: !enabled ? "Completion enabled: false" : "Completion provider: none",
         };
       }
-      if (provider !== "qwen-direct") {
+      if (provider !== "qwen-direct" && provider !== "fim-direct") {
         return {
           kind: "off",
           label: "Complete off",
@@ -6208,7 +7388,7 @@ ${codiconFontFace}    .codicon {
           provider,
           enabled,
           model: savedModel || "qwen-coder-30b0",
-          reason: "Completion provider is " + provider + ", not qwen-direct.",
+          reason: "Completion provider is " + provider + ", not a direct FIM provider.",
         };
       }
       if (!candidates.length) {
@@ -6216,13 +7396,13 @@ ${codiconFontFace}    .codicon {
           kind: "warning",
           label: "Complete unavailable",
           tileLabel: "Unavailable",
-          title: "Autocomplete unavailable · no Qwen Coder completion model was returned by the provider",
+          title: "Autocomplete unavailable · no " + (profile === "deepseek-fim" ? "DeepSeek FIM" : "Qwen Coder") + " completion model was returned by the provider",
           ariaLabel: "Autocomplete unavailable",
           iconState: "disabled",
           provider,
           enabled,
           model: savedModel || "qwen-coder-30b0",
-          reason: "No provider-returned Qwen Coder model is available.",
+          reason: "No provider-returned " + (profile === "deepseek-fim" ? "DeepSeek FIM" : "Qwen Coder") + " model is available.",
         };
       }
       return {
@@ -6533,7 +7713,7 @@ ${codiconFontFace}    .codicon {
       toggleTitle.textContent = "模型工具调用";
       const toggleDesc = document.createElement("span");
       toggleDesc.className = "toolsToggleDesc";
-      toggleDesc.textContent = enabled ? "已开启，工具执行继续受下方权限模式控制。" : "已关闭，不向模型暴露工具 schema。";
+	      toggleDesc.textContent = enabled ? "已开启，可读取 workspace evidence，并按权限模式创建新的 workspace 文本文件。" : "已关闭，不向模型暴露工具 schema。";
       toggleCopy.append(toggleTitle, toggleDesc);
       const toggleTrack = document.createElement("span");
       toggleTrack.className = "toolsToggleTrack";
@@ -6594,7 +7774,9 @@ ${codiconFontFace}    .codicon {
       const rows = statusRows();
       if (!available.length) appendStatusRow(rows, "Add .agents/skills/<name>/SKILL.md in this workspace.");
       for (const skill of available.slice(0, 8)) {
-        appendStatusRow(rows, (skill.enabled ? "Enabled: " : "Available: ") + (skill.name || skill.id));
+        const state = skill.invalid ? "Invalid: " : skill.enabled ? "Enabled: " : "Available: ";
+        const source = [skill.scope, skill.sourceKind, skill.visibility].filter(Boolean).join("/");
+        appendStatusRow(rows, state + (skill.name || skill.id) + (source ? " · " + source : ""));
       }
       if (available.length > 8) appendStatusRow(rows, "+" + (available.length - 8) + " more skills in settings.");
       root.appendChild(rows);
@@ -6772,11 +7954,61 @@ ${codiconFontFace}    .codicon {
 	      render();
 	    }
 
-	    function renderSessions() {
-      const root = el("sessionList");
-      root.innerHTML = "";
-      const sessions = state.sessions || [];
-      if (state.historyError) {
+		    function historySessionIds() {
+		      return (state.sessions || []).map((session) => session.id).filter(Boolean);
+		    }
+
+		    function reconcileHistorySelection() {
+		      const liveIds = new Set(historySessionIds());
+		      selectedHistorySessionIds = new Set(Array.from(selectedHistorySessionIds).filter((sessionId) => liveIds.has(sessionId)));
+		      if (historyBulkSelectMode && liveIds.size === 0) historyBulkSelectMode = false;
+		    }
+
+			    function renderHistoryControls() {
+			      const total = historySessionIds().length;
+			      const selectedCount = selectedHistorySessionIds.size;
+			      const allSelected = total > 0 && selectedCount === total;
+			      el("historyTitle").textContent = historyBulkSelectMode ? selectedCount + " selected" : "History";
+			      el("selectHistorySessions").hidden = total === 0;
+			      el("selectAllHistorySessions").hidden = !historyBulkSelectMode;
+			      el("deleteSelectedHistorySessions").hidden = !historyBulkSelectMode;
+			      el("refreshHistory").hidden = historyBulkSelectMode;
+			      el("closeHistory").hidden = historyBulkSelectMode;
+			      el("selectHistorySessions").setAttribute("aria-pressed", historyBulkSelectMode ? "true" : "false");
+			      el("selectHistorySessions").classList.toggle("is-active", historyBulkSelectMode);
+			      el("selectAllHistorySessions").disabled = total === 0;
+			      el("deleteSelectedHistorySessions").disabled = selectedCount === 0;
+			      setHistoryToolbarButton(
+			        el("selectHistorySessions"),
+			        "enterSelection",
+			        historyBulkSelectMode ? "Exit selection mode" : "Select chat history sessions",
+			      );
+				      setHistoryToolbarButton(
+				        el("selectAllHistorySessions"),
+				        allSelected ? "deselectAll" : "selectAll",
+				        allSelected ? "Deselect all chat history sessions" : "Select all chat history sessions",
+				      );
+			      setHistoryToolbarButton(
+			        el("deleteSelectedHistorySessions"),
+			        "delete",
+			        selectedCount > 0 ? "Delete " + selectedCount + " selected chat history sessions" : "Delete selected chat history sessions",
+			      );
+			    }
+
+		    function toggleHistorySessionSelection(sessionID) {
+		      if (!sessionID) return;
+		      if (selectedHistorySessionIds.has(sessionID)) selectedHistorySessionIds.delete(sessionID);
+		      else selectedHistorySessionIds.add(sessionID);
+		      render();
+		    }
+
+		    function renderSessions() {
+	      const root = el("sessionList");
+	      root.innerHTML = "";
+	      const sessions = state.sessions || [];
+	      reconcileHistorySelection();
+	      renderHistoryControls();
+	      if (state.historyError) {
         const error = document.createElement("div");
         error.className = "sessionEmpty";
         error.textContent = state.historyError;
@@ -6789,14 +8021,28 @@ ${codiconFontFace}    .codicon {
         empty.textContent = state.connectionState === "connected" ? "No ChipMate sessions yet." : "Configure a provider to load chat history.";
         root.appendChild(empty);
         return;
-      }
-      for (const session of sessions) {
-        const row = document.createElement("div");
-        row.className = "sessionRow " + (session.id === state.currentSessionID ? "active" : "");
-        const select = document.createElement("button");
-        select.className = "sessionSelect";
-        select.type = "button";
-        select.title = session.title || "Untitled chat";
+	      }
+	      for (const session of sessions) {
+	        const selected = selectedHistorySessionIds.has(session.id);
+	        const row = document.createElement("div");
+	        row.className = "sessionRow "
+	          + (session.id === state.currentSessionID ? "active " : "")
+	          + (historyBulkSelectMode ? "selecting " : "")
+	          + (selected ? "selected" : "");
+	        if (historyBulkSelectMode) {
+	          const check = document.createElement("button");
+	          check.className = "sessionCheck oc-icon-btn oc-liquid-btn";
+		          check.type = "button";
+		          check.title = selected ? "Deselect chat history session" : "Select chat history session";
+		          check.setAttribute("aria-pressed", selected ? "true" : "false");
+		          setIconOnlyButton(check, selected ? "checkboxChecked" : "checkbox", check.title);
+		          check.addEventListener("click", () => toggleHistorySessionSelection(session.id));
+		          row.appendChild(check);
+	        }
+	        const select = document.createElement("button");
+	        select.className = "sessionSelect";
+	        select.type = "button";
+	        select.title = session.title || "Untitled chat";
         const name = document.createElement("div");
         name.className = "sessionName";
         name.textContent = session.title || "Untitled chat";
@@ -6807,30 +8053,39 @@ ${codiconFontFace}    .codicon {
           name.appendChild(badge);
         }
         const time = document.createElement("div");
-        time.className = "sessionTime";
-        time.textContent = formatTime(session.updated || session.created);
-        select.append(name, time);
-        select.addEventListener("click", () => {
-          vscode.postMessage({ type: "selectSession", sessionID: session.id });
-          if (window.innerWidth < 760) {
-            historyTouched = true;
-            historyOpen = false;
-            renderShell();
-          }
-        });
-        const deleteButton = document.createElement("button");
-        deleteButton.className = "sessionDelete oc-icon-btn oc-liquid-btn";
-        deleteButton.type = "button";
+	        time.className = "sessionTime";
+	        time.textContent = formatTime(session.updated || session.created);
+	        select.append(name, time);
+	        select.addEventListener("click", () => {
+	          if (historyBulkSelectMode) {
+	            toggleHistorySessionSelection(session.id);
+	            return;
+	          }
+	          vscode.postMessage({ type: "selectSession", sessionID: session.id });
+	          if (window.innerWidth < 760) {
+	            historyTouched = true;
+	            historyOpen = false;
+	            renderShell();
+	          }
+	        });
+	        row.appendChild(select);
+	        if (historyBulkSelectMode) {
+	          root.appendChild(row);
+	          continue;
+	        }
+	        const deleteButton = document.createElement("button");
+	        deleteButton.className = "sessionDelete oc-icon-btn oc-liquid-btn";
+	        deleteButton.type = "button";
         deleteButton.title = "Delete chat history";
-        deleteButton.setAttribute("aria-label", "Delete chat history");
-        deleteButton.innerHTML = LIQUID_ICONS.discard + '<span class="srOnly">Delete chat history</span>';
-        deleteButton.addEventListener("click", () => {
-          vscode.postMessage({ type: "deleteSession", sessionID: session.id });
-        });
-        row.append(select, deleteButton);
-        root.appendChild(row);
-      }
-    }
+	        deleteButton.setAttribute("aria-label", "Delete chat history");
+	        deleteButton.innerHTML = LIQUID_ICONS.trash + '<span class="srOnly">Delete chat history</span>';
+	        deleteButton.addEventListener("click", () => {
+	          vscode.postMessage({ type: "deleteSession", sessionID: session.id });
+	        });
+	        row.appendChild(deleteButton);
+	        root.appendChild(row);
+	      }
+	    }
 
 	    function renderMessages() {
 	      const root = el("messages");
@@ -6846,19 +8101,26 @@ ${codiconFontFace}    .codicon {
 	      } else if (messages.length === 0) {
 	        root.replaceChildren(emptyState());
 	      } else {
+	        const activityStatus = assistantActivityStatus(messages);
+	        const activityMessageKey = currentTurnActivityMessageKey(messages);
 	        const entries = messages.map((item, index) => {
 	          const key = stableMessageKey(item, index);
+	          const liveToolActivity = activityStatus && key === activityMessageKey ? activityStatus : undefined;
 	          return {
 	            key,
 	            item,
 	            index,
-	            fingerprint: messageRenderFingerprint(item, index, key),
-	            build: () => messageNode(item, index)
+	            fingerprint: messageRenderFingerprint(item, index, key, { liveToolActivity }),
+	            build: () => messageNode(item, index, { liveToolActivity })
 	          };
 	        });
-	        if (state.sending && !hasAssistantContentAfterLastUser(messages)) {
-	          entries.push({ key: "__thinking", fingerprint: "thinking", build: thinkingNode });
-	        }
+		        if (activityStatus && !activityMessageKey) {
+		          entries.push({
+		            key: "__thinking",
+		            fingerprint: assistantActivityFingerprint(activityStatus),
+		            build: () => thinkingNode(activityStatus)
+		          });
+		        }
 	        reconcileMessageNodes(root, entries);
 	      }
 	      restoreMessageHorizontalScrollState(root, horizontalScrollState);
@@ -6951,20 +8213,24 @@ ${codiconFontFace}    .codicon {
 	      for (const card of Array.from(root.querySelectorAll(".messageCard[data-message-key]"))) {
 	        const key = card.getAttribute("data-message-key");
 	        if (!key) continue;
-	        const stateForMessage = {
-	          outlineScrollLeft: Array.from(card.querySelectorAll(".messageOutline")).map((node) => node.scrollLeft),
-	          codeScrollLeft: Array.from(card.querySelectorAll(".codeBlock pre")).map((node) => node.scrollLeft),
-	          diagramScrollLeft: Array.from(card.querySelectorAll(".diagramCanvas, .diagramSource")).map((node) => node.scrollLeft),
-	          tableScrollLeft: Array.from(card.querySelectorAll(".tableScroll")).map((node) => node.scrollLeft),
-	          tableRawScrollLeft: Array.from(card.querySelectorAll(".tableRaw")).map((node) => node.scrollLeft)
-	        };
-	        if (
-	          stateForMessage.outlineScrollLeft.some(Boolean) ||
-	          stateForMessage.codeScrollLeft.some(Boolean) ||
-	          stateForMessage.diagramScrollLeft.some(Boolean) ||
-	          stateForMessage.tableScrollLeft.some(Boolean) ||
-	          stateForMessage.tableRawScrollLeft.some(Boolean)
-	        ) {
+		        const stateForMessage = {
+		          outlineScrollLeft: Array.from(card.querySelectorAll(".messageOutline")).map((node) => node.scrollLeft),
+		          codeScrollLeft: Array.from(card.querySelectorAll(".codeBlock pre")).map((node) => node.scrollLeft),
+		          diagramScrollLeft: Array.from(card.querySelectorAll(".diagramCanvas, .diagramSource")).map((node) => node.scrollLeft),
+		          diagramScrollTop: Array.from(card.querySelectorAll(".diagramCanvas")).map((node) => node.scrollTop),
+		          diagramZoom: Array.from(card.querySelectorAll(".diagramBlock")).map((node) => Number(node.dataset.diagramZoom) || DIAGRAM_ZOOM_DEFAULT),
+		          tableScrollLeft: Array.from(card.querySelectorAll(".tableScroll")).map((node) => node.scrollLeft),
+		          tableRawScrollLeft: Array.from(card.querySelectorAll(".tableRaw")).map((node) => node.scrollLeft)
+		        };
+		        if (
+		          stateForMessage.outlineScrollLeft.some(Boolean) ||
+		          stateForMessage.codeScrollLeft.some(Boolean) ||
+		          stateForMessage.diagramScrollLeft.some(Boolean) ||
+		          stateForMessage.diagramScrollTop.some(Boolean) ||
+		          stateForMessage.diagramZoom.some((value) => value !== DIAGRAM_ZOOM_DEFAULT) ||
+		          stateForMessage.tableScrollLeft.some(Boolean) ||
+		          stateForMessage.tableRawScrollLeft.some(Boolean)
+		        ) {
 	          scrollState.set(key, stateForMessage);
 	        }
 	      }
@@ -6976,15 +8242,24 @@ ${codiconFontFace}    .codicon {
 	        const key = card.getAttribute("data-message-key");
 	        if (!key) continue;
 	        const saved = scrollState.get(key);
-	        restoreNestedScrollList(card.querySelectorAll(".messageOutline"), saved && saved.outlineScrollLeft, "scrollLeft");
-	        restoreNestedScrollList(card.querySelectorAll(".codeBlock pre"), saved && saved.codeScrollLeft, "scrollLeft");
-	        restoreNestedScrollList(card.querySelectorAll(".diagramCanvas, .diagramSource"), saved && saved.diagramScrollLeft, "scrollLeft");
-	        restoreNestedScrollList(card.querySelectorAll(".tableScroll"), saved && saved.tableScrollLeft, "scrollLeft");
-	        restoreNestedScrollList(card.querySelectorAll(".tableRaw"), saved && saved.tableRawScrollLeft, "scrollLeft");
-	      }
-	    }
+		        restoreNestedScrollList(card.querySelectorAll(".messageOutline"), saved && saved.outlineScrollLeft, "scrollLeft");
+		        restoreNestedScrollList(card.querySelectorAll(".codeBlock pre"), saved && saved.codeScrollLeft, "scrollLeft");
+		        restoreNestedScrollList(card.querySelectorAll(".diagramCanvas, .diagramSource"), saved && saved.diagramScrollLeft, "scrollLeft");
+		        restoreNestedScrollList(card.querySelectorAll(".diagramCanvas"), saved && saved.diagramScrollTop, "scrollTop");
+		        restoreDiagramZoomList(card.querySelectorAll(".diagramBlock"), saved && saved.diagramZoom);
+		        restoreNestedScrollList(card.querySelectorAll(".tableScroll"), saved && saved.tableScrollLeft, "scrollLeft");
+		        restoreNestedScrollList(card.querySelectorAll(".tableRaw"), saved && saved.tableRawScrollLeft, "scrollLeft");
+		      }
+		    }
 
-	    function restoreNestedScrollList(nodes, values, property) {
+		    function restoreDiagramZoomList(nodes, values) {
+		      if (!values) return;
+		      Array.from(nodes).forEach((node, index) => {
+		        setDiagramZoom(node, values[index] || DIAGRAM_ZOOM_DEFAULT);
+		      });
+		    }
+
+		    function restoreNestedScrollList(nodes, values, property) {
 	      if (!values) return;
 	      Array.from(nodes).forEach((node, index) => {
 	        const value = values[index] || 0;
@@ -7008,6 +8283,10 @@ ${codiconFontFace}    .codicon {
 	    function redirectNestedVerticalWheel(event, root) {
 	      const nested = nestedMessageScroller(event.target);
 	      if (!nested) return false;
+	      if (nested.classList && nested.classList.contains("diagramCanvas") && nested.classList.contains("zoomed-in")) {
+	        pauseAutoFollowForUser();
+	        return false;
+	      }
 	      if (!isPlainVerticalWheel(event)) {
 	        pauseAutoFollowForUser();
 	        return false;
@@ -7057,6 +8336,17 @@ ${codiconFontFace}    .codicon {
 	      return messages.some((item) => messageHasContent(item));
 	    }
 
+	    function currentTurnActivityMessageKey(messages) {
+	      for (let index = messages.length - 1; index >= 0; index -= 1) {
+	        const item = messages[index];
+	        if (item.role === "user") return undefined;
+	        if ((item.role === "assistant" || item.role === "tool") && messageHasContent(item)) {
+	          return stableMessageKey(item, index);
+	        }
+	      }
+	      return undefined;
+	    }
+
 	    function isNestedMessageScroller(target) {
 	      return Boolean(nestedMessageScroller(target));
 	    }
@@ -7066,7 +8356,7 @@ ${codiconFontFace}    .codicon {
 	      return node ? node.closest(".codeBlock pre, .diagramCanvas, .diagramSource, .tableScroll, .tableRaw, .messageOutline, .toolCard pre") : null;
 	    }
 
-	    function hasAssistantContentAfterLastUser(messages) {
+    function hasAssistantContentAfterLastUser(messages) {
       let hasAssistantContent = false;
       for (let index = messages.length - 1; index >= 0; index -= 1) {
         const item = messages[index];
@@ -7078,9 +8368,112 @@ ${codiconFontFace}    .codicon {
       return hasAssistantContent;
     }
 
+	    function assistantActivityStatus(messages) {
+	      if (!state.sending) return undefined;
+	      const active = activeSendActivityStatus();
+	      if (active) return active;
+	      for (let index = messages.length - 1; index >= 0; index -= 1) {
+	        const item = messages[index];
+	        if (item.role !== "user") continue;
+	        const status = sendStatusFromMessage(item);
+	        if (!status) return { stage: "thinking", label: "Thinking", detail: "" };
+	        if (status.stage === "summarizing" || status.stage === "sending" || status.stage === "thinking" || status.stage === "done") return status;
+	        return undefined;
+	      }
+	      return { stage: "thinking", label: "Thinking", detail: "" };
+	    }
+
+	    function activeSendActivityStatus() {
+	      const activity = state.activeSendActivity;
+	      if (!activity || typeof activity !== "object") return undefined;
+	      const startedAt = Number(activity.startedAt) || 0;
+	      const toolCallCount = Number(activity.toolCallCount) || 0;
+	      return {
+	        stage: String(activity.stage || "thinking"),
+	        label: "",
+	        detail: String(activity.detail || ""),
+	        startedAt: startedAt > 0 ? startedAt : undefined,
+	        currentToolName: compactActivityText(activity.currentToolName),
+	        toolCallCount: toolCallCount > 0 ? toolCallCount : 0
+	      };
+	    }
+
+	    function assistantActivityLabel(status) {
+	      const toolName = compactActivityText(status && status.currentToolName);
+	      const stepLabel = assistantActivityStepLabel(status);
+	      if (toolName) return ["Using " + toolName, stepLabel].filter(Boolean).join(" · ");
+	      if (stepLabel) return stepLabel;
+	      if (status && status.stage === "summarizing") return "Summarizing conversation history";
+	      if (status && status.stage === "sending") return "Sending to model";
+	      if (status && status.stage === "preparing") return "Preparing context";
+	      return "Thinking";
+	    }
+
+	    function assistantActivityStepLabel(status) {
+	      const detail = String((status && status.detail) || "");
+	      const match = detail.match(/tool step\\s+(\\d+)/i);
+	      if (match) return "Tool step " + match[1];
+	      const count = Number(status && status.toolCallCount) || 0;
+	      if (count > 0) return count === 1 ? "1 tool call" : count + " tool calls";
+	      return "";
+	    }
+
+	    function compactActivityText(value) {
+	      return String(value || "").replace(/\\s+/g, " ").trim().slice(0, 80);
+	    }
+
+	    function assistantActivityElapsedText(status) {
+	      const startedAt = Number(status && status.startedAt) || 0;
+	      if (startedAt <= 0) return "";
+	      return formatActivityElapsed(Date.now() - startedAt);
+	    }
+
+	    function formatActivityElapsed(elapsedMs) {
+	      const seconds = Math.max(0, Math.floor(Number(elapsedMs || 0) / 1000));
+	      if (seconds < 60) return seconds + "s";
+	      const minutes = Math.floor(seconds / 60);
+	      const remaining = seconds % 60;
+	      if (minutes < 60) return minutes + "m " + String(remaining).padStart(2, "0") + "s";
+	      const hours = Math.floor(minutes / 60);
+	      const minuteRemainder = minutes % 60;
+	      return hours + "h " + String(minuteRemainder).padStart(2, "0") + "m";
+	    }
+
+	    function syncActiveActivityElapsedTimer() {
+	      const hasElapsedActivity = Boolean(state.sending && state.activeSendActivity && Number(state.activeSendActivity.startedAt));
+	      if (hasElapsedActivity && !activeActivityElapsedTimer) {
+	        activeActivityElapsedTimer = window.setInterval(updateActiveActivityElapsedNodes, 1000);
+	      } else if (!hasElapsedActivity && activeActivityElapsedTimer) {
+	        window.clearInterval(activeActivityElapsedTimer);
+	        activeActivityElapsedTimer = 0;
+	      }
+	      updateActiveActivityElapsedNodes();
+	    }
+
+	    function updateActiveActivityElapsedNodes() {
+	      const status = assistantActivityStatus(state.messages || []);
+	      const text = assistantActivityElapsedText(status);
+	      for (const node of Array.from(document.querySelectorAll("[data-active-activity-elapsed]"))) {
+	        node.textContent = text;
+	        node.classList.toggle("is-empty", !text);
+	      }
+	    }
+
+	    function assistantActivityFingerprint(status) {
+	      return [
+	        "thinking",
+	        (status && status.stage) || "thinking",
+	        assistantActivityLabel(status),
+	        (status && status.detail) || "",
+	        (status && status.startedAt) || "",
+	        (status && status.currentToolName) || "",
+	        (status && status.toolCallCount) || ""
+	      ].map((part) => String(part || "").replace(/\s+/g, " ").trim()).join(":");
+	    }
+
     function messageHasContent(item) {
       if (item.text) return true;
-      return (item.parts || []).some((part) => part.text || part.detail || part.status);
+      return (item.parts || []).some((part) => part.text || part.detail || part.status || part.xml || part.type === "diagram");
     }
 
 	    function emptyState() {
@@ -7133,13 +8526,13 @@ ${codiconFontFace}    .codicon {
       return node;
     }
 
-	    function messageNode(item, index) {
+	    function messageNode(item, index, options) {
 	      const messageKey = stableMessageKey(item, index);
 	      const bodyId = "message-body-" + domSafeId(messageKey);
 	      const node = document.createElement("article");
 	      node.className = "timelineItem " + (item.role || "message");
 	      node.setAttribute("data-message-key", messageKey);
-	      node.setAttribute("data-message-fingerprint", messageRenderFingerprint(item, index, messageKey));
+	      node.setAttribute("data-message-fingerprint", messageRenderFingerprint(item, index, messageKey, options));
 	      const avatar = document.createElement("div");
       avatar.className = "avatar";
       setAvatarContent(avatar, item.role);
@@ -7162,11 +8555,14 @@ ${codiconFontFace}    .codicon {
         usage.title = item.usage.detail || item.usage.summary;
         stats.appendChild(usage);
       }
-      const body = document.createElement("div");
-      body.className = "messageBody";
-      body.id = bodyId;
+      const sendStatus = sendStatusFromMessage(item);
+      if (sendStatus) stats.appendChild(sendStatusNode(sendStatus));
+	      const body = document.createElement("div");
+	      body.className = "messageBody";
+	      body.id = bodyId;
 	      if (item.text) renderMarkdownInto(body, item.text);
-	      renderPartCards(body, item);
+	      renderPartCards(body, item, options);
+	      tagMessageDiagramBlocks(body, item);
 	      const structureTargets = messageStructureTargets(body);
 	      const isCollapsed = collapsedMessages.has(messageKey);
 	      card.className = "messageCard"
@@ -7186,14 +8582,16 @@ ${codiconFontFace}    .codicon {
 	      return node;
 	    }
 
-	    function messageRenderFingerprint(item, index, messageKey) {
+	    function messageRenderFingerprint(item, index, messageKey, options) {
 	      const payload = {
 	        role: item.role || "message",
 	        text: item.text || "",
 	        parts: item.parts || [],
+	        sendStatus: item.sendStatus || null,
 	        usage: item.usage || null,
 	        timeCreated: item.timeCreated || "",
-	        collapsed: collapsedMessages.has(messageKey || stableMessageKey(item, index))
+	        collapsed: collapsedMessages.has(messageKey || stableMessageKey(item, index)),
+	        liveToolActivity: options && options.liveToolActivity ? assistantActivityFingerprint(options.liveToolActivity) : ""
 	      };
 	      try {
 	        return JSON.stringify(payload);
@@ -7204,6 +8602,43 @@ ${codiconFontFace}    .codicon {
 
     function stableMessageKey(item, index) {
       return String(item.id || ((item.role || "message") + "-" + (item.timeCreated || index) + "-" + index));
+    }
+
+    function tagMessageDiagramBlocks(body, item) {
+      const messageId = String(item && item.id || "");
+      if (!messageId) return;
+      const blocks = Array.from(body.querySelectorAll(".diagramBlock"));
+      for (let index = 0; index < blocks.length; index += 1) {
+        const block = blocks[index];
+        block.dataset.messageId = messageId;
+        block.dataset.sessionId = String(state.currentSessionID || "");
+        block.dataset.diagramIndex = String(index + 1);
+        if (!block.dataset.diagramId) {
+          block.dataset.diagramId = messageId + "-diagram-" + (index + 1);
+        }
+      }
+    }
+
+    function sendStatusFromMessage(item) {
+      if (item && item.sendStatus && item.sendStatus.label) return item.sendStatus;
+      const part = (item.parts || []).find((candidate) => candidate && candidate.type === "sendStatus");
+      if (!part || !part.text) return undefined;
+      return {
+        stage: part.status || "pending",
+        label: part.text,
+        detail: part.detail || ""
+      };
+    }
+
+    function sendStatusNode(status) {
+      const node = document.createElement("span");
+      node.className = "messageSendStatus " + String(status.stage || "pending");
+      const text = document.createElement("span");
+      text.className = "messageSendStatusText";
+      text.textContent = status.label || "Sending";
+      node.title = [status.label, status.detail].filter(Boolean).join(" · ");
+      node.appendChild(text);
+      return node;
     }
 
     function domSafeId(value) {
@@ -7348,11 +8783,11 @@ ${codiconFontFace}    .codicon {
         .trim();
     }
 
-	    function thinkingNode() {
-	      const node = document.createElement("article");
-	      node.className = "timelineItem assistant thinking";
-	      node.setAttribute("data-message-key", "__thinking");
-	      node.setAttribute("data-message-fingerprint", "thinking");
+		    function thinkingNode(status) {
+		      const node = document.createElement("article");
+		      node.className = "timelineItem assistant thinking";
+		      node.setAttribute("data-message-key", "__thinking");
+		      node.setAttribute("data-message-fingerprint", assistantActivityFingerprint(status));
 	      const avatar = document.createElement("div");
       avatar.className = "avatar";
       setAvatarContent(avatar, "assistant");
@@ -7361,33 +8796,209 @@ ${codiconFontFace}    .codicon {
       const meta = document.createElement("div");
       meta.className = "messageMeta";
       meta.textContent = "ChipMate";
-      const body = document.createElement("div");
-      body.className = "messageBody";
-      const label = document.createElement("span");
-      label.textContent = "Thinking";
+	      const body = document.createElement("div");
+	      body.className = "messageBody activityRow";
+	      const label = document.createElement("span");
+	      label.className = "activityLabel";
+	      label.textContent = assistantActivityLabel(status);
+      const elapsed = document.createElement("span");
+      elapsed.className = "activityElapsed";
+      elapsed.setAttribute("data-active-activity-elapsed", "true");
+      elapsed.textContent = assistantActivityElapsedText(status);
+      elapsed.classList.toggle("is-empty", !elapsed.textContent);
       const dots = document.createElement("span");
       dots.className = "dots";
       dots.append(document.createElement("span"), document.createElement("span"), document.createElement("span"));
-      body.append(label, dots);
+      body.append(label);
+      if (elapsed.textContent) {
+        const separator = document.createElement("span");
+        separator.className = "activitySeparator";
+        separator.textContent = "·";
+        body.append(separator, elapsed);
+      } else {
+        body.appendChild(elapsed);
+      }
+      body.appendChild(dots);
       card.append(meta, body);
       node.append(avatar, card);
       return node;
     }
 
-    function renderPartCards(root, item) {
+    function toolLiveActivityStatus(status, toolParts) {
+      if (!status || !toolParts.length) return undefined;
+      const toolName = compactActivityText(status.currentToolName);
+      if (!toolName) return undefined;
+      return {
+        ...status,
+        currentToolName: toolName,
+      };
+    }
+
+    function toolLiveActivityRow(status) {
+      const row = document.createElement("div");
+      row.className = "toolLiveActivityRow activityRow";
+      const label = document.createElement("span");
+      label.className = "activityLabel";
+      label.textContent = assistantActivityLabel(status);
+      const elapsed = document.createElement("span");
+      elapsed.className = "activityElapsed";
+      elapsed.setAttribute("data-active-activity-elapsed", "true");
+      elapsed.textContent = assistantActivityElapsedText(status);
+      elapsed.classList.toggle("is-empty", !elapsed.textContent);
+      const dots = document.createElement("span");
+      dots.className = "dots";
+      dots.setAttribute("aria-hidden", "true");
+      dots.append(document.createElement("span"), document.createElement("span"), document.createElement("span"));
+      row.append(label);
+      if (elapsed.textContent) {
+        const separator = document.createElement("span");
+        separator.className = "activitySeparator";
+        separator.textContent = "·";
+        row.append(separator, elapsed);
+      } else {
+        row.appendChild(elapsed);
+      }
+      row.appendChild(dots);
+      return row;
+    }
+
+    function renderPartCards(root, item, options) {
       const parts = item.parts || [];
       const reasoningParts = parts.filter((part) => part.type === "reasoning");
+      const clarificationParts = parts.filter((part) => part.type === "clarification");
+      const diagramParts = parts.filter((part) => part.type === "diagram");
       const toolParts = parts.filter((part) => part.type === "tool");
+      const liveToolActivity = toolLiveActivityStatus(options && options.liveToolActivity, toolParts);
       const warningParts = parts.filter((part) => part.type === "serverToolWarning");
+      const docTimelineParts = parts.filter((part) => part.type === "docAgentTimeline");
+      const docConflictParts = parts.filter((part) => part.type === "docAgentConflictReview");
+      const generatedParts = parts.filter((part) => part.type === "generatedDocument");
       for (const part of reasoningParts) {
         root.appendChild(partCard(part, "Thinking", "reasoning"));
+      }
+      for (const part of clarificationParts) {
+        root.appendChild(clarificationCard(part));
+      }
+      for (const part of diagramParts) {
+        root.appendChild(diagramPartCard(part));
       }
       if (toolParts.length > 0) {
         root.appendChild(toolGroupCard(toolParts));
       }
+      if (liveToolActivity) {
+        root.appendChild(toolLiveActivityRow(liveToolActivity));
+      }
       for (const part of warningParts) {
         root.appendChild(partCard(part, "Warning: workspace filesystem tool used", "serverWarning"));
       }
+      for (const part of docTimelineParts) {
+        root.appendChild(docAgentTimelineCard(part));
+      }
+      for (const part of docConflictParts) {
+        root.appendChild(docAgentConflictCard(part));
+      }
+      for (const part of generatedParts) {
+        root.appendChild(generatedDocumentCard(part));
+      }
+    }
+
+    function clarificationCard(part) {
+      const card = document.createElement("section");
+      card.className = "clarificationCard";
+      card.setAttribute("data-clarification-card", part.clarificationId || "");
+      const answered = part.status === "answered";
+      const cancelled = part.status === "cancelled";
+      const head = document.createElement("div");
+      head.className = "clarificationHead";
+      const title = document.createElement("div");
+      title.className = "clarificationTitle";
+      title.textContent = answered ? "已收到澄清回答" : cancelled ? "澄清已取消" : "需要你的确认";
+      title.title = part.title || title.textContent;
+      const status = document.createElement("span");
+      status.className = "clarificationStatus";
+      status.textContent = answered ? "已回答" : cancelled ? "已取消" : "等待你的回答";
+      head.append(title, status);
+      card.appendChild(head);
+      if (part.detail) {
+        const reason = document.createElement("div");
+        reason.className = "clarificationReason";
+        reason.textContent = part.detail;
+        card.appendChild(reason);
+      }
+      for (const question of part.questions || []) {
+        card.appendChild(clarificationQuestionNode(part, question, answered || cancelled));
+      }
+      if (answered && Array.isArray(part.answers) && part.answers.length) {
+        const summary = document.createElement("div");
+        summary.className = "clarificationAnswerSummary";
+        summary.textContent = "回答：" + part.answers.map((answer) => answer.text || answer.choiceId || "").filter(Boolean).join("；");
+        card.appendChild(summary);
+      } else if (!cancelled) {
+        const actions = document.createElement("div");
+        actions.className = "clarificationActions";
+        const submit = document.createElement("button");
+        submit.type = "button";
+        submit.className = "statusActionButton primary";
+        submit.textContent = "确认并继续";
+        submit.setAttribute("data-clarification-submit", part.clarificationId || "");
+        actions.appendChild(submit);
+        card.appendChild(actions);
+      }
+      return card;
+    }
+
+    function clarificationQuestionNode(part, question, disabled) {
+      const node = document.createElement("div");
+      node.className = "clarificationQuestion";
+      node.setAttribute("data-clarification-question", question.id || "");
+      const text = document.createElement("div");
+      text.className = "clarificationQuestionText";
+      text.textContent = question.question || "";
+      node.appendChild(text);
+      if (Array.isArray(question.choices) && question.choices.length) {
+        const choices = document.createElement("div");
+        choices.className = "clarificationChoices";
+        for (const choice of question.choices) {
+          const button = document.createElement("button");
+          button.type = "button";
+          button.className = "statusActionButton clarificationChoice";
+          button.textContent = choice.label || choice.id || "Choice";
+          button.title = choice.description || button.textContent;
+          button.disabled = Boolean(disabled);
+          button.setAttribute("data-clarification-choice", part.clarificationId || "");
+          button.setAttribute("data-clarification-question-id", question.id || "");
+          button.setAttribute("data-clarification-choice-id", choice.id || "");
+          button.setAttribute("data-clarification-choice-label", choice.label || "");
+          choices.appendChild(button);
+        }
+        node.appendChild(choices);
+      }
+      if (question.allowFreeText && !disabled) {
+        const input = document.createElement("textarea");
+        input.className = "clarificationFreeText";
+        input.rows = 2;
+        input.placeholder = "输入自定义回答";
+        input.setAttribute("data-clarification-free-text", question.id || "");
+        node.appendChild(input);
+      }
+      return node;
+    }
+
+    function diagramPartCard(part) {
+      if (String(part.kind || "").toLowerCase() === "drawio") {
+        const block = drawioDiagramBlock(part.title || "drawio", part.xml || "", {
+          diagramId: part.diagramId || "",
+        });
+        block.dataset.diagramSource = part.source || "tool";
+        if (Array.isArray(part.warnings) && part.warnings.length) {
+          const warning = diagramStatus(part.warnings.slice(0, 4).join(" "), false);
+          warning.className += " diagramToolWarning";
+          const canvas = block.querySelector(".diagramCanvas");
+          block.insertBefore(warning, canvas || null);
+        }
+        return block;
+      }
+      return partCard(part, part.title || "Diagram", "diagramPart");
     }
 
     function partCard(part, summaryText, className) {
@@ -7429,12 +9040,192 @@ ${codiconFontFace}    .codicon {
     function toolGroupCard(parts) {
       const details = document.createElement("details");
       details.className = "toolCard toolGroup";
+      const approvalParts = parts.filter(isPendingToolApproval);
+      if (approvalParts.length > 0) details.open = true;
       const summary = document.createElement("summary");
       summary.textContent = toolGroupSummary(parts);
-      const body = document.createElement("pre");
-      body.textContent = toolGroupDetail(parts);
+      const body = document.createElement("div");
+      body.className = "toolGroupBody";
+      for (const part of approvalParts) body.appendChild(toolApprovalPane(part));
+      const detail = document.createElement("pre");
+      detail.textContent = toolGroupDetail(parts);
+      body.appendChild(detail);
       details.append(summary, body);
       return details;
+    }
+
+    function isPendingToolApproval(part) {
+      return part && part.status === "approval-required" && part.approvalRequestId;
+    }
+
+    function toolApprovalPane(part) {
+      const pane = document.createElement("div");
+      pane.className = "toolApprovalPane";
+      pane.setAttribute("data-tool-approval-pane", part.approvalRequestId);
+      const head = document.createElement("div");
+      head.className = "toolApprovalHead";
+      const title = document.createElement("div");
+      title.className = "toolApprovalTitle";
+      title.textContent = part.approvalTitle || part.title || "Tool approval";
+      title.title = title.textContent;
+      const risk = document.createElement("span");
+      risk.className = "toolApprovalRisk";
+      risk.textContent = "Risk: " + (part.approvalRisk || "unknown");
+      head.append(title, risk);
+      const summary = document.createElement("div");
+      summary.className = "toolApprovalSummary";
+      summary.textContent = part.approvalSummary || "ChipMate is waiting for permission to continue.";
+      const meta = document.createElement("div");
+      meta.className = "toolApprovalMeta";
+      if (part.approvalPath) appendToolApprovalStat(meta, "Path", part.approvalPath);
+      if (typeof part.approvalBytes === "number") appendToolApprovalStat(meta, "Bytes", String(part.approvalBytes));
+      const reason = document.createElement("div");
+      reason.className = "toolApprovalReason";
+      reason.textContent = part.approvalReason ? "Reason: " + part.approvalReason : "";
+      const actions = document.createElement("div");
+      actions.className = "toolApprovalActions";
+      actions.append(
+        toolApprovalButton(part.approvalRequestId, true, "批准一次", true),
+        toolApprovalButton(part.approvalRequestId, false, "拒绝", false),
+      );
+      pane.append(head, summary);
+      if (meta.childElementCount > 0) pane.appendChild(meta);
+      if (reason.textContent) pane.appendChild(reason);
+      pane.appendChild(actions);
+      return pane;
+    }
+
+    function appendToolApprovalStat(root, label, value) {
+      const item = document.createElement("span");
+      item.className = "toolApprovalStat";
+      item.textContent = label + ": " + value;
+      item.title = item.textContent;
+      root.appendChild(item);
+    }
+
+    function toolApprovalButton(requestId, approved, label, primary) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "statusActionButton" + (primary ? " primary" : "");
+      button.textContent = label;
+      button.title = label;
+      button.setAttribute("data-tool-approval-request", requestId);
+      button.setAttribute("data-tool-approval-approved", approved ? "true" : "false");
+      return button;
+    }
+
+    function toolApprovalFocusButton(requestId) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "statusActionButton";
+      button.textContent = "查看详情";
+      button.title = "跳到消息里的完整审批详情";
+      button.setAttribute("data-tool-approval-focus", requestId);
+      return button;
+    }
+
+    function onMessagesClick(event) {
+      const target = event.target;
+      if (!target || !target.closest) return;
+      const clarificationChoice = target.closest("[data-clarification-choice]");
+      if (clarificationChoice && !clarificationChoice.disabled) {
+        event.preventDefault();
+        selectClarificationChoice(clarificationChoice);
+        return;
+      }
+      const clarificationSubmit = target.closest("[data-clarification-submit]");
+      if (clarificationSubmit && !clarificationSubmit.disabled) {
+        event.preventDefault();
+        submitClarificationAnswer(clarificationSubmit);
+        return;
+      }
+      const focusButton = target.closest("[data-tool-approval-focus]");
+      if (focusButton) {
+        const requestId = focusButton.getAttribute("data-tool-approval-focus") || "";
+        if (!requestId) return;
+        event.preventDefault();
+        focusToolApprovalPane(requestId);
+        return;
+      }
+      const button = target.closest("[data-tool-approval-request]");
+      if (!button || button.disabled) return;
+      const requestId = button.getAttribute("data-tool-approval-request") || "";
+      if (!requestId) return;
+      event.preventDefault();
+      const approved = button.getAttribute("data-tool-approval-approved") === "true";
+      disableToolApprovalActions(requestId);
+      vscode.postMessage({ type: "resolveToolApproval", requestId, approved });
+    }
+
+    function selectClarificationChoice(button) {
+      const card = button.closest("[data-clarification-card]");
+      if (!card) return;
+      const questionId = button.getAttribute("data-clarification-question-id") || "";
+      for (const choice of Array.from(card.querySelectorAll('[data-clarification-question-id="' + cssEscape(questionId) + '"]'))) {
+        choice.classList.toggle("is-selected", choice === button);
+      }
+    }
+
+    function submitClarificationAnswer(button) {
+      const card = button.closest("[data-clarification-card]");
+      if (!card) return;
+      const requestId = button.getAttribute("data-clarification-submit") || card.getAttribute("data-clarification-card") || "";
+      const answers = collectClarificationAnswers(card);
+      if (!requestId || answers.length === 0) {
+        setNotice("请选择或输入澄清回答。");
+        return;
+      }
+      for (const action of Array.from(card.querySelectorAll("button, textarea"))) action.disabled = true;
+      vscode.postMessage({ type: "answerClarification", requestId, answers });
+    }
+
+    function collectClarificationAnswers(card) {
+      const answers = [];
+      for (const question of Array.from(card.querySelectorAll("[data-clarification-question]"))) {
+        const questionId = question.getAttribute("data-clarification-question") || "";
+        const selected = question.querySelector(".clarificationChoice.is-selected");
+        const freeText = question.querySelector("[data-clarification-free-text]");
+        const text = freeText ? String(freeText.value || "").trim() : "";
+        if (selected) {
+          answers.push({
+            questionId,
+            choiceId: selected.getAttribute("data-clarification-choice-id") || "",
+            text: text || selected.getAttribute("data-clarification-choice-label") || selected.textContent || "",
+          });
+        } else if (text) {
+          answers.push({ questionId, text });
+        }
+      }
+      return answers;
+    }
+
+    function cssEscape(value) {
+      if (globalThis.CSS && typeof globalThis.CSS.escape === "function") return globalThis.CSS.escape(value);
+      return String(value || "").replace(/["\\\\]/g, "\\\\$&");
+    }
+
+    function disableToolApprovalActions(requestId) {
+      for (const action of Array.from(document.querySelectorAll("[data-tool-approval-request]"))) {
+        if (action.getAttribute("data-tool-approval-request") === requestId) action.disabled = true;
+      }
+      for (const action of Array.from(document.querySelectorAll("[data-tool-approval-focus]"))) {
+        if (action.getAttribute("data-tool-approval-focus") === requestId) action.disabled = true;
+      }
+    }
+
+    function focusToolApprovalPane(requestId) {
+      const pane = findToolApprovalPane(requestId);
+      if (!pane) return;
+      pane.scrollIntoView({ block: "center", behavior: "smooth" });
+      pane.classList.add("is-focused");
+      const firstAction = pane.querySelector("[data-tool-approval-request]");
+      if (firstAction && firstAction.focus) firstAction.focus({ preventScroll: true });
+      window.setTimeout(() => pane.classList.remove("is-focused"), 1400);
+    }
+
+    function findToolApprovalPane(requestId) {
+      return Array.from(document.querySelectorAll("[data-tool-approval-pane]"))
+        .find((pane) => pane.getAttribute("data-tool-approval-pane") === requestId);
     }
 
     function toolGroupSummary(parts) {
@@ -7476,6 +9267,239 @@ ${codiconFontFace}    .codicon {
       return "Tool: " + (part.title || "tool") + (part.status ? " - " + part.status : "");
     }
 
+    function docAgentTimelineCard(part) {
+      const details = document.createElement("details");
+      details.className = "toolCard docAgentTimelineCard";
+      details.open = part.status !== "completed";
+      const summary = document.createElement("summary");
+      summary.textContent = docAgentTimelineSummary(part);
+      const body = document.createElement("div");
+      body.className = "docAgentTimelineBody";
+      const stats = document.createElement("div");
+      stats.className = "docAgentStats";
+      appendDocAgentStat(stats, "状态", docAgentStatusLabel(part.status));
+      if (part.total) appendDocAgentStat(stats, "进度", String(part.current || 0) + "/" + String(part.total));
+      appendDocAgentStat(stats, "Warning", String(part.warningCount || 0));
+      appendDocAgentStat(stats, "Fallback", String(part.fallbackCount || 0));
+      if (part.startedAt) appendDocAgentStat(stats, "耗时", elapsedLabel(part.startedAt));
+      const list = document.createElement("div");
+      list.className = "docAgentEventList";
+      const events = Array.isArray(part.events) ? part.events.slice(-36) : [];
+      for (const event of events) list.appendChild(docAgentEventRow(event));
+      if (!events.length) {
+        const empty = document.createElement("div");
+        empty.className = "docAgentEventDetail";
+        empty.textContent = "等待生成流程开始。";
+        list.appendChild(empty);
+      }
+      body.append(stats, list);
+      details.append(summary, body);
+      return details;
+    }
+
+    function docAgentTimelineSummary(part) {
+      const base = part.title || "本地 Word 生成过程";
+      const progress = part.total ? " · " + String(part.current || 0) + "/" + String(part.total) : "";
+      const warning = part.warningCount ? " · Warning " + String(part.warningCount) : "";
+      const fallback = part.fallbackCount ? " · Fallback " + String(part.fallbackCount) : "";
+      return base + progress + warning + fallback;
+    }
+
+    function appendDocAgentStat(root, label, value) {
+      const item = document.createElement("span");
+      item.className = "docAgentStat";
+      item.textContent = label + ": " + value;
+      root.appendChild(item);
+    }
+
+    function docAgentEventRow(event) {
+      const row = document.createElement("div");
+      row.className = "docAgentEvent";
+      const head = document.createElement("div");
+      head.className = "docAgentEventHead";
+      const title = document.createElement("span");
+      title.textContent = event.title || event.type || "step";
+      const status = document.createElement("span");
+      status.className = "docAgentEventStatus";
+      status.textContent = event.stateLabel || docAgentStatusLabel(event.status);
+      head.append(title, status);
+      row.appendChild(head);
+      const detailText = [event.detail, event.warning].filter(Boolean).join("\\n");
+      if (detailText) {
+        const detail = document.createElement("div");
+        detail.className = "docAgentEventDetail";
+        detail.textContent = detailText;
+        row.appendChild(detail);
+      }
+      return row;
+    }
+
+    function docAgentConflictCard(part) {
+      const details = document.createElement("details");
+      details.className = "toolCard docAgentConflictCard";
+      details.open = part.status !== "completed";
+      const summary = document.createElement("summary");
+      summary.textContent = part.status === "completed"
+        ? "规则冲突已处理 · " + (part.detail || "")
+        : "规则冲突需要确认 · " + String((part.conflicts || []).length) + " 条";
+      const body = document.createElement("div");
+      body.className = "docAgentConflictBody";
+      const bulk = document.createElement("div");
+      bulk.className = "docAgentBulkActions";
+      for (const action of [
+        { label: "全部采用第一份", choice: "internal" },
+        { label: "全部采用第二份", choice: "external" },
+        { label: "全部保留待评审", choice: "review" },
+      ]) {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "statusActionButton";
+        button.textContent = action.label;
+        button.disabled = part.status === "completed";
+        button.addEventListener("click", () => setAllDocAgentConflictChoices(body, action.choice));
+        bulk.appendChild(button);
+      }
+      const list = document.createElement("div");
+      list.className = "docAgentConflictList";
+      for (const conflict of part.conflicts || []) list.appendChild(docAgentConflictItem(conflict, part.status === "completed"));
+      const confirm = document.createElement("button");
+      confirm.type = "button";
+      confirm.className = "statusActionButton primary docAgentConfirm";
+      confirm.textContent = part.status === "completed" ? "已确认" : "确认选择并继续生成";
+      confirm.disabled = part.status === "completed";
+      confirm.addEventListener("click", () => {
+        vscode.postMessage({
+          type: "resolveDocAgentConflict",
+          requestId: part.requestId,
+          choices: collectDocAgentConflictChoices(body),
+        });
+      });
+      body.append(bulk, list, confirm);
+      details.append(summary, body);
+      return details;
+    }
+
+    function docAgentConflictItem(conflict, disabled) {
+      const item = document.createElement("div");
+      item.className = "docAgentConflictItem";
+      item.dataset.conflictId = conflict.id || "";
+      item.dataset.choice = conflict.choice || "review";
+      const head = document.createElement("div");
+      head.className = "docAgentConflictHead";
+      const title = document.createElement("span");
+      title.textContent = conflict.title || "未命名冲突";
+      const state = document.createElement("span");
+      state.className = "docAgentChoiceState";
+      state.textContent = docAgentChoiceLabel(item.dataset.choice);
+      head.append(title, state);
+      const meta = document.createElement("div");
+      meta.className = "docAgentConflictMeta";
+      meta.textContent = [
+        "第一份/内部：" + (conflict.internalSource || ""),
+        conflict.internalSummary || "",
+        "第二份/外部：" + (conflict.externalSource || ""),
+        conflict.externalSummary || "",
+        "建议：" + (conflict.recommendation || ""),
+      ].filter(Boolean).join("\\n");
+      const choices = document.createElement("div");
+      choices.className = "docAgentChoiceRow";
+      for (const action of [
+        { label: "采用第一份", choice: "internal" },
+        { label: "采用第二份", choice: "external" },
+        { label: "保留待评审", choice: "review" },
+      ]) {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "statusActionButton docAgentChoiceButton" + (item.dataset.choice === action.choice ? " is-selected" : "");
+        button.textContent = action.label;
+        button.disabled = disabled;
+        button.addEventListener("click", () => setDocAgentConflictChoice(item, action.choice));
+        choices.appendChild(button);
+      }
+      item.append(head, meta, choices);
+      return item;
+    }
+
+    function setAllDocAgentConflictChoices(root, choice) {
+      for (const item of Array.from(root.querySelectorAll(".docAgentConflictItem"))) setDocAgentConflictChoice(item, choice);
+    }
+
+    function setDocAgentConflictChoice(item, choice) {
+      item.dataset.choice = choice;
+      const state = item.querySelector(".docAgentChoiceState");
+      if (state) state.textContent = docAgentChoiceLabel(choice);
+      for (const button of Array.from(item.querySelectorAll(".docAgentChoiceButton"))) {
+        button.classList.toggle("is-selected", button.textContent === docAgentChoiceButtonText(choice));
+      }
+    }
+
+    function collectDocAgentConflictChoices(root) {
+      return Array.from(root.querySelectorAll(".docAgentConflictItem")).map((item) => ({
+        conflictId: item.dataset.conflictId || "",
+        choice: item.dataset.choice || "review",
+      }));
+    }
+
+    function docAgentChoiceButtonText(choice) {
+      if (choice === "internal") return "采用第一份";
+      if (choice === "external") return "采用第二份";
+      return "保留待评审";
+    }
+
+    function docAgentChoiceLabel(choice) {
+      if (choice === "internal") return "采用第一份/内部规范";
+      if (choice === "external") return "采用第二份/外部参考";
+      return "保留为待评审冲突";
+    }
+
+    function docAgentStatusLabel(status) {
+      if (status === "completed") return "完成";
+      if (status === "warning") return "Warning";
+      if (status === "waiting") return "等待";
+      if (status === "error") return "失败";
+      return "运行中";
+    }
+
+    function elapsedLabel(startedAt) {
+      const elapsed = Math.max(0, Date.now() - Number(startedAt || Date.now()));
+      if (elapsed < 1000) return "<1s";
+      return String(Math.round(elapsed / 1000)) + "s";
+    }
+
+    function generatedDocumentCard(part) {
+      const card = document.createElement("div");
+      card.className = "toolCard generatedDocumentCard";
+      const title = document.createElement("div");
+      title.className = "generatedDocumentTitle";
+      title.textContent = "Word 文档已生成";
+      const meta = document.createElement("div");
+      meta.className = "generatedDocumentMeta";
+      meta.textContent = (part.path || "") + " · 来源 " + (part.sourceCount || 0) + " 份 · Warning " + (part.warningCount || 0) + " 条";
+      const actions = document.createElement("div");
+      actions.className = "generatedDocumentActions";
+      const open = document.createElement("button");
+      open.type = "button";
+      open.className = "statusActionButton primary";
+      open.textContent = "外部打开";
+      open.title = "用系统默认应用打开生成的 Word 文档";
+      open.addEventListener("click", () => vscode.postMessage({ type: "openGeneratedDocument", path: part.path, mode: "external" }));
+      const reveal = document.createElement("button");
+      reveal.type = "button";
+      reveal.className = "statusActionButton";
+      reveal.textContent = "在资源管理器中显示";
+      reveal.title = "在 Finder 或系统资源管理器中显示文件";
+      reveal.addEventListener("click", () => vscode.postMessage({ type: "openGeneratedDocument", path: part.path, mode: "reveal" }));
+      actions.append(open, reveal);
+      card.append(title, meta, actions);
+      if (Array.isArray(part.warnings) && part.warnings.length) {
+        const warnings = document.createElement("pre");
+        warnings.className = "generatedDocumentWarnings";
+        warnings.textContent = part.warnings.slice(0, 8).join("\\n");
+        card.appendChild(warnings);
+      }
+      return card;
+    }
+
     function renderMarkdownInto(root, text) {
       root.innerHTML = "";
       const lines = String(text || "").split(/\\r?\\n/);
@@ -7494,9 +9518,7 @@ ${codiconFontFace}    .codicon {
         language = "";
       };
       const flushPendingCode = () => {
-        root.appendChild(isMermaidLanguage(language)
-          ? pendingMermaidSourceBlock(language, codeLines.join("\\n"))
-          : codeBlock(language, codeLines.join("\\n")));
+        root.appendChild(pendingDiagramSourceBlock(language, codeLines.join("\\n")));
         codeLines = [];
         language = "";
       };
@@ -8036,13 +10058,25 @@ ${codiconFontFace}    .codicon {
       return value === "mermaid" || value === "mmd";
     }
 
+    function isDrawioLanguage(language) {
+      const value = String(language || "").trim().toLowerCase().split(/\\s+/)[0];
+      return value === "drawio" || value === "draw.io" || value === "mxfile" || value === "mxgraph" || value === "mxgraphmodel";
+    }
+
     function codeBlock(language, codeText) {
       if (isMermaidLanguage(language)) return diagramBlock(language, codeText);
+      if (isDrawioLanguage(language)) return drawioDiagramBlock(language, codeText);
       return sourceCodeBlock(language, codeText);
     }
 
     function pendingMermaidSourceBlock(language, codeText) {
       return sourceCodeBlock((language || "mermaid") + " source pending", codeText);
+    }
+
+    function pendingDiagramSourceBlock(language, codeText) {
+      return isMermaidLanguage(language) || isDrawioLanguage(language)
+        ? sourceCodeBlock((language || "diagram") + " source pending", codeText)
+        : codeBlock(language, codeText);
     }
 
     function sourceCodeBlock(language, codeText) {
@@ -8076,25 +10110,41 @@ ${codiconFontFace}    .codicon {
       block.setAttribute("tabindex", "-1");
       const head = document.createElement("div");
       head.className = "codeHead";
-      const label = document.createElement("span");
-      label.className = "codeLanguage";
-      label.textContent = language || "mermaid";
-      const actions = document.createElement("span");
-      actions.className = "diagramActions";
-      const source = document.createElement("button");
-      source.className = "toggleDiagramSource oc-icon-btn oc-liquid-btn";
-      source.type = "button";
+	      const label = document.createElement("span");
+	      label.className = "codeLanguage";
+	      label.textContent = language || "mermaid";
+	      const actions = document.createElement("span");
+	      actions.className = "diagramActions";
+	      const zoomOut = document.createElement("button");
+	      zoomOut.className = "diagramZoom diagramZoomOut oc-icon-btn oc-liquid-btn";
+	      zoomOut.type = "button";
+	      setIconOnlyButton(zoomOut, "zoomOut", "Zoom out diagram");
+	      zoomOut.addEventListener("click", () => setDiagramZoom(block, diagramZoomValue(block) - DIAGRAM_ZOOM_STEP));
+	      const zoomIn = document.createElement("button");
+	      zoomIn.className = "diagramZoom diagramZoomIn oc-icon-btn oc-liquid-btn";
+	      zoomIn.type = "button";
+	      setIconOnlyButton(zoomIn, "zoomIn", "Zoom in diagram");
+	      zoomIn.addEventListener("click", () => setDiagramZoom(block, diagramZoomValue(block) + DIAGRAM_ZOOM_STEP));
+	      const exportPng = document.createElement("button");
+	      exportPng.className = "exportMermaidImage oc-icon-btn oc-liquid-btn";
+	      exportPng.type = "button";
+	      setIconOnlyButton(exportPng, "save", "Export Mermaid diagram as PNG");
+	      exportPng.addEventListener("click", () => exportMermaidDiagramImage(block, exportPng));
+	      const source = document.createElement("button");
+	      source.className = "toggleDiagramSource oc-icon-btn oc-liquid-btn";
+	      source.type = "button";
       source.setAttribute("aria-pressed", "false");
       setIconOnlyButton(source, "references", "Show Mermaid source");
       const copy = document.createElement("button");
-      copy.className = "copyCode oc-icon-btn oc-liquid-btn";
-      copy.type = "button";
-      setIconOnlyButton(copy, "copy", "Copy Mermaid source");
-      copy.addEventListener("click", () => copyCode(codeText, copy));
-      actions.append(source, copy);
-      head.append(label, actions);
-      const canvas = document.createElement("div");
-      canvas.className = "diagramCanvas";
+	      copy.className = "copyCode oc-icon-btn oc-liquid-btn";
+	      copy.type = "button";
+	      setIconOnlyButton(copy, "copy", "Copy Mermaid source");
+	      copy.addEventListener("click", () => copyCode(codeText, copy));
+	      actions.append(zoomOut, zoomIn, exportPng, source, copy);
+	      head.append(label, actions);
+	      const canvas = document.createElement("div");
+	      canvas.className = "diagramCanvas";
+	      enableDiagramCanvasPan(canvas);
       canvas.appendChild(diagramStatus("Rendering Mermaid diagram...", false));
       const sourcePre = document.createElement("pre");
       sourcePre.className = "diagramSource";
@@ -8104,22 +10154,380 @@ ${codiconFontFace}    .codicon {
       source.addEventListener("click", () => {
         const visible = !block.classList.contains("show-source");
         block.classList.toggle("show-source", visible);
+	        source.setAttribute("aria-pressed", visible ? "true" : "false");
+	        setIconOnlyButton(source, visible ? "discard" : "references", visible ? "Hide Mermaid source" : "Show Mermaid source");
+	      });
+	      block.append(head, canvas, sourcePre);
+	      setDiagramZoom(block, DIAGRAM_ZOOM_DEFAULT);
+	      disableDiagramZoom(block);
+	      renderMermaidDiagram(block, canvas, codeText);
+	      return block;
+	    }
+
+    function drawioDiagramBlock(language, codeText, options) {
+      const block = document.createElement("section");
+      block.className = "diagramBlock drawioDiagramBlock";
+      block.setAttribute("role", "region");
+      block.setAttribute("aria-label", "draw.io diagram");
+      block.setAttribute("data-diagram-kind", "drawio");
+      block.setAttribute("tabindex", "-1");
+      const providedDiagramId = options && options.diagramId ? String(options.diagramId) : "";
+      block.dataset.diagramId = providedDiagramId || ("chipmate-drawio-" + (++drawioDiagramSerial));
+      block.dataset.diagramCacheKey = drawioDiagramCacheKey(providedDiagramId, codeText);
+      const head = document.createElement("div");
+      head.className = "codeHead";
+      const label = document.createElement("span");
+      label.className = "codeLanguage";
+      label.textContent = language || "drawio";
+      const actions = document.createElement("span");
+      actions.className = "diagramActions";
+      const zoomOut = document.createElement("button");
+      zoomOut.className = "diagramZoom diagramZoomOut oc-icon-btn oc-liquid-btn";
+      zoomOut.type = "button";
+      setIconOnlyButton(zoomOut, "zoomOut", "Zoom out diagram");
+      zoomOut.addEventListener("click", () => setDiagramZoom(block, diagramZoomValue(block) - DIAGRAM_ZOOM_STEP));
+      const zoomIn = document.createElement("button");
+      zoomIn.className = "diagramZoom diagramZoomIn oc-icon-btn oc-liquid-btn";
+      zoomIn.type = "button";
+      setIconOnlyButton(zoomIn, "zoomIn", "Zoom in diagram");
+      zoomIn.addEventListener("click", () => setDiagramZoom(block, diagramZoomValue(block) + DIAGRAM_ZOOM_STEP));
+      const exportPng = document.createElement("button");
+      exportPng.className = "exportDrawioImage oc-icon-btn oc-liquid-btn";
+      exportPng.type = "button";
+      exportPng.disabled = true;
+      setDrawioExportUnavailable(exportPng, "Draw.io PNG export is available after the preview renders.");
+      let renderedPngDataUri = "";
+      exportPng.addEventListener("click", () => {
+        if (!renderedPngDataUri) {
+          setNotice("Draw.io diagram is not ready to export.");
+          return;
+        }
+        vscode.postMessage({
+          type: "exportDrawioImage",
+          diagramId: block.dataset.diagramId || "",
+          filenameHint: label.textContent || "drawio-diagram",
+          dataUri: renderedPngDataUri,
+        });
+      });
+      const source = document.createElement("button");
+      source.className = "toggleDiagramSource oc-icon-btn oc-liquid-btn";
+      source.type = "button";
+      source.setAttribute("aria-pressed", "false");
+      setIconOnlyButton(source, "references", "Show draw.io source");
+      const copy = document.createElement("button");
+      copy.className = "copyCode oc-icon-btn oc-liquid-btn";
+      copy.type = "button";
+      setIconOnlyButton(copy, "copy", "Copy draw.io source");
+      copy.addEventListener("click", () => copyCode(codeText, copy));
+      actions.append(zoomOut, zoomIn, exportPng, source, copy);
+      head.append(label, actions);
+      const canvas = document.createElement("div");
+      canvas.className = "diagramCanvas";
+      enableDiagramCanvasPan(canvas);
+      const sourcePre = document.createElement("pre");
+      sourcePre.className = "diagramSource";
+      const sourceCode = document.createElement("code");
+      sourceCode.textContent = codeText;
+      sourcePre.appendChild(sourceCode);
+      source.addEventListener("click", () => {
+        const visible = !block.classList.contains("show-source");
+        block.classList.toggle("show-source", visible);
         source.setAttribute("aria-pressed", visible ? "true" : "false");
-        setIconOnlyButton(source, visible ? "discard" : "references", visible ? "Hide Mermaid source" : "Show Mermaid source");
+        setIconOnlyButton(source, visible ? "discard" : "references", visible ? "Hide draw.io source" : "Show draw.io source");
       });
       block.append(head, canvas, sourcePre);
-      renderMermaidDiagram(block, canvas, codeText);
+      setDiagramZoom(block, DIAGRAM_ZOOM_DEFAULT);
+      disableDiagramZoom(block);
+      renderDrawioDiagram(block, canvas, codeText, block.dataset.diagramCacheKey || "", (dataUri) => {
+        renderedPngDataUri = dataUri;
+        exportPng.disabled = false;
+        setIconOnlyButton(exportPng, "save", "Export draw.io diagram as PNG");
+        void registerDiagramVisualEvidence(block, {
+          kind: "drawio",
+          title: label.textContent || "draw.io diagram",
+          source: codeText,
+          dataUri,
+        });
+      });
       return block;
     }
 
-    function diagramStatus(text, isError) {
+	    function diagramStatus(text, isError, detail) {
       const status = document.createElement("div");
       status.className = "diagramStatus" + (isError ? " error" : "");
-      status.textContent = text;
+      const line = document.createElement("div");
+      line.textContent = text;
+      status.appendChild(line);
+      const detailText = String(detail || "").trim();
+      if (detailText) {
+        const details = document.createElement("details");
+        const summary = document.createElement("summary");
+        summary.textContent = "Details";
+        const code = document.createElement("code");
+        code.textContent = detailText;
+        details.append(summary, code);
+        status.appendChild(details);
+      }
       return status;
-    }
+	    }
 
-    async function renderMermaidDiagram(block, canvas, codeText) {
+	    async function exportMermaidDiagramImage(block, button) {
+	      const previousLabel = button ? (button.getAttribute("aria-label") || button.title || "Export Mermaid diagram as PNG") : "";
+	      try {
+	        const svg = block && block.dataset && block.dataset.diagramRendered === "true"
+	          ? block.querySelector(".diagramCanvas svg")
+	          : undefined;
+	        if (!svg) throw new Error("Mermaid diagram is not ready to export.");
+	        const dataUrl = await mermaidSvgToPngDataUrl(svg);
+	        if (button) setButtonTemporaryLabel(button, "Exporting", previousLabel);
+	        setNotice("Choose where to save the Mermaid PNG.");
+	        vscode.postMessage({
+	          type: "exportMermaidImage",
+	          format: "png",
+	          dataUrl,
+	        });
+	      } catch (error) {
+	        if (button) setButtonTemporaryLabel(button, "Failed", previousLabel);
+	        setNotice(diagramErrorMessage(error));
+	      }
+	    }
+
+	    async function registerDiagramVisualEvidence(block, input) {
+	      try {
+	        if (!block || !block.dataset) return;
+	        if (!block.dataset.messageId) {
+	          if (!input.retry) setTimeout(() => void registerDiagramVisualEvidence(block, Object.assign({}, input, { retry: true })), 0);
+	          return;
+	        }
+	        const rawDataUri = input.dataUri || await mermaidSvgToPngDataUrl(input.svg);
+	        const visualProfile = diagramVisualProfile(block, input);
+	        const normalized = await normalizeDiagramVisualDataUri(rawDataUri, visualProfile);
+	        const sourceHash = input.source ? hashString(String(input.source || "")) : "";
+	        const key = [
+	          block.dataset.sessionId || "",
+	          block.dataset.messageId || "",
+	          input.kind || "",
+	          block.dataset.diagramId || "",
+	          sourceHash,
+	          hashString(normalized.dataUri || ""),
+	        ].join(":");
+	        if (registeredDiagramVisualEvidence.has(key)) return;
+	        registeredDiagramVisualEvidence.add(key);
+	        vscode.postMessage({
+	          type: "registerDiagramVisualEvidence",
+	          sessionID: block.dataset.sessionId || "",
+	          messageId: block.dataset.messageId || "",
+	          diagramId: block.dataset.diagramId || "",
+	          kind: input.kind || "mermaid",
+	          title: input.title || "",
+	          sourceHash,
+	          dataUri: normalized.dataUri,
+	          width: normalized.width,
+	          height: normalized.height,
+	        });
+	      } catch (error) {
+	        postDrawioRenderTelemetry("visual-evidence-failed", { code: "visual.evidence_failed", message: diagramErrorMessage(error) });
+	      }
+	    }
+
+	    function diagramVisualProfile(block, input) {
+	      const dense = isDenseDiagramVisual(block, input);
+	      return {
+	        dense,
+	        maxSide: dense ? DIAGRAM_VISUAL_DENSE_MAX_SIDE : DIAGRAM_VISUAL_NORMAL_MAX_SIDE,
+	        minSide: DIAGRAM_VISUAL_READABLE_MIN_SIDE,
+	        softMaxBytes: DIAGRAM_VISUAL_SOFT_MAX_BYTES,
+	        hardMaxBytes: dense ? DIAGRAM_VISUAL_HARD_MAX_BYTES : DIAGRAM_VISUAL_SOFT_MAX_BYTES,
+	      };
+	    }
+
+	    function isDenseDiagramVisual(block, input) {
+	      const source = String((input && input.source) || "");
+	      if (textByteLength(source) >= DIAGRAM_VISUAL_DENSE_SOURCE_BYTES) return true;
+	      const kind = String((input && input.kind) || (block && block.dataset && block.dataset.diagramKind) || "").toLowerCase();
+	      if (kind === "drawio") {
+	        const cellCount = countPattern(source, /<mxCell\\b/gi);
+	        const textCellCount = countPattern(source, /\\bvalue="[^"]{2,}"/gi);
+	        return cellCount >= DIAGRAM_VISUAL_DENSE_DRAWIO_CELL_COUNT || textCellCount >= DIAGRAM_VISUAL_DENSE_LABEL_COUNT;
+	      }
+	      if (kind === "mermaid") {
+	        const svgTextCount = svgTextElementCount(input && input.svg);
+	        const sourceLabelCount = countPattern(source, /(\\[[^\\]]+\\]|\\([^)]{2,}\\)|\\{[^}]+\\})/g);
+	        const edgeCount = countPattern(source, /(-->|---|==>|-.->|--x|--o|<--|<-->|~~~)/g);
+	        return svgTextCount >= DIAGRAM_VISUAL_DENSE_LABEL_COUNT ||
+	          sourceLabelCount >= DIAGRAM_VISUAL_DENSE_LABEL_COUNT ||
+	          edgeCount >= DIAGRAM_VISUAL_DENSE_EDGE_COUNT;
+	      }
+	      return false;
+	    }
+
+	    function svgTextElementCount(svg) {
+	      try {
+	        return svg && typeof svg.querySelectorAll === "function"
+	          ? svg.querySelectorAll("text,tspan").length
+	          : 0;
+	      } catch {
+	        return 0;
+	      }
+	    }
+
+	    function countPattern(value, pattern) {
+	      const matches = String(value || "").match(pattern);
+	      return matches ? matches.length : 0;
+	    }
+
+	    function diagramVisualResizeAttempts(originalLongest, profile) {
+	      const target = Math.max(1, Math.min(profile.maxSide, originalLongest));
+	      const floor = Math.max(1, Math.min(profile.minSide, target));
+	      const attempts = [];
+	      let limit = target;
+	      while (true) {
+	        const rounded = Math.max(1, Math.round(limit));
+	        if (!attempts.includes(rounded)) attempts.push(rounded);
+	        if (rounded <= floor) break;
+	        const next = Math.floor(rounded * 0.75);
+	        limit = next < floor ? floor : next;
+	      }
+	      return attempts;
+	    }
+
+	    function normalizeDiagramVisualDataUri(dataUri, profile) {
+	      return new Promise((resolve, reject) => {
+	        try {
+	          const source = String(dataUri || "");
+	          if (!/^data:image\\/png;base64,/i.test(source)) throw new Error("Rendered diagram is not a PNG image.");
+	          const image = new Image();
+	          image.onload = () => {
+	            try {
+		              const originalWidth = Math.max(1, image.naturalWidth || image.width || 1);
+		              const originalHeight = Math.max(1, image.naturalHeight || image.height || 1);
+		              const originalLongest = Math.max(originalWidth, originalHeight);
+		              const originalBytes = dataUriByteLength(source);
+		              const visualProfile = profile || diagramVisualProfile(undefined, {});
+		              if (originalLongest <= visualProfile.maxSide && originalBytes <= visualProfile.hardMaxBytes) {
+		                resolve({ dataUri: source, width: originalWidth, height: originalHeight });
+		                return;
+		              }
+		              const attempts = diagramVisualResizeAttempts(originalLongest, visualProfile);
+		              for (const limit of attempts) {
+		                const scale = Math.min(1, limit / originalLongest);
+		                const width = Math.max(1, Math.round(originalWidth * scale));
+		                const height = Math.max(1, Math.round(originalHeight * scale));
+		                const canvas = document.createElement("canvas");
+	                canvas.width = width;
+	                canvas.height = height;
+	                const context = canvas.getContext("2d");
+	                if (!context) throw new Error("Canvas export is not available.");
+		                context.drawImage(image, 0, 0, width, height);
+		                const output = canvas.toDataURL("image/png");
+		                if (!/^data:image\\/png;base64,/i.test(output)) throw new Error("Diagram visual export failed.");
+		                if (dataUriByteLength(output) <= visualProfile.hardMaxBytes) {
+		                  resolve({ dataUri: output, width, height });
+		                  return;
+		                }
+		              }
+		              throw new Error("Diagram visual image is too large after readable compression.");
+		            } catch (error) {
+		              reject(error);
+		            }
+	          };
+	          image.onerror = () => reject(new Error("Rendered diagram PNG could not be loaded."));
+	          image.src = source;
+	        } catch (error) {
+	          reject(error);
+	        }
+	      });
+	    }
+
+	    function dataUriByteLength(dataUri) {
+	      const base64 = String(dataUri || "").replace(/^data:image\\/png;base64,/i, "");
+	      const padding = base64.endsWith("==") ? 2 : base64.endsWith("=") ? 1 : 0;
+	      return Math.max(0, Math.floor((base64.length * 3) / 4) - padding);
+	    }
+
+	    function mermaidSvgToPngDataUrl(svg) {
+	      return new Promise((resolve, reject) => {
+	        try {
+	          const size = svgExportSize(svg);
+	          const clone = svg.cloneNode(true);
+	          clone.setAttribute("xmlns", "http://www.w3.org/2000/svg");
+	          clone.setAttribute("width", String(size.width));
+	          clone.setAttribute("height", String(size.height));
+	          if (!clone.getAttribute("viewBox")) clone.setAttribute("viewBox", size.viewBox);
+	          clone.setAttribute("style", "color: " + getComputedStyle(svg).color + ";");
+	          const svgText = new XMLSerializer().serializeToString(clone);
+	          const image = new Image();
+	          const blob = new Blob([svgText], { type: "image/svg+xml;charset=utf-8" });
+	          const url = URL.createObjectURL(blob);
+	          image.onload = () => {
+	            try {
+	              const scale = Math.max(1, Math.min(3, Number(window.devicePixelRatio) || 1));
+	              const canvas = document.createElement("canvas");
+	              canvas.width = Math.max(1, Math.ceil(size.width * scale));
+	              canvas.height = Math.max(1, Math.ceil(size.height * scale));
+	              const context = canvas.getContext("2d");
+	              if (!context) throw new Error("Canvas export is not available.");
+	              context.setTransform(scale, 0, 0, scale, 0, 0);
+	              const background = exportCanvasBackground(svg);
+	              if (background) {
+	                context.fillStyle = background;
+	                context.fillRect(0, 0, size.width, size.height);
+	              }
+	              context.drawImage(image, 0, 0, size.width, size.height);
+	              const dataUrl = canvas.toDataURL("image/png");
+	              if (!/^data:image\\/png;base64,/i.test(dataUrl)) throw new Error("Mermaid PNG export failed.");
+	              resolve(dataUrl);
+	            } catch (error) {
+	              reject(error);
+	            } finally {
+	              URL.revokeObjectURL(url);
+	            }
+	          };
+	          image.onerror = () => {
+	            URL.revokeObjectURL(url);
+	            reject(new Error("Mermaid SVG could not be converted to PNG."));
+	          };
+	          image.src = url;
+	        } catch (error) {
+	          reject(error);
+	        }
+	      });
+	    }
+
+	    function svgExportSize(svg) {
+	      const viewBox = String(svg.getAttribute("viewBox") || "").trim().split(/[\\s,]+/).map(Number);
+	      if (viewBox.length === 4 && viewBox.every(Number.isFinite) && viewBox[2] > 0 && viewBox[3] > 0) {
+	        return {
+	          width: Math.ceil(viewBox[2]),
+	          height: Math.ceil(viewBox[3]),
+	          viewBox: viewBox.join(" "),
+	        };
+	      }
+	      const rect = svg.getBoundingClientRect ? svg.getBoundingClientRect() : { width: 0, height: 0 };
+	      const width = svgLength(svg.getAttribute("width")) || rect.width || 800;
+	      const height = svgLength(svg.getAttribute("height")) || rect.height || 600;
+	      return {
+	        width: Math.ceil(width),
+	        height: Math.ceil(height),
+	        viewBox: "0 0 " + Math.ceil(width) + " " + Math.ceil(height),
+	      };
+	    }
+
+	    function svgLength(value) {
+	      const text = String(value || "").trim();
+	      if (!text || text.endsWith("%")) return 0;
+	      const match = text.match(/^([0-9]+(?:\\.[0-9]+)?)(?:px)?$/i);
+	      return match ? Number(match[1]) : 0;
+	    }
+
+	    function exportCanvasBackground(svg) {
+	      const canvas = svg.closest(".diagramCanvas");
+	      const background = canvas ? getComputedStyle(canvas).backgroundColor : "";
+	      if (!background || background === "transparent" || /^rgba\\([^,]+,[^,]+,[^,]+,\\s*0\\)$/i.test(background)) return "";
+	      return background;
+	    }
+
+	    async function renderMermaidDiagram(block, canvas, codeText) {
       const source = String(codeText || "");
       if (!source.trim()) {
         renderMermaidFallback(block, canvas, "Empty Mermaid diagram.");
@@ -8137,12 +10545,24 @@ ${codiconFontFace}    .codicon {
       const renderId = "chipmate-mermaid-" + (++mermaidRenderSerial);
       try {
         const result = await mermaid.render(renderId, source);
-        if (!canvas.isConnected) return;
-        canvas.innerHTML = result && result.svg ? result.svg : "";
-        if (!canvas.firstChild) canvas.appendChild(diagramStatus("Mermaid produced an empty diagram.", true));
-      } catch (error) {
-        renderMermaidFallback(block, canvas, "Mermaid render failed: " + diagramErrorMessage(error));
-      }
+	        if (!canvas.isConnected) return;
+	        canvas.innerHTML = result && result.svg ? result.svg : "";
+	        if (!canvas.firstChild) {
+	          canvas.appendChild(diagramStatus("Mermaid produced an empty diagram.", true));
+	          disableDiagramZoom(block);
+	          return;
+	        }
+	        block.dataset.diagramRendered = "true";
+	        setDiagramZoom(block, diagramZoomValue(block));
+	        void registerDiagramVisualEvidence(block, {
+	          kind: "mermaid",
+	          title: "Mermaid diagram",
+	          source,
+	          svg: canvas.querySelector("svg"),
+	        });
+	      } catch (error) {
+	        renderMermaidFallback(block, canvas, "Mermaid render failed: " + diagramErrorMessage(error));
+	      }
     }
 
     function initializeMermaid() {
@@ -8167,13 +10587,459 @@ ${codiconFontFace}    .codicon {
       return root.classList.contains("vscode-dark") || body.classList.contains("vscode-dark") ? "dark" : "default";
     }
 
-    function renderMermaidFallback(block, canvas, message) {
-      if (!canvas.isConnected) return;
-      canvas.replaceChildren(diagramStatus(message, true));
-      block.classList.add("show-source");
+	    function renderMermaidFallback(block, canvas, message) {
+	      if (!canvas.isConnected) return;
+	      canvas.replaceChildren(diagramStatus(message, true));
+	      disableDiagramZoom(block);
+	      block.classList.add("show-source");
+	    }
+
+    async function renderDrawioDiagram(block, canvas, codeText, cacheKey, onReady) {
+      const source = String(codeText || "");
+      if (!source.trim()) {
+        renderDrawioFallback(block, canvas, "Empty draw.io diagram.", { code: "drawio.empty_source", showSource: true });
+        return;
+      }
+      if (!looksLikeDrawioXml(source)) {
+        renderDrawioFallback(block, canvas, "Expected draw.io <mxfile> or <mxGraphModel> XML. Source view is available.", { code: "drawio.invalid_source", showSource: true });
+        return;
+      }
+      if (textByteLength(source) > DRAWIO_MAX_SOURCE_BYTES) {
+        renderDrawioFallback(block, canvas, "Draw.io source is too large to render. Source view is available.", { code: "drawio.source_too_large", showSource: true });
+        return;
+      }
+
+      const cacheState = drawioRenderCacheState(cacheKey);
+      if (cacheState === "miss") {
+        const warnings = drawioOfflineWarnings(source);
+        if (warnings.length) {
+          canvas.replaceChildren(diagramStatus(warnings.join(" "), false));
+        } else {
+          canvas.replaceChildren(diagramStatus("Rendering draw.io diagram...", false));
+        }
+      }
+
+      try {
+        const result = await queueDrawioRuntimeExport(source, cacheKey);
+        if (!canvas.isConnected) return;
+        const dataUri = String(result && result.data || "");
+        if (!/^data:image\\/png;base64,/i.test(dataUri)) {
+          throw new Error("Offline draw.io runtime did not return a PNG image.");
+        }
+        const image = document.createElement("img");
+        image.className = "drawioImage";
+        image.alt = "Rendered draw.io diagram";
+        image.src = dataUri;
+        canvas.replaceChildren(image);
+        block.dataset.diagramRendered = "true";
+        setDiagramZoom(block, diagramZoomValue(block));
+        onReady(dataUri);
+      } catch (error) {
+        renderDrawioFallback(block, canvas, drawioFallbackSummary(error), {
+          code: drawioFailureCode(error),
+          detail: diagramErrorMessage(error),
+          showSource: shouldShowDrawioSourceOnFailure(error),
+        });
+      }
     }
 
-    function diagramErrorMessage(error) {
+    function renderDrawioFallback(block, canvas, message, options) {
+      if (!canvas.isConnected) return;
+      const failureCode = options && options.code ? String(options.code) : "drawio.render_failed";
+      const detail = options && options.detail ? String(options.detail) : "";
+      canvas.replaceChildren(diagramStatus(message, true, failureCode + (detail ? ": " + detail : "")));
+      disableDiagramZoom(block);
+      setDrawioExportUnavailable(block.querySelector(".exportDrawioImage"), "Draw.io PNG export is unavailable until the preview renders.");
+      if (!options || options.showSource !== false) block.classList.add("show-source");
+    }
+
+    function setDrawioExportUnavailable(button, label) {
+      if (!button) return;
+      button.disabled = true;
+      setIconOnlyButton(button, "save", label);
+    }
+
+    function looksLikeDrawioXml(source) {
+      return /^\\s*<(?:mxfile|mxGraphModel)(?:\\s|>)/i.test(String(source || ""));
+    }
+
+    function drawioOfflineWarnings(source) {
+      const warnings = [];
+      const text = String(source || "");
+      if (/(?:https?:)?\\/\\//i.test(text)) {
+        warnings.push("Draw.io source references external URLs; offline rendering will not fetch remote resources.");
+      }
+      if (/data:image\\/(?!png|svg\\+xml)/i.test(text)) {
+        warnings.push("Draw.io source embeds a non-PNG image data URI; export may omit unsupported content.");
+      }
+      return warnings;
+    }
+
+    function drawioFallbackSummary(error) {
+      const code = drawioFailureCode(error);
+      if (code === "drawio.runtime_unavailable" || /^drawio\\.runtime|self_test|init/i.test(code)) return "离线 draw.io 预览暂不可用";
+      if (code === "drawio.export_failed" || /export|png|svg|rasterize/i.test(code)) return "Draw.io PNG export failed.";
+      if (code === "drawio.invalid_source" || /expected|empty|too_large|parse|xml|mxfile|mxgraphmodel/i.test(code)) return "Draw.io source could not be rendered.";
+      return "Draw.io preview failed.";
+    }
+
+    function drawioFailureCode(error) {
+      const code = error && typeof error === "object" && "code" in error ? String(error.code || "") : "";
+      if (code) return code;
+      const message = diagramErrorMessage(error).toLowerCase();
+      if (/initialize|initialise|runtime|iframe|bundled|handshake|stopped|timed out/.test(message)) return "drawio.runtime_unavailable";
+      if (/png|svg|export|rasterize/.test(message)) return "drawio.export_failed";
+      if (/expected|empty|too large|parse|xml|mxfile|mxgraphmodel/.test(message)) return "drawio.invalid_source";
+      return "drawio.render_failed";
+    }
+
+    function shouldShowDrawioSourceOnFailure(error) {
+      return drawioFailureCode(error) === "drawio.invalid_source";
+    }
+
+    function queueDrawioRuntimeExport(xml, cacheKey) {
+      if (cacheKey && drawioRenderedPngCache.has(cacheKey)) {
+        postDrawioRenderTelemetry("cache-hit", { cacheKey, runtime: "cache" });
+        return Promise.resolve({ event: "export", data: drawioRenderedPngCache.get(cacheKey) });
+      }
+      if (cacheKey && drawioRenderedPngInflight.has(cacheKey)) {
+        postDrawioRenderTelemetry("cache-inflight", { cacheKey });
+        return drawioRenderedPngInflight.get(cacheKey);
+      }
+      postDrawioRenderTelemetry("cache-miss", { cacheKey: cacheKey || "none" });
+      const task = drawioRuntimeQueue.then(async () => {
+        await ensureDrawioRuntimeReady();
+        await postDrawioRuntimeMessage({ action: "load", xml });
+        return postDrawioRuntimeMessage({
+          action: "export",
+          format: "xmlpng",
+          scale: DRAWIO_EXPORT_SCALE,
+          border: DRAWIO_EXPORT_BORDER,
+          transparent: false,
+          size: "diagram",
+        });
+      }).then((result) => {
+        const dataUri = String(result && result.data || "");
+        if (cacheKey && /^data:image\\/png;base64,/i.test(dataUri)) {
+          drawioRenderedPngCache.set(cacheKey, dataUri);
+        }
+        return result;
+      }).finally(() => {
+        if (cacheKey) drawioRenderedPngInflight.delete(cacheKey);
+      });
+      if (cacheKey) drawioRenderedPngInflight.set(cacheKey, task);
+      drawioRuntimeQueue = task.catch(() => {});
+      return task;
+    }
+
+    function drawioDiagramCacheKey(diagramId, source) {
+      const stableId = String(diagramId || "").trim();
+      if (stableId) return "drawio-id:" + DRAWIO_RENDER_BACKGROUND_MODE + ":" + stableId;
+      return "drawio-xml:" + DRAWIO_RENDER_BACKGROUND_MODE + ":" + hashString(String(source || ""));
+    }
+
+    function drawioRenderCacheState(cacheKey) {
+      if (!cacheKey) return "miss";
+      if (drawioRenderedPngCache.has(cacheKey)) return "hit";
+      if (drawioRenderedPngInflight.has(cacheKey)) return "inflight";
+      return "miss";
+    }
+
+    async function ensureDrawioRuntimeReady() {
+      await ensureDrawioRuntimeFrame();
+      if (!drawioRuntimeHandshakePromise) {
+        drawioRuntimeHandshakePromise = (async () => {
+          await postDrawioRuntimeMessage({ action: "load", xml: DRAWIO_HANDSHAKE_XML });
+          const result = await postDrawioRuntimeMessage({
+            action: "export",
+            format: "xmlpng",
+            scale: 1,
+            border: 4,
+            transparent: false,
+            size: "diagram",
+          });
+          if (!result || !/^data:image\\/png;base64,/i.test(String(result.data || ""))) {
+            throw new Error("Offline draw.io runtime handshake did not return PNG.");
+          }
+        })();
+      }
+      await drawioRuntimeHandshakePromise;
+    }
+
+    function ensureDrawioRuntimeFrame() {
+      if (!DRAWIO_RUNTIME_HTML_B64 && !DRAWIO_RUNTIME_URI) {
+        postDrawioRenderTelemetry("runtime-missing", { code: "drawio.runtime_unavailable", runtime: "none" });
+        return Promise.reject(new Error("Offline draw.io runtime is not bundled with this extension."));
+      }
+      if (drawioRuntimeReadyPromise) return drawioRuntimeReadyPromise;
+      drawioRuntimeReadyPromise = new Promise((resolve, reject) => {
+        drawioRuntimeInitResolve = resolve;
+        drawioRuntimeInitReject = reject;
+        drawioRuntimeInitTimer = setTimeout(() => {
+          const error = new Error("Offline draw.io runtime did not initialize.");
+          error.code = "drawio.runtime_unavailable";
+          postDrawioRenderTelemetry("init-timeout", { code: error.code, message: error.message, runtime: drawioRuntimeMode(), frameSrc: drawioRuntimeFrameSource() });
+          reject(error);
+        }, DRAWIO_RENDER_TIMEOUT_MS);
+        window.addEventListener("message", handleDrawioRuntimeMessage);
+        const frame = document.createElement("iframe");
+        frame.className = "drawioRuntimeFrame";
+        frame.title = "Offline draw.io renderer";
+        frame.setAttribute("aria-hidden", "true");
+        frame.setAttribute("sandbox", "allow-scripts allow-same-origin");
+        frame.addEventListener("load", () => {
+          postDrawioRenderTelemetry("iframe-load", { runtime: drawioRuntimeMode(), frameSrc: drawioRuntimeFrameSource() });
+        });
+        try {
+          if (DRAWIO_RUNTIME_HTML_B64) {
+            frame.srcdoc = decodeDrawioRuntimeHtml();
+          } else {
+            frame.src = DRAWIO_RUNTIME_URI + (DRAWIO_RUNTIME_URI.indexOf("?") === -1 ? "?" : "&") + "offline=1&local=1";
+          }
+        } catch (error) {
+          window.removeEventListener("message", handleDrawioRuntimeMessage);
+          if (drawioRuntimeInitTimer) clearTimeout(drawioRuntimeInitTimer);
+          drawioRuntimeInitTimer = undefined;
+          reject(error);
+          return;
+        }
+        drawioRuntimeFrame = frame;
+        postDrawioRenderTelemetry("iframe-create", { runtime: drawioRuntimeMode(), frameSrc: drawioRuntimeFrameSource() });
+        document.body.appendChild(frame);
+      }).catch((error) => {
+        cleanupDrawioRuntimeFrame();
+        throw error;
+      });
+      return drawioRuntimeReadyPromise;
+    }
+
+    function decodeDrawioRuntimeHtml() {
+      try {
+        const binary = atob(DRAWIO_RUNTIME_HTML_B64);
+        const bytes = new Uint8Array(binary.length);
+        for (let index = 0; index < binary.length; index += 1) {
+          bytes[index] = binary.charCodeAt(index);
+        }
+        return new TextDecoder().decode(bytes);
+      } catch (error) {
+        const failure = new Error("Offline draw.io runtime HTML could not be decoded.");
+        failure.code = "drawio.runtime_decode_failed";
+        postDrawioRenderTelemetry("runtime-decode-failed", { code: failure.code, message: diagramErrorMessage(error), runtime: drawioRuntimeMode() });
+        throw failure;
+      }
+    }
+
+    function drawioRuntimeMode() {
+      return DRAWIO_RUNTIME_HTML_B64 ? "srcdoc" : "uri";
+    }
+
+    function drawioRuntimeFrameSource() {
+      if (!drawioRuntimeFrame) return DRAWIO_RUNTIME_HTML_B64 ? "about:srcdoc" : DRAWIO_RUNTIME_URI;
+      return drawioRuntimeFrame.getAttribute("src") || drawioRuntimeFrame.src || (DRAWIO_RUNTIME_HTML_B64 ? "about:srcdoc" : DRAWIO_RUNTIME_URI);
+    }
+
+    function postDrawioRenderTelemetry(phase, detail) {
+      const frameSrc = detail && detail.frameSrc ? String(detail.frameSrc) : drawioRuntimeFrameSource();
+      try {
+        vscode.postMessage(Object.assign({
+          type: "drawioRenderTelemetry",
+          phase,
+          runtime: drawioRuntimeMode(),
+          frameSrc,
+          usesCdn: /(?:vscode-cdn\\.net|file\\+\\.vscode-resource)/i.test(frameSrc || DRAWIO_RUNTIME_URI),
+        }, detail || {}));
+      } catch {
+        // Telemetry must never affect rendering.
+      }
+    }
+
+    function cleanupDrawioRuntimeFrame() {
+      if (drawioRuntimeInitTimer) clearTimeout(drawioRuntimeInitTimer);
+      drawioRuntimeInitTimer = undefined;
+      drawioRuntimeInitResolve = undefined;
+      drawioRuntimeInitReject = undefined;
+      for (const pending of drawioRuntimePending.values()) {
+        clearTimeout(pending.timer);
+        pending.reject(new Error("Offline draw.io runtime stopped."));
+      }
+      drawioRuntimePending.clear();
+      window.removeEventListener("message", handleDrawioRuntimeMessage);
+      if (drawioRuntimeFrame && drawioRuntimeFrame.parentNode) drawioRuntimeFrame.parentNode.removeChild(drawioRuntimeFrame);
+      drawioRuntimeFrame = undefined;
+      drawioRuntimeReadyPromise = undefined;
+      drawioRuntimeHandshakePromise = undefined;
+    }
+
+    function handleDrawioRuntimeMessage(event) {
+      if (!drawioRuntimeFrame || event.source !== drawioRuntimeFrame.contentWindow) return;
+      const message = event.data || {};
+      if (!message || message.source !== "chipmate-drawio-runtime") return;
+      if (message.event === "init") {
+        postDrawioRenderTelemetry("init", { mode: message.mode || "", runtime: drawioRuntimeMode(), frameSrc: drawioRuntimeFrameSource() });
+        if (drawioRuntimeInitTimer) clearTimeout(drawioRuntimeInitTimer);
+        drawioRuntimeInitTimer = undefined;
+        if (drawioRuntimeInitResolve) drawioRuntimeInitResolve();
+        drawioRuntimeInitResolve = undefined;
+        drawioRuntimeInitReject = undefined;
+        return;
+      }
+      if (message.event === "error" && !message.requestId && drawioRuntimeInitReject) {
+        postDrawioRenderTelemetry("init-error", { code: message.code || "", message: message.message || "", mode: message.mode || "", runtime: drawioRuntimeMode(), frameSrc: drawioRuntimeFrameSource() });
+        if (drawioRuntimeInitTimer) clearTimeout(drawioRuntimeInitTimer);
+        drawioRuntimeInitTimer = undefined;
+        drawioRuntimeInitReject(drawioRuntimeMessageError(message));
+        drawioRuntimeInitResolve = undefined;
+        drawioRuntimeInitReject = undefined;
+        return;
+      }
+      const pending = drawioRuntimePending.get(message.requestId);
+      if (!pending) return;
+      clearTimeout(pending.timer);
+      drawioRuntimePending.delete(message.requestId);
+      if (message.event === "error") {
+        postDrawioRenderTelemetry(pending.action + "-error", { code: message.code || "", message: message.message || "", mode: message.mode || "", requestId: message.requestId || "", runtime: drawioRuntimeMode(), frameSrc: drawioRuntimeFrameSource() });
+        pending.reject(drawioRuntimeMessageError(message));
+        return;
+      }
+      if (message.event === "load" || message.event === "export") {
+        postDrawioRenderTelemetry(message.event, { mode: message.mode || "", requestId: message.requestId || "", runtime: drawioRuntimeMode(), frameSrc: drawioRuntimeFrameSource() });
+        pending.resolve(message);
+      }
+    }
+
+    function drawioRuntimeMessageError(message) {
+      const error = new Error(message.message || "Offline draw.io runtime error.");
+      error.code = message.code || "";
+      return error;
+    }
+
+    function postDrawioRuntimeMessage(message) {
+      if (!drawioRuntimeFrame || !drawioRuntimeFrame.contentWindow) {
+        return Promise.reject(new Error("Offline draw.io runtime iframe is unavailable."));
+      }
+      const requestId = "chipmate-drawio-request-" + (++drawioRuntimeRequestSerial);
+      return new Promise((resolve, reject) => {
+        const timer = setTimeout(() => {
+          drawioRuntimePending.delete(requestId);
+          const error = new Error("Offline draw.io runtime timed out.");
+          error.code = "drawio.runtime_unavailable";
+          postDrawioRenderTelemetry(String(message.action || "request") + "-timeout", { code: error.code, message: error.message, requestId, runtime: drawioRuntimeMode(), frameSrc: drawioRuntimeFrameSource() });
+          reject(error);
+        }, DRAWIO_RENDER_TIMEOUT_MS);
+        drawioRuntimePending.set(requestId, { resolve, reject, timer, action: String(message.action || "request") });
+        drawioRuntimeFrame.contentWindow.postMessage(Object.assign({
+          source: "chipmate-chat",
+          requestId,
+        }, message), "*");
+      });
+    }
+
+    function hashString(value) {
+      let hash = 2166136261;
+      const text = String(value || "");
+      for (let index = 0; index < text.length; index += 1) {
+        hash ^= text.charCodeAt(index);
+        hash = Math.imul(hash, 16777619);
+      }
+      return (hash >>> 0).toString(36);
+    }
+
+    function enableDiagramCanvasPan(canvas) {
+      if (!canvas || canvas.dataset.diagramPanReady === "true") return;
+      canvas.dataset.diagramPanReady = "true";
+      let activePointerId = undefined;
+      let startClientX = 0;
+      let startClientY = 0;
+      let startScrollLeft = 0;
+      let startScrollTop = 0;
+
+      canvas.addEventListener("pointerdown", (event) => {
+        if (!canStartDiagramPan(canvas, event)) return;
+        activePointerId = event.pointerId;
+        startClientX = event.clientX;
+        startClientY = event.clientY;
+        startScrollLeft = canvas.scrollLeft;
+        startScrollTop = canvas.scrollTop;
+        canvas.classList.add("diagramDragging");
+        canvas.setPointerCapture(event.pointerId);
+        event.preventDefault();
+      });
+
+      canvas.addEventListener("pointermove", (event) => {
+        if (activePointerId !== event.pointerId) return;
+        canvas.scrollLeft = startScrollLeft - (event.clientX - startClientX);
+        canvas.scrollTop = startScrollTop - (event.clientY - startClientY);
+        event.preventDefault();
+      });
+
+      const endPan = (event) => {
+        if (activePointerId !== event.pointerId) return;
+        if (canvas.hasPointerCapture && canvas.hasPointerCapture(event.pointerId)) {
+          canvas.releasePointerCapture(event.pointerId);
+        }
+        activePointerId = undefined;
+        canvas.classList.remove("diagramDragging");
+      };
+
+      canvas.addEventListener("pointerup", endPan);
+      canvas.addEventListener("pointercancel", endPan);
+      canvas.addEventListener("lostpointercapture", () => {
+        activePointerId = undefined;
+        canvas.classList.remove("diagramDragging");
+      });
+    }
+
+    function canStartDiagramPan(canvas, event) {
+      if (!canvas.classList.contains("zoomed-in")) return false;
+      if (event.button !== 0 || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return false;
+      if (!diagramCanvasHasOverflow(canvas)) return false;
+      const target = event.target && event.target.nodeType === 1 ? event.target : event.target && event.target.parentElement;
+      if (target && target.closest("button, a, input, textarea, select, summary, details, pre, code")) return false;
+      return true;
+    }
+
+    function diagramCanvasHasOverflow(canvas) {
+      return canvas.scrollWidth > canvas.clientWidth + 1 || canvas.scrollHeight > canvas.clientHeight + 1;
+    }
+
+	    function setDiagramZoom(block, value) {
+	      const zoom = normalizeDiagramZoom(value);
+	      block.dataset.diagramZoom = String(zoom);
+	      const canvas = block.querySelector(".diagramCanvas");
+	      if (canvas) {
+	        canvas.style.setProperty("--diagram-zoom", String(zoom));
+	        canvas.style.setProperty("--diagram-zoom-width", Math.round(zoom * 100) + "%");
+	        canvas.classList.toggle("zoomed-in", zoom > DIAGRAM_ZOOM_DEFAULT);
+	        if (zoom <= DIAGRAM_ZOOM_DEFAULT) canvas.classList.remove("diagramDragging");
+	      }
+	      updateDiagramZoomControls(block);
+	    }
+
+	    function diagramZoomValue(block) {
+	      return normalizeDiagramZoom(Number(block && block.dataset ? block.dataset.diagramZoom : undefined));
+	    }
+
+	    function normalizeDiagramZoom(value) {
+	      const raw = Number.isFinite(value) ? value : DIAGRAM_ZOOM_DEFAULT;
+	      const stepped = Math.round(raw / DIAGRAM_ZOOM_STEP) * DIAGRAM_ZOOM_STEP;
+	      return Math.max(DIAGRAM_ZOOM_MIN, Math.min(DIAGRAM_ZOOM_MAX, Number(stepped.toFixed(2))));
+	    }
+
+	    function updateDiagramZoomControls(block) {
+	      const zoom = diagramZoomValue(block);
+	      const rendered = block.dataset.diagramRendered === "true";
+	      const zoomOut = block.querySelector(".diagramZoomOut");
+	      const zoomIn = block.querySelector(".diagramZoomIn");
+	      if (zoomOut) zoomOut.disabled = !rendered || zoom <= DIAGRAM_ZOOM_MIN;
+	      if (zoomIn) zoomIn.disabled = !rendered || zoom >= DIAGRAM_ZOOM_MAX;
+	    }
+
+	    function disableDiagramZoom(block) {
+	      block.dataset.diagramRendered = "false";
+	      updateDiagramZoomControls(block);
+	    }
+
+	    function diagramErrorMessage(error) {
       const message = error instanceof Error ? error.message : String(error || "Unknown error");
       return message.replace(/\\s+/g, " ").trim().slice(0, 220) || "Unknown error";
     }
@@ -9538,24 +12404,11 @@ ${codiconFontFace}    .codicon {
 	      const icon = document.createElement("span");
 	      icon.className = "contextChipIcon";
 	      icon.setAttribute("aria-hidden", "true");
-	      appendLiquidIcon(icon, "references");
+	      appendLiquidIcon(icon, file.type === "folder" ? "file" : "references");
 	      const label = document.createElement("span");
 	      label.className = "contextChipLabel";
-	      label.textContent = "@" + file.label;
+	      label.textContent = "@" + (file.type === "folder" ? (file.insertText || (String(file.label || "").replace(new RegExp("/+$"), "") + "/")) : file.label);
 	      main.append(icon, label);
-	      const pin = document.createElement("button");
-	      pin.className = "contextChipPin";
-	      pin.type = "button";
-	      pin.title = contextPinTitle(false);
-	      pin.setAttribute("aria-label", contextPinTitle(false));
-	      pin.setAttribute("aria-pressed", "false");
-	      appendLiquidIcon(pin, "pin");
-	      pin.addEventListener("click", (event) => {
-	        event.stopPropagation();
-	        vscode.postMessage({ type: "toggleContextPin", pinned: true, file });
-	        removeMention(file.uri);
-	        setNotice("Pinned " + file.label + " to context.");
-	      });
 	      const remove = document.createElement("button");
 	      remove.className = "contextChipRemove";
 	      remove.type = "button";
@@ -9566,7 +12419,24 @@ ${codiconFontFace}    .codicon {
 	        event.stopPropagation();
 	        removeMention(file.uri);
 	      });
-	      node.append(main, pin, remove);
+	      if (file.type !== "folder") {
+	        const pin = document.createElement("button");
+	        pin.className = "contextChipPin";
+	        pin.type = "button";
+	        pin.title = contextPinTitle(false);
+	        pin.setAttribute("aria-label", contextPinTitle(false));
+	        pin.setAttribute("aria-pressed", "false");
+	        appendLiquidIcon(pin, "pin");
+	        pin.addEventListener("click", (event) => {
+	          event.stopPropagation();
+	          vscode.postMessage({ type: "toggleContextPin", pinned: true, file });
+	          removeMention(file.uri);
+	          setNotice("Pinned " + file.label + " to context.");
+	        });
+	        node.append(main, pin, remove);
+	        return node;
+	      }
+	      node.append(main, remove);
 	      return node;
 	    }
 

@@ -11,7 +11,7 @@ const RAG_RERANK_PROBE_DOCUMENTS = [
 ]
 
 export type RagHttpDiagnosticEvent = {
-  phase: "request" | "response" | "normalize" | "encoding"
+  phase: "request" | "response" | "normalize" | "encoding" | "error"
   kind: "embedding" | "rerank"
   method: "POST"
   endpoint: string
@@ -36,6 +36,20 @@ export type RagHttpDiagnosticEvent = {
   normalizeElapsedMs?: number
   errorPreview?: string
   message?: string
+  errorName?: string
+  errorMessage?: string
+  errorCode?: string
+  causeName?: string
+  causeMessage?: string
+  causeCode?: string
+  causeErrno?: string
+  causeSyscall?: string
+  causeHostname?: string
+  causeHost?: string
+  causePort?: string
+  causeAddress?: string
+  causeStackFirstLine?: string
+  causeDetails?: string[]
 }
 
 export type RagHttpDiagnostics = (event: RagHttpDiagnosticEvent) => void
@@ -294,17 +308,17 @@ async function fetchJsonWithTimeout(
   const onAbort = () => controller.abort()
   signal?.addEventListener("abort", onAbort, { once: true })
   const started = Date.now()
+  const diagnosticBase = {
+    method: "POST" as const,
+    endpoint: url.toString(),
+    timeoutMs,
+    authorizationPresent: Boolean(apiKey?.trim()),
+    apiKeyFingerprint: apiKeyFingerprint(apiKey),
+    ...detail,
+  }
   try {
     const headers: Record<string, string> = { "content-type": "application/json" }
     if (apiKey?.trim()) headers.Authorization = `Bearer ${apiKey.trim()}`
-    const diagnosticBase = {
-      method: "POST" as const,
-      endpoint: url.toString(),
-      timeoutMs,
-      authorizationPresent: Boolean(apiKey?.trim()),
-      apiKeyFingerprint: apiKeyFingerprint(apiKey),
-      ...detail,
-    }
     emitRagHttpDiagnostic(diagnostics, { ...diagnosticBase, phase: "request" })
     const response = await fetch(url, {
       method: "POST",
@@ -350,11 +364,119 @@ async function fetchJsonWithTimeout(
       })
       throw new RagHttpError(`408 Request Timeout: ${message}`, 408, "Request Timeout", message)
     }
+    if (!(error instanceof RagHttpError) && !(signal?.aborted && isFetchAbortError(error))) {
+      emitRagHttpDiagnostic(diagnostics, {
+        ...diagnosticBase,
+        phase: "error",
+        elapsedMs: Date.now() - started,
+        ...describeRagFetchFailureForDiagnostics(error),
+      })
+    }
     throw error
   } finally {
     clearTimeout(timer)
     signal?.removeEventListener("abort", onAbort)
   }
+}
+
+export function describeRagFetchFailureForDiagnostics(error: unknown) {
+  const root = diagnosticErrorRecord(error)
+  const causes = diagnosticCauseChain(error, 3)
+  const primaryCause = causes[0]
+  const aggregateDetails = diagnosticAggregateDetails(error, 2)
+  return {
+    message: root.message,
+    errorName: root.name,
+    errorMessage: root.message,
+    errorCode: root.code,
+    causeName: primaryCause?.name,
+    causeMessage: primaryCause?.message,
+    causeCode: primaryCause?.code,
+    causeErrno: primaryCause?.errno,
+    causeSyscall: primaryCause?.syscall,
+    causeHostname: primaryCause?.hostname,
+    causeHost: primaryCause?.host,
+    causePort: primaryCause?.port,
+    causeAddress: primaryCause?.address,
+    causeStackFirstLine: primaryCause?.stackFirstLine,
+    causeDetails: [...causes.slice(1).map(formatDiagnosticCauseDetail), ...aggregateDetails].filter(Boolean),
+  }
+}
+
+function diagnosticCauseChain(error: unknown, maxDepth: number) {
+  const causes: ReturnType<typeof diagnosticErrorRecord>[] = []
+  let current = diagnosticCause(error)
+  while (current && causes.length < maxDepth) {
+    causes.push(diagnosticErrorRecord(current))
+    current = diagnosticCause(current)
+  }
+  return causes
+}
+
+function diagnosticAggregateDetails(error: unknown, maxItems: number) {
+  const details: string[] = []
+  for (const source of [error, diagnosticCause(error)]) {
+    const errors = diagnosticAggregateErrors(source)
+    if (!errors.length) continue
+    for (const item of errors.slice(0, maxItems - details.length)) {
+      details.push(`aggregate:${formatDiagnosticCauseDetail(diagnosticErrorRecord(item))}`)
+      if (details.length >= maxItems) return details
+    }
+  }
+  return details
+}
+
+function diagnosticAggregateErrors(value: unknown) {
+  const record = diagnosticObject(value)
+  return Array.isArray(record.errors) ? record.errors : []
+}
+
+function diagnosticCause(value: unknown) {
+  return diagnosticObject(value).cause
+}
+
+function diagnosticErrorRecord(value: unknown) {
+  const record = diagnosticObject(value)
+  const name = diagnosticString(value instanceof Error ? value.name : record.name)
+  const message = diagnosticString(value instanceof Error ? value.message : record.message)
+  const stack = diagnosticString(value instanceof Error ? value.stack : record.stack, 500)
+  return {
+    name,
+    message,
+    code: diagnosticString(record.code),
+    errno: diagnosticString(record.errno),
+    syscall: diagnosticString(record.syscall),
+    hostname: diagnosticString(record.hostname),
+    host: diagnosticString(record.host),
+    port: diagnosticString(record.port),
+    address: diagnosticString(record.address),
+    stackFirstLine: stack?.split(/\r?\n/, 1)[0],
+  }
+}
+
+function diagnosticObject(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" ? value as Record<string, unknown> : {}
+}
+
+function diagnosticString(value: unknown, maxLength = 240) {
+  if (value === undefined || value === null) return undefined
+  const text = String(value).replace(/\s+/g, " ").trim()
+  if (!text) return undefined
+  return text.length > maxLength ? `${text.slice(0, maxLength)}...` : text
+}
+
+function formatDiagnosticCauseDetail(cause: ReturnType<typeof diagnosticErrorRecord>) {
+  return [
+    cause.name ? `name=${cause.name}` : undefined,
+    cause.code ? `code=${cause.code}` : undefined,
+    cause.errno ? `errno=${cause.errno}` : undefined,
+    cause.syscall ? `syscall=${cause.syscall}` : undefined,
+    cause.host ? `host=${cause.host}` : undefined,
+    cause.hostname ? `hostname=${cause.hostname}` : undefined,
+    cause.port ? `port=${cause.port}` : undefined,
+    cause.address ? `address=${cause.address}` : undefined,
+    cause.message ? `message=${cause.message}` : undefined,
+  ].filter(Boolean).join(",")
 }
 
 function parseRetryAfterMs(value: string | null) {

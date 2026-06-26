@@ -11,9 +11,29 @@ describe("document parser", () => {
     expect(source).not.toMatch(/^import .*["']exceljs["']/m)
     expect(source).not.toMatch(/^import .*["']mammoth["']/m)
     expect(source).not.toMatch(/^import .*["']node-html-parser["']/m)
+    expect(source).not.toMatch(/^import .*["']word-extractor["']/m)
     expect(source).toContain('nodeRequire("exceljs")')
     expect(source).toContain('nodeRequire("mammoth")')
     expect(source).toContain('nodeRequire("node-html-parser")')
+    expect(source).toContain('nodeRequire("word-extractor")')
+  })
+
+  test("extracts legacy DOC body text from an OLE Word document", async () => {
+    const parsed = await parseSupportedDocument({
+      path: "docs/legacy.doc",
+      bytes: readFileSync(join(import.meta.dir, "fixtures", "doc", "test01.doc")),
+      maxBytes: 16_000,
+    })
+
+    expect(parsed).toMatchObject({ kind: "doc", language: "doc", truncated: false })
+    expect(parsed?.text).toContain("DOC text:")
+    expect(parsed?.text).toContain("A second test of reviewing")
+    expect(parsed?.text).toContain("This is a test of reviewing")
+    expect(parsed?.text).toContain("Unicode characters")
+    expect(parsed?.blocks).toContainEqual(expect.objectContaining({
+      kind: "paragraph",
+      label: "Document body",
+    }))
   })
 
   test("extracts DOCX body text from a bundled OOXML archive", async () => {

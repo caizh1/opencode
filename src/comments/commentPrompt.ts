@@ -1,7 +1,29 @@
 import { formatAllowedInsertionAnchors } from "./commentAnchors"
+import { commentLanguageLabel } from "./commentLanguage"
 import type { CommentGenerationContext } from "./commentTypes"
 
 export function buildCommentPrompt(context: CommentGenerationContext) {
+  const languageLabel = commentLanguageLabel(context.languageId)
+  const languageSubject = context.languageId === "makefile"
+    ? "Makefile 规则"
+    : context.languageId === "yaml"
+      ? "YAML 配置"
+      : context.languageId === "shellscript"
+        ? "Shell 脚本"
+        : "C/C++ 代码"
+  const commentSyntaxInstructions = context.commentSyntax === "hash-line"
+    ? [
+      `- commentText 必须使用简体中文自然语言编写，但要保留合法 ${languageLabel} 的 # 注释语法。`,
+      "- commentText 只能是合法的 # 注释文本。",
+      "- 必须使用 # 注释。",
+      "- 不要使用 // 或 /* */。",
+    ]
+    : [
+      "- commentText 必须使用简体中文自然语言编写，但要保留合法 C/C++ 注释语法。",
+      "- commentText 只能是合法 C/C++ 注释文本。",
+      "- 短逻辑注释使用 //。",
+      "- 只有函数头注释才使用 /** ... */。",
+    ]
   const reviewScopeLabel = context.source === "currentFunction"
     ? "当前函数"
     : context.source === "workspaceChanges"
@@ -79,9 +101,9 @@ export function buildCommentPrompt(context: CommentGenerationContext) {
       "只在局部结构锚点存在非显然语义时生成注释，不强制生成整体/函数级注释。",
     ]
   return [
-    "你是一个保守的固件代码注释助手。",
+    "你是一个保守的工程代码与配置注释助手。",
     "",
-    `你的任务是为${reviewScopeLabel}中的 C/C++ 代码提出有价值的中文注释候选。`,
+    `你的任务是为${reviewScopeLabel}中的${languageSubject}提出有价值的中文注释候选。`,
     "每条候选都必须把综合原因绑定到具体代码证据行段。",
     "",
     "不要重写代码。",
@@ -98,6 +120,8 @@ export function buildCommentPrompt(context: CommentGenerationContext) {
     "",
     "只在注释能解释以下内容时生成：",
     "- 这段代码为什么存在",
+    "- 执行顺序、环境前提或依赖约束",
+    "- 构建规则、CI 流程或配置块之间的非显然关系",
     "- 硬件顺序约束",
     "- DMA/cache 一致性约束",
     "- 状态机迁移",
@@ -123,13 +147,13 @@ export function buildCommentPrompt(context: CommentGenerationContext) {
     "不要解释为什么你的输出符合要求。",
     "",
     "中文输出要求：",
-    "- commentText 必须使用简体中文自然语言编写，但要保留合法 C/C++ 注释语法。",
     "- functionHeader 的 commentText 必须描述函数职责、关键约束或整体流程，不要把函数签名、伪代码、独立 if/return/assignment 行放进注释正文。",
     "- 可以保留函数名、参数名和控制条件原文，但它们必须嵌入中文说明句子中，不要单独成为一行代码。",
     "- reason 必须使用简体中文。",
     "- codeEvidence 内的 anchorLabel、codeSummary、meaning 必须使用简体中文，代码标识符保持原文。",
     "- 函数名、变量名、宏名、寄存器名、协议名、硬件缩写、路径和 API 名称必须保持原文，不要翻译。",
     "- JSON 字段名、kind 枚举值和 confidence 枚举值必须保持下方 schema 指定的英文。",
+    ...commentSyntaxInstructions,
     "",
     "Schema:",
     "{",
@@ -161,9 +185,6 @@ export function buildCommentPrompt(context: CommentGenerationContext) {
     "",
     "规则：",
     "- insertBeforeLine 是 0-based，且必须指向 selected range 内的行。",
-    "- commentText 只能是合法 C/C++ 注释文本。",
-    "- 短逻辑注释使用 //。",
-    "- 只有函数头注释才使用 /** ... */。",
     "- 注释要简洁。",
     "- 宁可返回少量高价值注释，不要返回大量显而易见的注释。",
     `- 全部模式最多返回 ${context.proposalBudget} 条 proposals。`,
