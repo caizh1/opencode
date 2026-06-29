@@ -20,13 +20,20 @@ interface PackageBuildVersion {
 }
 
 type LocalDefaultValue = string | string[]
+type LocalDefaultSettingSpec = {
+  setting: string
+  path: readonly string[]
+  kind: "string" | "stringArray"
+  optional?: boolean
+}
 
 const CORE_RELEASE_PATTERN = /^\d+\.\d+\.\d+$/
 const BUILD_VERSION_PATTERN = /^(\d+\.\d+\.\d+)-build\.(\d+)$/
 const LOCAL_DEFAULTS_FILENAME = ".chipmate-vsix-defaults.local.json"
-const LOCAL_DEFAULT_SETTING_SPECS = [
+const LOCAL_DEFAULT_SETTING_SPECS: readonly LocalDefaultSettingSpec[] = [
   { setting: "chipmate.provider.apiBaseUrl", path: ["provider", "apiBaseUrl"], kind: "string" },
   { setting: "chipmate.provider.chatModel", path: ["provider", "chatModel"], kind: "string" },
+  { setting: "chipmate.wordRender.remoteEndpoint", path: ["wordRender", "remoteEndpoint"], kind: "string", optional: true },
   { setting: "chipmate.rag.embedding.endpoint", path: ["rag", "embedding", "endpoint"], kind: "string" },
   { setting: "chipmate.rag.embedding.model", path: ["rag", "embedding", "model"], kind: "string" },
   { setting: "chipmate.rag.rerank.endpoint", path: ["rag", "rerank", "endpoint"], kind: "string" },
@@ -155,6 +162,7 @@ export function collectVsixLocalDefaultSettings(rawDefaults: unknown) {
   const settings: Record<string, LocalDefaultValue> = {}
   for (const spec of LOCAL_DEFAULT_SETTING_SPECS) {
     const value = readNestedValue(rawDefaults, spec.path)
+    if (value === undefined && spec.optional) continue
     settings[spec.setting] = spec.kind === "stringArray"
       ? requireNonEmptyStringArray(value, spec.path.join("."))
       : requireNonEmptyString(value, spec.path.join("."))

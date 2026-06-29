@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test"
 import { generateDrawioDiagram } from "../src/drawio-diagram-generator"
 import { setDrawioElkLayoutRunnerForTest } from "../src/drawio-layout-engine"
+import { validateDiagramIr } from "../src/diagram-ir"
 
 describe("draw.io diagram generator", () => {
   afterEach(() => {
@@ -123,6 +124,7 @@ describe("draw.io diagram generator", () => {
     expect(result.mxGraphModelXml).toContain("&quot;quote&quot;")
     expect(result.mxGraphModelXml).toContain("&apos;apostrophe&apos;")
     expect(result.mxGraphModelXml).not.toContain("<tag>")
+    expect(result.mxGraphModelXml).not.toContain("&lt;br")
   })
 
   test("accepts DiagramIR with SoC regions, arrays, ports, buses, and evidence metadata", async () => {
@@ -237,13 +239,14 @@ describe("draw.io diagram generator", () => {
     expect(result.normalizedSpec.visualPlan?.profile).toBe("code-flow")
     expect(entry?.geometry.width).toBeGreaterThan(168)
     expect(entry?.geometry.height).toBeGreaterThanOrEqual(64)
-    expect(result.mxGraphModelXml).toContain("&#xa;")
+    expect(result.mxGraphModelXml).not.toContain("&lt;br")
+    expect(result.mxGraphModelXml).not.toContain("&#xa;")
     expect(result.mxGraphModelXml).toContain("edgeStyle=orthogonalEdgeStyle")
     expect(result.mxGraphModelXml).toContain('as="offset"')
     expect(result.normalizedSpec.layoutEngine).toBe("elk")
   })
 
-  test("design compiler moves noisy labels into visual notes and shortens edge labels", async () => {
+  test("design compiler does not create visible Legend items from overflow labels", async () => {
     const result = await generateDrawioDiagram({
       title: "Detailed code flow",
       diagramType: "code-flow",
@@ -274,11 +277,34 @@ describe("draw.io diagram generator", () => {
     expect(result.normalizedSpec.visualPlan?.profile).toBe("code-flow")
     expect(result.normalizedSpec.visualPlan?.qualityGate.textOverflowRepairs).toBeGreaterThan(0)
     expect(result.normalizedSpec.visualPlan?.qualityGate.edgeLabelRepairs).toBeGreaterThan(0)
-    expect(result.normalizedSpec.containers.some((container) => container.id.includes("visual-notes") || container.label === "Legend / Details")).toBe(true)
+    expect(result.normalizedSpec.visualPlan?.qualityGate.legendItems).toBe(0)
+    expect(result.normalizedSpec.containers.some((container) => container.id.includes("visual-plan-legend") || container.label === "Legend / Evidence")).toBe(false)
     expect(result.normalizedSpec.edges[0]?.label).toMatch(/^\[E1\]$/)
-    expect(result.mxGraphModelXml).toContain("Legend / Details")
-    expect(result.mxGraphModelXml).toContain("[N1]")
+    expect(result.mxGraphModelXml).not.toContain("Legend / Evidence")
+    expect(result.mxGraphModelXml).not.toContain("[N1]")
     expect(result.mxGraphModelXml).toContain("[E1]")
+  })
+
+  test("warns when explicit VisualPlan legend repeats truncated identifiers", () => {
+    const validation = validateDiagramIr({
+      diagramIr: {
+        title: "Legend quality",
+        diagramType: "code-flow",
+        nodes: [
+          { id: "a", label: "A", evidenceRefs: ["ref:a"] },
+          { id: "b", label: "B", evidenceRefs: ["ref:b"] },
+        ],
+        edges: [{ id: "ab", source: "a", target: "b", evidenceRefs: ["ref:ab"] }],
+        visualPlan: {
+          legend: {
+            items: [{ id: "bad", label: "USP_FOLD_STATE_ALLOC_RES...USP_FOLD_STATE_ALLOC" }],
+          },
+        },
+      },
+    })
+
+    expect(validation.issues.some((issue) => issue.code === "diagram.legend.low_information" && issue.severity === "warning")).toBe(true)
+    expect(validation.gaps.join("\n")).not.toContain("diagram.legend.low_information")
   })
 
   test("DiagramIR visual hints survive validation and guide the design compiler", async () => {
@@ -343,6 +369,25 @@ describe("draw.io diagram generator", () => {
           { id: "complete", source: "runtime-idle", target: "runtime-complete", label: "all reclaim steps done", pathRole: "local-transition", edgeKind: "transition", evidenceRefs: ["ref:e-complete"] },
           { id: "feedback", source: "runtime-complete", target: "gc-dispatch", label: "feedback to dispatch next GC window", pathRole: "feedback", edgeKind: "event", evidenceRefs: ["ref:e-feedback"] },
         ],
+        visualPlan: {
+          layoutProfile: "embedded-fsm-flow",
+          mainBackbone: {
+            nodes: ["entry", "gc-dispatch", "gc-reclaim", "runtime-idle", "runtime-complete"],
+            edges: ["start", "dispatch-reclaim", "runtime-event", "complete"],
+            direction: "down",
+          },
+          edgePresentation: {
+            start: { mode: "line" },
+            "dispatch-reclaim": { mode: "line" },
+            "runtime-event": { mode: "line" },
+            complete: { mode: "line" },
+            feedback: { mode: "rail", rail: "left", marker: "[R1]" },
+          },
+          legend: {
+            position: "right",
+            items: [{ id: "e6", marker: "[E1]", label: "Runtime FSM event waits for queue and parity completion." }],
+          },
+        },
       },
     })
 
@@ -358,47 +403,44 @@ describe("draw.io diagram generator", () => {
     expect(result.normalizedSpec.nodes.find((node) => node.sourceId === "gc-dispatch")?.parent).toBe("1")
     expect(result.normalizedSpec.nodes.find((node) => node.sourceId === "gc-dispatch")?.ownerContainer).toBe(gcLane?.id)
     expect(result.warnings.join("\n")).toContain("selected embedded-fsm-flow")
-    expect(result.mxGraphModelXml).toContain("Legend / Details")
+    expect(result.mxGraphModelXml).toContain("Legend / Evidence")
     expect(result.mxGraphModelXml).toContain("[E1]")
   })
 
-  test("converts unused embedded FSM partition containers to non-rendered layout-only scaffolds", async () => {
-    const result = await generateDrawioDiagram({
-      diagramIr: {
-        title: "SSD MP GC process with unused partitions",
-        diagramType: "business-flow",
-        semanticHints: {
-          containsStateMachines: true,
-          stateMachineCount: 1,
-          processPhases: ["trigger", "proc", "core"],
-        },
-        containers: [
-          { id: "trigger_layer", label: "触发层 (5个入口)", evidenceRefs: ["ref:trigger"] },
-          { id: "proc_layer", label: "Proc FSM 处理层", evidenceRefs: ["ref:proc"] },
-          { id: "core_layer", label: "Core FSM 核心状态机", evidenceRefs: ["ref:core"] },
-        ],
-        nodes: [
-          { id: "entry", label: "ftl_mp_gc_sys_idle()", visualRole: "action", evidenceRefs: ["ref:entry"] },
-          { id: "proc-run", label: "PROC_RUN", visualRole: "state", evidenceRefs: ["ref:run"] },
-          { id: "core-idle", label: "MP_GC_STATE_IDLE", visualRole: "state", evidenceRefs: ["ref:idle"] },
-        ],
-        edges: [
-          { id: "start", source: "entry", target: "proc-run", edgeKind: "transition", evidenceRefs: ["ref:e1"] },
-          { id: "next", source: "proc-run", target: "core-idle", edgeKind: "transition", evidenceRefs: ["ref:e2"] },
-        ],
+  test("blocks unresolved empty partition containers instead of rendering isolated scaffolds", async () => {
+    const diagramIr = {
+      title: "SSD MP GC process with unused partitions",
+      diagramType: "business-flow",
+      semanticHints: {
+        containsStateMachines: true,
+        stateMachineCount: 1,
+        processPhases: ["trigger", "proc", "core"],
       },
-    })
+      containers: [
+        { id: "trigger_layer", label: "触发层 (5个入口)", evidenceRefs: ["ref:trigger"] },
+        { id: "proc_layer", label: "Proc FSM 处理层", evidenceRefs: ["ref:proc"] },
+        { id: "core_layer", label: "Core FSM 核心状态机", evidenceRefs: ["ref:core"] },
+      ],
+      nodes: [
+        { id: "entry", label: "ftl_mp_gc_sys_idle()", visualRole: "action", evidenceRefs: ["ref:entry"] },
+        { id: "proc-run", label: "PROC_RUN", visualRole: "state", evidenceRefs: ["ref:run"] },
+        { id: "core-idle", label: "MP_GC_STATE_IDLE", visualRole: "state", evidenceRefs: ["ref:idle"] },
+      ],
+      edges: [
+        { id: "start", source: "entry", target: "proc-run", edgeKind: "transition", evidenceRefs: ["ref:e1"] },
+        { id: "next", source: "proc-run", target: "core-idle", edgeKind: "transition", evidenceRefs: ["ref:e2"] },
+      ],
+      visualPlan: {
+        layoutProfile: "embedded-fsm-flow",
+        mainBackbone: { nodes: ["entry", "proc-run", "core-idle"], edges: ["start", "next"] },
+        edgePresentation: { start: { mode: "line" }, next: { mode: "line" } },
+      },
+    }
 
-    expect(result.normalizedSpec.layout).toBe("embedded-fsm-flow")
-    expect(result.normalizedSpec.containers.map((container) => container.label)).not.toContain("触发层 (5个入口)")
-    expect(result.normalizedSpec.containers.map((container) => container.label)).not.toContain("Proc FSM 处理层")
-    expect(result.normalizedSpec.containers.map((container) => container.label)).not.toContain("Core FSM 核心状态机")
-    expect(result.mxGraphModelXml).not.toContain("触发层")
-    expect(result.mxGraphModelXml).not.toContain("Proc FSM 处理层")
-    expect(result.mxGraphModelXml).not.toContain("Core FSM 核心状态机")
-    expect(result.warnings.join("\n")).toContain("Converted empty container")
-    expect(result.warnings.join("\n")).toContain("layout-only scaffold")
-    expect(result.warnings.join("\n")).toContain("has no assigned nodes")
+    const validation = validateDiagramIr({ diagramIr })
+    expect(validation.ok).toBe(false)
+    expect(validation.issues.some((issue) => issue.code === "diagram.container.unresolved_ownership" && issue.severity === "blocking")).toBe(true)
+    await expect(generateDrawioDiagram({ diagramIr })).rejects.toThrow(/diagram\.container\.unresolved_ownership/)
   })
 
   test("renders embedded FSM partition ownership as weak background bands", async () => {
@@ -422,6 +464,19 @@ describe("draw.io diagram generator", () => {
           { id: "handoff", source: "proc-wait", target: "core-idle", edgeKind: "transition", evidenceRefs: ["ref:e1"] },
           { id: "core-local", source: "core-idle", target: "core-run", edgeKind: "transition", evidenceRefs: ["ref:e-core"] },
         ],
+        visualPlan: {
+          layoutProfile: "embedded-fsm-flow",
+          mainBackbone: {
+            nodes: ["proc-run", "proc-wait", "core-idle", "core-run"],
+            edges: ["proc-local", "handoff", "core-local"],
+            direction: "down",
+          },
+          edgePresentation: {
+            "proc-local": { mode: "line" },
+            handoff: { mode: "line" },
+            "core-local": { mode: "line" },
+          },
+        },
       },
     })
 
@@ -578,17 +633,82 @@ describe("draw.io diagram generator", () => {
           { id: "run", source: "gc-idle", target: "init", label: "进入RUN", pathRole: "primary", edgeKind: "control", evidenceRefs: ["ref:e4"] },
           { id: "feedback", source: "init", target: "wait-flush", label: "轮询回到等待", pathRole: "feedback", edgeKind: "event", evidenceRefs: ["ref:e5"] },
         ],
+        visualPlan: {
+          layoutProfile: "embedded-fsm-flow",
+          mainBackbone: {
+            nodes: ["non-gc-check", "wait-flush", "config", "init"],
+            edges: ["wait", "config"],
+            direction: "down",
+          },
+          edgePresentation: {
+            csu: { mode: "rail", rail: "right", marker: "[R1]" },
+            wait: { mode: "line" },
+            config: { mode: "line" },
+            run: { mode: "rail", rail: "right", marker: "[R2]" },
+            feedback: { mode: "rail", rail: "left", marker: "[R3]" },
+          },
+        },
       },
     })
 
     expect(result.mxGraphModelXml).not.toContain("&lt;br")
     expect(result.mxGraphModelXml).not.toContain("<br")
     expect(result.normalizedSpec.nodes.every((node) => !/[<>]br|&lt;br/i.test(node.label))).toBe(true)
-    expect(result.normalizedSpec.edges.filter((edge) => edge.points.some((point) => Number.isFinite(point.x))).length).toBeGreaterThan(2)
+    expect(result.normalizedSpec.edges.filter((edge) => edge.presentationMode === "rail" && edge.points.some((point) => Number.isFinite(point.x))).length).toBe(3)
     expect(result.normalizedSpec.visualPlan?.qualityGate.labelSanitizationRepairs).toBeGreaterThan(0)
-    expect(result.normalizedSpec.visualPlan?.qualityGate.edgeOverlapRepairs).toBeGreaterThan(0)
     expect(result.normalizedSpec.containers.some((container) => container.label === "Non GC 判断区")).toBe(false)
     expect(result.warnings.join("\n")).toContain("Skipped singleton weak-band")
+  })
+
+  test("renders model-authored VisualPlan edge presentations as line, rail, and legend", async () => {
+    const result = await generateDrawioDiagram({ diagramIr: denseEmbeddedFsmDiagramIr("visual-plan") })
+
+    expect(result.normalizedSpec.layout).toBe("embedded-fsm-flow")
+    expect(result.normalizedSpec.visualPlan?.profile).toBe("embedded-fsm-flow")
+    expect(result.normalizedSpec.visualPlan?.qualityGate.edgeVisibilityRepairs).toBeGreaterThan(0)
+    expect(result.normalizedSpec.visualPlan?.qualityGate.legendEdges).toBeGreaterThan(0)
+    expect(result.normalizedSpec.visualPlan?.qualityGate.visibleEdges).toBe(result.normalizedSpec.edges.length)
+    expect(result.normalizedSpec.edges.length).toBeLessThan(denseEmbeddedFsmDiagramIr("visual-plan").edges.length)
+    expect(result.normalizedSpec.edges.some((edge) => edge.label.includes("进入调度"))).toBe(true)
+    expect(result.normalizedSpec.edges.find((edge) => edge.sourceId === "feedback-done")?.presentationMode).toBe("rail")
+    expect(result.normalizedSpec.edges.find((edge) => edge.sourceId === "feedback-done")?.rail).toBe("left")
+    expect(result.normalizedSpec.edges.find((edge) => edge.sourceId === "feedback-done")?.points.length).toBeGreaterThan(0)
+    expect(result.mxGraphModelXml).toContain('<Array as="points">')
+    expect(result.normalizedSpec.edges.some((edge) => edge.sourceId === "csu")).toBe(false)
+    expect(result.mxGraphModelXml).toContain("Legend / Evidence")
+    expect(result.mxGraphModelXml).toContain("CSU调度")
+    expect(result.warnings.join("\n")).toContain("model-authored VisualPlan legend edge")
+  })
+
+  test("does not infer embedded FSM edge visibility when VisualPlan is missing", async () => {
+    const diagramIr = denseEmbeddedFsmDiagramIr()
+    const validation = validateDiagramIr({ diagramIr })
+
+    expect(validation.ok).toBe(false)
+    expect(validation.issues.some((issue) => issue.code === "diagram.visualPlan.missing" && issue.severity === "blocking")).toBe(true)
+    await expect(generateDrawioDiagram({ diagramIr })).rejects.toThrow(/diagram\.visualPlan\.missing/)
+  })
+
+  test("does not classify edge roles from domain words when VisualPlan is absent", async () => {
+    const result = await generateDrawioDiagram({
+      diagramIr: {
+        title: "No semantic hardcode",
+        diagramType: "business-flow",
+        layoutHints: { kind: "embedded-fsm-flow" },
+        nodes: [
+          { id: "start", label: "START", visualRole: "state", evidenceRefs: ["ref:start"] },
+          { id: "fds", label: "FDS ERROR GC SSD MP", visualRole: "state", evidenceRefs: ["ref:fds"] },
+        ],
+        edges: [
+          { id: "domain-edge", source: "start", target: "fds", label: "FDS ERROR START GC MP SSD", edgeKind: "transition", evidenceRefs: ["ref:e"] },
+        ],
+      },
+    })
+
+    expect(result.normalizedSpec.edges).toHaveLength(1)
+    expect(result.normalizedSpec.edges[0]?.presentationMode).toBeUndefined()
+    expect(result.normalizedSpec.edges[0]?.rail).toBeUndefined()
+    expect(result.normalizedSpec.edges[0]?.sourceId).toBe("domain-edge")
   })
 
   test("does not use embedded-fsm-flow for ordinary business flows", async () => {
@@ -681,3 +801,73 @@ describe("draw.io diagram generator", () => {
     })).rejects.toThrow(/stage=elk\.output.*missing coordinates/)
   })
 })
+
+function denseEmbeddedFsmDiagramIr(mode: "plain" | "visual-plan" = "plain") {
+  return {
+    title: "Dense SSD MP GC business flow",
+    diagramType: "business-flow",
+    layoutHints: mode === "visual-plan" ? undefined : { showAllEdges: true },
+    semanticHints: {
+      containsStateMachines: true,
+      stateMachineCount: 2,
+      processPhases: ["entry", "dispatch", "wait", "runtime", "complete"],
+    },
+    lanes: [
+      { id: "entry_lane", label: "入口层", evidenceRefs: ["ref:entry"] },
+      { id: "gc_lane", label: "MP GC 子模块", evidenceRefs: ["ref:gc"] },
+      { id: "runtime_lane", label: "运行时 FSM", evidenceRefs: ["ref:runtime"] },
+    ],
+    nodes: [
+      { id: "entry", label: "入口检查", parent: "entry_lane", visualRole: "action", evidenceRefs: ["ref:n-entry"] },
+      { id: "dispatch", label: "DISPATCH", parent: "gc_lane", visualRole: "state", evidenceRefs: ["ref:n-dispatch"] },
+      { id: "wait", label: "WAIT_FLUSH", parent: "gc_lane", visualRole: "state", evidenceRefs: ["ref:n-wait"] },
+      { id: "reclaim", label: "RECLAIM", parent: "gc_lane", visualRole: "state", evidenceRefs: ["ref:n-reclaim"] },
+      { id: "config", label: "提交配置", parent: "gc_lane", visualRole: "action", evidenceRefs: ["ref:n-config"] },
+      { id: "idle", label: "RUNTIME_IDLE", parent: "runtime_lane", visualRole: "state", evidenceRefs: ["ref:n-idle"] },
+      { id: "run", label: "RUNTIME_RUN", parent: "runtime_lane", visualRole: "state", evidenceRefs: ["ref:n-run"] },
+      { id: "done", label: "COMPLETE", parent: "runtime_lane", visualRole: "state", evidenceRefs: ["ref:n-done"] },
+    ],
+    edges: [
+      { id: "start", source: "entry", target: "dispatch", label: "进入调度", pathRole: "primary", edgeKind: "control", evidenceRefs: ["ref:e-start"] },
+      { id: "dispatch-wait", source: "dispatch", target: "wait", label: "等待 MP Flush", pathRole: "local-transition", edgeKind: "transition", evidenceRefs: ["ref:e-wait"] },
+      { id: "wait-reclaim", source: "wait", target: "reclaim", label: "Flush 完成", pathRole: "local-transition", edgeKind: "transition", evidenceRefs: ["ref:e-reclaim"] },
+      { id: "reclaim-config", source: "reclaim", target: "config", label: "提交配置", pathRole: "primary", edgeKind: "control", evidenceRefs: ["ref:e-config"] },
+      { id: "idle-run", source: "idle", target: "run", label: "运行时进入 RUN", pathRole: "local-transition", edgeKind: "transition", evidenceRefs: ["ref:e-run"] },
+      { id: "run-done", source: "run", target: "done", label: "完成", pathRole: "local-transition", edgeKind: "transition", evidenceRefs: ["ref:e-done"] },
+      { id: "csu", source: "dispatch", target: "idle", label: "CSU调度触发 runtime FSM", pathRole: "cross-module", edgeKind: "event", evidenceRefs: ["ref:e-csu"] },
+      { id: "cui", source: "wait", target: "run", label: "提交CUI任务", pathRole: "cross-module", edgeKind: "event", evidenceRefs: ["ref:e-cui"] },
+      { id: "feedback-done", source: "done", target: "dispatch", label: "完成后回到调度窗口", pathRole: "feedback", edgeKind: "event", evidenceRefs: ["ref:e-feedback"] },
+      { id: "retry-wait", source: "run", target: "wait", label: "轮询等待 flush 条件", pathRole: "feedback", edgeKind: "event", evidenceRefs: ["ref:e-retry"] },
+      { id: "secondary-entry", source: "reclaim", target: "entry", label: "异常时回到入口检查", pathRole: "secondary", edgeKind: "event", evidenceRefs: ["ref:e-secondary"] },
+      { id: "cross-config", source: "config", target: "run", label: "[E12] 配置完成后唤醒运行时处理", pathRole: "cross-module", edgeKind: "event", evidenceRefs: ["ref:e-cross"] },
+    ],
+    visualPlan: mode === "visual-plan"
+      ? {
+        layoutProfile: "embedded-fsm-flow",
+        mainBackbone: {
+          nodes: ["entry", "dispatch", "wait", "reclaim", "config"],
+          edges: ["start", "dispatch-wait", "wait-reclaim", "reclaim-config"],
+          direction: "down",
+        },
+        edgePresentation: {
+          start: { mode: "line" },
+          "dispatch-wait": { mode: "line" },
+          "wait-reclaim": { mode: "line" },
+          "reclaim-config": { mode: "line" },
+          "idle-run": { mode: "line" },
+          "run-done": { mode: "line" },
+          csu: { mode: "legend", marker: "[E-CSU]", label: "CSU调度触发 runtime FSM" },
+          cui: { mode: "legend", marker: "[E-CUI]", label: "提交CUI任务" },
+          "feedback-done": { mode: "rail", rail: "left", marker: "[R1]" },
+          "retry-wait": { mode: "rail", rail: "left", marker: "[R2]" },
+          "secondary-entry": { mode: "rail", rail: "right", marker: "[R3]" },
+          "cross-config": { mode: "legend", marker: "[E12]", label: "配置完成后唤醒运行时处理" },
+        },
+        legend: {
+          position: "right",
+          items: [{ id: "scope", label: "Legend entries are model-authored VisualPlan decisions." }],
+        },
+      }
+      : undefined,
+  }
+}

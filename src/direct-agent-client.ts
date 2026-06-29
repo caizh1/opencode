@@ -3,8 +3,12 @@ import { CHIPMATE_LOCAL_AGENT_ID, CHIPMATE_SESSION_TITLE } from "./chipmate-cons
 import { extractPluginChatQuestionText, pluginHistoryUserText } from "./chat-session"
 import { chatCompletionsUrl } from "./completion-model-client"
 import { terminalProjectContextPrompt, type TerminalProjectContext } from "./agent-terminal-project-context"
-import { activeSkillPolicies, renderSkillsForPrompt, selectActiveSkills, skillSystemCatalog, SkillRegistry } from "./skills"
-import type { ClarificationRequest, ToolApprovalDecision, ToolApprovalHandler, ToolApprovalRequest, ToolRuntime, ToolRuntimeResult } from "./tool-runtime"
+import { activeSkillPolicies, renderSkillsForPrompt, selectActiveSkills, skillSystemCatalog, SkillRegistry, type ActiveSkillPolicy } from "./skills"
+import { retryHeadersForError, sessionRetryableError, sessionRetryDelayMs, sessionRetryLimitFromEnv } from "./session-retry"
+import { UsageLedgerService, usageRecordFromMessage } from "./usage-ledger"
+import { estimateChatTokenUsage, normalizeProviderTokenUsage } from "./usage"
+import { GoalRuntime } from "./goal-runtime"
+import type { ClarificationRequest, ToolApprovalDecision, ToolApprovalHandler, ToolApprovalRequest, ToolRuntime, ToolRuntimeProgressEvent, ToolRuntimeResult } from "./tool-runtime"
 import type {
   ConnectionState,
   HealthResponse,
@@ -15,8 +19,14 @@ import type {
   ChipMateModelInfo,
   ChipMateSession,
   ChipMateSessionStatus,
+  ChipMateTokenUsage,
+  ChipMateUsageStatsOptions,
+  ChipMateUsageStatsSnapshot,
   EvidenceLedgerEntry,
   RemoteSettings,
+  ThreadGoal,
+  ThreadGoalOperation,
+  ThreadGoalStatus,
 } from "./types"
 
 type DirectAgentClientInput = {
@@ -64,10 +74,12 @@ type VisualEvidenceRecord = {
   sessionID: string
   messageID: string
   createdAt: number
-  kind: "drawio" | "mermaid"
+  kind: "drawio" | "mermaid" | "word-render-page"
   diagramId?: string
   title?: string
   sourceHash?: string
+  artifactPath?: string
+  page?: number
   mediaType: "image/png"
   width?: number
   height?: number
@@ -90,6 +102,19 @@ export type LocalHistoryMessageInput = {
   mode?: string
 }
 
+type MermaidRepairInput = {
+  sessionID: string
+  messageID: string
+  source: string
+  error: string
+  sourceHash?: string
+  diagramId?: string
+  language?: string
+  signal?: AbortSignal
+}
+
+const TOOL_ARGUMENT_STATE: unique symbol = Symbol("chipmate.toolArgumentState")
+
 type ChatToolCall = {
   id: string
   type: "function"
@@ -97,7 +122,18 @@ type ChatToolCall = {
     name: string
     arguments: string
   }
+  [TOOL_ARGUMENT_STATE]?: ToolArgumentState
 }
+
+type ToolArgumentState = {
+  truncated?: boolean
+  originalBytes?: number
+  maxBytes?: number
+}
+
+type ToolArgumentParseResult =
+  | { ok: true; args: Record<string, unknown> }
+  | { ok: false; errorCode: string; errorMessage: string }
 
 type ChatCompletionChoiceMessage = {
   content?: unknown
@@ -114,6 +150,19 @@ type ChatCompletionChoice = {
   message?: ChatCompletionChoiceMessage
   text?: unknown
   finish_reason?: unknown
+}
+
+class ChatCompletionHttpError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+    readonly statusText: string,
+    readonly bodyPreview: string,
+    readonly headers: Headers,
+  ) {
+    super(message)
+    this.name = "ChatCompletionHttpError"
+  }
 }
 
 type ChatMessageTextContent = {
@@ -154,6 +203,82 @@ type ConversationMemoryRefreshInput = {
 }
 
 type ChatToolDefinition = ReturnType<ToolRuntime["toolDefinitions"]>[number]
+
+type WordVisualQaArtifact = {
+  path?: string
+  pdfArtifactPath?: string
+  pagePngPaths: string[]
+  pageCount: number
+  attempted?: boolean
+  ok?: boolean
+  warnings: string[]
+  pageVisualSummaries: unknown[]
+  visualEvidenceCount: number
+  coverage: WordVisualQaPageCoverage[]
+  batchSize: number
+  batchCount: number
+}
+
+type WordVisualQaPageCoverage = {
+  page: number
+  path?: string
+  status: "pending" | "attached" | "inspected" | "summary-only" | "skipped" | "failed"
+  reason?: string
+}
+
+type WordVisualQaBatch = {
+  artifact: WordVisualQaArtifact
+  batchIndex: number
+  batchCount: number
+  pages: WordVisualQaPageCoverage[]
+  images: ChatMessageImageContent[]
+}
+
+type WordVisualQaState = {
+  pendingBatches: WordVisualQaBatch[]
+  renderRoundCount: number
+  qaBatchCount: number
+  imageInputRejected: boolean
+}
+
+type DeliveryExpectationKind = "docx" | "artifact"
+
+type DeliveryExpectation = {
+  kind: DeliveryExpectationKind
+  label: string
+  requiredExtensions: string[]
+}
+
+type DeliveryArtifactRecord = {
+  kind: string
+  path: string
+  tool: string
+}
+
+type DeliveryNextAction = {
+  tool: string
+  reason: string
+  argsSummary?: string
+  sourceTool: string
+}
+
+type DeliveryProducerFailure = {
+  tool: string
+  reason: string
+  errorCode?: string
+  validationErrors: string[]
+}
+
+type DeliveryDisciplineState = {
+  expectations: DeliveryExpectation[]
+  producedArtifacts: DeliveryArtifactRecord[]
+  pendingNextActions: DeliveryNextAction[]
+  producerFailures: DeliveryProducerFailure[]
+  completedTools: string[]
+  convergencePromptInserted: boolean
+  missingDeliverablePromptInserted: boolean
+  producerFailureRepairPromptInserted: boolean
+}
 
 type ToolExecutionSummary = {
   tool: string
@@ -260,6 +385,7 @@ const DEFAULT_MAX_AGENT_STEPS = 25
 const MIN_MAX_AGENT_STEPS = 1
 const HARD_MAX_AGENT_STEPS = 100
 const MAX_STREAM_TOOL_ARGUMENT_BYTES = 128 * 1024
+const MAX_TOOL_ARGUMENT_DIAGNOSTIC_BYTES = 900
 const CONVERSATION_MEMORY_SUMMARY_VERSION = 1
 const EVIDENCE_LEDGER_SUMMARY_VERSION = 1
 const VISUAL_EVIDENCE_SUMMARY_VERSION = 1
@@ -273,6 +399,10 @@ const MAX_EVIDENCE_LEDGER_FIELD_CHARS = 240
 const MAX_VISUAL_EVIDENCE_IMAGES_PER_TURN = 3
 const MAX_VISUAL_EVIDENCE_SOFT_IMAGE_BYTES = 1024 * 1024
 const MAX_VISUAL_EVIDENCE_HARD_IMAGE_BYTES = 2 * 1024 * 1024
+const MAX_WORD_VISUAL_QA_REPAIR_ROUNDS = 2
+const WORD_VISUAL_QA_IMAGES_PER_BATCH = 3
+const EVIDENCE_CONVERGENCE_CHECKPOINT_REMAINING_STEPS = 5
+const MAX_MERMAID_REPAIR_TOKENS = 4096
 const DIRECT_PROVIDER_VERSION = "direct-openai-compatible"
 
 export class DirectAgentClient {
@@ -280,12 +410,21 @@ export class DirectAgentClient {
   private readonly listeners = new Set<(event: ChipMateEvent) => void>()
   private readonly activeControllers = new Map<string, AbortController>()
   private readonly statuses = new Map<string, ChipMateSessionStatus>()
+  private readonly goalRuntime: GoalRuntime
+  private readonly goalContinuationTimers = new Map<string, ReturnType<typeof setTimeout>>()
+  private readonly goalOperations = new Map<string, ThreadGoalOperation>()
+  private readonly goalStateLocks = new Map<string, Promise<void>>()
   private readonly pendingToolApprovals = new Map<string, PendingToolApproval>()
   private readonly pendingClarifications = new Map<string, PendingClarification>()
   private readonly activeMemoryRefreshes = new Set<string>()
   private readonly queuedMemoryRefreshes = new Map<string, ConversationMemoryRefreshInput>()
+  private readonly usageLedger: UsageLedgerService
+  private usageBackfillPromise?: Promise<void>
 
-  constructor(private readonly deps: DirectAgentClientInput) {}
+  constructor(private readonly deps: DirectAgentClientInput) {
+    this.usageLedger = new UsageLedgerService(deps.context)
+    this.goalRuntime = new GoalRuntime(deps.context)
+  }
 
   async health(signal?: AbortSignal): Promise<HealthResponse> {
     const settings = this.deps.getSettings()
@@ -493,6 +632,131 @@ export class DirectAgentClient {
     return Object.fromEntries(this.statuses)
   }
 
+  async getGoal(sessionID: string, signal?: AbortSignal): Promise<ThreadGoal | undefined> {
+    signal?.throwIfAborted()
+    const goal = await this.goalRuntime.getGoal(sessionID)
+    return goal ? this.goalRuntime.goalForDisplay(goal) : undefined
+  }
+
+  getGoalOperation(sessionID: string | undefined): ThreadGoalOperation | undefined {
+    return sessionID ? this.goalOperations.get(sessionID) : undefined
+  }
+
+  async restoreGoalAfterSessionResume(sessionID: string, signal?: AbortSignal): Promise<ThreadGoal | undefined> {
+    signal?.throwIfAborted()
+    return this.withGoalStateLock(sessionID, () => this.restoreGoalAfterSessionResumeUnlocked(sessionID))
+  }
+
+  private async restoreGoalAfterSessionResumeUnlocked(sessionID: string): Promise<ThreadGoal | undefined> {
+    const goal = await this.goalRuntime.restoreAfterSessionResume(sessionID)
+    if (!goal) {
+      this.clearGoalContinuationTimer(sessionID)
+      this.goalOperations.delete(sessionID)
+      return undefined
+    }
+
+    const displayGoal = await this.emitGoalUpdated(sessionID, goal)
+    if (goal.status === "active") {
+      this.scheduleGoalContinuation(sessionID)
+    } else {
+      this.clearGoalContinuationTimer(sessionID)
+      this.finishGoalOperation(sessionID, displayGoal)
+    }
+    return displayGoal
+  }
+
+  async createGoal(input: { sessionID: string; objective: string; tokenBudget?: number; signal?: AbortSignal }) {
+    input.signal?.throwIfAborted()
+    return this.withGoalStateLock(input.sessionID, () => this.createGoalUnlocked(input))
+  }
+
+  private async createGoalUnlocked(input: { sessionID: string; objective: string; tokenBudget?: number }) {
+    const goal = await this.goalRuntime.setGoal(input.sessionID, {
+      objective: input.objective,
+      status: "active",
+      tokenBudget: input.tokenBudget,
+    })
+    const displayGoal = await this.emitGoalUpdated(input.sessionID, goal)
+    this.scheduleGoalContinuation(input.sessionID)
+    return displayGoal
+  }
+
+  async setGoal(input: { sessionID: string; objective?: string; status?: ThreadGoalStatus; tokenBudget?: number | null; signal?: AbortSignal }) {
+    input.signal?.throwIfAborted()
+    return this.withGoalStateLock(input.sessionID, () => this.setGoalUnlocked(input))
+  }
+
+  private async setGoalUnlocked(input: { sessionID: string; objective?: string; status?: ThreadGoalStatus; tokenBudget?: number | null }) {
+    const goal = await this.goalRuntime.setGoal(input.sessionID, {
+      objective: input.objective,
+      status: input.status,
+      tokenBudget: input.tokenBudget,
+    })
+    const displayGoal = await this.emitGoalUpdated(input.sessionID, goal)
+    if (goal.status === "active") this.scheduleGoalContinuation(input.sessionID)
+    else this.finishGoalOperation(input.sessionID, displayGoal)
+    return displayGoal
+  }
+
+  async pauseGoal(sessionID: string, signal?: AbortSignal) {
+    signal?.throwIfAborted()
+    return this.withGoalStateLock(sessionID, () => this.pauseGoalUnlocked(sessionID))
+  }
+
+  private async pauseGoalUnlocked(sessionID: string) {
+    const goal = await this.goalRuntime.pauseGoal(sessionID)
+    if (goal) {
+      const displayGoal = await this.emitGoalUpdated(sessionID, goal)
+      this.finishGoalOperation(sessionID, displayGoal)
+    }
+    return goal ? this.goalRuntime.goalForDisplay(goal) : undefined
+  }
+
+  async resumeGoal(sessionID: string, signal?: AbortSignal) {
+    signal?.throwIfAborted()
+    return this.withGoalStateLock(sessionID, () => this.resumeGoalUnlocked(sessionID))
+  }
+
+  private async resumeGoalUnlocked(sessionID: string) {
+    const goal = await this.goalRuntime.resumeGoal(sessionID)
+    if (goal) {
+      await this.emitGoalUpdated(sessionID, goal)
+      this.scheduleGoalContinuation(sessionID)
+    }
+    return goal ? this.goalRuntime.goalForDisplay(goal) : undefined
+  }
+
+  async clearGoal(sessionID: string, signal?: AbortSignal) {
+    signal?.throwIfAborted()
+    return this.withGoalStateLock(sessionID, () => this.clearGoalUnlocked(sessionID))
+  }
+
+  private async clearGoalUnlocked(sessionID: string) {
+    const cleared = await this.goalRuntime.clearGoal(sessionID)
+    this.clearGoalContinuationTimer(sessionID)
+    this.finishGoalOperation(sessionID)
+    if (cleared) this.emit("goal.cleared", { sessionID })
+    return cleared
+  }
+
+		  async startGoalOperation(input: { sessionID: string; objective: string; tokenBudget?: number; signal?: AbortSignal }) {
+		    input.signal?.throwIfAborted()
+		    return this.withGoalStateLock(input.sessionID, async () => {
+		    await this.goalRuntime.clearGoal(input.sessionID)
+		    const goal = await this.createGoalUnlocked(input)
+		    const operation = this.beginGoalOperation(input.sessionID, goal)
+		    this.emit("goal.operation.started", { sessionID: input.sessionID, operation })
+		    this.scheduleGoalContinuation(input.sessionID)
+		    return goal
+		    })
+		  }
+
+  async cancelGoalOperation(sessionID: string, signal?: AbortSignal) {
+    signal?.throwIfAborted()
+    await this.pauseGoal(sessionID, signal)
+    return this.abortSession(sessionID, signal)
+  }
+
   async createSession(title = CHIPMATE_SESSION_TITLE, _signal?: AbortSignal): Promise<ChipMateSession> {
     const now = Date.now()
     const session: SessionRecord = {
@@ -511,6 +775,13 @@ export class DirectAgentClient {
   async getMessages(sessionID: string, limit = 100, _signal?: AbortSignal): Promise<ChipMateMessage[]> {
     const events = await this.readSessionEvents(sessionID)
     return latestSessionMessages(events).slice(-limit)
+  }
+
+  async getUsageStats(signal?: AbortSignal, options: ChipMateUsageStatsOptions = {}): Promise<ChipMateUsageStatsSnapshot> {
+    signal?.throwIfAborted()
+    await this.ensureUsageBackfilled(signal)
+    signal?.throwIfAborted()
+    return this.usageLedger.stats(undefined, options)
   }
 
   async ensureSessionDisplayTitle(sessionID: string, signal?: AbortSignal): Promise<ChipMateSession | undefined> {
@@ -581,11 +852,13 @@ export class DirectAgentClient {
   async appendVisualEvidence(input: {
     sessionID: string
     messageID: string
-    kind: "drawio" | "mermaid"
+    kind: "drawio" | "mermaid" | "word-render-page"
     dataUri: string
     diagramId?: string
     title?: string
     sourceHash?: string
+    artifactPath?: string
+    page?: number
     width?: number
     height?: number
   }) {
@@ -604,6 +877,8 @@ export class DirectAgentClient {
       diagramId: optionalVisualField(input.diagramId),
       title: optionalVisualField(input.title),
       sourceHash: optionalVisualField(input.sourceHash),
+      artifactPath: optionalVisualField(input.artifactPath),
+      page: positiveInteger(input.page),
       mediaType: "image/png",
       width: positiveInteger(input.width),
       height: positiveInteger(input.height),
@@ -615,6 +890,50 @@ export class DirectAgentClient {
     const sizeNote = byteLength > MAX_VISUAL_EVIDENCE_SOFT_IMAGE_BYTES ? " large=true" : ""
     this.deps.output.appendLine(`[visual-context] stored kind=${visualEvidence.kind} message=${visualEvidence.messageID} bytes=${byteLength}${sizeNote}`)
     return visualEvidence
+  }
+
+  async repairMermaidDiagram(input: MermaidRepairInput): Promise<ChipMateMessage> {
+    const settings = this.deps.getSettings()
+    this.setBusyStatus(input.sessionID, "thinking", "Repairing Mermaid diagram")
+    try {
+      const sessionEvents = await this.readSessionEvents(input.sessionID)
+      const historyMessages = await this.recentChatHistoryMessages(input.sessionID, settings, input.signal, sessionEvents)
+      const messages = mermaidRepairMessages({
+        historyMessages,
+        messageID: input.messageID,
+        diagramId: input.diagramId,
+        sourceHash: input.sourceHash,
+        source: input.source,
+        error: input.error,
+        language: input.language,
+      })
+      const raw = await this.requestMermaidRepair(settings, messages, input.signal)
+      const repaired = mermaidRepairContentFromResponse(raw)
+      const assistantText = mermaidRepairAssistantText(repaired.text)
+      const assistant = createMessage(input.sessionID, "assistant", "", "mermaid-repair")
+      assistant.info.modelID = settings.provider.chatModel || undefined
+      assistant.info.tokens = repaired.usage ?? estimateChatTokenUsage({
+        messages,
+        outputText: assistantText,
+        model: settings.provider.chatModel,
+      })
+      assistant.info.usageKind = repaired.usage ? "reported" : "estimated"
+      replaceAssistantText(assistant, input.sessionID, assistantText)
+      assistant.info.time = { ...assistant.info.time, completed: Date.now() }
+      await this.appendMessage(input.sessionID, assistant)
+      await this.recordAssistantUsage(assistant)
+      this.emit("message.updated", { info: assistant.info })
+      const textPart = assistant.parts.find((part) => part.type === "text")
+      if (textPart) this.emit("message.part.updated", { part: textPart })
+      await this.touchSession(input.sessionID)
+      this.flushQueuedConversationMemoryRefresh(input.sessionID)
+      this.deps.output.appendLine(`[mermaid-repair] appended assistant message=${assistant.info.id} sourceHash=${input.sourceHash || ""}`)
+      return assistant
+    } finally {
+      const status: ChipMateSessionStatus = { type: "idle" }
+      this.statuses.set(input.sessionID, status)
+      this.emit("session.status", { sessionID: input.sessionID, status })
+    }
   }
 
   async sendMessage(input: {
@@ -660,15 +979,22 @@ export class DirectAgentClient {
         if (controller.signal.aborted || input.signal?.aborted) return
         return this.recordSessionError(input.sessionID, error)
       })
-      .finally(() => {
-        input.signal?.removeEventListener("abort", abort)
-        this.activeControllers.delete(input.sessionID)
-      })
-  }
+	      .finally(() => {
+	        input.signal?.removeEventListener("abort", abort)
+	        this.activeControllers.delete(input.sessionID)
+	        if (!controller.signal.aborted && !input.signal?.aborted) this.scheduleGoalContinuation(input.sessionID)
+	      })
+	  }
 
   async abortSession(sessionID: string, _signal?: AbortSignal) {
     const controller = this.activeControllers.get(sessionID)
     controller?.abort()
+    this.clearGoalContinuationTimer(sessionID)
+    const accountedGoal = await this.withGoalStateLock(sessionID, () => this.goalRuntime.abortTurn(sessionID)).catch(() => undefined)
+    if (accountedGoal) {
+      const displayGoal = await this.emitGoalUpdated(sessionID, accountedGoal)
+      this.finishGoalOperation(sessionID, displayGoal)
+    }
     this.resolvePendingToolApprovalsForSession(sessionID, {
       approved: false,
       reason: "request canceled",
@@ -679,10 +1005,167 @@ export class DirectAgentClient {
     return true
   }
 
+  private goalToolHandler() {
+    return {
+      getGoal: async (sessionID: string) => this.goalRuntime.goalResponse(await this.goalRuntime.getGoal(sessionID)),
+		      createGoal: async (sessionID: string, input: { objective: string; tokenBudget?: number }) => {
+		        return this.withGoalStateLock(sessionID, async () => {
+		        const response = await this.goalRuntime.createGoalFromTool(sessionID, input.objective, input.tokenBudget)
+		        if (response.goal) {
+		          const displayGoal = await this.emitGoalUpdated(sessionID, response.goal)
+	          const operation = this.beginGoalOperation(sessionID, displayGoal)
+	          this.emit("goal.operation.started", { sessionID, operation })
+		          this.scheduleGoalContinuation(sessionID)
+		        }
+		        return response
+		        })
+	      },
+	      updateGoal: async (sessionID: string, input: { status: ThreadGoalStatus }) => {
+	        return this.withGoalStateLock(sessionID, async () => {
+	        const response = await this.goalRuntime.updateGoalFromTool(sessionID, input.status)
+	        if (response.goal) {
+	          const displayGoal = await this.emitGoalUpdated(sessionID, response.goal)
+	          if (isTerminalGoalStatus(response.goal.status)) this.finishGoalOperation(sessionID, displayGoal)
+	        }
+	        return response
+	        })
+	      },
+    }
+  }
+
   private setBusyStatus(sessionID: string, stage: string, message: string) {
     const status: ChipMateSessionStatus = { type: "busy", stage, message }
     this.statuses.set(sessionID, status)
     this.emit("session.status", { sessionID, status })
+  }
+
+  private scheduleGoalContinuation(sessionID: string) {
+    this.clearGoalContinuationTimer(sessionID)
+    const status = this.statuses.get(sessionID)
+    if (this.activeControllers.has(sessionID) || status?.type === "busy" || status?.type === "retry") return
+    const timer = setTimeout(() => {
+      this.goalContinuationTimers.delete(sessionID)
+      void this.runGoalContinuation(sessionID)
+    }, 120)
+    this.goalContinuationTimers.set(sessionID, timer)
+  }
+
+  private clearGoalContinuationTimer(sessionID: string) {
+    const timer = this.goalContinuationTimers.get(sessionID)
+    if (timer) clearTimeout(timer)
+    this.goalContinuationTimers.delete(sessionID)
+  }
+
+  private async withGoalStateLock<T>(sessionID: string, run: () => Promise<T> | T): Promise<T> {
+    const previous = this.goalStateLocks.get(sessionID) ?? Promise.resolve()
+    let release!: () => void
+    const next = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    const current = previous.catch(() => undefined).then(() => next)
+    this.goalStateLocks.set(sessionID, current)
+    await previous.catch(() => undefined)
+    try {
+      return await run()
+    } finally {
+      release()
+      if (this.goalStateLocks.get(sessionID) === current) this.goalStateLocks.delete(sessionID)
+    }
+  }
+
+  private async runGoalContinuation(sessionID: string) {
+    let controller: AbortController | undefined
+    let goal: ThreadGoal | undefined
+    const shouldRun = await this.withGoalStateLock(sessionID, async () => {
+      if (this.activeControllers.has(sessionID)) return false
+      goal = await this.goalRuntime.getGoal(sessionID)
+      if (!goal || goal.status !== "active") {
+        if (goal && isTerminalGoalStatus(goal.status)) this.finishGoalOperation(sessionID, await this.goalRuntime.goalForDisplay(goal))
+        return false
+      }
+      controller = new AbortController()
+      this.activeControllers.set(sessionID, controller)
+      const operation = this.beginGoalOperation(sessionID, await this.goalRuntime.goalForDisplay(goal))
+      this.emit("goal.operation.started", { sessionID, operation })
+      return true
+    })
+    if (!shouldRun || !controller || !goal) {
+      return
+    }
+    try {
+      await this.runTurn(sessionID, goal.objective, {
+        signal: controller.signal,
+        skipUserMessage: true,
+        goalContinuation: true,
+        messageMode: "goal-continuation",
+        internalGoalPrompt: await this.goalRuntime.continuationPrompt(goal),
+      })
+    } catch (error) {
+      if (!controller.signal.aborted) await this.recordSessionError(sessionID, error)
+    } finally {
+      this.activeControllers.delete(sessionID)
+      if (controller.signal.aborted) return
+      const latest = await this.goalRuntime.getGoal(sessionID)
+      if (latest?.status === "active") this.scheduleGoalContinuation(sessionID)
+      else this.finishGoalOperation(sessionID, latest ? await this.goalRuntime.goalForDisplay(latest) : undefined)
+    }
+  }
+
+	  private beginGoalOperation(sessionID: string, goal: ThreadGoal) {
+	    const now = Date.now()
+	    const existing = this.goalOperations.get(sessionID)
+	    const operation: ThreadGoalOperation = {
+	      sessionID,
+	      active: true,
+	      startedAt: existing?.startedAt ?? now,
+	      updatedAt: now,
+	      turnCount: existing?.turnCount ?? 0,
+	      currentTurnID: existing?.currentTurnID,
+	      status: goal.status,
+	      objective: goal.objective,
+    }
+    this.goalOperations.set(sessionID, operation)
+    return operation
+  }
+
+	  private updateGoalOperationTurn(sessionID: string, goal: ThreadGoal | undefined, turnID: string) {
+	    if (!goal) return
+	    const now = Date.now()
+	    const existing = this.goalOperations.get(sessionID)
+	    const operation: ThreadGoalOperation = {
+	      sessionID,
+	      active: true,
+	      startedAt: existing?.startedAt ?? now,
+	      updatedAt: now,
+	      turnCount: (existing?.turnCount ?? 0) + 1,
+	      currentTurnID: turnID,
+	      status: goal.status,
+	      objective: goal.objective,
+	    }
+	    this.goalOperations.set(sessionID, operation)
+	    this.emit("goal.operation.started", { sessionID, operation })
+	  }
+
+  private finishGoalOperation(sessionID: string, goal?: ThreadGoal) {
+    const existing = this.goalOperations.get(sessionID)
+    if (!existing) return
+    const operation: ThreadGoalOperation = {
+      ...existing,
+      active: false,
+      updatedAt: Date.now(),
+      currentTurnID: undefined,
+      status: goal?.status ?? existing.status,
+      objective: goal?.objective ?? existing.objective,
+    }
+    this.goalOperations.set(sessionID, operation)
+    this.emit("goal.operation.finished", { sessionID, operation })
+  }
+
+  private async emitGoalUpdated(sessionID: string, goal: ThreadGoal) {
+    const displayGoal = await this.goalRuntime.goalForDisplay(goal)
+    this.emit("goal.updated", { sessionID, goal: displayGoal })
+    if (isTerminalGoalStatus(displayGoal.status)) this.finishGoalOperation(sessionID, displayGoal)
+    return displayGoal
   }
 
   async deleteSession(sessionID: string, signal?: AbortSignal) {
@@ -693,6 +1176,9 @@ export class DirectAgentClient {
     const controller = this.activeControllers.get(sessionID)
     controller?.abort()
     this.activeControllers.delete(sessionID)
+    this.clearGoalContinuationTimer(sessionID)
+    this.goalOperations.delete(sessionID)
+    await this.goalRuntime.clearGoal(sessionID).catch(() => false)
     this.statuses.delete(sessionID)
     this.resolvePendingToolApprovalsForSession(sessionID, {
       approved: false,
@@ -818,6 +1304,32 @@ export class DirectAgentClient {
     return text
   }
 
+  private async requestMermaidRepair(settings: RemoteSettings, messages: ChatMessage[], signal?: AbortSignal) {
+    const configuredMaxTokens = Number.isFinite(settings.provider.maxTokens) ? Math.floor(settings.provider.maxTokens) : MAX_MERMAID_REPAIR_TOKENS
+    const maxTokens = Math.max(512, Math.min(MAX_MERMAID_REPAIR_TOKENS, configuredMaxTokens))
+    const body = {
+      model: settings.provider.chatModel,
+      messages,
+      stream: false,
+      max_tokens: maxTokens,
+      temperature: 0,
+    }
+    const promptBytes = textByteLength(JSON.stringify(messages))
+    this.deps.output.appendLine(`[mermaid-repair] request model=${settings.provider.chatModel || "default"} messages=${messages.length} promptBytes=${promptBytes} maxTokens=${maxTokens} tools=disabled`)
+    const response = await fetch(chatCompletionsUrl(settings.provider.apiBaseUrl), {
+      method: "POST",
+      headers: await this.headers(true),
+      signal,
+      body: JSON.stringify(body),
+    })
+    const text = await response.text().catch(() => "")
+    if (!response.ok) {
+      throw new Error(`Mermaid repair failed: ${response.status} ${response.statusText || "HTTP error"}${text ? `: ${text}` : ""}`)
+    }
+    this.deps.output.appendLine(`[mermaid-repair] response rawBytes=${textByteLength(text)}`)
+    return text
+  }
+
   private async requestSessionDisplayTitle(settings: RemoteSettings, question: string, signal?: AbortSignal) {
     const body = {
       model: settings.provider.chatModel,
@@ -846,6 +1358,9 @@ export class DirectAgentClient {
     historyText?: string
     messageMode?: string
     evidenceLedger?: EvidenceLedgerEntry[]
+    internalGoalPrompt?: string
+    goalContinuation?: boolean
+    skipUserMessage?: boolean
     signal?: AbortSignal
   } = {}) {
     const signal = options.signal
@@ -855,20 +1370,25 @@ export class DirectAgentClient {
     const historyMessages = await this.recentChatHistoryMessages(sessionID, settings, signal, sessionEvents)
     const visualInputs = await this.previousAssistantVisualInputs(sessionID, sessionEvents)
     const userHistoryText = userHistoryTextForTurn(userText, options.historyText, options.messageMode)
-    const userMessage = createMessage(sessionID, "user", userHistoryText, options.messageMode)
-    await this.appendMessage(sessionID, userMessage)
-    await this.appendEvidenceLedger(sessionID, userMessage.info.id, options.evidenceLedger)
-    this.setBusyStatus(sessionID, "sending", "Sending user message")
-    this.emit("message.updated", { info: userMessage.info })
-    this.emit("message.part.updated", {
-      part: {
-        id: `${userMessage.info.id}-text`,
-        sessionID,
-        messageID: userMessage.info.id,
-        type: "text",
-        text: userHistoryText,
-      },
-    })
+    let userMessage: ChipMateMessage | undefined
+    if (!options.skipUserMessage) {
+      userMessage = createMessage(sessionID, "user", userHistoryText, options.messageMode)
+      await this.appendMessage(sessionID, userMessage)
+      await this.appendEvidenceLedger(sessionID, userMessage.info.id, options.evidenceLedger)
+      this.setBusyStatus(sessionID, "sending", "Sending user message")
+      this.emit("message.updated", { info: userMessage.info })
+      this.emit("message.part.updated", {
+        part: {
+          id: `${userMessage.info.id}-text`,
+          sessionID,
+          messageID: userMessage.info.id,
+          type: "text",
+          text: userHistoryText,
+        },
+      })
+    } else {
+      this.setBusyStatus(sessionID, "sending", "Continuing active goal")
+    }
 
     const enabledSkillMetadata = await this.deps.skills.enabledSkills()
     const activeSkillSelections = selectActiveSkills(userText, enabledSkillMetadata)
@@ -890,13 +1410,15 @@ export class DirectAgentClient {
         ),
       },
       ...historyMessages,
-      { role: "user", content: userContentForRequest(userText, visualInputs) },
+      { role: "user", content: options.internalGoalPrompt ?? userContentForRequest(userText, visualInputs) },
     ]
     if (visualInputs.length > 0) {
       this.deps.output.appendLine(`[visual-context] attached previous-turn images=${visualInputs.length}`)
     }
 
     let assistant = createMessage(sessionID, "assistant", "", options.messageMode)
+    const startingGoal = await this.goalRuntime.startTurn(sessionID, assistant.info.id)
+    if (startingGoal) this.updateGoalOperationTurn(sessionID, startingGoal, assistant.info.id)
     let assistantText = ""
     let toolCalls: ChatToolCall[] = []
     const maxAgentSteps = maxAgentStepsForSettings(settings)
@@ -908,6 +1430,62 @@ export class DirectAgentClient {
       renderCompleted: false,
       diagramPartInserted: false,
     }
+    const wordVisualQa: WordVisualQaState = {
+      pendingBatches: [],
+      renderRoundCount: 0,
+      qaBatchCount: 0,
+      imageInputRejected: false,
+    }
+    const deliveryDiscipline = createDeliveryDisciplineState(userText, activeSkills)
+
+    const enqueueWordVisualQaPrompt = () => {
+      const wordQaPrompt = consumeWordVisualQaSteering(wordVisualQa)
+      if (!wordQaPrompt) return false
+      messages.push({
+        role: "user",
+        content: userContentForRequest(wordQaPrompt.text, wordQaPrompt.images),
+      })
+      this.deps.output.appendLine(`[word-visual-qa] steering batch=${wordVisualQa.qaBatchCount} renderRound=${wordQaPrompt.renderRound}/${MAX_WORD_VISUAL_QA_REPAIR_ROUNDS} artifact=${wordQaPrompt.artifactCount} pages=${wordQaPrompt.pages.join(",") || "none"} images=${wordQaPrompt.images.length} imageMode=${wordVisualQa.imageInputRejected ? "text-only" : "image-or-text"}`)
+      return true
+    }
+
+    const enqueueEvidenceConvergencePrompt = () => {
+      if (!shouldInsertEvidenceConvergenceCheckpoint(deliveryDiscipline, stepCount, maxAgentSteps)) return false
+      deliveryDiscipline.convergencePromptInserted = true
+      messages.push({
+        role: "user",
+        content: evidenceConvergenceCheckpointPrompt({
+          state: deliveryDiscipline,
+          stepCount,
+          maxAgentSteps,
+          totalToolCallCount,
+        }),
+      })
+      this.deps.output.appendLine(`[tool-loop] evidence convergence checkpoint inserted step=${stepCount}/${maxAgentSteps} totalToolCalls=${totalToolCallCount} expected=${deliveryDiscipline.expectations.map((item) => item.kind).join(",") || "none"} pendingActions=${pendingDeliveryNextActions(deliveryDiscipline).length}`)
+      return true
+    }
+
+    const enqueueMissingDeliverablePrompt = () => {
+      if (!shouldInsertMissingDeliverablePrompt(deliveryDiscipline)) return false
+      deliveryDiscipline.missingDeliverablePromptInserted = true
+      messages.push({
+        role: "user",
+        content: missingDeliverableSteeringPrompt(deliveryDiscipline),
+      })
+      this.deps.output.appendLine(`[tool-loop] missing deliverable steering inserted expected=${missingDeliveryExpectations(deliveryDiscipline).map((item) => item.kind).join(",")}`)
+      return true
+    }
+
+    const enqueueProducerFailureRepairPrompt = () => {
+      if (!shouldInsertProducerFailureRepairPrompt(deliveryDiscipline)) return false
+      deliveryDiscipline.producerFailureRepairPromptInserted = true
+      messages.push({
+        role: "user",
+        content: producerFailureRepairPrompt(deliveryDiscipline),
+      })
+      this.deps.output.appendLine(`[tool-loop] producer failure repair checkpoint inserted tools=${deliveryDiscipline.producerFailures.slice(-3).map((item) => item.tool).join(",")}`)
+      return true
+    }
 
     const executeToolCallsForStep = async (calls: ChatToolCall[]) => {
       totalToolCallCount += calls.length
@@ -917,7 +1495,11 @@ export class DirectAgentClient {
         tool_calls: calls,
       })
       for (const call of calls) {
-        const args = parseToolArguments(call.function.arguments)
+        const parsedArgs = parseToolArguments(call.function.arguments, call[TOOL_ARGUMENT_STATE])
+        if (!parsedArgs.ok || call.function.name === "create_word_document") {
+          this.deps.output.appendLine(toolArgumentDiagnosticLogLine(call.function.name, call.function.arguments, call[TOOL_ARGUMENT_STATE], parsedArgs))
+        }
+        const args = parsedArgs.ok ? parsedArgs.args : {}
         const isExposedTool = exposedToolNames.has(call.function.name)
         assistant = this.emitToolActivityPart({
           assistant,
@@ -925,7 +1507,22 @@ export class DirectAgentClient {
           call,
           status: "running",
         })
-        const toolResult = isExposedTool
+        assistant = this.emitRunProgressPart({
+          assistant,
+          sessionID,
+          toolCallID: call.id,
+          event: {
+            id: "tool-execution",
+            phase: "tool-execution",
+            title: runProgressToolTitle(call.function.name),
+            detail: "开始执行工具",
+            status: "running",
+            tool: call.function.name,
+          },
+        })
+        const toolResult = !parsedArgs.ok
+          ? failedToolArgumentParsing(call.function.name, parsedArgs)
+          : isExposedTool
           ? await this.executeToolCall({
               sessionID,
               mode: settings.permissions.mode,
@@ -933,6 +1530,18 @@ export class DirectAgentClient {
               arguments: args,
               activeSkills,
               signal,
+              goals: this.goalToolHandler(),
+              progress: (event) => {
+                assistant = this.emitRunProgressPart({
+                  assistant,
+                  sessionID,
+                  toolCallID: call.id,
+                  event: {
+                    ...event,
+                    tool: event.tool || call.function.name,
+                  },
+                })
+              },
               approve: this.toolApprovalHandler({
                 sessionID,
                 assistant,
@@ -946,7 +1555,25 @@ export class DirectAgentClient {
           this.deps.output.appendLine(`[tool] blocked unexposed tool_call name=${call.function.name}`)
         }
         const status = toolStatusFromResult(toolResult)
+        assistant = this.emitRunProgressPart({
+          assistant,
+          sessionID,
+          toolCallID: call.id,
+          event: {
+            id: "tool-execution",
+            phase: "tool-execution",
+            title: runProgressToolTitle(call.function.name),
+            detail: runProgressToolResultDetail(toolResult, status),
+            status: runProgressStatusFromToolStatus(status),
+            tool: call.function.name,
+          },
+        })
         this.deps.output.appendLine(toolResultLogLine(call.function.name, toolResult, status))
+        recordDeliveryToolResult(deliveryDiscipline, call.function.name, args, toolResult)
+        if (call.function.name !== "update_goal") {
+          const accountedGoal = await this.goalRuntime.accountProgress(sessionID)
+          if (accountedGoal) await this.emitGoalUpdated(sessionID, accountedGoal)
+        }
         if (call.function.name === "chipmate_validate_diagram_ir" && status === "completed" && toolResult.approved) {
           diagramWorkflow.validateCompleted = true
         }
@@ -1065,10 +1692,48 @@ export class DirectAgentClient {
         if (diagramExtraction.parts.length > 0) {
           diagramWorkflow.diagramPartInserted = true
         }
-        logDrawioDiagramExtraction(this.deps.output, call.function.name, toolResult, diagramExtraction)
-        for (const diagramPart of diagramExtraction.parts) {
-          assistant.parts = upsertPart(assistant.parts, diagramPart)
-          this.emit("message.part.updated", { part: diagramPart })
+	        logDrawioDiagramExtraction(this.deps.output, call.function.name, toolResult, diagramExtraction)
+	        for (const diagramPart of diagramExtraction.parts) {
+	          assistant.parts = upsertPart(assistant.parts, diagramPart)
+	          this.emit("message.part.updated", { part: diagramPart })
+	        }
+	        const mermaidExtraction = diagramPartsFromMermaidToolResult({
+	          sessionID,
+	          messageID: assistant.info.id,
+	          toolCallID: call.id,
+	          result: toolResult,
+	        })
+	        logMermaidDiagramExtraction(this.deps.output, call.function.name, toolResult, mermaidExtraction)
+	        for (const diagramPart of mermaidExtraction.parts) {
+	          assistant.parts = upsertPart(assistant.parts, diagramPart)
+	          this.emit("message.part.updated", { part: diagramPart })
+	        }
+	        const wordRenderExtraction = wordRenderPartsFromToolResult({
+          sessionID,
+          messageID: assistant.info.id,
+          toolCallID: call.id,
+          result: toolResult,
+        })
+        logWordRenderExtraction(this.deps.output, call.function.name, toolResult, wordRenderExtraction)
+        for (const wordRenderPart of wordRenderExtraction.parts) {
+          assistant.parts = upsertPart(assistant.parts, wordRenderPart)
+          this.emit("message.part.updated", { part: wordRenderPart })
+          if (wordVisualQa.renderRoundCount >= MAX_WORD_VISUAL_QA_REPAIR_ROUNDS) {
+            this.deps.output.appendLine(`[word-visual-qa] skipped render artifact because repair round limit was reached: ${wordVisualQa.renderRoundCount}/${MAX_WORD_VISUAL_QA_REPAIR_ROUNDS}`)
+            continue
+          }
+          if (wordVisualQa.pendingBatches.length > 0) {
+            this.deps.output.appendLine(`[word-visual-qa] discarded ${wordVisualQa.pendingBatches.length} stale batch(es) after a new render artifact`)
+            wordVisualQa.pendingBatches.splice(0)
+          }
+          wordVisualQa.renderRoundCount += 1
+          const visualBatches = await this.wordRenderVisualBatchesFromPart({
+            sessionID,
+            messageID: assistant.info.id,
+            part: wordRenderPart,
+            disabled: wordVisualQa.imageInputRejected,
+          })
+          wordVisualQa.pendingBatches.push(...visualBatches.batches)
         }
         messages.push({
           role: "tool",
@@ -1078,9 +1743,16 @@ export class DirectAgentClient {
       }
     }
 
+    const flushGoalSteering = () => {
+      for (const prompt of this.goalRuntime.consumePendingSteering(sessionID)) {
+        messages.push({ role: "user", content: prompt })
+      }
+    }
+
     try {
       for (let step = 0; step < maxAgentSteps; step += 1) {
         signal?.throwIfAborted()
+        flushGoalSteering()
         stepCount = step + 1
         this.setBusyStatus(sessionID, "thinking", stepCount === 1 ? "Waiting for model response" : `Continuing tool step ${stepCount}`)
         const result = await this.streamChatCompletion({
@@ -1091,11 +1763,29 @@ export class DirectAgentClient {
           allowTools: true,
           signal,
         })
+        if (result.visualInputRejected) wordVisualQa.imageInputRejected = true
         assistant = result.assistant
         assistantText = result.text
         toolCalls = result.toolCalls
         this.deps.output.appendLine(`[tool-loop] step=${stepCount}/${maxAgentSteps} toolCalls=${toolCalls.length} totalToolCalls=${totalToolCallCount + toolCalls.length}`)
-        if (toolCalls.length === 0) break
+        if (toolCalls.length === 0) {
+          if (settings.tools.enabled && wordVisualQa.pendingBatches.length > 0) {
+            if (assistantText) messages.push({ role: "assistant", content: assistantText })
+            assistantText = ""
+            if (enqueueWordVisualQaPrompt()) continue
+          }
+          if (settings.tools.enabled && shouldInsertMissingDeliverablePrompt(deliveryDiscipline)) {
+            if (assistantText) {
+              messages.push({ role: "assistant", content: assistantText })
+              replaceAssistantText(assistant, sessionID, "")
+              this.emitAssistantTextPart(sessionID, assistant, "")
+            }
+            assistantText = ""
+            enqueueMissingDeliverablePrompt()
+            continue
+          }
+          break
+        }
         if (!settings.tools.enabled) {
           this.deps.output.appendLine(`[tool] ignored ${toolCalls.length} tool_call(s) because chipmate.tools.enabled=false`)
           assistantText = appendAssistantText(
@@ -1115,6 +1805,10 @@ export class DirectAgentClient {
           break
         }
         await executeToolCallsForStep(toolCalls)
+        const queuedWordQa = enqueueWordVisualQaPrompt()
+        const queuedProducerRepair = !queuedWordQa && enqueueProducerFailureRepairPrompt()
+        flushGoalSteering()
+        if (!queuedWordQa && !queuedProducerRepair) enqueueEvidenceConvergencePrompt()
         if (step === maxAgentSteps - 1) reachedToolLoopLimit = true
       }
       if (reachedToolLoopLimit && toolCalls.length > 0 && settings.tools.enabled) {
@@ -1125,6 +1819,7 @@ export class DirectAgentClient {
           maxAgentSteps,
           stepCount,
           totalToolCallCount,
+          deliveryDiscipline,
           signal,
         })
       } else if (exposedToolNames.has("chipmate_create_drawio_diagram") && shouldRepairDrawioWorkflow(diagramWorkflow, settings)) {
@@ -1157,18 +1852,31 @@ export class DirectAgentClient {
           this.deps.output.appendLine(`[drawio-workflow] repair final textBytes=${textByteLength(assistantText)} toolCalls=${finalResult.toolCalls.length}`)
         }
       }
+      const enforcedMissingDeliverableText = missingDeliverableFinalAnswerText(deliveryDiscipline, assistantText)
+      if (enforcedMissingDeliverableText) {
+        assistantText = replaceAssistantText(assistant, sessionID, enforcedMissingDeliverableText)
+        this.emitAssistantTextPart(sessionID, assistant, assistantText)
+        this.deps.output.appendLine(`[tool-loop] enforced missing deliverable final answer expected=${missingDeliveryExpectations(deliveryDiscipline).map((item) => item.kind).join(",")}`)
+      }
     } catch (error) {
-      if (!signal?.aborted) await this.persistPartialAssistant(sessionID, assistant)
+      if (!signal?.aborted) {
+        const goal = await this.goalRuntime.stopTurnWithError(sessionID, goalStatusForTurnError(error)).catch(() => undefined)
+        if (goal) await this.emitGoalUpdated(sessionID, goal)
+        await this.persistPartialAssistant(sessionID, assistant)
+      }
       throw error
     }
 
     assistant.info.time = { ...assistant.info.time, completed: Date.now() }
     await this.appendMessage(sessionID, assistant)
+    await this.recordAssistantUsage(assistant)
+    await this.goalRuntime.stopTurn(sessionID)
     this.statuses.set(sessionID, { type: "idle" })
     this.emit("message.updated", { info: assistant.info })
     this.emit("session.status", { sessionID, status: { type: "idle" } })
     await this.touchSession(sessionID)
     this.flushQueuedConversationMemoryRefresh(sessionID)
+    this.scheduleGoalContinuation(sessionID)
     return { user: userMessage, assistant }
   }
 
@@ -1179,9 +1887,10 @@ export class DirectAgentClient {
     maxAgentSteps: number
     stepCount: number
     totalToolCallCount: number
+    deliveryDiscipline: DeliveryDisciplineState
     signal?: AbortSignal
   }) {
-    const finalizationPrompt = toolLoopLimitFinalizationPrompt(input.maxAgentSteps, input.totalToolCallCount)
+    const finalizationPrompt = toolLoopLimitFinalizationPrompt(input.maxAgentSteps, input.totalToolCallCount, input.deliveryDiscipline)
     input.messages.push({ role: "user", content: finalizationPrompt })
     const promptBytes = textByteLength(JSON.stringify(input.messages))
     this.deps.output.appendLine(`[tool-loop] limit reached steps=${input.stepCount}/${input.maxAgentSteps} totalToolCalls=${input.totalToolCallCount} finalizationPromptBytes=${promptBytes}`)
@@ -1414,6 +2123,95 @@ export class DirectAgentClient {
     return images
   }
 
+  private async wordRenderVisualBatchesFromPart(input: {
+    sessionID: string
+    messageID: string
+    part: ChipMatePart
+    disabled: boolean
+  }): Promise<{ batches: WordVisualQaBatch[] }> {
+    if (input.part.type !== "wordRender") return { batches: [] }
+    const baseArtifact = wordVisualQaArtifactFromPart(input.part, 0, [])
+    const pagePngPaths = stringArrayValue((input.part as { pagePngPaths?: unknown }).pagePngPaths)
+    const coverage: WordVisualQaPageCoverage[] = []
+    const pageImages: Array<{ page: number; image: ChatMessageImageContent }> = []
+    for (let index = 0; index < pagePngPaths.length; index += 1) {
+      const relative = pagePngPaths[index]
+      if (!relative) continue
+      const page = index + 1
+      if (input.disabled) {
+        coverage.push({ page, path: relative, status: "summary-only", reason: "provider image input disabled" })
+        continue
+      }
+      try {
+        const uri = this.wordRenderPagePngUri(relative)
+        if (!uri) {
+          coverage.push({ page, path: relative, status: "skipped", reason: "path is outside render artifact PNG boundary" })
+          continue
+        }
+        const bytes = await vscode.workspace.fs.readFile(uri)
+        const dataUri = `data:image/png;base64,${Buffer.from(bytes).toString("base64")}`
+        await this.appendVisualEvidence({
+          sessionID: input.sessionID,
+          messageID: input.messageID,
+          kind: "word-render-page",
+          title: `Word render page ${page}`,
+          sourceHash: `word-render:${relative}`,
+          artifactPath: relative,
+          page,
+          dataUri,
+        })
+        const image = {
+          type: "image_url",
+          image_url: {
+            url: dataUri,
+            detail: "auto",
+          },
+        } as ChatMessageImageContent
+        pageImages.push({ page, image })
+        coverage.push({ page, path: relative, status: "attached" })
+      } catch (error) {
+        this.deps.output.appendLine(`[word-visual-qa] skipped page PNG visual evidence path=${relative}: ${formatErrorMessage(error)}`)
+        coverage.push({ page, path: relative, status: "failed", reason: formatErrorMessage(error) })
+      }
+    }
+    if (!coverage.length && baseArtifact.pageCount > 0) {
+      for (let page = 1; page <= baseArtifact.pageCount; page += 1) {
+        coverage.push({ page, status: input.disabled ? "summary-only" : "skipped", reason: "page PNG artifact missing" })
+      }
+    }
+    const artifact: WordVisualQaArtifact = {
+      ...baseArtifact,
+      visualEvidenceCount: pageImages.length,
+      coverage,
+      batchSize: WORD_VISUAL_QA_IMAGES_PER_BATCH,
+      batchCount: Math.max(1, Math.ceil(Math.max(coverage.length, pageImages.length) / WORD_VISUAL_QA_IMAGES_PER_BATCH)),
+    }
+    const imageByPage = new Map(pageImages.map((item) => [item.page, item.image]))
+    const pagesForBatches = coverage.length ? coverage : [{ page: 0, status: "summary-only" as const, reason: "no page PNG artifact available" }]
+    const batches: WordVisualQaBatch[] = []
+    for (let index = 0; index < pagesForBatches.length; index += WORD_VISUAL_QA_IMAGES_PER_BATCH) {
+      const pages = pagesForBatches.slice(index, index + WORD_VISUAL_QA_IMAGES_PER_BATCH)
+      batches.push({
+        artifact,
+        batchIndex: batches.length + 1,
+        batchCount: artifact.batchCount,
+        pages,
+        images: input.disabled ? [] : pages.map((page) => imageByPage.get(page.page)).filter((item): item is ChatMessageImageContent => Boolean(item)),
+      })
+    }
+    return { batches }
+  }
+
+  private wordRenderPagePngUri(relative: string | undefined) {
+    const root = vscode.workspace.workspaceFolders?.[0]?.uri
+    if (!root || !relative) return undefined
+    const normalized = relative.replace(/\\/g, "/").replace(/^\/+/, "")
+    if (!normalized.startsWith(".chipmate/docs/") || normalized.split("/").includes("..") || !/\.png$/i.test(normalized)) {
+      return undefined
+    }
+    return vscode.Uri.joinPath(root, ...normalized.split("/"))
+  }
+
   private async conversationMemoryContextMessage(input: {
     sessionID: string
     settings: RemoteSettings
@@ -1560,7 +2358,114 @@ export class DirectAgentClient {
     return input.assistant
   }
 
+  private emitRunProgressPart(input: {
+    assistant: ChipMateMessage
+    sessionID: string
+    toolCallID: string
+    event: ToolRuntimeProgressEvent
+  }) {
+    const now = Date.now()
+    const id = `${input.assistant.info.id}-run-progress`
+    const existing = input.assistant.parts.find((part) => (part as { id?: unknown }).id === id && part.type === "runProgress")
+    const existingRecord = recordValue(existing)
+    const existingItems = Array.isArray(existingRecord.items)
+      ? existingRecord.items.map((item) => recordValue(item))
+      : []
+    const itemID = `${input.toolCallID}:${input.event.id || input.event.phase || input.event.title || "progress"}`
+    const priorIndex = existingItems.findIndex((item) => stringValue(item.id) === itemID)
+    const prior = priorIndex >= 0 ? existingItems[priorIndex] : {}
+    const status = normalizeRunProgressStatus(input.event.status)
+    const item = {
+      id: itemID,
+      title: input.event.title || runProgressToolTitle(input.event.tool || ""),
+      status,
+      detail: input.event.detail || stringValue(prior.detail),
+      tool: input.event.tool || stringValue(prior.tool),
+      phase: input.event.phase || stringValue(prior.phase),
+      path: input.event.path || stringValue(prior.path),
+      artifactPath: input.event.artifactPath || stringValue(prior.artifactPath),
+      provider: input.event.provider || stringValue(prior.provider),
+      fallbackUsed: input.event.fallbackUsed ?? booleanValue(prior.fallbackUsed),
+      startedAt: numberValue(prior.startedAt) || now,
+      updatedAt: now,
+    }
+    const items = [...existingItems]
+    if (priorIndex >= 0) items[priorIndex] = item
+    else items.push(item)
+    const typedItems = items.map((entry, index) => ({
+      id: stringValue(entry.id) || `run-progress-item-${index + 1}`,
+      title: stringValue(entry.title) || "Step",
+      status: normalizeRunProgressStatus(stringValue(entry.status)),
+      detail: stringValue(entry.detail),
+      tool: stringValue(entry.tool),
+      phase: stringValue(entry.phase),
+      path: stringValue(entry.path),
+      artifactPath: stringValue(entry.artifactPath),
+      provider: stringValue(entry.provider),
+      fallbackUsed: booleanValue(entry.fallbackUsed),
+      startedAt: numberValue(entry.startedAt),
+      updatedAt: numberValue(entry.updatedAt),
+    }))
+    const warningCount = typedItems.filter((entry) => entry.status === "warning" || entry.status === "failed" || entry.status === "skipped").length
+    const fallbackCount = typedItems.filter((entry) => entry.fallbackUsed).length
+    const completed = typedItems.filter((entry) => entry.status !== "running").length
+    const statusForPart = runProgressAggregateStatus(typedItems)
+    const part = {
+      id,
+      sessionID: input.sessionID,
+      messageID: input.assistant.info.id,
+      type: "runProgress",
+      title: "执行进度",
+      status: statusForPart,
+      startedAt: numberValue(existingRecord.startedAt) || now,
+      updatedAt: now,
+      current: completed,
+      total: typedItems.length,
+      warningCount,
+      fallbackCount,
+      items: typedItems,
+    } satisfies ChipMatePart & { id: string; sessionID: string; messageID: string }
+    input.assistant.parts = upsertPart(input.assistant.parts, part)
+    this.emit("message.part.updated", { part })
+    return input.assistant
+  }
+
   private async streamChatCompletion(input: {
+    messages: ChatMessage[]
+    sessionID: string
+    assistant: ChipMateMessage
+    exposedTools: ChatToolDefinition[]
+    allowTools?: boolean
+    signal?: AbortSignal
+  }) {
+    let attempt = 0
+    for (;;) {
+      input.signal?.throwIfAborted()
+      try {
+        return await this.streamChatCompletionOnce(input)
+      } catch (error) {
+        if (input.signal?.aborted || isAbortError(error)) throw error
+        const retry = sessionRetryableError(error)
+        if (!retry) throw error
+        attempt += 1
+        const limit = sessionRetryLimitFromEnv()
+        if (limit !== undefined && attempt > limit) throw error
+        const delayMs = sessionRetryDelayMs(attempt, retryHeadersForError(error))
+        const status: ChipMateSessionStatus = {
+          type: "retry",
+          attempt,
+          message: retry.message,
+          next: Date.now() + delayMs,
+        }
+        this.statuses.set(input.sessionID, status)
+        this.emit("session.status", { sessionID: input.sessionID, status })
+        this.deps.output.appendLine(`[chat-retry] retryable model error session=${input.sessionID} attempt=${attempt}${limit !== undefined ? `/${limit}` : ""} delayMs=${delayMs} message=${quoteLogValue(retry.message)}`)
+        await sleepWithAbort(delayMs, input.signal)
+      }
+    }
+  }
+
+  private async streamChatCompletionOnce(input: {
     messages: ChatMessage[]
     sessionID: string
     assistant: ChipMateMessage
@@ -1573,48 +2478,66 @@ export class DirectAgentClient {
       model: settings.provider.chatModel,
       messages: input.messages,
       stream: true,
+      stream_options: { include_usage: true },
       temperature: settings.provider.temperature,
       top_p: settings.provider.topP,
-    }
-    const toolsAllowed = input.allowTools !== false && settings.tools.enabled && input.exposedTools.length > 0
-    if (toolsAllowed) {
-      body.tools = input.exposedTools
-      body.tool_choice = "auto"
+	    }
+	    const toolsAllowed = input.allowTools !== false && settings.tools.enabled && input.exposedTools.length > 0
+	    const exposedToolNames = toolDefinitionNames(input.exposedTools)
+	    if (toolsAllowed) {
+	      body.tools = input.exposedTools
+	      body.tool_choice = "auto"
     }
     const requestStarted = Date.now()
+    let visualInputRejected = false
     const promptBytes = textByteLength(JSON.stringify(input.messages))
     this.deps.output.appendLine(
-      `[chat-stream] request start model=${settings.provider.chatModel || "default"} messages=${input.messages.length} promptBytes=${promptBytes} tools=${toolsAllowed ? "enabled" : "disabled"}`,
+      `[chat-stream] request start model=${settings.provider.chatModel || "default"} messages=${input.messages.length} promptBytes=${promptBytes} maxTokens=omitted tools=${toolsAllowed ? "enabled" : "disabled"}`,
     )
-    let response = await fetch(chatCompletionsUrl(settings.provider.apiBaseUrl), {
+    const postChatCompletion = async () => fetch(chatCompletionsUrl(settings.provider.apiBaseUrl), {
       method: "POST",
       headers: await this.headers(true),
       signal: input.signal,
       body: JSON.stringify(body),
     })
+    let response = await postChatCompletion()
     if (!response.ok) {
-      const text = await response.text().catch(() => "")
-      if (chatMessagesHaveImages(input.messages)) {
+      let text = await response.text().catch(() => "")
+      if (isStreamUsageUnsupportedResponse(response.status, text) && body.stream_options) {
+        this.deps.output.appendLine(`[chat-stream] provider rejected stream usage; retrying without include_usage status=${response.status}`)
+        delete body.stream_options
+        response = await postChatCompletion()
+        text = response.ok ? "" : await response.text().catch(() => "")
+      }
+      if (chatMessagesHaveImages(input.messages) && isVisualInputUnsupportedResponse(response.status, text)) {
         this.deps.output.appendLine(`[visual-context] provider rejected image input; retrying text-only status=${response.status}`)
+        visualInputRejected = true
         stripChatMessageImages(input.messages)
         body = {
           ...body,
           messages: input.messages,
         }
-        response = await fetch(chatCompletionsUrl(settings.provider.apiBaseUrl), {
-          method: "POST",
-          headers: await this.headers(true),
-          signal: input.signal,
-          body: JSON.stringify(body),
-        })
+        response = await postChatCompletion()
         if (response.ok) {
           this.deps.output.appendLine("[visual-context] text-only retry accepted")
         } else {
           const retryText = await response.text().catch(() => "")
-          throw new Error(`Chat completion failed: ${response.status} ${response.statusText}${retryText ? `: ${retryText}` : ""}`)
+          if (isStreamUsageUnsupportedResponse(response.status, retryText) && body.stream_options) {
+            this.deps.output.appendLine(`[chat-stream] provider rejected stream usage after text-only retry; retrying without include_usage status=${response.status}`)
+            delete body.stream_options
+            response = await postChatCompletion()
+            if (response.ok) {
+              this.deps.output.appendLine("[chat-stream] stream usage disabled retry accepted")
+            } else {
+              const finalText = await response.text().catch(() => "")
+              throw chatCompletionHttpError(response, finalText)
+            }
+          } else {
+          throw chatCompletionHttpError(response, retryText)
+          }
         }
       } else {
-      throw new Error(`Chat completion failed: ${response.status} ${response.statusText}${text ? `: ${text}` : ""}`)
+        if (!response.ok) throw chatCompletionHttpError(response, text)
       }
     }
     if (!response.body) throw new Error("Chat completion stream is empty.")
@@ -1632,6 +2555,7 @@ export class DirectAgentClient {
     let completed = false
     let doneMarker = false
     let finishReason = ""
+    let reportedUsage: ChipMateTokenUsage | undefined
     let deltaCount = 0
     let sseDataCount = 0
     let emptySseBlockCount = 0
@@ -1657,6 +2581,12 @@ export class DirectAgentClient {
         const delta = parseDelta(data)
         deltaCount += 1
         if (delta.error) throw new Error(`Chat completion stream failed: ${delta.error}`)
+        if (delta.usage) {
+          reportedUsage = delta.usage
+          input.assistant.info.tokens = reportedUsage
+          input.assistant.info.usageKind = "reported"
+          this.emit("message.updated", { info: input.assistant.info })
+        }
         if (delta.finishReason) {
           completed = true
           finishReason = delta.finishReason
@@ -1692,11 +2622,12 @@ export class DirectAgentClient {
             existing.id = call.id
             stableToolCallIDsByIndex.set(call.index, call.id)
           }
-          if (call.name) existing.function.name += call.name
-          if (call.arguments) {
-            existing.function.arguments = truncateString(existing.function.arguments + call.arguments, MAX_STREAM_TOOL_ARGUMENT_BYTES)
-          }
-          toolCalls.set(call.index, existing)
+	          if (call.name) {
+	            existing.function.name += call.name
+	            enforceStreamToolArgumentLimit(existing, exposedToolNames)
+	          }
+	          if (call.arguments) appendStreamToolArguments(existing, call.arguments, exposedToolNames)
+	          toolCalls.set(call.index, existing)
           const stableToolCallID = stableToolCallIDsByIndex.get(call.index)
           if (toolsAllowed && stableToolCallID && existing.function.name && !announcedToolCallIDs.has(stableToolCallID)) {
             announcedToolCallIDs.add(stableToolCallID)
@@ -1747,11 +2678,24 @@ export class DirectAgentClient {
     const streamSummary = `deltaCount=${deltaCount} sseDataCount=${sseDataCount} textBytes=${textByteLength(text)} rawBytes=${rawByteCount} firstChunkMs=${firstChunkMs ?? "none"} streamElapsedMs=${streamElapsedMs} doneMarker=${doneMarker ? "true" : "false"} finishReason=${finishReason || "none"} contentType=${responseContentType} emptySseBlocks=${emptySseBlockCount}${emptySsePreview ? ` emptySsePreview=${emptySsePreview}` : ""}${!completed && rawPreview ? ` rawPreview=${streamPreview(rawPreview)}` : ""}`
     this.deps.output.appendLine(`[chat-stream] closed ${streamSummary}`)
     if (!completed) throw new Error(`Chat completion stream closed before completion marker. ${streamSummary}`)
+    if (!reportedUsage) {
+      const estimated = estimateChatTokenUsage({
+        messages: input.messages,
+        outputText: text,
+        model: settings.provider.chatModel,
+      })
+      input.assistant.info.tokens = estimated
+      input.assistant.info.usageKind = "estimated"
+      this.emit("message.updated", { info: input.assistant.info })
+    }
+    const accountedGoal = await this.goalRuntime.recordTokenUsage(input.sessionID, input.assistant.info.tokens)
+    if (accountedGoal) await this.emitGoalUpdated(input.sessionID, accountedGoal)
 
     return {
       assistant: input.assistant,
       text,
       toolCalls: [...toolCalls.values()].filter((call) => call.function.name),
+      visualInputRejected,
     }
   }
 
@@ -1817,6 +2761,33 @@ export class DirectAgentClient {
 
   private async appendMessage(sessionID: string, message: ChipMateMessage) {
     await this.appendSessionEvent(sessionID, { type: "message", message })
+  }
+
+  private async recordAssistantUsage(message: ChipMateMessage) {
+    const recorded = await this.usageLedger.append(usageRecordFromMessage(message))
+    if (recorded) this.emit("usage.updated", { sessionID: message.info.sessionID, messageID: message.info.id })
+  }
+
+  private async ensureUsageBackfilled(signal?: AbortSignal) {
+    if (!this.usageBackfillPromise) {
+      this.usageBackfillPromise = this.backfillUsageLedger(signal).catch((error) => {
+        this.usageBackfillPromise = undefined
+        throw error
+      })
+    }
+    await this.usageBackfillPromise
+  }
+
+  private async backfillUsageLedger(signal?: AbortSignal) {
+    signal?.throwIfAborted()
+    const sessions = await this.readSessionRecords()
+    const records = []
+    for (const session of sessions) {
+      signal?.throwIfAborted()
+      const messages = latestSessionMessages(await this.readSessionEvents(session.id))
+      records.push(...messages.map(usageRecordFromMessage))
+    }
+    await this.usageLedger.backfill(records)
   }
 
   private async appendMemory(sessionID: string, memory: ConversationMemoryRecord) {
@@ -1918,13 +2889,326 @@ function drawioWorkflowRepairPrompt() {
   ].join("\n")
 }
 
-function toolLoopLimitFinalizationPrompt(maxAgentSteps: number, totalToolCallCount: number) {
+function createDeliveryDisciplineState(userText: string, activeSkills: ActiveSkillPolicy[]): DeliveryDisciplineState {
+  return {
+    expectations: deliveryExpectationsFromTurn(userText, activeSkills),
+    producedArtifacts: [],
+    pendingNextActions: [],
+    producerFailures: [],
+    completedTools: [],
+    convergencePromptInserted: false,
+    missingDeliverablePromptInserted: false,
+    producerFailureRepairPromptInserted: false,
+  }
+}
+
+function deliveryExpectationsFromTurn(userText: string, activeSkills: ActiveSkillPolicy[]): DeliveryExpectation[] {
+  const text = compactSummaryText(userText)
+  const lower = text.toLowerCase()
+  const hasDocumentSkill = activeSkills.some((skill) => skill.name === "documents" || skill.name === "chip-design-doc")
+  const asksForCreation = /生成|创建|建立|制作|产出|输出|写入|导出|保存|编辑|修改|审阅|generate|create|write|produce|export|save|edit|revise|review/i.test(text)
+  const mentionsWordDocument = /\.docx\b/i.test(lower) ||
+    /Word\s*文档/i.test(text) ||
+    /Word\s*文件/i.test(text) ||
+    /\bword\s+document\b/i.test(lower) ||
+    /\bword\s+file\b/i.test(lower) ||
+    /(生成|创建|导出|输出)\s*Word\b/i.test(text) ||
+    /文档|报告|方案|规范|设计文档|详细设计/.test(text)
+  if ((hasDocumentSkill && asksForCreation && mentionsWordDocument) || /\.docx\b/i.test(lower)) {
+    return [{
+      kind: "docx",
+      label: "Word .docx document",
+      requiredExtensions: [".docx"],
+    }]
+  }
+  if (asksForCreation && /\.(png|mmd|drawio|csv|pdf)\b/i.test(lower)) {
+    return [{
+      kind: "artifact",
+      label: "local artifact file",
+      requiredExtensions: [".png", ".mmd", ".drawio", ".csv", ".pdf"],
+    }]
+  }
+  return []
+}
+
+function recordDeliveryToolResult(state: DeliveryDisciplineState, tool: string, args: Record<string, unknown>, result: ToolRuntimeResult) {
+  state.completedTools.push(tool)
+  for (const artifact of deliveryArtifactsFromToolResult(tool, result)) {
+    const key = `${artifact.kind}:${artifact.path}`
+    if (!state.producedArtifacts.some((existing) => `${existing.kind}:${existing.path}` === key)) {
+      state.producedArtifacts.push(artifact)
+    }
+  }
+  for (const action of deliveryNextActionsFromToolResult(tool, result)) {
+    if (!action.tool || state.completedTools.includes(action.tool)) continue
+    const key = `${action.sourceTool}:${action.tool}:${action.reason}:${action.argsSummary ?? ""}`
+    const exists = state.pendingNextActions.some((existing) => `${existing.sourceTool}:${existing.tool}:${existing.reason}:${existing.argsSummary ?? ""}` === key)
+    if (!exists) state.pendingNextActions.push(action)
+  }
+  const producerFailure = deliveryProducerFailureFromToolResult(tool, result)
+  if (producerFailure) state.producerFailures.push(producerFailure)
+  const requestedOutput = requestedArtifactPathFromArgs(args)
+  if (requestedOutput && isDeliverableProducerTool(tool) && toolStatusFromResult(result) === "completed" && result.approved) {
+    const kind = artifactKindFromPath(requestedOutput)
+    if (kind) state.producedArtifacts.push({ kind, path: requestedOutput, tool })
+  }
+}
+
+function requestedArtifactPathFromArgs(args: Record<string, unknown>) {
+  const filename = stringValue(args.filename)
+  if (filename && /\.docx$/i.test(filename)) return `.chipmate/docs/${filename}`
+  const path = stringValue(args.path) || stringValue(args.outputPath) || stringValue(args.outputFilename)
+  return path
+}
+
+function deliveryArtifactsFromToolResult(tool: string, result: ToolRuntimeResult): DeliveryArtifactRecord[] {
+  if (toolStatusFromResult(result) !== "completed" || !result.approved) return []
+  const artifacts: DeliveryArtifactRecord[] = []
+  for (const artifact of result.artifacts ?? []) {
+    const payload = recordValue(artifact.payload)
+    if (artifact.kind === "mermaid") {
+      pushArtifactPath(artifacts, tool, stringValue(payload.mmdPath))
+      pushArtifactPath(artifacts, tool, stringValue(payload.pngPath))
+    } else if (artifact.kind === "word-render") {
+      pushArtifactPath(artifacts, tool, stringValue(payload.path))
+      pushArtifactPath(artifacts, tool, stringValue(payload.pdfArtifactPath))
+      for (const path of stringArrayValue(payload.pagePngPaths)) pushArtifactPath(artifacts, tool, path)
+    } else if (artifact.kind === "skill-script") {
+      for (const item of arrayRecords(payload.artifacts)) pushArtifactPath(artifacts, tool, stringValue(item.path))
+    }
+  }
+  const output = parseToolOutputObject(result.output)
+  const data = recordValue(output.data)
+  for (const value of [
+    stringValue(output.path),
+    stringValue(output.file),
+    stringValue(output.artifactPath),
+    stringValue(output.pdfArtifactPath),
+    stringValue(data.path),
+    stringValue(data.file),
+    stringValue(data.artifactPath),
+    stringValue(data.pngPath),
+    stringValue(data.mmdPath),
+    stringValue(data.pdfArtifactPath),
+  ]) {
+    pushArtifactPath(artifacts, tool, value)
+  }
+  for (const path of stringArrayValue(output.pagePngPaths)) pushArtifactPath(artifacts, tool, path)
+  for (const path of stringArrayValue(data.pagePngPaths)) pushArtifactPath(artifacts, tool, path)
+  if (typeof result.output === "string") {
+    for (const path of result.output.match(/(?:\.chipmate\/docs|\/[^\s"'`<>)]*\.chipmate\/docs)\/[^\s"'`<>)]*\.(?:docx|png|mmd|pdf|csv|drawio)/gi) ?? []) {
+      pushArtifactPath(artifacts, tool, path)
+    }
+  }
+  return artifacts
+}
+
+function pushArtifactPath(artifacts: DeliveryArtifactRecord[], tool: string, path: string) {
+  const normalized = compactSummaryText(path)
+  if (!normalized) return
+  const kind = artifactKindFromPath(normalized)
+  if (!kind) return
+  const key = `${kind}:${normalized}`
+  if (!artifacts.some((artifact) => `${artifact.kind}:${artifact.path}` === key)) {
+    artifacts.push({ kind, path: normalized, tool })
+  }
+}
+
+function artifactKindFromPath(path: string) {
+  const extension = /\.([A-Za-z0-9]+)(?:$|[?#])/.exec(path)?.[1]?.toLowerCase()
+  if (!extension) return ""
+  if (extension === "docx") return "docx"
+  if (extension === "png") return "png"
+  if (extension === "mmd") return "mmd"
+  if (extension === "pdf") return "pdf"
+  if (extension === "csv") return "csv"
+  if (extension === "drawio") return "drawio"
+  return ""
+}
+
+function deliveryNextActionsFromToolResult(sourceTool: string, result: ToolRuntimeResult): DeliveryNextAction[] {
+  const output = parseToolOutputObject(result.output)
+  return arrayRecords(output.nextActions)
+    .map((action): DeliveryNextAction | undefined => {
+      const tool = stringValue(action.tool)
+      const reason = truncateString(compactSummaryText(stringValue(action.reason)), MAX_TOOL_EXECUTION_FIELD_CHARS)
+      const argsSummary = summarizeToolArguments(recordValue(action.args))
+      if (!tool || !reason) return undefined
+      return argsSummary ? { tool, reason, argsSummary, sourceTool } : { tool, reason, sourceTool }
+    })
+    .filter((action): action is DeliveryNextAction => Boolean(action))
+    .slice(0, 12)
+}
+
+function deliveryProducerFailureFromToolResult(tool: string, result: ToolRuntimeResult): DeliveryProducerFailure | undefined {
+  if (toolStatusFromResult(result) === "completed" || !isDeliverableProducerTool(tool)) return undefined
+  const output = parseToolOutputObject(result.output)
+  const data = recordValue(output.data)
+  const validationErrors = [
+    ...stringArrayValue(data.validationErrors),
+    ...stringArrayValue(output.gaps),
+  ].map((item) => truncateString(compactSummaryText(item), MAX_TOOL_EXECUTION_FIELD_CHARS)).filter(Boolean)
+  const reason = truncateString(compactSummaryText(
+    stringValue(data.errorMessage) ||
+    stringValue(output.answerSummary) ||
+    stringValue(result.error) ||
+    result.output ||
+    "Producer tool failed.",
+  ), MAX_TOOL_EXECUTION_LINE_BYTES)
+  if (!reason && validationErrors.length === 0) return undefined
+  return {
+    tool,
+    reason: reason || validationErrors[0] || "Producer tool failed.",
+    errorCode: stringValue(data.errorCode) || undefined,
+    validationErrors: [...new Set(validationErrors)].slice(0, 8),
+  }
+}
+
+function isDeliverableProducerTool(tool: string) {
+  return /create|render|compare|merge|normalize|apply|flatten|materialize|refresh|export/i.test(tool)
+}
+
+function pendingDeliveryNextActions(state: DeliveryDisciplineState) {
+  return state.pendingNextActions
+    .filter((action) => !state.completedTools.includes(action.tool))
+    .slice(-8)
+}
+
+function missingDeliveryExpectations(state: DeliveryDisciplineState) {
+  return state.expectations.filter((expectation) =>
+    !state.producedArtifacts.some((artifact) => expectation.requiredExtensions.includes(`.${artifact.kind}`))
+  )
+}
+
+function shouldInsertEvidenceConvergenceCheckpoint(state: DeliveryDisciplineState, stepCount: number, maxAgentSteps: number) {
+  if (state.convergencePromptInserted) return false
+  if (maxAgentSteps < 4) return false
+  const remainingAfterThisStep = maxAgentSteps - stepCount
+  if (remainingAfterThisStep > EVIDENCE_CONVERGENCE_CHECKPOINT_REMAINING_STEPS) return false
+  return state.expectations.length > 0 || pendingDeliveryNextActions(state).length > 0
+}
+
+function shouldInsertMissingDeliverablePrompt(state: DeliveryDisciplineState) {
+  return !state.missingDeliverablePromptInserted && missingDeliveryExpectations(state).length > 0
+}
+
+function shouldInsertProducerFailureRepairPrompt(state: DeliveryDisciplineState) {
+  return !state.producerFailureRepairPromptInserted &&
+    missingDeliveryExpectations(state).length > 0 &&
+    state.producerFailures.length > 0
+}
+
+function evidenceConvergenceCheckpointPrompt(input: {
+  state: DeliveryDisciplineState
+  stepCount: number
+  maxAgentSteps: number
+  totalToolCallCount: number
+}) {
+  return [
+    "ChipMate evidence convergence checkpoint.",
+    `The turn is near the configured tool budget: step ${input.stepCount}/${input.maxAgentSteps}, executed tool calls ${input.totalToolCallCount}.`,
+    "Stop open-ended search/read loops when the current evidence is enough to answer or produce the requested deliverable.",
+    "If the user requested a local file or artifact, prioritize the final producer tool now. Put incomplete coverage into assumptions, limitations, gaps, or owner-review notes instead of spending the remaining budget on broad exploration.",
+    deliveryDisciplineSummary(input.state),
+  ].filter(Boolean).join("\n\n")
+}
+
+function missingDeliverableSteeringPrompt(state: DeliveryDisciplineState) {
+  return [
+    "ChipMate deliverable discipline checkpoint.",
+    "The current assistant draft did not produce the local deliverable requested by the user.",
+    "Do not answer with inline Markdown as if the file was created. If enough evidence is present, call the final producer tool now. If evidence is insufficient, state the exact missing input instead of claiming completion.",
+    deliveryDisciplineSummary(state),
+  ].join("\n\n")
+}
+
+function producerFailureRepairPrompt(state: DeliveryDisciplineState) {
+  return [
+    "ChipMate producer failure repair checkpoint.",
+    "A final artifact producer tool failed while the requested local deliverable is still missing.",
+    "Do not resume broad search/read loops. Use the tool error below to repair the producer arguments/spec and retry the same final producer tool when the current evidence is sufficient. Put unresolved content coverage into assumptions, limitations, gaps, or owner-review notes.",
+    "If the producer arguments cannot be repaired, explicitly state that the requested local deliverable was not generated and cite the exact tool failure.",
+    deliveryDisciplineSummary(state),
+  ].join("\n\n")
+}
+
+function deliveryDisciplineSummary(state: DeliveryDisciplineState) {
+  const expectations = state.expectations.length
+    ? state.expectations.map((item) => `${item.label} (${item.requiredExtensions.join(", ")})`).join("; ")
+    : "none"
+  const missing = missingDeliveryExpectations(state).map((item) => item.label).join("; ") || "none"
+  const produced = state.producedArtifacts.length
+    ? state.producedArtifacts.slice(-8).map((item) => `${item.kind}:${item.path} via ${item.tool}`).join("\n")
+    : "none"
+  const pending = pendingDeliveryNextActions(state).length
+    ? pendingDeliveryNextActions(state).map((item, index) => `${index + 1}. ${item.tool} from ${item.sourceTool}: ${item.reason}${item.argsSummary ? ` (${item.argsSummary})` : ""}`).join("\n")
+    : "none"
+  const failures = state.producerFailures.length
+    ? state.producerFailures.slice(-5).map((item, index) => `${index + 1}. ${item.tool}: ${item.errorCode ? `[${item.errorCode}] ` : ""}${item.reason}${item.validationErrors.length ? `; validationErrors=${item.validationErrors.join(" | ")}` : ""}`).join("\n")
+    : "none"
+  return [
+    `Expected deliverables: ${expectations}`,
+    `Missing expected deliverables: ${missing}`,
+    `Produced artifacts this turn:\n${produced}`,
+    `Tool-declared next actions still pending:\n${pending}`,
+    `Producer failures this turn:\n${failures}`,
+  ].join("\n")
+}
+
+function missingDeliverableFinalAnswerText(state: DeliveryDisciplineState, assistantText: string) {
+  const missing = missingDeliveryExpectations(state)
+  if (missing.length === 0) return ""
+  if (assistantTextDisclosesMissingDeliverable(assistantText) && !assistantTextPresentsInlineDeliverableSubstitute(assistantText)) return ""
+  return missingDeliverableFallbackMessage(state)
+}
+
+function assistantTextDisclosesMissingDeliverable(text: string) {
+  if (!text.trim()) return false
+  return /(未生成|没有生成|未创建|没有创建|未产出|没有产出|无法生成|未能生成|not generated|not created|was not generated|could not generate|no .*artifact|no .*file)/i.test(text) &&
+    /(\.docx|word|文档|交付物|artifact|file)/i.test(text)
+}
+
+function assistantTextPresentsInlineDeliverableSubstitute(text: string) {
+  return /完整\s*Word\s*文档如下|完整.*文档.*如下|复制到\s*Word|复制到\s*Markdown|Markdown\s*编辑器|Word\s*或\s*Markdown|直接将以下内容复制|directly copy.*Word|copy.*Markdown/i.test(text)
+}
+
+function missingDeliverableFallbackMessage(state: DeliveryDisciplineState) {
+  const missing = missingDeliveryExpectations(state)
+    .map((item) => `${item.label} (${item.requiredExtensions.join(", ")})`)
+    .join("、")
+  const pending = pendingDeliveryNextActions(state)
+    .map((item) => `- ${item.tool}: ${item.reason}`)
+    .join("\n")
+  const produced = state.producedArtifacts
+    .slice(-8)
+    .map((item) => `- ${item.kind}: ${item.path}`)
+    .join("\n")
+  const failures = state.producerFailures
+    .slice(-5)
+    .map((item) => `- ${item.tool}: ${item.errorCode ? `[${item.errorCode}] ` : ""}${item.reason}${item.validationErrors.length ? `；validationErrors=${item.validationErrors.join(" | ")}` : ""}`)
+    .join("\n")
+  return [
+    `未生成请求的本地交付物：${missing || "未知交付物"}。`,
+    "本轮已停止把内联 Markdown 当作完成结果返回，以符合 Codex-style artifact delivery discipline。",
+    produced ? `本轮已经产生的相关 artifact：\n${produced}` : "本轮没有产生满足请求的最终 artifact。",
+    failures ? `最终产物工具失败原因：\n${failures}` : "",
+    pending ? `仍待执行的工具动作：\n${pending}` : "没有可确认的后续工具动作；需要继续时请让 ChipMate 基于当前会话证据调用最终产物工具。",
+  ].filter(Boolean).join("\n\n")
+}
+
+function toolLoopLimitFinalizationPrompt(maxAgentSteps: number, totalToolCallCount: number, deliveryDiscipline?: DeliveryDisciplineState) {
+  const deliverySummary = deliveryDiscipline ? deliveryDisciplineSummary(deliveryDiscipline) : ""
   return [
     `ChipMate reached the configured direct-chat tool loop limit after ${maxAgentSteps} agent step(s) and ${totalToolCallCount} tool call(s).`,
     "Do not call any more tools. The host will not execute additional tool calls in this finalization step.",
     "Use only the bounded raw tool outputs already present above in this same turn, plus the original user request, to produce the best possible final answer.",
     "State concrete file paths, symbols, coverage, and gaps when the bounded tool outputs support them.",
     "If the collected evidence is incomplete, say what remains uncertain and what narrower follow-up would be useful.",
+    deliverySummary ? [
+      "Deliverable discipline:",
+      deliverySummary,
+      "If an expected local deliverable is still missing, explicitly state that it was not generated. Do not present inline Markdown, Mermaid source, or prose as the requested file artifact.",
+    ].join("\n") : "",
   ].join("\n\n")
 }
 
@@ -2370,6 +3654,14 @@ function defaultTerminalSummaryNextStep(status: TerminalCommandResultSummary["st
   return "如果结果符合预期，可以继续下一步。"
 }
 
+function isTerminalGoalStatus(status: ThreadGoalStatus) {
+  return status === "paused" ||
+    status === "blocked" ||
+    status === "usage_limited" ||
+    status === "budget_limited" ||
+    status === "complete"
+}
+
 function blockedUnexposedTool(toolName: string): ToolRuntimeResult {
   return {
     title: "Tool blocked",
@@ -2392,8 +3684,84 @@ function failedToolExecution(toolName: string, error: unknown): ToolRuntimeResul
   }
 }
 
+function failedToolArgumentParsing(toolName: string, error: Exclude<ToolArgumentParseResult, { ok: true }>): ToolRuntimeResult {
+  const payload = {
+    answerSummary: `Tool arguments invalid for ${toolName}: ${error.errorMessage}`,
+    evidence: [],
+    gaps: [error.errorMessage],
+    nextActions: [],
+    truncated: error.errorCode === "tool-arguments-truncated",
+    coverage: "partial",
+    data: {
+      errorCode: error.errorCode,
+      errorMessage: error.errorMessage,
+      tool: toolName,
+    },
+  }
+  return {
+    title: `Tool arguments invalid: ${toolName}`,
+    output: JSON.stringify(payload, null, 2),
+    approved: false,
+    status: "failed",
+    error: error.errorMessage,
+    risk: "failed",
+  }
+}
+
 function toolStatusFromResult(result: ToolRuntimeResult) {
   return result.status ?? (result.approved ? "completed" : result.requiresApproval ? "approval-required" : "blocked")
+}
+
+function toolArgumentDiagnosticLogLine(toolName: string, input: string, state: ToolArgumentState | undefined, parsed: ToolArgumentParseResult) {
+  const fragments = [
+    `[tool-args] ${toolName}`,
+    `parse=${parsed.ok ? "ok" : "failed"}`,
+    parsed.ok ? "" : `errorCode=${parsed.errorCode}`,
+    parsed.ok ? "" : `error="${quoteLogValue(parsed.errorMessage)}"`,
+    `argumentBytes=${textByteLength(input)}`,
+    state?.truncated ? "streamTruncated=true" : "",
+    state?.originalBytes !== undefined ? `originalBytes=${state.originalBytes}` : "",
+    state?.maxBytes !== undefined ? `maxBytes=${state.maxBytes}` : "",
+    `head="${quoteLogValue(textHeadByBytes(input, MAX_TOOL_ARGUMENT_DIAGNOSTIC_BYTES), MAX_TOOL_ARGUMENT_DIAGNOSTIC_BYTES)}"`,
+    `tail="${quoteLogValue(textTailByBytes(input, MAX_TOOL_ARGUMENT_DIAGNOSTIC_BYTES), MAX_TOOL_ARGUMENT_DIAGNOSTIC_BYTES)}"`,
+  ].filter(Boolean)
+  return fragments.join(" ")
+}
+
+function runProgressStatusFromToolStatus(status: string) {
+  if (status === "completed") return "completed"
+  if (status === "failed" || status === "blocked") return "failed"
+  if (status === "approval-required" || status === "user-input-required") return "warning"
+  return "running"
+}
+
+function normalizeRunProgressStatus(status: unknown) {
+  if (status === "completed" || status === "warning" || status === "failed" || status === "skipped") return status
+  return "running"
+}
+
+function runProgressAggregateStatus(items: Array<{ status: string }>) {
+  if (items.some((item) => item.status === "running")) return "running"
+  if (items.some((item) => item.status === "failed")) return "failed"
+  if (items.some((item) => item.status === "warning" || item.status === "skipped")) return "warning"
+  return items.length ? "completed" : "running"
+}
+
+function runProgressToolTitle(tool: string) {
+  if (tool === "chipmate_render_mermaid_diagram") return "渲染 Mermaid PNG"
+  if (tool === "create_word_document") return "生成 Word 文档"
+  if (tool === "render_word_document") return "页面级视觉 QA"
+  if (tool === "inspect_word_document") return "检查 Word 文档"
+  if (tool === "apply_word_document_edits") return "编辑 Word 文档"
+  if (tool === "compare_word_documents") return "比较 Word 文档"
+  if (tool === "merge_word_documents") return "合并 Word 文档"
+  if (tool === "chipmate_read" || tool === "chipmate_read_file" || tool === "chipmate_read_evidence" || tool.startsWith("chipmate_search") || tool.startsWith("chipmate_graph_")) return "收集证据"
+  return tool || "执行工具"
+}
+
+function runProgressToolResultDetail(result: ToolRuntimeResult, status: string) {
+  if (status === "completed") return summarizeToolOutput(result.output, result.error, result.title, status)
+  return summarizeToolFailure(result.output, result.error, status) || summarizeToolOutput(result.output, result.error, result.title, status)
 }
 
 function toolApprovalMetadata(request: ToolApprovalRequest) {
@@ -2466,20 +3834,95 @@ function sanitizeClarificationAnswers(answers: ClarificationAnswer[]) {
     .filter((answer) => answer.questionId && (answer.choiceId || answer.text))
 }
 
+function mermaidRepairMessages(input: {
+  historyMessages: ChatMessage[]
+  messageID: string
+  source: string
+  error: string
+  sourceHash?: string
+  diagramId?: string
+  language?: string
+}): ChatMessage[] {
+  const language = truncateString(compactSummaryText(input.language || "mermaid"), 80) || "mermaid"
+  const system = [
+    "You are ChipMate Mermaid Repair.",
+    "A Mermaid diagram already shown in VS Code failed in the Mermaid renderer.",
+    "Understand the render error and the original diagram intent, then generate a corrected Mermaid diagram.",
+    "Return exactly one fenced ```mermaid code block plus at most one short caption.",
+    "Do not return draw.io, XML, JSON, tool calls, external URLs, or a long explanation.",
+    "Preserve the original graph meaning and labels as much as possible.",
+    "Avoid Mermaid syntax that commonly fails in strict webview rendering, including invalid style attributes, unescaped punctuation in labels, HTML labels, and subgraph/container parent cycles.",
+  ].join("\n")
+  const user = [
+    "Repair this Mermaid diagram so it can render successfully.",
+    "",
+    `Original message id: ${truncateString(input.messageID, 160)}`,
+    input.diagramId ? `Diagram id: ${truncateString(input.diagramId, 160)}` : "",
+    input.sourceHash ? `Source hash: ${truncateString(input.sourceHash, 160)}` : "",
+    `Language fence: ${language}`,
+    "",
+    "Mermaid render error:",
+    "```text",
+    input.error,
+    "```",
+    "",
+    "Original Mermaid source:",
+    "```mermaid",
+    input.source,
+    "```",
+  ].filter(Boolean).join("\n")
+  return [
+    { role: "system", content: system },
+    ...input.historyMessages,
+    { role: "user", content: user },
+  ]
+}
+
+function mermaidRepairContentFromResponse(text: string) {
+  let value: unknown
+  try {
+    value = text ? JSON.parse(text) : {}
+  } catch {
+    throw new Error("Mermaid repair provider returned malformed JSON.")
+  }
+  if (!isRecord(value)) {
+    throw new Error("Mermaid repair provider returned non-object JSON.")
+  }
+  const body = value as { choices?: ChatCompletionChoice[]; usage?: unknown }
+  const choice = body.choices?.[0]
+  const content = choice?.message?.content ?? choice?.text
+  const contentText = terminalPlanTextFromContent(content)
+  if (!contentText) throw new Error("Mermaid repair response did not include message content.")
+  return {
+    text: contentText,
+    usage: normalizeProviderTokenUsage(body.usage),
+  }
+}
+
+function mermaidRepairAssistantText(text: string) {
+  const repaired = text.trim()
+  if (!repaired) throw new Error("Mermaid repair response was empty.")
+  if (!/```(?:mermaid|mmd)\b/i.test(repaired)) {
+    throw new Error("Mermaid repair response did not include a fenced Mermaid block.")
+  }
+  return `我根据 Mermaid 渲染错误重画了一版：\n\n${repaired}`
+}
+
 function systemPrompt(settings: RemoteSettings, skillCatalog: string, loadedSkills: string) {
   const toolsEnabled = settings.tools.enabled
   return [
     "You are ChipMate, a direct model coding agent running inside the VS Code workspace extension host.",
     toolsEnabled
-      ? "Draw.io output: use an evidence-backed DiagramIR workflow for complex diagrams. The model or active skill decides the user-visible diagramType from the user's intent and evidence: business-flow for business/process perspective, code-flow for entry/function/branch/return execution paths, state-machine for pure state transitions, architecture for module boundaries, and soc-block for chip/module/bus/port diagrams. Code evidence does not automatically mean code-flow; if the user asks for a business/process view backed by code, keep diagramType as business-flow and encode FSM/module semantics in DiagramIR. For code-flow, business-flow, architecture, SoC/chip block, state-machine, or reference-style diagrams, first collect enough evidence with CodeGraph/RAG/AST/document/skill tools, organize it into DiagramIR, call chipmate_validate_diagram_ir, then call chipmate_create_drawio_diagram as the final renderer. The renderer always runs the Diagram Design Compiler before ELKJS layout, so provide semantic nodes/edges/regions/containers/lane plus visualRole, importance, edgeKind, pathRole, labelPriority, textParts, layoutHints, styleHints, and semanticHints instead of hand-written draw.io coordinates. Treat containers, regions, lanes, swimlanes, and groups as ownership/background areas, not execution steps: assign owned nodes with parent/container/lane/region/group, and mark an intentionally empty region with allowEmpty or placeholder. For business-flow/code-flow embedded FSM diagrams, these ownership areas render as weak background bands so flow edges remain on the root layout plane; use explicit containerMode='strong' only when the diagram really needs compound structural nesting. Architecture and SoC/chip diagrams use strong containers by default. For embedded flows with modules plus FSM states/events, include semanticHints such as domain, primaryPerspective, containsStateMachines, stateMachineCount, and processPhases; the compiler may choose an internal embedded-fsm-flow visual profile without changing diagramType. For a simple illustrative diagram with no evidence requirement, you may call chipmate_create_drawio_diagram directly with a structured spec. Set DiagramIR composition.mode to single by default; only set composition.mode to multi when the current user request or active skill explicitly asks for or allows multiple diagrams. If one dense diagram would benefit from splitting, mention that as a warning instead of splitting automatically. Use Mermaid only when the user explicitly asks for Mermaid, mmd, or Mermaid source. If the user only asks to draw a diagram and the goal, scope, or required format is genuinely unclear, call chipmate_ask_user_clarification; do not ask whether to use draw.io when the request is a complex code-flow, architecture, SoC/chip, or state-machine diagram because draw.io is the default. If the user explicitly asks for draw.io/drawio/diagrams.net, use draw.io directly; if the user explicitly asks for Mermaid/mmd/Mermaid source, use Mermaid directly. Do not handwrite mxCell/mxGeometry XML unless the user explicitly asks for raw source. Do not reference external image/font/style URLs or remote draw.io services; after the tool renders the diagram in chat, keep the final explanation brief and do not repeat the XML."
-      : "Draw.io output: tool calling is disabled, so if the user asks for a draw.io diagram, fall back to one fenced `drawio` code block containing valid <mxfile> or <mxGraphModel> XML; warn that hand-authored XML is less reliable with small local models. Do not reference external image/font/style URLs or remote draw.io services.",
+      ? "Diagram output: default to Mermaid when the user asks to draw a flowchart, process flow, architecture diagram, sequence diagram, state diagram, or simple explanatory diagram and does not explicitly request another format. Choose Mermaid syntax from intent: flowchart TD/LR for flow, process, and architecture diagrams; sequenceDiagram for interaction timelines; stateDiagram-v2 for state transitions; and subgraph blocks for module or layer boundaries. For Mermaid output, return one fenced `mermaid` block with concise labels plus a short caption; do not call draw.io tools for Mermaid output, and collect CodeGraph/RAG/AST/document/skill evidence first only when the diagram content itself needs grounding. Ask for clarification only when the diagram goal, target, or scope is missing; do not ask whether to use Mermaid or draw.io when Mermaid is a safe default. Use draw.io/diagrams.net only when the user explicitly asks for draw.io, drawio, diagrams.net, mxfile, mxGraphModel, or an editable draw.io asset; when repairing/exporting an existing draw.io diagram; or when the user accepts draw.io because Mermaid cannot express the required layout. For complex draw.io requests, use an evidence-backed DiagramIR workflow. The model or active skill decides the user-visible diagramType and all semantic presentation decisions from the user's intent and evidence: business-flow for business/process perspective, code-flow for entry/function/branch/return execution paths, state-machine for pure state transitions, architecture for module boundaries, and soc-block for chip/module/bus/port diagrams. Code evidence does not automatically mean code-flow; if the user asks for a business/process view backed by code, keep diagramType as business-flow. For complex draw.io code-flow, business-flow, architecture, SoC/chip block, state-machine, or reference-style diagrams, first collect enough evidence with CodeGraph/RAG/AST/document/skill tools, organize it into DiagramIR, call chipmate_validate_diagram_ir, then call chipmate_create_drawio_diagram as the final renderer. For complex draw.io diagrams, include visualPlan with layoutProfile, mainBackbone.nodes/edges, edgePresentation edge-id map using mode line/rail/legend, optional rail side, and legend items. For dense engineering draw.io diagrams, keep the mainBackbone and a small number of essential cross-module edges visible; treat rail as a scarce visual channel, and put low-priority, repetitive, evidence-only, explanatory, retry, cleanup, telemetry, or secondary exception details into legend items so the final PNG is at least as clear as a Mermaid baseline. The draw.io renderer does not infer main path, exception path, business meaning, or importance from labels, function names, state names, Chinese words, or domain terms; it only validates and executes the model/skill-authored VisualPlan. Treat containers, regions, lanes, swimlanes, and groups as ownership/background areas, not execution steps: assign owned nodes with parent/container/lane/region/group, and mark an intentionally empty region with allowEmpty or placeholder. For business-flow/code-flow embedded FSM draw.io diagrams, these ownership areas render as weak background bands so flow edges remain on the root layout plane; use explicit containerMode='strong' only when the diagram really needs compound structural nesting. Architecture and SoC/chip draw.io diagrams use strong containers by default. For a simple illustrative draw.io diagram with no evidence requirement, you may call chipmate_create_drawio_diagram directly with a structured spec. Set DiagramIR composition.mode to single by default. Only set composition.mode to multi when the current user request or active skill explicitly asks for or allows multiple diagrams; if one dense diagram would benefit from splitting, mention that as a warning instead of splitting automatically. Do not handwrite mxCell/mxGeometry XML unless the user explicitly asks for raw source. Do not reference external image/font/style URLs or remote draw.io services; after rendering, keep the final explanation brief and do not repeat XML."
+      : "Diagram output: tool calling is disabled, so default to one fenced `mermaid` block for unspecified flowchart, process flow, architecture, sequence, state, and simple explanatory diagram requests. When the user explicitly asks for a draw.io or diagrams.net diagram, fall back to one fenced `drawio` code block containing valid <mxfile> or <mxGraphModel> XML; warn that hand-authored XML is less reliable with small local models. Do not reference external image/font/style URLs or remote draw.io services.",
     toolsEnabled
       ? "Use only the context and ChipMate workspace tools provided by this VS Code extension host."
       : "Use only the context provided by ChipMate for workspace operations.",
     toolsEnabled
       ? [
           "Use the initial local evidence pack first. Call read-only ChipMate evidence tools only when evidence is missing, ambiguous, or needs deeper context.",
-          "Tool routing: for complex diagrams, use chipmate_graph_map_module, chipmate_graph_function_cfg, chipmate_graph_expand_flow_slice, chipmate_graph_state_flow_detail, chipmate_graph_find_state_machines/trace_state_path, chipmate_search_code, chipmate_search_documents, read_docx, and active skill resources to collect evidence; then use chipmate_validate_diagram_ir and finally chipmate_create_drawio_diagram. Use chipmate_ask_user_clarification only when a bounded user answer is required before continuing the same turn; it returns as a tool result, so continue after the answer. Use chipmate_create_drawio_diagram directly only for simple illustrative diagrams or after DiagramIR is validated. Use chipmate_search_text for exact strings/macros/registers/logs; chipmate_graph_inspect_symbol for definitions; chipmate_graph_find_references for references; chipmate_graph_callers/callees for direct function edges; chipmate_graph_trace_call_chain for source-to-target call paths; chipmate_graph_analyze_impact for bounded impact; chipmate_read_evidence for returned refIds; chipmate_read only for an explicit workspace path; chipmate_read_skill_resource only for active skill references/assets/scripts resources; create_word_document only for a complete WordDocSpec that should be rendered as .docx; chipmate_create_directory only when the user explicitly asks to create a new local workspace folder; chipmate_create_file only when the user explicitly asks to create a new local workspace text/code file from scratch; chipmate_edit_file only when the user explicitly asks to modify an existing local workspace text/code file by exact oldString/newString replacement.",
+          "Tool routing: for Mermaid-default diagram requests, use read-only evidence tools only when the content needs grounding, then answer with a fenced `mermaid` block instead of draw.io tools. When Mermaid must be embedded into a Word document or persisted as artifacts, call chipmate_render_mermaid_diagram after authoring valid Mermaid source, then place the returned PNG figure path in the matching WordDocSpec section. For explicit complex draw.io requests, use chipmate_graph_map_module, chipmate_graph_function_cfg, chipmate_graph_expand_flow_slice, chipmate_graph_state_flow_detail, chipmate_graph_find_state_machines/trace_state_path, chipmate_search_code, chipmate_search_documents, read_docx, and active skill resources to collect evidence; then use chipmate_validate_diagram_ir and finally chipmate_create_drawio_diagram. For controlled edits to an existing .docx, first call inspect_word_document and then call apply_word_document_edits with a DocumentEditPlan using only returned locators; supported operations are insertSection, replaceParagraph, replaceParagraphWithRichParagraph, replaceParagraphWithBlocks, replaceText, replaceParagraphWithTrackedChange, replaceParagraphWithRichTrackedChange, replaceTextWithTrackedChange, updateHeadingLevel, updateTable, replaceTable, updateTableHeaderRows, updateList, updateSectionPageSetup, updateImageAltText, replaceImage, updateCaptionText, updateHyperlinkText, updateHyperlinkTarget, updateNoteText, paragraph addComment, updateCommentText, setCommentResolved, fillContentControl, addTextWatermark, removeWatermark, removeAllComments, acceptAllTrackedChanges, rejectAllTrackedChanges, scrubDocumentMetadata, redactText, and patchOoxmlPart. Use audit_word_document_styles when the user asks why formatting looks inconsistent or before style cleanup; use normalize_word_document_styles only when the user wants a new style-normalized copy, and pass preserveRunFormatting such as ['bold','italic','underline','color'] when the user wants intentional manual emphasis or brand coloring preserved while other direct formatting drift is removed. Use apply_word_template_styles when the user asks to apply a DOTX/template DOCX/style pack to an existing .docx; warn that pagination and styling may change, pass styleAllowlist when the user asks to import only selected template style ids, and use returned templateAudit to explain style/numbering conflicts plus copied or blocked template relationships/media. Use audit_word_document_fields when the user asks why TOC/page numbers/captions/cross-references look stale or before rendering field-heavy documents; use refresh_word_native_fields when Word-native TOC/PAGE/NUMPAGES fields must be refreshed and render-verified; use flatten_word_ref_fields only when deterministic headless rendering should replace cached REF/PAGEREF display text in a new copy, and use materialize_word_seq_fields only when deterministic headless rendering should recalculate cached SEQ caption/table/figure numbers while preserving live SEQ fields. Do not use flatten_word_ref_fields or materialize_word_seq_fields to refresh TOC, PAGE, or NUMPAGES. Use compare_word_documents when the user asks to compare/diff/review changes between two local .docx files; the tool handles text diff, DOCX rendering, changed page detection, per-page pixel diff PNGs, changedRatio metrics, and evidence artifacts. Use merge_word_documents when the user asks to append or merge one local .docx into another; the model must choose base vs append order. Keep allowDrawings false for object-heavy append docs, but it can be true for local image/PNG figure append docs after warning that unsupported embedded objects remain out of scope; local image media and relationships are merged deterministically, hyperlink relationships are remapped, style/numbering conflicts are reported as base-wins, and unsupported embedded object relationships fail closed. Use replaceText for small exact paragraph-local edits when the surrounding paragraph should stay intact; use replaceTextWithTrackedChange instead when that small paragraph-local edit must be visible as Word redline/revision markup; use replaceParagraph only when the whole paragraph should change, and use replaceParagraphWithBlocks when one paragraph should become ordered structural blocks such as lists, figures, tables, cards, quotes, or code. Use updateHeadingLevel only with paragraph locators returned by inspect_word_document when the user asks to fix skipped heading levels or heading hierarchy accessibility warnings. Use updateTableHeaderRows only with table locators returned by inspect_word_document when the user asks to set repeated/header rows for tables or fix table-header accessibility warnings. Use updateHyperlinkText only with hyperlink locators returned by inspect_word_document when the user asks to make link text descriptive; it changes visible text only, not URL or anchor relationships. Use fillContentControl with contentControl locators returned by inspect_word_document when the user asks to fill a Word form/template field. Use addTextWatermark with the documentEnd locator to add a simple VML text watermark; use removeWatermark only with watermark locators returned by inspect_word_document. Use inspection.lists to summarize or audit existing Word numbering/list groups, list levels, and paragraph list membership; use updateList only with a list locator returned by inspect_word_document when the user asks to replace or reorganize list items. Use inspection.notes to summarize or audit existing footnotes/endnotes; use updateNoteText only with a note locator returned by inspect_word_document when the user asks to update footnote or endnote text. Use inspection.images to summarize or audit existing drawings/images, media targets, media paths, sizes, names, and alt text; use updateImageAltText only with an image locator returned by inspect_word_document when the user asks to fix or add image alt text/title, and use replaceImage with an image locator plus PNG-backed FigureSpec when the user asks to replace a local screenshot, diagram, rendered figure, or image binary. Use inspection.captions to summarize or audit existing Figure/Table captions, SEQ fields, cached numbers, and bookmarks; use updateCaptionText only with a caption locator returned by inspect_word_document when the user asks to revise caption text, and preserve SEQ fields/bookmark anchors. Use inspection.sections to summarize or audit existing page size, orientation, margins, section type, and header/footer references; use updateSectionPageSetup only with a section locator returned by inspect_word_document when the user asks to change page size, orientation, or margins. Use inspection.fields to summarize or audit existing Word fields, instructions, cached display text, and field types such as TOC, PAGE, NUMPAGES, SEQ, REF, and PAGEREF; use refresh_word_native_fields for TOC/PAGE/NUMPAGES refresh, and only use field materialization tools for the documented REF/PAGEREF flattening or SEQ cached-number workflows. Use inspection.styles to summarize or audit the existing Word style catalog and paragraph/run style usage; do not attempt arbitrary style edits because only audit, normalize, and template-style application tools are exposed. Use replaceParagraphWithTrackedChange for whole-paragraph plain-text redlines, replaceParagraphWithRichTrackedChange for whole-paragraph redlines that must preserve rich runs such as bold, hyperlinks, REF/PAGEREF, or true footnote/endnote note runs, and replaceTextWithTrackedChange for exact paragraph-local redlines; use these only when the user asks for redlines, tracked changes, or revision-mode edits. Use updateCommentText only with a returned comment locator when the user asks to revise existing comment text; use setCommentResolved only with a returned comment locator; use removeAllComments, acceptAllTrackedChanges, rejectAllTrackedChanges, scrubDocumentMetadata, redactText, and patchOoxmlPart only with the returned documentEnd locator for final clean/shareable copies or low-level OOXML repair. For redactText, prefer exact items for known sensitive values; use built-in patterns like {kind:'email'} and {kind:'phone'} for broad PII sweeps, set includeComments only when comment text must be redacted, and disclose that image OCR and cross-run semantic matching remain out of scope. Use patchOoxmlPart only as a last-resort controlled OOXML repair when no native Word operation covers the request; the plan must name a safe XML package part, exact oldText/anchor/closeTag preconditions, expectedOccurrences, and a reason, and it must not create external relationships, macros, OLE, ActiveX, or embedded binary object references. Use chipmate_ask_user_clarification only when a bounded user answer is required before continuing the same turn; it returns as a tool result, so continue after the answer. Use chipmate_create_drawio_diagram directly only for simple illustrative draw.io diagrams or after DiagramIR is validated. Use chipmate_search_text for exact strings/macros/registers/logs; chipmate_graph_inspect_symbol for definitions; chipmate_graph_find_references for references; chipmate_graph_callers/callees for direct function edges; chipmate_graph_trace_call_chain for source-to-target call paths; chipmate_graph_analyze_impact for bounded impact; chipmate_read_evidence for returned refIds; chipmate_read only for an explicit workspace path; chipmate_read_skill_resource only for active skill references/assets/scripts/tasks resources; chipmate_run_skill_script only for active skill helper scripts that are explicitly opted in through scripts/manifest.json (manifest-level directExecution true or helper execution.directExecution true) with an executable entrypoint, offline networkPolicy, input schema, and bounded output/artifacts; prefer native Word tools whenever the manifest maps the helper to one; create_word_document only for a complete WordDocSpec that should be rendered as .docx, including navigation/TOC intent when appropriate; chipmate_create_directory only when the user explicitly asks to create a new local workspace folder; chipmate_create_file only when the user explicitly asks to create a new local workspace text/code file from scratch; chipmate_edit_file only when the user explicitly asks to modify an existing local workspace text/code file by exact oldString/newString replacement.",
+          "Word document workflow: when the user asks to create, edit, review, redline, comment on, compare, diff, merge, append, normalize styles, audit formatting, apply a template/style pack, audit/flatten/materialize/refresh Word fields, render, preview, visually QA, export page PNGs, check pagination/layout, or verify a Word/DOCX document, prefer the active `documents` skill when available. The model must plan the document type, audience, design preset, preset alias when useful, header pattern when useful for a new local Word document, heading ladder, section form factors, list/table/figure intent, link/reference/note intent, navigation/TOC/field intent, form/protection intent, compare/merge/style/template/render intent, and edit strategy before calling create_word_document, apply_word_document_edits, render_word_document, compare_word_documents, merge_word_documents, audit_word_document_styles, normalize_word_document_styles, apply_word_template_styles, audit_word_document_fields, refresh_word_native_fields, flatten_word_ref_fields, or materialize_word_seq_fields. When a Word figure should come from Mermaid, call chipmate_render_mermaid_diagram first and insert the returned PNG path as a FigureSpec image in the intended section; do not put raw Mermaid syntax in the Word body. If chipmate_render_mermaid_diagram reports fallbackUsed=true, disclose that remote Mermaid rendering failed and local fallback generated the PNG; if pngGenerated=false or wordFigureUsable=false, do not use Mermaid source, source summaries, or fenced code as a Word figure substitute. Use refresh_word_native_fields when TOC/PAGE/NUMPAGES need Word-native refresh and render verification; distinguish it from static TOC and deterministic REF/PAGEREF/SEQ materialization. Use render_word_document directly when the user wants to see or verify existing DOCX layout, page PNGs, visual QA, clipping/overflow checks, or render evidence without modifying the source document. After create_word_document, apply_word_document_edits, render_word_document, or refresh_word_native_fields returns render evidence, complete the Word visual QA checkpoint before finalizing: inspect attached page PNGs when available, otherwise use render warnings and pageVisualSummaries only and say image-level visual QA was not completed. If the checkpoint finds material risks, use inspect_word_document -> apply_word_document_edits -> render_word_document, or regenerate with create_word_document when locator edits are not appropriate. The Word tools execute the structure, basic a11y, style lint/cleanup, template style-part application, field inventory/REF flattening/SEQ cached numbering/TOC-PAGE-NUMPAGES native refresh, rendering checks, deterministic navigation fields, deterministic diff artifacts, and safe body-level merges; they do not decide the user's document design by themselves.",
           "Diagram skill precedence: obey the current user request first, then any active skill workflow, then ChipMate's default DiagramIR workflow. Active skills may change evidence ordering, reference artifacts, DiagramIR organization, composition.mode, VisualPlan hints, layoutHints, styleHints, semanticHints, and output captions, but they must not bypass the Design Compiler, ELKJS layout, offline rendering, XML/style sanitization, evidence gap reporting, or PNG safety checks.",
           "When the user wants multiple new files inside a new folder, create the folder with chipmate_create_directory first, then create new files under that folder with chipmate_create_file.",
           "For existing-file edits, use chipmate_edit_file with an exact oldString copied from read evidence; do not use fuzzy or anchor-based patches. Do not overwrite whole files, delete files, rename, move, or run commands against existing workspace files or folders.",
@@ -2487,7 +3930,7 @@ function systemPrompt(settings: RemoteSettings, skillCatalog: string, loadedSkil
         ].join("\n")
       : "ChipMate tool calling is disabled. Do not request, simulate, or emit tool calls; explain missing local information instead.",
     toolsEnabled
-      ? `Permission mode: ${settings.permissions.mode}. Obey blocked tool results; only chipmate_create_directory, chipmate_create_file, and chipmate_edit_file may perform local writes, and only within their documented workspace boundaries.`
+      ? `Permission mode: ${settings.permissions.mode}. Obey blocked tool results; only chipmate_create_directory, chipmate_create_file, chipmate_edit_file, chipmate_render_mermaid_diagram, create_word_document, apply_word_document_edits, render_word_document, compare_word_documents, merge_word_documents, normalize_word_document_styles, apply_word_template_styles, flatten_word_ref_fields, materialize_word_seq_fields, and refresh_word_native_fields may perform local writes, and only within their documented workspace boundaries.`
       : "Permission mode settings are inactive while tool calling is disabled.",
     skillCatalog,
     loadedSkills,
@@ -2634,6 +4077,18 @@ type DrawioDiagramExtraction = {
   payloadCount: number
 }
 
+type MermaidDiagramExtraction = {
+  parts: ChipMatePart[]
+  reason?: string
+  payloadCount: number
+}
+
+type WordRenderExtraction = {
+  parts: ChipMatePart[]
+  reason?: string
+  payloadCount: number
+}
+
 function diagramPartsFromDrawioToolResult(input: {
   sessionID: string
   messageID: string
@@ -2713,6 +4168,293 @@ function diagramPartFromDrawioPayload(input: {
   } as ChipMatePart
 }
 
+function diagramPartsFromMermaidToolResult(input: {
+  sessionID: string
+  messageID: string
+  toolCallID: string
+  result: ToolRuntimeResult
+}): MermaidDiagramExtraction {
+  if (input.result.status && input.result.status !== "completed") {
+    return { parts: [], reason: `tool status ${input.result.status}`, payloadCount: 0 }
+  }
+  if (!input.result.approved) {
+    return { parts: [], reason: "tool result was not approved", payloadCount: 0 }
+  }
+  const payloads = mermaidPayloadsFromArtifacts(input.result)
+  if (payloads.length === 0) {
+    return { parts: [], reason: "no mermaid payload in artifacts", payloadCount: 0 }
+  }
+  const parts = payloads
+    .map((payload, index) => diagramPartFromMermaidPayload(input, payload, index))
+    .filter((part): part is ChipMatePart => Boolean(part))
+  return {
+    parts,
+    reason: parts.length ? undefined : "mermaid artifact payload did not contain sourceText",
+    payloadCount: payloads.length,
+  }
+}
+
+function mermaidPayloadsFromArtifacts(result: ToolRuntimeResult) {
+  const payloads: Record<string, unknown>[] = []
+  for (const artifact of result.artifacts ?? []) {
+    if (artifact.kind !== "mermaid") continue
+    const payload = recordValue(artifact.payload)
+    if (stringValue(payload.kind) !== "mermaid") continue
+    payloads.push(payload)
+  }
+  return payloads
+}
+
+function diagramPartFromMermaidPayload(input: {
+  sessionID: string
+  messageID: string
+  toolCallID: string
+}, payload: Record<string, unknown>, index: number): ChipMatePart | undefined {
+  const sourceText = stringValue(payload.sourceText).trim()
+  if (!sourceText) return undefined
+  const warnings = Array.isArray(payload.warnings)
+    ? payload.warnings.filter((item): item is string => typeof item === "string").slice(0, 20)
+    : []
+  return {
+    id: index === 0 ? `${input.toolCallID}-mermaid` : `${input.toolCallID}-mermaid-${index + 1}`,
+    sessionID: input.sessionID,
+    messageID: input.messageID,
+    type: "diagram",
+    kind: "mermaid",
+    source: "tool",
+    displayMode: "artifact",
+    toolCallID: input.toolCallID,
+    diagramId: stringValue(payload.diagramId),
+    title: stringValue(payload.title) || "Mermaid diagram",
+    sourceText,
+    mmdPath: stringValue(payload.mmdPath),
+    absoluteMmdPath: stringValue(payload.absoluteMmdPath),
+    pngPath: stringValue(payload.pngPath),
+    absolutePngPath: stringValue(payload.absolutePngPath),
+    width: numberValue(payload.width),
+    height: numberValue(payload.height),
+    renderProvider: stringValue(payload.renderProvider),
+    fallbackUsed: booleanValue(payload.fallbackUsed),
+    warnings,
+  } as ChipMatePart
+}
+
+function wordRenderPartsFromToolResult(input: {
+  sessionID: string
+  messageID: string
+  toolCallID: string
+  result: ToolRuntimeResult
+}): WordRenderExtraction {
+  if (input.result.status && input.result.status !== "completed") {
+    return { parts: [], reason: `tool status ${input.result.status}`, payloadCount: 0 }
+  }
+  if (!input.result.approved) {
+    return { parts: [], reason: "tool result was not approved", payloadCount: 0 }
+  }
+  const payloads = wordRenderPayloadsFromArtifacts(input.result)
+  if (payloads.length === 0) {
+    return { parts: [], reason: "no word render payload in artifacts", payloadCount: 0 }
+  }
+  const parts = payloads
+    .map((payload, index) => wordRenderPartFromPayload(input, payload, index))
+    .filter((part): part is ChipMatePart => Boolean(part))
+  return {
+    parts,
+    reason: parts.length ? undefined : "word render payload was incomplete",
+    payloadCount: payloads.length,
+  }
+}
+
+function wordRenderPayloadsFromArtifacts(result: ToolRuntimeResult) {
+  const payloads: Record<string, unknown>[] = []
+  for (const artifact of result.artifacts ?? []) {
+    if (artifact.kind !== "word-render") continue
+    const payload = recordValue(artifact.payload)
+    if (stringValue(payload.kind) !== "word-render") continue
+    payloads.push(payload)
+  }
+  return payloads
+}
+
+function wordRenderPartFromPayload(input: {
+  sessionID: string
+  messageID: string
+  toolCallID: string
+}, payload: Record<string, unknown>, index: number): ChipMatePart | undefined {
+  const renderCheck = recordValue(payload.renderCheckResult)
+  const path = stringValue(payload.path)
+  if (!path && Object.keys(renderCheck).length === 0) return undefined
+  const pagePngPaths = stringArrayValue(payload.pagePngPaths)
+  const summaries = Array.isArray(payload.pageVisualSummaries) ? payload.pageVisualSummaries.slice(0, 8) : []
+  const visualQaStatus = stringValue(renderCheck.visualQaStatus)
+  const skipReason = stringValue(renderCheck.skipReason)
+  const issues = Array.isArray(payload.issues) ? payload.issues.slice(0, 12).map((issue) => {
+    const record = recordValue(issue)
+    const code = stringValue(record.code)
+    const message = stringValue(record.message)
+    return [code, message].filter(Boolean).join(": ")
+  }).filter(Boolean) : []
+  return {
+    id: index === 0 ? `${input.toolCallID}-word-render` : `${input.toolCallID}-word-render-${index + 1}`,
+    sessionID: input.sessionID,
+    messageID: input.messageID,
+    type: "wordRender",
+    title: "Word render QA",
+    path,
+    absolutePath: stringValue(payload.absolutePath),
+    renderArtifactDir: stringValue(payload.renderArtifactDir),
+    pdfArtifactPath: stringValue(payload.pdfArtifactPath),
+    pagePngPaths,
+    pageCount: numberValue(renderCheck.pageCount) ?? pagePngPaths.length,
+    attempted: booleanValue(renderCheck.attempted),
+    ok: booleanValue(renderCheck.ok),
+    visualQaStatus: visualQaStatus === "completed" || visualQaStatus === "skipped" ? visualQaStatus : undefined,
+    skipReason: isWordRenderSkipReason(skipReason) ? skipReason : undefined,
+    remoteEndpoint: stringValue(renderCheck.remoteEndpoint),
+    warnings: issues,
+    pageVisualSummaries: summaries,
+    visualQaCoverage: pagePngPaths.length ? {
+      totalPages: numberValue(renderCheck.pageCount) ?? pagePngPaths.length,
+      queuedPages: pagePngPaths.length,
+      batchSize: WORD_VISUAL_QA_IMAGES_PER_BATCH,
+      batchCount: Math.max(1, Math.ceil(pagePngPaths.length / WORD_VISUAL_QA_IMAGES_PER_BATCH)),
+      mode: "pending-image-batches",
+    } : visualQaStatus === "skipped" ? {
+      totalPages: 0,
+      queuedPages: 0,
+      batchSize: WORD_VISUAL_QA_IMAGES_PER_BATCH,
+      batchCount: 0,
+      mode: "skipped",
+    } : undefined,
+    toolCallID: input.toolCallID,
+  } as ChipMatePart
+}
+
+function isWordRenderSkipReason(value: string | undefined) {
+  return value === "remote-unconfigured"
+    || value === "remote-unavailable"
+    || value === "remote-invalid-response"
+    || value === "artifact-persist-failed"
+}
+
+function wordVisualQaArtifactFromPart(part: ChipMatePart, visualEvidenceCount: number, coverage: WordVisualQaPageCoverage[]): WordVisualQaArtifact {
+  if (part.type !== "wordRender") {
+    return {
+      pagePngPaths: [],
+      pageCount: 0,
+      warnings: [],
+      pageVisualSummaries: [],
+      visualEvidenceCount,
+      coverage,
+      batchSize: WORD_VISUAL_QA_IMAGES_PER_BATCH,
+      batchCount: 1,
+    }
+  }
+  const record = part as {
+    path?: unknown
+    pdfArtifactPath?: unknown
+    pagePngPaths?: unknown
+    pageCount?: unknown
+    attempted?: unknown
+    ok?: unknown
+    warnings?: unknown
+    pageVisualSummaries?: unknown
+  }
+  const pagePngPaths = stringArrayValue(record.pagePngPaths)
+  return {
+    path: stringValue(record.path),
+    pdfArtifactPath: stringValue(record.pdfArtifactPath),
+    pagePngPaths,
+    pageCount: numberValue(record.pageCount) ?? pagePngPaths.length,
+    attempted: booleanValue(record.attempted),
+    ok: booleanValue(record.ok),
+    warnings: stringArrayValue(record.warnings),
+    pageVisualSummaries: Array.isArray(record.pageVisualSummaries) ? record.pageVisualSummaries : [],
+    visualEvidenceCount,
+    coverage,
+    batchSize: WORD_VISUAL_QA_IMAGES_PER_BATCH,
+    batchCount: Math.max(1, Math.ceil(Math.max(pagePngPaths.length, coverage.length) / WORD_VISUAL_QA_IMAGES_PER_BATCH)),
+  }
+}
+
+function consumeWordVisualQaSteering(state: WordVisualQaState): { text: string; images: ChatMessageImageContent[]; artifactCount: number; pages: number[]; renderRound: number } | undefined {
+  const batch = state.pendingBatches.shift()
+  if (!batch) return undefined
+  state.qaBatchCount += 1
+  const images = state.imageInputRejected ? [] : batch.images
+  return {
+    text: wordVisualQaSteeringPrompt({
+      batch,
+      renderRound: state.renderRoundCount,
+      imageCount: images.length,
+      imageInputRejected: state.imageInputRejected,
+    }),
+    images,
+    artifactCount: 1,
+    pages: batch.pages.map((page) => page.page).filter((page) => page > 0),
+    renderRound: state.renderRoundCount,
+  }
+}
+
+function wordVisualQaSteeringPrompt(input: {
+  batch: WordVisualQaBatch
+  renderRound: number
+  imageCount: number
+  imageInputRejected: boolean
+}) {
+  const pageList = input.batch.pages.map((item) => item.page).filter((page) => page > 0).join(", ") || "none"
+  const remaining = input.batch.batchCount - input.batch.batchIndex
+  const visualMode = input.imageInputRejected
+    ? "The provider rejected image input earlier in this turn, so use only render warnings and pageVisualSummaries. Do not claim page-image visual inspection passed."
+    : input.imageCount > 0
+      ? `${input.imageCount} rendered page PNG image(s) are attached for visual review. Inspect them before claiming visual QA passed.`
+      : "No rendered page PNG image is attached in this checkpoint; use render warnings and pageVisualSummaries only, and disclose that image-level visual inspection was not completed if you deliver."
+  return [
+    `Word visual QA render round ${input.renderRound}/${MAX_WORD_VISUAL_QA_REPAIR_ROUNDS}, page batch ${input.batch.batchIndex}/${input.batch.batchCount}.`,
+    `Pages in this batch: ${pageList}. Remaining batches for this render: ${Math.max(0, remaining)}.`,
+    visualMode,
+    "Produce a concise WordVisualQaVerdict in your reasoning and then either continue with tools or finalize:",
+    "- PASS: if the Word document is acceptable. Final answer should mention the final .docx path and only material warnings.",
+    "- NEEDS_FIX: if clipping, blank pages, table overflow, missing image alt text, missing repeated headers, stale fields, bad page breaks, or other material layout/a11y risks are visible. Use inspect_word_document -> apply_word_document_edits -> render_word_document, or regenerate with create_word_document when locator edits are not appropriate.",
+    "- BLOCKED: if render dependencies failed or evidence is insufficient. State exactly which visual QA was not completed.",
+    "If more Word visual QA batches are requested after this response, review those pages before giving the final document-level visual pass.",
+    "Do not expose all intermediate PNG/PDF artifacts unless the user explicitly asks; use them as QA evidence.",
+    "Latest Word render evidence:",
+    wordVisualQaArtifactSummary(input.batch.artifact, 1, input.batch.pages),
+  ].join("\n")
+}
+
+function wordVisualQaArtifactSummary(artifact: WordVisualQaArtifact, index: number, batchPages?: WordVisualQaPageCoverage[]) {
+  const warnings = artifact.warnings.length ? artifact.warnings.slice(0, 8).join(" | ") : "none"
+  const summaries = artifact.pageVisualSummaries.length
+    ? truncateString(JSON.stringify(artifact.pageVisualSummaries.slice(0, 4)), 1800)
+    : "none"
+  const coverage = artifact.coverage.length
+    ? artifact.coverage.map((item) => `p${item.page}:${item.status}${item.reason ? `(${truncateString(item.reason, 80)})` : ""}`).join(", ")
+    : "none"
+  const batchCoverage = batchPages?.length
+    ? batchPages.map((item) => `p${item.page}:${item.status}${item.reason ? `(${truncateString(item.reason, 80)})` : ""}`).join(", ")
+    : "none"
+  return [
+    `Artifact ${index}:`,
+    `- docx: ${artifact.path || "unknown"}`,
+    `- pdf: ${artifact.pdfArtifactPath || "unavailable"}`,
+    `- render attempted: ${artifact.attempted === false ? "false" : artifact.attempted === true ? "true" : "unknown"}`,
+    `- render ok: ${artifact.ok === false ? "false" : artifact.ok === true ? "true" : "unknown"}`,
+    `- pages: ${artifact.pageCount}`,
+    `- page PNG artifacts: ${artifact.pagePngPaths.slice(0, 6).join(", ") || "none"}`,
+    `- attached visual evidence images: ${artifact.visualEvidenceCount}`,
+    `- visual QA coverage ledger: ${coverage}`,
+    `- current batch coverage: ${batchCoverage}`,
+    `- warnings: ${warnings}`,
+    `- pageVisualSummaries: ${summaries}`,
+  ].join("\n")
+}
+
+function stringArrayValue(value: unknown) {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : []
+}
+
 function logDrawioDiagramExtraction(output: vscode.OutputChannel, tool: string, result: ToolRuntimeResult, extraction: DrawioDiagramExtraction) {
   if (!isDrawioRelevantToolResult(tool, result, extraction)) return
   if (extraction.parts.length > 0) {
@@ -2730,11 +4472,50 @@ function logDrawioDiagramExtraction(output: vscode.OutputChannel, tool: string, 
   output.appendLine(`[drawio-artifact] skipped reason=${extraction.reason ?? "unknown"} source=${extraction.source} payloads=${extraction.payloadCount} outputBytes=${textByteLength(result.output)} artifacts=${toolArtifactSummary(result)}`)
 }
 
+function logMermaidDiagramExtraction(output: vscode.OutputChannel, tool: string, result: ToolRuntimeResult, extraction: MermaidDiagramExtraction) {
+  if (!isMermaidRelevantToolResult(tool, result, extraction)) return
+  if (extraction.parts.length > 0) {
+    const sourceBytes = extraction.parts.reduce((sum, part) => {
+      const sourceText = typeof (part as { sourceText?: unknown }).sourceText === "string" ? (part as { sourceText: string }).sourceText : ""
+      return sum + textByteLength(sourceText)
+    }, 0)
+    const titles = extraction.parts
+      .map((part) => truncateString(stringValue((part as { title?: unknown }).title), 80))
+      .filter(Boolean)
+      .join(" | ")
+    output.appendLine(`[mermaid-artifact] inserted count=${extraction.parts.length} payloads=${extraction.payloadCount} sourceBytes=${sourceBytes}${titles ? ` titles=${titles}` : ""}`)
+    return
+  }
+  output.appendLine(`[mermaid-artifact] skipped reason=${extraction.reason ?? "unknown"} payloads=${extraction.payloadCount} outputBytes=${textByteLength(result.output)} artifacts=${toolArtifactSummary(result)}`)
+}
+
+function logWordRenderExtraction(output: vscode.OutputChannel, tool: string, result: ToolRuntimeResult, extraction: WordRenderExtraction) {
+  if (!isWordRenderRelevantToolResult(tool, result, extraction)) return
+  if (extraction.parts.length > 0) {
+    const pageCount = extraction.parts.reduce((sum, part) => sum + (numberValue((part as { pageCount?: unknown }).pageCount) ?? 0), 0)
+    output.appendLine(`[word-render-artifact] inserted count=${extraction.parts.length} payloads=${extraction.payloadCount} pages=${pageCount}`)
+    return
+  }
+  output.appendLine(`[word-render-artifact] skipped reason=${extraction.reason ?? "unknown"} payloads=${extraction.payloadCount} outputBytes=${textByteLength(result.output)} artifacts=${toolArtifactSummary(result)}`)
+}
+
 function isDrawioRelevantToolResult(tool: string, result: ToolRuntimeResult, extraction: DrawioDiagramExtraction) {
   return tool === "chipmate_create_drawio_diagram" ||
     extraction.source !== "none" ||
     (result.artifacts ?? []).some((artifact) => artifact.kind === "drawio") ||
     /^\s*\{[\s\S]*"kind"\s*:\s*"drawio"/.test(result.output)
+}
+
+function isMermaidRelevantToolResult(tool: string, result: ToolRuntimeResult, extraction: MermaidDiagramExtraction) {
+  return tool === "chipmate_render_mermaid_diagram" ||
+    extraction.parts.length > 0 ||
+    (result.artifacts ?? []).some((artifact) => artifact.kind === "mermaid")
+}
+
+function isWordRenderRelevantToolResult(tool: string, result: ToolRuntimeResult, extraction: WordRenderExtraction) {
+  return tool === "render_word_document" ||
+    extraction.parts.length > 0 ||
+    (result.artifacts ?? []).some((artifact) => artifact.kind === "word-render")
 }
 
 function toolResultLogLine(tool: string, result: ToolRuntimeResult, status: string) {
@@ -3029,7 +4810,7 @@ function visualEvidenceForMessage(events: SessionEvent[], messageID: string) {
     if (event.type !== "visual_evidence") continue
     const record = event.visualEvidence
     if (record.messageID !== messageID) continue
-    const key = record.diagramId || record.sourceHash || record.id
+    const key = record.diagramId || record.sourceHash || (record.artifactPath && record.page ? `${record.artifactPath}:${record.page}` : undefined) || record.id
     byKey.set(`${record.kind}:${key}`, record)
   }
   return [...byKey.values()].sort((left, right) => left.createdAt - right.createdAt)
@@ -3074,6 +4855,54 @@ function stripChatMessageImages(messages: ChatMessage[]) {
     const text = chatMessageTextContent(message.content).trim()
     message.content = text || null
   }
+}
+
+function isVisualInputUnsupportedResponse(status: number, body: string) {
+  if (status !== 400 && status !== 415 && status !== 422) return false
+  return /\b(?:image_url|image input|vision|multimodal|unsupported image|images? (?:are|is) not supported)\b/i.test(body)
+}
+
+function isStreamUsageUnsupportedResponse(status: number, body: string) {
+  if (status !== 400 && status !== 422) return false
+  return /\b(?:stream_options|include_usage)\b/i.test(body) &&
+    /\b(?:unsupported|unknown|invalid|not support|extra fields?|unrecognized|forbidden)\b/i.test(body)
+}
+
+function chatCompletionHttpError(response: Response, body: string) {
+  const preview = truncateString(body.trim(), 600)
+  const summary = `${response.status} ${response.statusText || "HTTP error"}`.trim()
+  return new ChatCompletionHttpError(
+    `Chat completion failed: ${summary}${preview ? `: ${preview}` : ""}`,
+    response.status,
+    response.statusText || "HTTP error",
+    preview,
+    response.headers,
+  )
+}
+
+async function sleepWithAbort(ms: number, signal?: AbortSignal) {
+  signal?.throwIfAborted()
+  if (ms <= 0) return
+  await new Promise<void>((resolve, reject) => {
+    let timer: ReturnType<typeof setTimeout>
+    const onAbort = () => {
+      clearTimeout(timer)
+      signal?.removeEventListener("abort", onAbort)
+      reject(new DOMException("Aborted", "AbortError"))
+    }
+    const done = () => {
+      clearTimeout(timer)
+      signal?.removeEventListener("abort", onAbort)
+      resolve()
+    }
+    timer = setTimeout(done, ms)
+    signal?.addEventListener("abort", onAbort, { once: true })
+  })
+  signal?.throwIfAborted()
+}
+
+function isAbortError(error: unknown) {
+  return error instanceof Error && error.name === "AbortError"
 }
 
 function userHistoryTextForTurn(userText: string, historyText: string | undefined, messageMode: string | undefined) {
@@ -3394,6 +5223,7 @@ function parseDelta(data: string) {
   const result: {
     content: string
     toolCalls: Array<{ index: number; id?: string; name?: string; arguments?: string }>
+    usage?: ChipMateTokenUsage
     finishReason?: string
     error?: string
   } = {
@@ -3413,6 +5243,7 @@ function parseDelta(data: string) {
       result.error = body.error.message
       return result
     }
+    result.usage = normalizeProviderTokenUsage((body as { usage?: unknown }).usage)
     const choice = body.choices?.[0]
     if (typeof choice?.finish_reason === "string" && choice.finish_reason) result.finishReason = choice.finish_reason
     const delta = choice?.delta ?? {}
@@ -3435,13 +5266,67 @@ function parseDelta(data: string) {
   return result
 }
 
-function parseToolArguments(input: string) {
-  try {
-    const value = JSON.parse(input) as unknown
-    return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {}
-  } catch {
-    return {}
+function appendStreamToolArguments(call: ChatToolCall, chunk: string, exposedToolNames: Set<string>) {
+  const state = call[TOOL_ARGUMENT_STATE]
+  if (state?.truncated && shouldApplyStreamToolArgumentLimit(call.function.name, exposedToolNames)) {
+    state.originalBytes = (state.originalBytes ?? textByteLength(call.function.arguments)) + textByteLength(chunk)
+    return
   }
+  call.function.arguments += chunk
+  enforceStreamToolArgumentLimit(call, exposedToolNames)
+}
+
+function enforceStreamToolArgumentLimit(call: ChatToolCall, exposedToolNames: Set<string>) {
+  if (!shouldApplyStreamToolArgumentLimit(call.function.name, exposedToolNames)) return
+  const byteLength = textByteLength(call.function.arguments)
+  if (byteLength <= MAX_STREAM_TOOL_ARGUMENT_BYTES) return
+  call.function.arguments = truncateString(call.function.arguments, MAX_STREAM_TOOL_ARGUMENT_BYTES)
+  call[TOOL_ARGUMENT_STATE] = {
+    truncated: true,
+    originalBytes: byteLength,
+    maxBytes: MAX_STREAM_TOOL_ARGUMENT_BYTES,
+  }
+}
+
+function shouldApplyStreamToolArgumentLimit(toolName: string, exposedToolNames: Set<string>) {
+  if (!toolName || !exposedToolNames.has(toolName)) return false
+  return toolName !== "create_word_document"
+}
+
+function parseToolArguments(input: string, state?: ToolArgumentState): ToolArgumentParseResult {
+  if (state?.truncated) {
+    return {
+      ok: false,
+      errorCode: "tool-arguments-truncated",
+      errorMessage: `Tool arguments exceeded the streaming limit: ${state.originalBytes ?? "unknown"} byte(s), maximum ${state.maxBytes ?? MAX_STREAM_TOOL_ARGUMENT_BYTES}.`,
+    }
+  }
+  const text = input.trim()
+  if (!text) {
+    return {
+      ok: false,
+      errorCode: "tool-arguments-empty",
+      errorMessage: "Tool arguments were empty; expected a JSON object.",
+    }
+  }
+  let value: unknown
+  try {
+    value = JSON.parse(text) as unknown
+  } catch (error) {
+    return {
+      ok: false,
+      errorCode: "tool-arguments-invalid-json",
+      errorMessage: `Tool arguments were not valid JSON: ${formatErrorMessage(error)}`,
+    }
+  }
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return {
+      ok: false,
+      errorCode: "tool-arguments-not-object",
+      errorMessage: `Tool arguments must be a JSON object. Received ${Array.isArray(value) ? "array" : value === null ? "null" : typeof value}.`,
+    }
+  }
+  return { ok: true, args: value as Record<string, unknown> }
 }
 
 function recordValue(value: unknown): Record<string, unknown> {
@@ -3496,12 +5381,34 @@ function formatErrorMessage(error: unknown) {
   return error instanceof Error ? error.message : String(error)
 }
 
+function quoteLogValue(value: string, maxLength = 240) {
+  return value.replace(/\\/g, "\\\\").replace(/"/g, "\\\"").replace(/\s+/g, " ").slice(0, maxLength)
+}
+
 function uniqueStrings(values: string[]) {
   return [...new Set(values.filter((value) => value.trim()))]
 }
 
 function chatInterruptedMessage(reason: string) {
   return `对话已中断：${reason}`
+}
+
+function goalStatusForTurnError(error: unknown): Extract<ThreadGoalStatus, "blocked" | "usage_limited"> {
+  const retry = sessionRetryableError(error)
+  const message = `${retry?.message ?? ""} ${formatErrorMessage(error)}`.toLowerCase()
+  if (
+    message.includes("429") ||
+    message.includes("too many requests") ||
+    message.includes("too_many_requests") ||
+    message.includes("rate limit") ||
+    message.includes("resource_exhausted") ||
+    message.includes("resource exhausted") ||
+    message.includes("usage limit") ||
+    message.includes("quota")
+  ) {
+    return "usage_limited"
+  }
+  return "blocked"
 }
 
 function textByteLength(input: string) {

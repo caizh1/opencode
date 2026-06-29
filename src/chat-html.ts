@@ -50,7 +50,13 @@ const liquidIconNames: LiquidIconName[] = [
   "closePanel",
   "zoomIn",
   "zoomOut",
+  "expand",
   "close",
+  "panelBottomCollapseSimple",
+  "panelBottomExpandSimple",
+  "contextLens",
+  "goalTarget",
+  "skillBlocks",
   "panelBottomClose",
   "panelBottomOpen",
   "more",
@@ -873,6 +879,14 @@ ${codiconFontFace}    .codicon {
       overscroll-behavior: none;
       overflow-anchor: none;
     }
+    [hidden] {
+      display: none !important;
+    }
+    .chatMain.view-usage .messages,
+    .chatMain.view-usage .jumpLatest,
+    .chatMain.view-usage .composerWrap {
+      display: none !important;
+    }
     .messages {
       flex: 1;
       min-height: 0;
@@ -884,6 +898,398 @@ ${codiconFontFace}    .codicon {
       flex-direction: column;
       gap: 11px;
       scroll-behavior: smooth;
+    }
+    .usagePage {
+      flex: 1 1 auto;
+      min-height: 0;
+      overflow: auto;
+      display: grid;
+      align-content: flex-start;
+      gap: 12px;
+      padding: 12px 10px;
+      background: var(--vscode-editor-background, var(--vscode-sideBar-background));
+    }
+    .usagePage[hidden] { display: none; }
+    .usageHeader {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 10px;
+      min-width: 0;
+      flex-wrap: wrap;
+    }
+    .usageTitleBlock {
+      display: grid;
+      gap: 3px;
+      min-width: 0;
+    }
+    .usageTitle {
+      color: var(--vscode-foreground);
+      font-size: 15px;
+      font-weight: 700;
+      line-height: 1.15;
+    }
+    .usageSubtitle {
+      min-width: 0;
+      color: var(--oc-muted);
+      font-size: 10px;
+      line-height: 1.35;
+    }
+    .usageHeaderActions {
+      display: inline-flex;
+      align-items: center;
+      justify-content: flex-end;
+      gap: 6px;
+      flex: 0 0 auto;
+      min-width: 0;
+    }
+    .usageBackToChat,
+    .usageRefresh {
+      flex: 0 0 auto;
+      width: 28px;
+      min-width: 28px;
+      height: 28px;
+      min-height: 28px;
+      padding: 0;
+    }
+    .usageMetricStrip {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(74px, 1fr));
+      gap: 0;
+      min-width: 0;
+      border: 1px solid var(--oc-border);
+      border-radius: var(--oc-radius-lg);
+      overflow: hidden;
+      background:
+        linear-gradient(135deg, color-mix(in srgb, white 10%, transparent), transparent 62%),
+        color-mix(in srgb, var(--vscode-sideBar-background) 82%, transparent);
+      box-shadow: inset 0 1px 0 color-mix(in srgb, white 12%, transparent), 0 10px 26px color-mix(in srgb, black 12%, transparent);
+    }
+    .usageMetric {
+      display: grid;
+      align-content: center;
+      justify-items: center;
+      gap: 3px;
+      min-width: 0;
+      min-height: 68px;
+      padding: 9px 8px;
+      text-align: center;
+      border-inline-start: 1px solid var(--oc-border);
+    }
+    .usageMetric:first-child { border-inline-start: 0; }
+    .usageMetricValue {
+      min-width: 0;
+      max-width: 100%;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      color: var(--vscode-foreground);
+      font-size: 18px;
+      font-weight: 750;
+      line-height: 1.1;
+    }
+    .usageMetricLabel {
+      min-width: 0;
+      max-width: 100%;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      color: var(--oc-muted);
+      font-size: 11px;
+      line-height: 1.2;
+    }
+    .usageMetricDetail {
+      min-width: 0;
+      max-width: 100%;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      color: color-mix(in srgb, var(--oc-muted) 76%, transparent);
+      font-size: 9px;
+      line-height: 1.1;
+    }
+    .usageActivityPanel {
+      display: grid;
+      gap: 10px;
+      min-width: 0;
+    }
+    .usageActivityHead {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      min-width: 0;
+      flex-wrap: wrap;
+    }
+    .usageModeTabs {
+      display: inline-flex;
+      align-items: center;
+      gap: 2px;
+      min-width: 0;
+      padding: 2px;
+      border: 1px solid transparent;
+      border-radius: 999px;
+      background: transparent;
+    }
+    .usageModeTab {
+      min-width: 42px;
+      min-height: 24px;
+      padding: 0 8px;
+      border-color: transparent;
+      color: var(--oc-muted);
+      background: transparent;
+      font-size: 11px;
+    }
+    .usageModeTab.is-active {
+      color: var(--vscode-foreground);
+      border-color: color-mix(in srgb, var(--vscode-focusBorder) 28%, transparent);
+      background: color-mix(in srgb, var(--vscode-button-background) 18%, transparent);
+      box-shadow: inset 0 1px 0 color-mix(in srgb, white 12%, transparent);
+    }
+    .usageHeatmapWrap {
+      --usage-cell-size: clamp(9px, 2.2vw, 15px);
+      --usage-cell-gap: 4px;
+      display: grid;
+      gap: 8px;
+      min-width: 0;
+    }
+    .usageHeatmapGrid {
+      display: grid;
+      grid-auto-flow: column;
+      grid-template-rows: repeat(7, var(--usage-cell-size));
+      grid-auto-columns: var(--usage-cell-size);
+      gap: var(--usage-cell-gap);
+      min-width: 0;
+      max-width: 100%;
+      overflow-x: auto;
+      overflow-y: hidden;
+      padding: 1px 1px 3px;
+      scrollbar-gutter: stable;
+    }
+    .usageCalendarScroller {
+      overflow-x: auto;
+      overflow-y: hidden;
+      padding: 1px 1px 3px;
+      scrollbar-gutter: stable;
+      min-width: 0;
+      max-width: 100%;
+    }
+    .usageCalendarInner {
+      display: grid;
+      gap: 8px;
+      width: max-content;
+      min-width: 100%;
+    }
+    .usageMonthTrack {
+      display: grid;
+      align-items: center;
+      gap: var(--usage-cell-gap, 4px);
+      grid-auto-columns: var(--usage-cell-size);
+      width: max-content;
+      min-height: 14px;
+      color: var(--oc-muted);
+      font-size: 10px;
+      line-height: 1.2;
+    }
+    .usageMonthLabel {
+      justify-self: start;
+      white-space: nowrap;
+    }
+    .usageCalendarScroller .usageHeatmapGrid.daily {
+      overflow: visible;
+      padding: 0;
+      max-width: none;
+      scrollbar-gutter: auto;
+    }
+    .usageHeatmapGrid.weekly,
+    .usageHeatmapGrid.cumulative {
+      grid-auto-flow: row;
+      grid-template-rows: none;
+      grid-template-columns: repeat(auto-fit, minmax(var(--usage-cell-size), 1fr));
+    }
+    .usageHeatCell {
+      width: var(--usage-cell-size);
+      min-width: var(--usage-cell-size);
+      height: var(--usage-cell-size);
+      min-height: var(--usage-cell-size);
+      border: 1px solid color-mix(in srgb, var(--oc-border) 72%, transparent);
+      border-radius: 4px;
+      padding: 0;
+      background: color-mix(in srgb, var(--vscode-foreground) 6%, transparent);
+      box-shadow: inset 0 1px 0 color-mix(in srgb, white 9%, transparent);
+    }
+    .usageHeatCell.level-1 { background: color-mix(in srgb, #86c5ff 24%, transparent); border-color: color-mix(in srgb, #86c5ff 32%, var(--oc-border)); }
+    .usageHeatCell.level-2 { background: color-mix(in srgb, #74b7ff 42%, transparent); border-color: color-mix(in srgb, #74b7ff 46%, var(--oc-border)); }
+    .usageHeatCell.level-3 { background: color-mix(in srgb, #4aa3ff 62%, transparent); border-color: color-mix(in srgb, #4aa3ff 62%, var(--oc-border)); }
+    .usageHeatCell.level-4 { background: color-mix(in srgb, #238cf0 78%, transparent); border-color: color-mix(in srgb, #238cf0 76%, var(--oc-border)); }
+    .usageHeatCell.level-5 { background: color-mix(in srgb, #0b7ee6 92%, transparent); border-color: color-mix(in srgb, #0b7ee6 86%, var(--oc-border)); }
+    .usageHeatCell.estimated {
+      border-style: dashed;
+      box-shadow: inset 0 1px 0 color-mix(in srgb, white 12%, transparent), 0 0 0 1px color-mix(in srgb, var(--vscode-editorWarning-foreground) 18%, transparent);
+    }
+    .usageHeatCell.is-active {
+      outline: 1px solid var(--vscode-focusBorder);
+      outline-offset: 2px;
+      box-shadow: inset 0 1px 0 color-mix(in srgb, white 12%, transparent), 0 0 0 1px color-mix(in srgb, var(--vscode-focusBorder) 42%, transparent);
+    }
+    .usageHeatCell.is-preview:not(.is-active) {
+      border-color: color-mix(in srgb, var(--vscode-focusBorder) 48%, var(--oc-border));
+    }
+    .usageHeatCell:hover,
+    .usageHeatCell:focus-visible {
+      outline: 1px solid var(--vscode-focusBorder);
+      outline-offset: 2px;
+    }
+    .usageHeatLegend {
+      display: flex;
+      align-items: center;
+      min-width: 0;
+      gap: 5px;
+      color: var(--oc-muted);
+      font-size: 10px;
+      line-height: 1.2;
+    }
+    .usageLegendSwatches {
+      display: inline-flex;
+      align-items: center;
+      gap: 3px;
+      min-width: 0;
+    }
+    .usageLegendSwatch {
+      width: 11px;
+      height: 11px;
+      border: 1px solid var(--oc-border);
+      border-radius: 3px;
+      background: color-mix(in srgb, var(--vscode-foreground) 6%, transparent);
+    }
+    .usageLegendSwatch.level-1 { background: color-mix(in srgb, #86c5ff 24%, transparent); }
+    .usageLegendSwatch.level-2 { background: color-mix(in srgb, #74b7ff 42%, transparent); }
+    .usageLegendSwatch.level-3 { background: color-mix(in srgb, #4aa3ff 62%, transparent); }
+    .usageLegendSwatch.level-4 { background: color-mix(in srgb, #238cf0 78%, transparent); }
+    .usageLegendSwatch.level-5 { background: color-mix(in srgb, #0b7ee6 92%, transparent); }
+    .usageBreakdown {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      min-width: 0;
+      flex-wrap: wrap;
+      color: var(--oc-muted);
+      font-size: 10px;
+      line-height: 1.3;
+    }
+    .usageBreakdownItem {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      min-width: 0;
+    }
+    .usageDetailCard {
+      display: grid;
+      gap: 8px;
+      min-width: 0;
+      padding: 10px 12px;
+      border-radius: 12px;
+      border: 1px solid color-mix(in srgb, var(--oc-border) 78%, transparent);
+      background: color-mix(in srgb, var(--vscode-editorWidget-background) 72%, transparent);
+      box-shadow: inset 0 1px 0 color-mix(in srgb, white 9%, transparent);
+    }
+    .usageDetailCard.is-empty {
+      color: var(--oc-muted);
+    }
+    .usageDetailHeader {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 8px;
+      flex-wrap: wrap;
+      min-width: 0;
+    }
+    .usageDetailTitle {
+      color: var(--vscode-foreground);
+      font-size: 12px;
+      font-weight: 650;
+    }
+    .usageDetailMeta {
+      color: var(--oc-muted);
+      font-size: 10px;
+      line-height: 1.2;
+    }
+    .usageDetailHint {
+      color: var(--oc-muted);
+      font-size: 11px;
+      line-height: 1.4;
+    }
+    .usageDetailGrid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 8px;
+      min-width: 0;
+    }
+    .usageDetailMetric {
+      display: grid;
+      gap: 2px;
+      min-width: 0;
+    }
+    .usageDetailMetricLabel {
+      color: var(--oc-muted);
+      font-size: 10px;
+      line-height: 1.2;
+    }
+    .usageDetailMetricValue {
+      color: var(--vscode-foreground);
+      font-size: 12px;
+      font-weight: 600;
+      line-height: 1.3;
+      min-width: 0;
+      word-break: break-word;
+    }
+    @media (max-width: 360px) {
+      .usageDetailGrid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+    }
+    .usageDot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: var(--vscode-focusBorder);
+      flex: 0 0 auto;
+    }
+    .usageDot.estimated { background: var(--vscode-editorWarning-foreground); }
+    .usageState {
+      display: grid;
+      place-items: center;
+      min-height: 220px;
+      padding: 18px 12px;
+      color: var(--oc-muted);
+      text-align: center;
+    }
+    .usageStateInner {
+      display: grid;
+      justify-items: center;
+      gap: 8px;
+      max-width: 300px;
+      min-width: 0;
+    }
+    .usageStateIcon {
+      width: 36px;
+      height: 36px;
+      display: grid;
+      place-items: center;
+      color: var(--oc-muted);
+    }
+    .usageStateIcon .oc-liquid-icon {
+      width: 30px;
+      height: 30px;
+    }
+    .usageStateTitle {
+      color: var(--vscode-foreground);
+      font-size: 13px;
+      font-weight: 650;
+    }
+    .usageStateCopy {
+      font-size: 11px;
+      line-height: 1.4;
     }
     .jumpLatest {
       display: none;
@@ -1268,6 +1674,7 @@ ${codiconFontFace}    .codicon {
     }
     .copyCode,
     .diagramZoom,
+    .openDiagramViewer,
     .exportMermaidImage,
     .exportDrawioImage,
     .toggleDiagramSource {
@@ -1291,6 +1698,7 @@ ${codiconFontFace}    .codicon {
     }
     .copyCode .oc-liquid-icon,
     .diagramZoom .oc-liquid-icon,
+    .openDiagramViewer .oc-liquid-icon,
     .exportMermaidImage .oc-liquid-icon,
     .exportDrawioImage .oc-liquid-icon,
     .toggleDiagramSource .oc-liquid-icon { width: 14px; height: 14px; }
@@ -1302,6 +1710,7 @@ ${codiconFontFace}    .codicon {
     .codeBlock:hover .copyCode,
     .diagramBlock:hover .copyCode,
     .diagramBlock:hover .diagramZoom,
+    .diagramBlock:hover .openDiagramViewer,
     .diagramBlock:hover .exportMermaidImage,
     .diagramBlock:hover .exportDrawioImage,
     .diagramBlock:hover .toggleDiagramSource,
@@ -1309,6 +1718,8 @@ ${codiconFontFace}    .codicon {
     .copyCode:hover,
     .diagramZoom:focus-visible,
     .diagramZoom:hover,
+    .openDiagramViewer:focus-visible,
+    .openDiagramViewer:hover,
     .exportMermaidImage:focus-visible,
     .exportMermaidImage:hover,
     .exportDrawioImage:focus-visible,
@@ -1319,6 +1730,8 @@ ${codiconFontFace}    .codicon {
     }
     .diagramZoom[disabled],
     .diagramZoom[disabled]:hover,
+    .openDiagramViewer[disabled],
+    .openDiagramViewer[disabled]:hover,
     .exportMermaidImage[disabled],
     .exportMermaidImage[disabled]:hover,
     .exportDrawioImage[disabled],
@@ -1357,11 +1770,25 @@ ${codiconFontFace}    .codicon {
       color: var(--vscode-foreground);
       background: var(--vscode-editor-background);
     }
+    .diagramZoomSurface {
+      display: grid;
+      align-items: center;
+      justify-items: center;
+      justify-self: center;
+      align-self: center;
+      width: 100%;
+      min-width: 0;
+    }
+    .diagramBlock[data-diagram-kind="mermaid"] .diagramCanvas {
+      color: #111827;
+      background: #ffffff;
+    }
     .diagramCanvas.zoomed-in {
       align-items: start;
       justify-items: start;
-      overflow: auto;
-      max-height: min(72vh, 900px);
+      overflow-x: auto;
+      overflow-y: auto;
+      max-height: var(--diagram-canvas-max-height, min(72vh, 900px));
       overscroll-behavior: contain;
       cursor: grab;
       touch-action: none;
@@ -1370,11 +1797,24 @@ ${codiconFontFace}    .codicon {
       cursor: grabbing;
       user-select: none;
     }
+    .diagramCanvas.zoomed-in .diagramZoomSurface {
+      align-items: start;
+      justify-items: start;
+      justify-self: start;
+      align-self: start;
+      width: var(--diagram-zoom-content-width, var(--diagram-zoom-width, 100%));
+      min-width: var(--diagram-zoom-content-width, var(--diagram-zoom-width, 100%));
+      height: var(--diagram-zoom-content-height, auto);
+      min-height: var(--diagram-zoom-content-height, 0);
+    }
     .diagramCanvas svg {
       width: var(--diagram-zoom-width, 100%);
       max-width: none;
       height: auto;
       justify-self: center;
+    }
+    .diagramBlock[data-diagram-kind="mermaid"] .diagramCanvas svg {
+      color: #111827;
     }
     .diagramCanvas img.drawioImage {
       display: block;
@@ -1384,7 +1824,14 @@ ${codiconFontFace}    .codicon {
       justify-self: center;
     }
     .diagramCanvas.zoomed-in svg,
-    .diagramCanvas.zoomed-in img.drawioImage { justify-self: start; }
+    .diagramCanvas.zoomed-in img.drawioImage {
+      width: 100% !important;
+      max-width: none !important;
+      max-height: none !important;
+      height: 100% !important;
+      justify-self: start;
+      align-self: start;
+    }
     .drawioDiagramBlock .diagramCanvas {
       color: #111827;
       background: #ffffff;
@@ -1398,6 +1845,102 @@ ${codiconFontFace}    .codicon {
       border: 0;
       opacity: 0;
       pointer-events: none;
+    }
+    .diagramViewer {
+      position: fixed;
+      inset: 0;
+      z-index: 12000;
+      display: grid;
+      grid-template-rows: auto minmax(0, 1fr);
+      gap: 8px;
+      padding: 10px;
+      background:
+        linear-gradient(135deg, color-mix(in srgb, white 10%, transparent), transparent 54%),
+        color-mix(in srgb, var(--vscode-sideBar-background) 82%, black 18%);
+      backdrop-filter: blur(18px) saturate(1.24);
+      -webkit-backdrop-filter: blur(18px) saturate(1.24);
+    }
+    .diagramViewer[hidden] {
+      display: none !important;
+    }
+    .diagramViewerToolbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      min-width: 0;
+      padding: 6px 8px;
+      border: 1px solid var(--oc-border);
+      border-radius: var(--oc-radius-lg);
+      background:
+        linear-gradient(135deg, color-mix(in srgb, white 12%, transparent), transparent 62%),
+        color-mix(in srgb, var(--vscode-editorWidget-background) 76%, transparent);
+      box-shadow: inset 0 1px 0 color-mix(in srgb, white 12%, transparent), 0 14px 34px color-mix(in srgb, black 18%, transparent);
+    }
+    .diagramViewerTitle {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      color: var(--vscode-foreground);
+      font-size: 12px;
+      font-weight: 650;
+    }
+    .diagramViewerActions {
+      display: inline-flex;
+      align-items: center;
+      justify-content: flex-end;
+      gap: 6px;
+      flex: 0 0 auto;
+      min-width: 0;
+    }
+    .diagramViewerButton {
+      width: 30px;
+      min-width: 30px;
+      height: 30px;
+      min-height: 30px;
+      padding: 0;
+      border-radius: 9px;
+    }
+    .diagramViewerButton .oc-liquid-icon {
+      width: 17px;
+      height: 17px;
+    }
+    .diagramViewerCanvas {
+      min-width: 0;
+      min-height: 0;
+      overflow: auto;
+      overscroll-behavior: contain;
+      cursor: grab;
+      border: 1px solid var(--oc-border);
+      border-radius: var(--oc-radius-lg);
+      background: #ffffff;
+      color: #111827;
+      box-shadow: inset 0 1px 0 color-mix(in srgb, white 22%, transparent), 0 16px 42px color-mix(in srgb, black 20%, transparent);
+    }
+    .diagramViewerCanvas.diagramDragging {
+      cursor: grabbing;
+      user-select: none;
+    }
+    .diagramViewerSurface {
+      display: grid;
+      align-items: start;
+      justify-items: start;
+      width: var(--diagram-viewer-content-width, 100%);
+      min-width: var(--diagram-viewer-content-width, 100%);
+      height: var(--diagram-viewer-content-height, auto);
+      min-height: var(--diagram-viewer-content-height, 0);
+      background: #ffffff;
+      color: #111827;
+    }
+    .diagramViewerSurface svg,
+    .diagramViewerSurface img.drawioImage {
+      width: 100% !important;
+      height: 100% !important;
+      max-width: none !important;
+      max-height: none !important;
+      justify-self: start;
+      align-self: start;
     }
     .diagramStatus {
       width: 100%;
@@ -1788,11 +2331,15 @@ ${codiconFontFace}    .codicon {
     }
     .toolCard.reasoning pre { color: var(--vscode-descriptionForeground); }
     .docAgentTimelineCard,
+    .runProgressCard,
+    .mermaidArtifactCard,
     .docAgentConflictCard {
       border-color: color-mix(in srgb, var(--vscode-focusBorder) 30%, var(--vscode-panel-border));
       background: color-mix(in srgb, var(--vscode-sideBar-background) 78%, var(--vscode-focusBorder) 7%);
     }
     .docAgentTimelineBody,
+    .runProgressBody,
+    .mermaidArtifactBody,
     .docAgentConflictBody {
       display: grid;
       gap: 8px;
@@ -1800,6 +2347,9 @@ ${codiconFontFace}    .codicon {
       border-top: 1px solid var(--vscode-panel-border);
     }
     .docAgentStats,
+    .runProgressStats,
+    .mermaidArtifactMeta,
+    .mermaidArtifactActions,
     .docAgentBulkActions,
     .docAgentChoiceRow {
       display: flex;
@@ -1809,6 +2359,9 @@ ${codiconFontFace}    .codicon {
       min-width: 0;
     }
     .docAgentStat,
+    .runProgressStat,
+    .runProgressItemStatus,
+    .mermaidArtifactStat,
     .docAgentEventStatus,
     .docAgentChoiceState {
       padding: 2px 6px;
@@ -1820,11 +2373,13 @@ ${codiconFontFace}    .codicon {
       line-height: 1.3;
     }
     .docAgentEventList,
+    .runProgressList,
     .docAgentConflictList {
       display: grid;
       gap: 6px;
     }
     .docAgentEvent,
+    .runProgressItem,
     .docAgentConflictItem {
       display: grid;
       gap: 4px;
@@ -1835,6 +2390,7 @@ ${codiconFontFace}    .codicon {
       background: color-mix(in srgb, var(--vscode-input-background) 65%, transparent);
     }
     .docAgentEventHead,
+    .runProgressItemHead,
     .docAgentConflictHead {
       display: flex;
       align-items: center;
@@ -1847,12 +2403,22 @@ ${codiconFontFace}    .codicon {
       line-height: 1.35;
     }
     .docAgentEventDetail,
+    .runProgressItemDetail,
+    .mermaidArtifactPath,
     .docAgentConflictMeta {
       color: var(--vscode-descriptionForeground);
       font-size: 10px;
       line-height: 1.35;
       overflow-wrap: anywhere;
       white-space: pre-wrap;
+    }
+    .mermaidArtifactPreview {
+      display: grid;
+      gap: 8px;
+      min-width: 0;
+    }
+    .mermaidArtifactPreview .diagramBlock {
+      margin: 0;
     }
     .docAgentChoiceButton.is-selected {
       color: var(--vscode-button-foreground);
@@ -1899,6 +2465,75 @@ ${codiconFontFace}    .codicon {
       font-size: 10px;
       line-height: 1.35;
       white-space: pre-wrap;
+    }
+    .wordRenderCard {
+      display: grid;
+      gap: 8px;
+      padding: 9px;
+      border-color: color-mix(in srgb, var(--vscode-testing-iconPassed, var(--vscode-focusBorder)) 28%, var(--vscode-panel-border));
+      background: color-mix(in srgb, var(--vscode-sideBar-background) 74%, var(--vscode-testing-iconPassed, var(--vscode-focusBorder)) 8%);
+    }
+    .wordRenderTitle {
+      color: var(--vscode-foreground);
+      font-size: 12px;
+      font-weight: 700;
+      line-height: 1.35;
+    }
+    .wordRenderMeta,
+    .wordRenderArtifacts,
+    .wordRenderSummary {
+      color: var(--vscode-descriptionForeground);
+      font-size: 11px;
+      line-height: 1.35;
+      overflow-wrap: anywhere;
+      white-space: pre-wrap;
+    }
+    .wordRenderPreviewStrip {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      min-width: 0;
+    }
+    .wordRenderPreviewItem {
+      display: grid;
+      gap: 4px;
+      min-width: 96px;
+      max-width: min(180px, 100%);
+      padding: 5px;
+      border: 1px solid color-mix(in srgb, var(--vscode-panel-border) 80%, transparent);
+      border-radius: 6px;
+      background: color-mix(in srgb, var(--vscode-editor-background) 82%, transparent);
+    }
+    .wordRenderPreviewImage {
+      width: 100%;
+      max-height: 220px;
+      object-fit: contain;
+      border-radius: 4px;
+      background: var(--vscode-editor-background);
+    }
+    .wordRenderPreviewCaption {
+      color: var(--vscode-descriptionForeground);
+      font-size: 10px;
+      line-height: 1.3;
+      overflow-wrap: anywhere;
+    }
+    .wordRenderWarnings {
+      margin: 0;
+      padding: 7px;
+      border: 1px solid var(--vscode-inputValidation-warningBorder, var(--vscode-panel-border));
+      border-radius: 6px;
+      color: var(--vscode-descriptionForeground);
+      background: color-mix(in srgb, var(--vscode-inputValidation-warningBackground, transparent) 55%, transparent);
+      font-size: 10px;
+      line-height: 1.35;
+      white-space: pre-wrap;
+    }
+    .wordRenderActions {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+      min-width: 0;
     }
     .activityRow {
       min-height: 22px;
@@ -2063,12 +2698,18 @@ ${codiconFontFace}    .codicon {
     .composerStatusPill.rag.error { color: var(--vscode-testing-iconFailed, #f85149); }
     .composerStatusPill.documentRag.error { color: var(--vscode-testing-iconFailed, #f85149); }
     .composerStatusPill.usage.error { color: var(--vscode-errorForeground, #f48771); }
-    .composerStatusPill.queue.info { color: var(--vscode-descriptionForeground); }
-    .composerStatusPill.queue.active { color: var(--vscode-focusBorder); }
-    .composerStatusPill.queue.warning { color: var(--vscode-editorWarning-foreground, #cca700); }
-    .composerStatusPill.completion.ready { color: var(--vscode-testing-iconPassed, #73c991); }
-    .composerStatusPill.completion.off { color: var(--vscode-descriptionForeground); }
-    .composerStatusPill.completion.warning { color: var(--vscode-editorWarning-foreground, #cca700); }
+	    .composerStatusPill.queue.info { color: var(--vscode-descriptionForeground); }
+	    .composerStatusPill.queue.active { color: var(--vscode-focusBorder); }
+	    .composerStatusPill.queue.warning { color: var(--vscode-editorWarning-foreground, #cca700); }
+	    .composerStatusPill.goal.active { color: var(--vscode-focusBorder); }
+	    .composerStatusPill.goal.paused,
+	    .composerStatusPill.goal.usage-limited,
+	    .composerStatusPill.goal.budget-limited { color: var(--vscode-editorWarning-foreground, #cca700); }
+	    .composerStatusPill.goal.blocked { color: var(--vscode-errorForeground, #f48771); }
+	    .composerStatusPill.goal.complete { color: var(--vscode-testing-iconPassed, #73c991); }
+	    .composerStatusPill.completion.ready { color: var(--vscode-testing-iconPassed, #73c991); }
+	    .composerStatusPill.completion.off { color: var(--vscode-descriptionForeground); }
+	    .composerStatusPill.completion.warning { color: var(--vscode-editorWarning-foreground, #cca700); }
     .composerStatusPill.guard.ok { color: var(--vscode-testing-iconPassed, #73c991); }
     .composerStatusPill.guard.off { color: var(--vscode-descriptionForeground); }
     .composerStatusPopover {
@@ -2105,10 +2746,43 @@ ${codiconFontFace}    .codicon {
       background: var(--vscode-editor-background);
     }
     .statusPopoverLabel { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .statusPopoverActions { display: flex; align-items: center; gap: 5px; flex-wrap: wrap; }
-    .statusActionButton,
-    .contextRemoveButton {
-      min-height: 22px;
+	    .statusPopoverActions { display: flex; align-items: center; gap: 5px; flex-wrap: wrap; }
+	    .goalActions {
+	      display: flex;
+	      align-items: center;
+	      gap: 6px;
+	      flex-wrap: wrap;
+	      min-width: 0;
+	    }
+	    .goalActionButton.oc-liquid-btn {
+	      width: auto;
+	      min-width: 0;
+	      max-width: 100%;
+	      height: 28px;
+	      min-height: 28px;
+	      display: inline-flex;
+	      align-items: center;
+	      justify-content: center;
+	      gap: 6px;
+	      padding: 0 9px;
+	      border-radius: 999px;
+	      white-space: nowrap;
+	    }
+	    .goalActionButton.danger { color: var(--vscode-errorForeground, #f48771); }
+	    .goalActionIcon {
+	      display: inline-flex;
+	      align-items: center;
+	      justify-content: center;
+	      flex: 0 0 auto;
+	    }
+	    .goalActionLabel {
+	      min-width: 0;
+	      overflow: hidden;
+	      text-overflow: ellipsis;
+	    }
+	    .statusActionButton,
+	    .contextRemoveButton {
+	      min-height: 22px;
       border-radius: 5px;
       padding: 2px 7px;
       color: var(--vscode-button-secondaryForeground);
@@ -2929,7 +3603,7 @@ ${codiconFontFace}    .codicon {
       --oc-user-message-border: color-mix(in srgb, var(--oc-user-message-accent) 58%, var(--oc-border));
       --composer-icon-button-size: 28px;
       --composer-toolbar-icon-slot-size: 22px;
-      --composer-toolbar-glyph-size: 17px;
+      --composer-toolbar-glyph-size: 18px;
       --composer-toolbar-status-glyph-size: 13px;
       --composer-send-button-size: 34px;
       --diagram-zoom-button-size: 30px;
@@ -3455,6 +4129,16 @@ ${codiconFontFace}    .codicon {
       transform: translateX(2px);
     }
     .recentSessions { display: none; }
+    .usageMetricStrip {
+      grid-template-columns: repeat(auto-fit, minmax(92px, 1fr));
+    }
+    .usageMetric {
+      border-inline-start: 0;
+      border-block-start: 1px solid var(--oc-border);
+    }
+    .usageMetric:nth-child(-n + 5) {
+      border-block-start: 0;
+    }
     .timelineItem {
       grid-template-columns: 22px minmax(0, 1fr);
       gap: 6px;
@@ -3616,6 +4300,7 @@ ${codiconFontFace}    .codicon {
     .messageAction,
     .copyCode,
     .diagramZoom,
+    .openDiagramViewer,
     .copyTable,
     .exportMermaidImage,
     .exportDrawioImage,
@@ -3650,6 +4335,7 @@ ${codiconFontFace}    .codicon {
     .messageAction:hover,
     .copyCode:hover,
     .diagramZoom:hover,
+    .openDiagramViewer:hover,
     .copyTable:hover,
     .exportMermaidImage:hover,
     .exportDrawioImage:hover,
@@ -3676,6 +4362,7 @@ ${codiconFontFace}    .codicon {
     }
     .copyCode,
     .diagramZoom,
+    .openDiagramViewer,
     .exportMermaidImage,
     .exportDrawioImage,
     .toggleDiagramSource { opacity: 0; }
@@ -3685,6 +4372,8 @@ ${codiconFontFace}    .codicon {
     .diagramBlock:focus-within .copyCode,
     .diagramBlock:hover .diagramZoom,
     .diagramBlock:focus-within .diagramZoom,
+    .diagramBlock:hover .openDiagramViewer,
+    .diagramBlock:focus-within .openDiagramViewer,
     .diagramBlock:hover .exportMermaidImage,
     .diagramBlock:focus-within .exportMermaidImage,
     .diagramBlock:hover .exportDrawioImage,
@@ -3693,6 +4382,7 @@ ${codiconFontFace}    .codicon {
     .diagramBlock:focus-within .toggleDiagramSource,
     .copyCode:focus-visible,
     .diagramZoom:focus-visible,
+    .openDiagramViewer:focus-visible,
     .exportMermaidImage:focus-visible,
     .exportDrawioImage:focus-visible,
     .toggleDiagramSource:focus-visible { opacity: 1; }
@@ -3700,6 +4390,10 @@ ${codiconFontFace}    .codicon {
     .diagramZoom[disabled]:hover,
     .diagramBlock:hover .diagramZoom[disabled],
     .diagramBlock:focus-within .diagramZoom[disabled],
+    .openDiagramViewer[disabled],
+    .openDiagramViewer[disabled]:hover,
+    .diagramBlock:hover .openDiagramViewer[disabled],
+    .diagramBlock:focus-within .openDiagramViewer[disabled],
     .exportMermaidImage[disabled],
     .exportMermaidImage[disabled]:hover,
     .diagramBlock:hover .exportMermaidImage[disabled],
@@ -3967,16 +4661,22 @@ ${codiconFontFace}    .codicon {
       text-overflow: ellipsis;
       white-space: nowrap;
     }
-    .composerStatusPill:hover,
-    .composerStatusPill.open {
-      background: var(--oc-hover-bg);
-      border-color: transparent;
-      box-shadow: none;
-      transform: none;
-    }
-    .composerStatusPill.completion.ready { color: var(--vscode-testing-iconPassed, #73c991); }
-    .composerStatusPill.completion.off { color: var(--vscode-descriptionForeground); }
-    .composerStatusPill.completion.warning { color: var(--vscode-editorWarning-foreground, #cca700); }
+	    .composerStatusPill:hover,
+	    .composerStatusPill.open {
+	      background: var(--oc-hover-bg);
+	      border-color: transparent;
+	      box-shadow: none;
+	      transform: none;
+	    }
+	    .composerStatusPill.goal.active { color: var(--vscode-focusBorder); }
+	    .composerStatusPill.goal.paused,
+	    .composerStatusPill.goal.usage-limited,
+	    .composerStatusPill.goal.budget-limited { color: var(--vscode-editorWarning-foreground, #cca700); }
+	    .composerStatusPill.goal.blocked { color: var(--vscode-errorForeground, #f48771); }
+	    .composerStatusPill.goal.complete { color: var(--vscode-testing-iconPassed, #73c991); }
+	    .composerStatusPill.completion.ready { color: var(--vscode-testing-iconPassed, #73c991); }
+	    .composerStatusPill.completion.off { color: var(--vscode-descriptionForeground); }
+	    .composerStatusPill.completion.warning { color: var(--vscode-editorWarning-foreground, #cca700); }
     .composerPanel { gap: 5px; }
     .composer {
       gap: 0;
@@ -3990,15 +4690,191 @@ ${codiconFontFace}    .codicon {
       border-color: var(--vscode-focusBorder);
       box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--vscode-focusBorder) 45%, transparent);
     }
-    .composer.is-drop-target {
-      border-color: var(--vscode-focusBorder);
-      background: color-mix(in srgb, var(--vscode-focusBorder) 10%, var(--vscode-input-background));
-      box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--vscode-focusBorder) 55%, transparent), 0 0 0 2px color-mix(in srgb, var(--vscode-focusBorder) 18%, transparent);
+	    .composer.is-drop-target {
+	      border-color: var(--vscode-focusBorder);
+	      background: color-mix(in srgb, var(--vscode-focusBorder) 10%, var(--vscode-input-background));
+	      box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--vscode-focusBorder) 55%, transparent), 0 0 0 2px color-mix(in srgb, var(--vscode-focusBorder) 18%, transparent);
+	    }
+	    .composer.goalInputMode {
+	      border-color: color-mix(in srgb, var(--vscode-focusBorder) 72%, var(--oc-border));
+	      background:
+	        linear-gradient(135deg, color-mix(in srgb, var(--vscode-focusBorder) 10%, transparent), transparent 68%),
+	        var(--vscode-input-background);
+	      box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--vscode-focusBorder) 32%, transparent);
+	    }
+    .goalSummaryBanner {
+      display: grid;
+      grid-template-columns: auto minmax(0, 1fr) auto;
+      align-items: center;
+      column-gap: 8px;
+      row-gap: 2px;
+      width: calc(100% - 12px);
+      min-width: 0;
+      min-height: 34px;
+      margin: 6px 6px 0;
+      padding: 5px 9px;
+      border: 1px solid color-mix(in srgb, var(--vscode-focusBorder) 34%, var(--oc-border));
+      border-radius: var(--oc-radius);
+      color: var(--vscode-foreground);
+      background:
+        linear-gradient(135deg, color-mix(in srgb, var(--vscode-focusBorder) 12%, transparent), transparent 70%),
+        color-mix(in srgb, var(--vscode-editorWidget-background, var(--vscode-input-background)) 82%, transparent);
+      box-shadow: inset 0 1px 0 color-mix(in srgb, white 14%, transparent), 0 7px 18px rgba(0, 0, 0, 0.08);
+      text-align: start;
+      cursor: pointer;
     }
-    .composer textarea {
-      min-height: 38px;
-      max-height: 108px;
-      padding: 8px 9px 5px;
+    .goalSummaryBanner[hidden] {
+      display: none;
+    }
+    .goalSummaryBanner:hover,
+    .goalSummaryBanner.open {
+      border-color: color-mix(in srgb, var(--vscode-focusBorder) 54%, var(--oc-border));
+      background:
+        linear-gradient(135deg, color-mix(in srgb, var(--vscode-focusBorder) 16%, transparent), transparent 70%),
+        color-mix(in srgb, var(--vscode-editorWidget-background, var(--vscode-input-background)) 88%, transparent);
+    }
+    .goalSummaryBanner:focus-visible {
+      outline: 1px solid var(--vscode-focusBorder);
+      outline-offset: 2px;
+    }
+    .goalSummaryBanner.paused,
+    .goalSummaryBanner.usage-limited,
+    .goalSummaryBanner.budget-limited {
+      border-color: color-mix(in srgb, var(--vscode-editorWarning-foreground, #cca700) 44%, var(--oc-border));
+    }
+    .goalSummaryBanner.blocked {
+      border-color: color-mix(in srgb, var(--vscode-errorForeground, #f48771) 48%, var(--oc-border));
+    }
+    .goalSummaryBanner.complete {
+      border-color: color-mix(in srgb, var(--vscode-testing-iconPassed, #73c991) 44%, var(--oc-border));
+    }
+    .goalSummaryIcon {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      grid-column: 1;
+      grid-row: 1 / span 2;
+      align-self: start;
+      flex: 0 0 var(--composer-toolbar-icon-slot-size);
+      width: var(--composer-toolbar-icon-slot-size);
+      height: var(--composer-toolbar-icon-slot-size);
+      color: var(--vscode-focusBorder);
+    }
+    .goalSummaryCopy {
+      display: grid;
+      gap: 2px;
+      min-width: 0;
+      align-content: center;
+    }
+    .goalSummaryText {
+      display: grid;
+      gap: 2px;
+      min-width: 0;
+      line-height: 1.2;
+    }
+    .goalSummaryStatus {
+      font-weight: 700;
+      color: var(--vscode-foreground);
+      white-space: nowrap;
+    }
+    .goalSummaryObjective {
+      min-width: 0;
+      overflow: hidden;
+      display: block;
+      color: var(--vscode-descriptionForeground);
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      overflow-wrap: anywhere;
+    }
+    .goalSummaryMeta {
+      min-width: 0;
+      color: var(--vscode-descriptionForeground);
+      font-size: 11px;
+      line-height: 1.2;
+      white-space: nowrap;
+    }
+	    .goalSummaryBadge {
+	      display: inline-flex;
+	      align-items: center;
+	      justify-content: center;
+      grid-column: 3;
+      grid-row: 1 / span 2;
+      align-self: start;
+      flex: 0 0 auto;
+      min-width: 18px;
+      height: 18px;
+      padding: 0 5px;
+      border-radius: 999px;
+      color: var(--vscode-button-foreground);
+      background: color-mix(in srgb, var(--vscode-focusBorder) 82%, var(--vscode-button-background));
+      font-size: 11px;
+	      font-weight: 800;
+	      line-height: 1;
+	    }
+	    .goalResumePrompt {
+	      display: flex;
+	      align-items: center;
+	      gap: 8px;
+	      width: calc(100% - 12px);
+	      min-width: 0;
+	      margin: 5px 6px 0;
+	      padding: 7px 9px;
+	      border: 1px solid color-mix(in srgb, var(--vscode-editorWarning-foreground, #cca700) 38%, var(--oc-border));
+	      border-radius: var(--oc-radius);
+	      background:
+	        linear-gradient(135deg, color-mix(in srgb, var(--vscode-editorWarning-foreground, #cca700) 12%, transparent), transparent 70%),
+	        color-mix(in srgb, var(--vscode-editorWidget-background, var(--vscode-input-background)) 86%, transparent);
+	      box-shadow: inset 0 1px 0 color-mix(in srgb, white 12%, transparent), 0 7px 16px rgba(0, 0, 0, 0.07);
+	    }
+	    .goalResumePrompt[hidden] {
+	      display: none;
+	    }
+	    .goalResumePrompt.blocked {
+	      border-color: color-mix(in srgb, var(--vscode-errorForeground, #f48771) 46%, var(--oc-border));
+	      background:
+	        linear-gradient(135deg, color-mix(in srgb, var(--vscode-errorForeground, #f48771) 11%, transparent), transparent 72%),
+	        color-mix(in srgb, var(--vscode-editorWidget-background, var(--vscode-input-background)) 86%, transparent);
+	    }
+	    .goalResumeCopy {
+	      display: flex;
+	      flex-direction: column;
+	      gap: 2px;
+	      flex: 1 1 auto;
+	      min-width: 0;
+	      line-height: 1.22;
+	    }
+	    .goalResumeTitle {
+	      font-size: 12px;
+	      font-weight: 800;
+	      color: var(--vscode-foreground);
+	    }
+	    .goalResumeObjective {
+	      color: var(--vscode-descriptionForeground);
+	      overflow: hidden;
+	      text-overflow: ellipsis;
+	      white-space: nowrap;
+	    }
+	    .goalResumeActions {
+	      display: inline-flex;
+	      align-items: center;
+	      justify-content: flex-end;
+	      gap: 6px;
+	      flex: 0 0 auto;
+	    }
+	    .goalResumeAction {
+	      display: inline-flex;
+	      align-items: center;
+	      justify-content: center;
+	      gap: 5px;
+	      min-height: 28px;
+	      padding: 0 9px;
+	      border-radius: var(--oc-radius-sm);
+	      font-weight: 700;
+	    }
+	    .composer textarea {
+      min-height: 62px;
+      max-height: 172px;
+      padding: 9px 10px 6px;
       font-size: var(--chat-content-font-size);
       line-height: 1.35;
     }
@@ -4017,16 +4893,66 @@ ${codiconFontFace}    .codicon {
       padding-top: 6px;
     }
     .composerPickerRail {
-      display: inline-flex;
+      display: grid;
+      grid-template-columns: 28px minmax(104px, 118px) minmax(148px, 172px) minmax(118px, 144px) minmax(84px, 96px);
+      justify-content: start;
       align-items: center;
       gap: 6px;
       flex: 1 1 0;
-      flex-wrap: wrap;
       min-width: 0;
     }
+    .composerPickerRail > * {
+      min-width: 0;
+    }
+    .composerAddButton {
+      flex: 0 0 28px;
+      width: 28px;
+      min-width: 28px;
+      height: 28px;
+      min-height: 28px;
+      padding: 0;
+      border: 0;
+      border-radius: 8px;
+      color: var(--vscode-descriptionForeground);
+      background: transparent;
+      box-shadow: none;
+      font-family: var(--vscode-font-family);
+    }
+    .composerAddButton.open,
+    .composerAddButton.has-context {
+      color: var(--vscode-focusBorder);
+      border: 0;
+      background: transparent;
+      box-shadow: none;
+    }
+    .composerAddButton:hover,
+    .composerAddButton:focus-visible {
+      color: var(--vscode-foreground);
+      border: 0;
+      background: color-mix(in srgb, var(--vscode-toolbar-hoverBackground, var(--vscode-foreground)) 55%, transparent);
+      box-shadow: none;
+    }
+    .composerAddButton.open:hover,
+    .composerAddButton.has-context:hover,
+    .composerAddButton.open:focus-visible,
+    .composerAddButton.has-context:focus-visible {
+      color: var(--vscode-focusBorder);
+    }
+    .composerAddGlyph {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 22px;
+      height: 22px;
+      color: currentColor;
+      font-size: 28px;
+      font-weight: 300;
+      line-height: 20px;
+      letter-spacing: -0.04em;
+    }
     .composerPickerRail .permissionTrigger,
-    .composerPickerRail .skillsTrigger {
-      width: auto;
+    .composerPickerRail .goalTrigger {
+      width: 100%;
       height: 28px;
       min-height: 28px;
       padding: 0 8px;
@@ -4035,29 +4961,25 @@ ${codiconFontFace}    .codicon {
       background: transparent;
     }
     .composerPickerRail .permissionTrigger {
-      flex: 0 0 118px;
-      min-width: 102px;
-      max-width: 132px;
+      min-width: 0;
+      max-width: none;
     }
-    .composerPickerRail .skillsTrigger {
-      flex: 0 1 96px;
-      min-width: 76px;
-      max-width: 112px;
+    .composerPickerRail .goalTrigger {
+      min-width: 0;
+      max-width: none;
     }
-    .composerPickerRail .skillsTrigger.is-empty {
+    .composerSupportRail .skillsTrigger.is-empty {
       display: none;
     }
     .composerPickerRail .modelTrigger {
-      flex: 1 1 132px;
-      width: auto;
-      min-width: 84px;
-      max-width: 180px;
+      width: 100%;
+      min-width: 0;
+      max-width: none;
     }
     .composerPickerRail .agentTrigger {
-      flex: 1 1 112px;
-      width: auto;
-      min-width: 76px;
-      max-width: 150px;
+      width: 100%;
+      min-width: 0;
+      max-width: none;
     }
     .composerToolbar .send {
       flex: 0 0 var(--composer-send-button-size);
@@ -4080,6 +5002,8 @@ ${codiconFontFace}    .codicon {
     .modelTrigger.open,
     .permissionTrigger:hover,
     .permissionTrigger.open,
+    .goalTrigger:hover,
+    .goalTrigger.open,
     .skillsTrigger:hover,
     .skillsTrigger.open { background: var(--oc-hover-bg); }
     .agentTrigger.ready { border-color: var(--oc-border); }
@@ -4091,10 +5015,9 @@ ${codiconFontFace}    .codicon {
     }
     .composerPickerRail .agentTrigger.warning,
     .composerPickerRail .modelTrigger.warning {
-      flex: 0 0 102px;
-      width: 102px;
-      min-width: 92px;
-      max-width: 110px;
+      width: 100%;
+      min-width: 0;
+      max-width: none;
     }
     .agentTrigger.warning .oc-liquid-chip-label,
     .modelTrigger.warning .oc-liquid-chip-label {
@@ -4123,7 +5046,7 @@ ${codiconFontFace}    .codicon {
       color: var(--oc-muted);
     }
     .composerActionRow {
-      display: flex;
+      display: none;
       align-items: center;
       flex-wrap: wrap;
       gap: 4px;
@@ -4182,6 +5105,84 @@ ${codiconFontFace}    .codicon {
     .composerSecondaryAction:hover,
     .composerSecondaryAction:focus-visible {
       opacity: 1;
+    }
+    .composerMoreMenu {
+      padding: 6px;
+    }
+    .composerMoreSection {
+      display: grid;
+      gap: 2px;
+      padding: 2px 0;
+    }
+    .composerMoreSection + .composerMoreSection {
+      margin-top: 5px;
+      padding-top: 7px;
+      border-top: 1px solid color-mix(in srgb, var(--oc-border) 72%, transparent);
+    }
+    .composerMoreSectionTitle {
+      padding: 2px 7px 4px;
+      color: var(--vscode-descriptionForeground);
+      font-size: 9px;
+      font-weight: 700;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+    }
+    .composerMoreItem {
+      grid-template-columns: 24px minmax(0, 1fr) auto;
+      align-items: center;
+      gap: 8px;
+      min-height: 38px;
+      padding: 6px 7px;
+      border-radius: 9px;
+    }
+    .composerMoreItem:hover,
+    .composerMoreItem:focus-visible,
+    .composerMoreItem.active {
+      background: var(--oc-hover-bg);
+    }
+    .composerMoreItemIcon {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: var(--composer-toolbar-icon-slot-size);
+      height: var(--composer-toolbar-icon-slot-size);
+      color: currentColor;
+    }
+    .composerMoreItemIcon .oc-liquid-icon,
+    .composerMoreItemIcon .autocompleteStatusIcon {
+      width: var(--composer-toolbar-glyph-size);
+      height: var(--composer-toolbar-glyph-size);
+    }
+    .composerMoreItemCopy {
+      min-width: 0;
+      overflow: hidden;
+    }
+    .composerMoreItemState {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-width: 16px;
+      min-height: 16px;
+      color: var(--vscode-descriptionForeground);
+      font-size: 10px;
+      line-height: 1;
+    }
+    .composerMoreItem[aria-checked="true"] .composerMoreItemState {
+      color: var(--vscode-testing-iconPassed, #73c991);
+    }
+    .composerMoreBadge {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-width: 18px;
+      height: 18px;
+      padding: 0 5px;
+      border-radius: 999px;
+      color: var(--vscode-button-foreground);
+      background: color-mix(in srgb, var(--vscode-button-background) 86%, transparent);
+      font-size: 10px;
+      font-weight: 700;
+      line-height: 1;
     }
     .composerProgress {
       display: none;
@@ -4372,7 +5373,7 @@ ${codiconFontFace}    .codicon {
       .composerPickerRail .modelTrigger,
       .composerPickerRail .agentTrigger,
       .composerPickerRail .permissionTrigger,
-      .composerPickerRail .skillsTrigger {
+      .composerPickerRail .goalTrigger {
         flex-grow: 1;
         min-width: 74px;
         max-width: 132px;
@@ -4403,17 +5404,42 @@ ${codiconFontFace}    .codicon {
         height: var(--composer-icon-button-size);
       }
     }
+    @container composer (max-width: 620px) {
+      .composerToolbar {
+        gap: 5px;
+      }
+      .composerPickerRail {
+        grid-template-columns: 28px minmax(92px, 104px) minmax(118px, 1.05fr) minmax(104px, 0.95fr) 28px;
+        gap: 5px;
+      }
+      .composerPickerRail .goalTrigger {
+        width: 28px;
+        min-width: 28px;
+        max-width: 28px;
+        justify-content: center;
+        padding: 0;
+      }
+      .composerPickerRail .goalTrigger .pillLabelText {
+        display: none;
+      }
+      .composerPickerRail .goalTrigger .pillText {
+        justify-content: center;
+        gap: 0;
+      }
+      .composerToolbar .send {
+        margin-inline-start: 0;
+      }
+    }
     @container composer (max-width: 420px) {
       .composerToolbar {
         gap: 5px;
       }
       .composerPickerRail {
-        flex-wrap: nowrap;
+        grid-template-columns: 28px 28px minmax(74px, 1fr) minmax(74px, 1fr) 28px;
         gap: 5px;
       }
       .composerPickerRail .permissionTrigger,
-      .composerPickerRail .skillsTrigger {
-        flex: 0 0 28px;
+      .composerPickerRail .goalTrigger {
         width: 28px;
         min-width: 28px;
         max-width: 28px;
@@ -4424,19 +5450,18 @@ ${codiconFontFace}    .codicon {
       .composerPickerRail .agentTrigger,
       .composerPickerRail .agentTrigger.warning,
       .composerPickerRail .modelTrigger.warning {
-        flex: 1 1 96px;
         width: auto;
-        min-width: 74px;
+        min-width: 0;
         max-width: none;
         justify-content: flex-start;
         padding: 0 8px;
       }
       .composerPickerRail .permissionTrigger .pillLabelText,
-      .composerPickerRail .skillsTrigger .pillLabelText {
+      .composerPickerRail .goalTrigger .pillLabelText {
         display: none;
       }
       .composerPickerRail .permissionTrigger .pillText,
-      .composerPickerRail .skillsTrigger .pillText {
+      .composerPickerRail .goalTrigger .pillText {
         justify-content: center;
         gap: 0;
       }
@@ -4446,27 +5471,26 @@ ${codiconFontFace}    .codicon {
     }
     @container composer (max-width: 300px) {
       .composerPickerRail {
+        grid-template-columns: 28px 28px 28px 28px 28px;
         gap: 4px;
       }
       .composerPickerRail .permissionTrigger {
-        flex-basis: 28px;
         width: 28px;
         min-width: 28px;
         max-width: 28px;
       }
       .composerPickerRail .modelTrigger,
       .composerPickerRail .agentTrigger,
-      .composerPickerRail .skillsTrigger,
+      .composerPickerRail .goalTrigger,
       .composerPickerRail .agentTrigger.warning,
       .composerPickerRail .modelTrigger.warning {
-        flex-basis: 28px;
         width: 28px;
         min-width: 28px;
         max-width: 28px;
       }
       .composerPickerRail .modelTrigger,
       .composerPickerRail .agentTrigger,
-      .composerPickerRail .skillsTrigger,
+      .composerPickerRail .goalTrigger,
       .composerPickerRail .agentTrigger.warning,
       .composerPickerRail .modelTrigger.warning {
         justify-content: center;
@@ -4563,7 +5587,7 @@ ${codiconFontFace}    .codicon {
       <div class="settingsHome" role="tablist" aria-label="Settings sections">
         <button type="button" class="settingsEntry oc-settings-tile oc-liquid-card" data-settings-section="connect" role="tab" aria-selected="true">${liquidIcons.chip}<span class="settingsEntryLabel">Provider</span></button>
         <button type="button" class="settingsEntry oc-settings-tile oc-liquid-card" data-settings-section="complete" role="tab" aria-selected="false">${liquidIcons.completion}<span class="settingsEntryLabel">Complete</span><span id="completionSettingsStatus" class="settingsEntryStatus off" title="Autocomplete disabled · inline code completion is off" aria-label="Autocomplete disabled">Off</span></button>
-        <button type="button" class="settingsEntry oc-settings-tile oc-liquid-card" data-settings-section="skills" role="tab" aria-selected="false">${liquidIcons.references}<span class="settingsEntryLabel">Skills</span></button>
+        <button type="button" class="settingsEntry oc-settings-tile oc-liquid-card" data-settings-section="skills" role="tab" aria-selected="false">${liquidIcons.skillBlocks}<span class="settingsEntryLabel">Skills</span></button>
         <button type="button" class="settingsEntry oc-settings-tile oc-liquid-card" data-settings-section="rag" role="tab" aria-selected="false">${liquidIcons.database}<span class="settingsEntryLabel">RAG</span></button>
         <button type="button" class="settingsEntry oc-settings-tile oc-liquid-card" data-settings-section="guard" role="tab" aria-selected="false">${liquidIcons.shield}<span class="settingsEntryLabel">Guard</span></button>
         <button type="button" class="settingsEntry oc-settings-tile oc-liquid-card" data-settings-section="mcp" role="tab" aria-selected="false">${liquidIcons.agent}<span class="settingsEntryLabel">MCP</span></button>
@@ -4624,7 +5648,7 @@ ${codiconFontFace}    .codicon {
       </div>
       <div id="skillsSettingsGroup" class="settingsSection" data-settings-panel="skills" role="tabpanel">
         <div class="settingsHeader">
-          <div class="settingsCompactLine">${liquidIcons.references}<div class="sectionTitle">Skills</div></div>
+          <div class="settingsCompactLine">${liquidIcons.skillBlocks}<div class="sectionTitle">Skills</div></div>
           <div id="skillsSettingsStatus" class="sectionMeta">Workspace</div>
         </div>
         <div id="skillImportDropZone" class="skillImportDropZone" role="button" tabindex="0" aria-label="Import ChipMate skill by dropping a skill folder or SKILL.md">
@@ -4713,28 +5737,38 @@ ${codiconFontFace}    .codicon {
 	        </div>
         <div id="sessionList" class="sessionList"></div>
       </aside>
-      <section class="chatMain">
-        <main id="messages" class="messages">
+      <section class="chatMain view-chat">
+        <main id="messages" class="messages" aria-label="Chat messages">
           <div class="empty">Ask with context</div>
         </main>
+        <section id="usagePage" class="usagePage" role="region" aria-label="Chat token usage" hidden>
+          <div id="usagePageContent" class="usageState">
+            <div class="usageStateInner">
+              <div class="usageStateIcon" aria-hidden="true">${liquidIcons.sparkle}</div>
+              <div class="usageStateTitle">Loading usage</div>
+              <div class="usageStateCopy">Chat token activity will appear here.</div>
+            </div>
+          </div>
+        </section>
         <button id="jumpLatest" class="jumpLatest oc-chip oc-liquid-chip" type="button" title="Jump to latest message" aria-label="Jump to latest message" aria-hidden="true" tabindex="-1">${liquidIcons.more}<span class="jumpLatestText">Latest</span></button>
         <div id="toolApprovalBanner" class="toolApprovalBanner" aria-live="polite" aria-hidden="true"></div>
         <footer class="composerWrap">
           <div id="composerStatusBar" class="composerStatusBar" aria-live="polite">
             <button id="composerStatusToggle" class="composerStatusToggle chat-toolbar-icon-button oc-icon-toggle oc-liquid-toggle" type="button" aria-expanded="true" aria-controls="composerPanel" title="Hide input panel">
-              <span class="composerToggleIcon chat-toolbar-icon-slot" aria-hidden="true">${liquidIcons.panelBottomClose}</span>
+              <span class="composerToggleIcon chat-toolbar-icon-slot" aria-hidden="true">${liquidIcons.panelBottomCollapseSimple}</span>
               <span class="composerToggleLabel">
                 <span id="composerToggleFull" class="composerToggleFull">Hide input</span>
                 <span id="composerToggleShort" class="composerToggleShort">Hide</span>
               </span>
             </button>
             <div class="composerSupportRail" aria-label="Composer status details">
-              <button id="contextStatusPill" class="composerStatusPill chat-toolbar-icon-button oc-icon-btn oc-liquid-btn context" type="button" title="Show context details"><span class="pillText">${toolbarIconSlotHtml(liquidIcons.references)}</span></button>
+              <button id="contextStatusPill" class="composerStatusPill chat-toolbar-icon-button oc-icon-btn oc-liquid-btn context" type="button" title="Show context details"><span class="pillText">${toolbarIconSlotHtml(liquidIcons.contextLens)}</span></button>
               <button id="indexStatusPill" class="composerStatusPill chat-toolbar-icon-button oc-icon-btn oc-liquid-btn index info" type="button" title="Show index details"><span class="pillText" aria-hidden="true">${codeGraphStatusIconMarkup("unknown")}</span></button>
               <button id="ragStatusPill" class="composerStatusPill chat-toolbar-icon-button oc-icon-btn oc-liquid-btn rag info" type="button" title="Show RAG index details"><span class="pillText" aria-hidden="true">${indexStatusIconMarkup("unknown", "database")}</span></button>
               <button id="documentRagStatusPill" class="composerStatusPill chat-toolbar-icon-button oc-icon-btn oc-liquid-btn documentRag info" type="button" title="Document RAG index: Disabled" aria-label="Document RAG index: Disabled"><span class="pillText" aria-hidden="true">${indexStatusIconMarkup("unknown", documentRagStatusCodicon)}</span></button>
               <button id="guardStatusPill" class="composerStatusPill chat-toolbar-icon-button oc-icon-btn oc-liquid-btn guard ok is-hidden" type="button" title="Show guard details" hidden><span class="pillText">${toolbarIconSlotHtml(liquidIcons.shield)}</span></button>
               <button id="usageStatusPill" class="composerStatusPill chat-toolbar-icon-button oc-icon-btn oc-liquid-btn usage pending" type="button" title="Show usage details"><span class="pillText">${toolbarIconSlotHtml(liquidIcons.sparkle)}</span></button>
+              <button id="skillsStatusPill" class="composerStatusPill skillsTrigger oc-chip oc-liquid-chip context is-empty" type="button" title="Show skills" aria-haspopup="dialog" aria-expanded="false" aria-controls="composerStatusPopover"><span class="pillText"><span class="pillGlyph">${toolbarIconSlotHtml(liquidIcons.skillBlocks)}</span></span></button>
               <button id="completionStatusPill" class="composerStatusPill oc-chip oc-liquid-chip completion off is-empty" type="button" title="Autocomplete disabled · inline code completion is off" aria-label="Autocomplete disabled" aria-haspopup="dialog" aria-expanded="false" aria-controls="composerStatusPopover"><span class="pillText"><span class="pillGlyph">${toolbarIconSlotHtml(autocompleteStatusIcons.disabled)}</span><span class="pillLabelText">Complete off</span></span></button>
               <button id="queueStatusPill" class="composerStatusPill oc-chip oc-liquid-chip queue info is-hidden" type="button" title="Show queued sends" hidden><span class="pillText"><span class="pillGlyph">${toolbarIconSlotHtml(liquidIcons.send)}</span><span class="pillLabelText">Queue</span></span></button>
             </div>
@@ -4747,30 +5781,26 @@ ${codiconFontFace}    .codicon {
               <div id="suggestions" class="suggestions"></div>
 	              <div id="contextChips" class="contextChips" aria-label="Selected ChipMate context"></div>
 	              <div id="queuedSendList" class="queuedSendList" aria-label="Queued ChipMate prompts"></div>
+	              <button id="goalSummaryBanner" class="goalSummaryBanner oc-liquid-chip" type="button" title="Show current goal" aria-label="Show current goal" aria-haspopup="dialog" aria-expanded="false" aria-controls="composerStatusPopover" hidden></button>
+	              <div id="goalResumePrompt" class="goalResumePrompt oc-liquid-chip" role="status" aria-live="polite" hidden></div>
 	              <textarea id="input" placeholder="Ask ChipMate…"></textarea>
               <div class="composerToolbar composerPrimaryRail composerControlRail">
                 <div class="composerPickerRail">
+                  <button id="composerMore" class="composerAddButton composerMoreButton chat-toolbar-icon-button" type="button" title="Add context and actions" aria-label="Add context and actions" aria-haspopup="menu" aria-expanded="false" aria-controls="composerMoreMenu"><span class="composerAddGlyph" aria-hidden="true">+</span><span class="srOnly">Add context and actions</span></button>
                   <button id="permissionStatusPill" class="composerStatusPill permissionTrigger oc-chip oc-liquid-chip permission tools-off is-empty" type="button" title="工具关闭：模型工具调用已关闭，权限模式暂不生效。" aria-label="模型工具调用：已关闭。权限模式暂不生效。" aria-haspopup="dialog" aria-expanded="false" aria-controls="composerStatusPopover"><span class="pillText"><span class="pillGlyph">${toolbarIconSlotHtml(liquidIcons.toolDisabled)}</span></span></button>
                   <button id="modelTrigger" class="modelTrigger oc-chip oc-liquid-chip" type="button" title="Model" aria-haspopup="listbox" aria-expanded="false" aria-controls="modelMenu"><span class="pillGlyph">${toolbarIconSlotHtml(liquidIcons.server)}</span><span class="oc-liquid-chip-label">Model</span></button>
                   <button id="agentTrigger" class="modelTrigger agentTrigger oc-chip oc-liquid-chip" type="button" title="Agent" aria-haspopup="listbox" aria-expanded="false" aria-controls="agentMenu"><span class="pillGlyph">${toolbarIconSlotHtml(liquidIcons.agent)}</span><span class="oc-liquid-chip-label">Agent</span></button>
-                  <button id="skillsStatusPill" class="composerStatusPill skillsTrigger oc-chip oc-liquid-chip context is-empty" type="button" title="Show skills" aria-haspopup="dialog" aria-expanded="false" aria-controls="composerStatusPopover"><span class="pillText"><span class="pillGlyph">${toolbarIconSlotHtml(liquidIcons.references)}</span></span></button>
+                  <button id="goalStatusPill" class="composerStatusPill goalTrigger oc-chip oc-liquid-chip goal is-empty" type="button" title="Goal inactive" aria-label="Goal inactive" aria-haspopup="dialog" aria-expanded="false" aria-controls="composerStatusPopover"><span class="pillText"><span class="pillGlyph">${toolbarIconSlotHtml(liquidIcons.goalTarget)}</span><span class="pillLabelText">Goal</span></span></button>
                 </div>
                 <div id="composerHint" class="composerHint">@ files, Enter send, Ctrl+Enter newline</div>
                 <button id="send" class="send oc-icon-btn oc-liquid-btn" type="button" title="Send" aria-label="Send message">${toolbarIconSlotHtml(liquidIcons.send)}<span class="srOnly">Send message</span></button>
               </div>
             </div>
-            <div class="composerActionRow toggles composerContextRail" aria-label="Composer context actions">
+            <div class="composerActionRow toggles composerContextRail" aria-label="Composer context actions" hidden>
               <input id="file" class="toggleInput" type="checkbox" checked>
-              <button id="fileToggle" class="chat-toolbar-icon-button oc-icon-toggle oc-liquid-toggle" type="button" title="Include current file" aria-label="Include current file" aria-pressed="true">${toolbarIconSlotHtml(liquidIcons.file)}<span class="srOnly">Include current file</span></button>
               <input id="sel" class="toggleInput" type="checkbox" checked>
-              <button id="selToggle" class="chat-toolbar-icon-button oc-icon-toggle oc-liquid-toggle" type="button" title="Include editor selection" aria-label="Include editor selection" aria-pressed="true">${toolbarIconSlotHtml(liquidIcons.selection)}<span class="srOnly">Include editor selection</span></button>
               <input id="diag" class="toggleInput" type="checkbox">
-              <button id="diagToggle" class="chat-toolbar-icon-button oc-icon-toggle oc-liquid-toggle" type="button" title="Include diagnostics" aria-label="Include diagnostics" aria-pressed="false">${toolbarIconSlotHtml(liquidIcons.diagnostics)}<span class="srOnly">Include diagnostics</span></button>
               <input id="diff" class="toggleInput" type="checkbox">
-              <button id="diffToggle" class="chat-toolbar-icon-button oc-icon-toggle oc-liquid-toggle" type="button" title="Include git diff" aria-label="Include git diff" aria-pressed="false">${toolbarIconSlotHtml(liquidIcons.diff)}<span class="srOnly">Include git diff</span></button>
-              <button id="attach" class="composerIconButton chat-toolbar-icon-button oc-icon-btn oc-liquid-btn" type="button" title="Attach workspace file to this message" aria-label="Attach workspace file to this message">${toolbarIconSlotHtml(liquidIcons.attach)}<span class="srOnly">Attach workspace file to this message</span></button>
-              <button id="refreshModels" class="composerIconButton chat-toolbar-icon-button oc-icon-btn oc-liquid-btn" type="button" title="Refresh models" aria-label="Refresh models">${toolbarIconSlotHtml(liquidIcons.refresh)}<span class="srOnly">Refresh models</span></button>
-              <button id="composerMore" class="composerIconButton composerMoreButton chat-toolbar-icon-button oc-icon-btn oc-liquid-btn" type="button" title="More actions" aria-label="More actions" aria-haspopup="menu" aria-expanded="false" aria-controls="composerMoreMenu">${toolbarIconSlotHtml(liquidIcons.more)}<span class="srOnly">More actions</span></button>
             </div>
             <div id="composerProgress" class="composerProgress" aria-hidden="true">
               <div class="composerProgressTrack"><div id="composerProgressFill" class="composerProgressFill"></div></div>
@@ -4790,19 +5820,77 @@ ${codiconFontFace}    .codicon {
     <div id="modelMenu" class="modelMenu" role="listbox" aria-label="Model" aria-hidden="true"></div>
     <div id="agentMenu" class="modelMenu agentMenu" role="listbox" aria-label="Agent" aria-hidden="true"></div>
     <div id="composerMoreMenu" class="modelMenu composerMoreMenu" role="menu" aria-label="More composer actions" aria-hidden="true">
-      <button id="addPersistentContext" class="modelMenuItem composerMoreItem" type="button" role="menuitem" title="Add persistent context file" aria-label="Add persistent context file">
-        <span class="modelMenuName">Add Persistent Context</span>
-        <span class="modelMenuMeta">Keep a file in context across prompts</span>
-      </button>
-      <button id="exportMarkdown" class="modelMenuItem composerMoreItem" type="button" role="menuitem" title="Export current chat to Markdown" aria-label="Export current chat to Markdown">
-        <span class="modelMenuName">Export Markdown</span>
-        <span class="modelMenuMeta">Save current chat</span>
-      </button>
+      <div class="composerMoreSection" role="group" aria-label="Use as context">
+        <div class="composerMoreSectionTitle">Use as context</div>
+        <button id="fileToggle" class="modelMenuItem composerMoreItem composerMoreToggle" type="button" role="menuitemcheckbox" title="Include current file" aria-label="Include current file" aria-checked="true"></button>
+        <button id="selToggle" class="modelMenuItem composerMoreItem composerMoreToggle" type="button" role="menuitemcheckbox" title="Include editor selection" aria-label="Include editor selection" aria-checked="true"></button>
+        <button id="diagToggle" class="modelMenuItem composerMoreItem composerMoreToggle" type="button" role="menuitemcheckbox" title="Include diagnostics" aria-label="Include diagnostics" aria-checked="false"></button>
+        <button id="diffToggle" class="modelMenuItem composerMoreItem composerMoreToggle" type="button" role="menuitemcheckbox" title="Include git diff" aria-label="Include git diff" aria-checked="false"></button>
+      </div>
+      <div class="composerMoreSection" role="group" aria-label="Add">
+        <div class="composerMoreSectionTitle">Add</div>
+        <button id="attach" class="modelMenuItem composerMoreItem composerMoreAction" type="button" role="menuitem" title="Attach workspace file to this message" aria-label="Attach workspace file to this message"></button>
+        <button id="addPersistentContext" class="modelMenuItem composerMoreItem composerMoreAction" type="button" role="menuitem" title="Add persistent context file" aria-label="Add persistent context file"></button>
+      </div>
+      <div class="composerMoreSection" role="group" aria-label="Session">
+        <div class="composerMoreSectionTitle">Session</div>
+        <button id="refreshModels" class="modelMenuItem composerMoreItem composerMoreAction" type="button" role="menuitem" title="Refresh models" aria-label="Refresh models"></button>
+        <button id="exportMarkdown" class="modelMenuItem composerMoreItem composerMoreAction" type="button" role="menuitem" title="Export current chat to Markdown" aria-label="Export current chat to Markdown"></button>
+      </div>
+    </div>
+  </div>
+  <div id="diagramViewer" class="diagramViewer" role="dialog" aria-label="Diagram viewer" aria-hidden="true" hidden>
+    <div class="diagramViewerToolbar">
+      <div id="diagramViewerTitle" class="diagramViewerTitle">Diagram viewer</div>
+      <div class="diagramViewerActions" aria-label="Diagram viewer controls">
+        <button id="diagramViewerZoomOut" class="diagramViewerButton oc-icon-btn oc-liquid-btn" type="button" title="Zoom out diagram" aria-label="Zoom out diagram">${toolbarIconSlotHtml(liquidIcons.zoomOut)}</button>
+        <button id="diagramViewerZoomIn" class="diagramViewerButton oc-icon-btn oc-liquid-btn" type="button" title="Zoom in diagram" aria-label="Zoom in diagram">${toolbarIconSlotHtml(liquidIcons.zoomIn)}</button>
+        <button id="diagramViewerFit" class="diagramViewerButton oc-icon-btn oc-liquid-btn" type="button" title="Fit diagram" aria-label="Fit diagram">${toolbarIconSlotHtml(liquidIcons.refresh)}</button>
+        <button id="diagramViewerClose" class="diagramViewerButton oc-icon-btn oc-liquid-btn" type="button" title="Close diagram viewer" aria-label="Close diagram viewer">${toolbarIconSlotHtml(liquidIcons.close)}</button>
+      </div>
+    </div>
+    <div id="diagramViewerCanvas" class="diagramViewerCanvas" tabindex="0">
+      <div id="diagramViewerSurface" class="diagramViewerSurface"></div>
     </div>
   </div>
   ${mermaidScriptTag}
   <script nonce="${nonce}">
 	    const vscode = acquireVsCodeApi();
+    function webviewErrorText(value) {
+      if (value instanceof Error) return value.message || value.name || "Error";
+      if (typeof value === "string") return value;
+      try {
+        return JSON.stringify(value);
+      } catch {
+        return String(value);
+      }
+    }
+    function webviewErrorStack(value) {
+      return value instanceof Error && typeof value.stack === "string" ? value.stack : "";
+    }
+    function reportWebviewError(payload) {
+      try {
+        vscode.postMessage(Object.assign({ type: "webviewError" }, payload || {}));
+      } catch {
+        // Best effort only; renderer diagnostics must not break the UI.
+      }
+    }
+    window.addEventListener("error", (event) => {
+      reportWebviewError({
+        message: webviewErrorText(event.error || event.message),
+        source: event.filename || "",
+        lineno: Number.isFinite(event.lineno) ? event.lineno : undefined,
+        colno: Number.isFinite(event.colno) ? event.colno : undefined,
+        stack: webviewErrorStack(event.error)
+      });
+    });
+    window.addEventListener("unhandledrejection", (event) => {
+      reportWebviewError({
+        message: "Unhandled promise rejection",
+        reason: webviewErrorText(event.reason),
+        stack: webviewErrorStack(event.reason)
+      });
+    });
 	    const el = (id) => document.getElementById(id);
 	    const LIQUID_ICONS = ${liquidIconForScript};
 	    const HISTORY_TOOLBAR_ICONS = ${historyToolbarIconsForScript};
@@ -4817,10 +5905,12 @@ ${codiconFontFace}    .codicon {
     const DRAWIO_EXPORT_BORDER = 16;
     const DRAWIO_RENDER_BACKGROUND_MODE = "white-bg";
     const DIAGRAM_ZOOM_MIN = 0.25;
-    const DIAGRAM_ZOOM_MAX = 6;
-    const DIAGRAM_ZOOM_STEP = 0.25;
-    const DIAGRAM_ZOOM_DEFAULT = 1;
-    let mermaidInitialized = false;
+	    const DIAGRAM_ZOOM_MAX = 6;
+	    const DIAGRAM_ZOOM_STEP = 0.25;
+	    const DIAGRAM_ZOOM_DEFAULT = 1;
+	    const DIAGRAM_VIEWER_ZOOM_MIN = 0.1;
+	    const DIAGRAM_VIEWER_ZOOM_MAX = 8;
+	    let mermaidInitialized = false;
     let mermaidRenderSerial = 0;
     let drawioRuntimeFrame;
     let drawioRuntimeReadyPromise;
@@ -4833,8 +5923,11 @@ ${codiconFontFace}    .codicon {
     let drawioRuntimeQueue = Promise.resolve();
     const drawioRuntimePending = new Map();
     const drawioRenderedPngCache = new Map();
-    const drawioRenderedPngInflight = new Map();
-    const registeredDiagramVisualEvidence = new Set();
+	    const drawioRenderedPngInflight = new Map();
+	    const registeredDiagramVisualEvidence = new Set();
+	    const postedMermaidRenderFailures = new Set();
+	    let diagramViewerZoom = 1;
+	    let diagramViewerOpener = undefined;
 	    const DIAGRAM_VISUAL_NORMAL_MAX_SIDE = 1280;
 	    const DIAGRAM_VISUAL_DENSE_MAX_SIDE = 2048;
 	    const DIAGRAM_VISUAL_READABLE_MIN_SIDE = 1024;
@@ -4846,19 +5939,20 @@ ${codiconFontFace}    .codicon {
 	    const DIAGRAM_VISUAL_DENSE_DRAWIO_CELL_COUNT = 40;
     const DRAWIO_HANDSHAKE_XML = '<mxGraphModel dx="140" dy="90" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="160" pageHeight="100" math="0" shadow="0"><root><mxCell id="0"/><mxCell id="1" parent="0"/><mxCell id="2" value="Offline" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#eaf4ff;strokeColor=#5b8def;fontColor=#172033;" vertex="1" parent="1"><mxGeometry x="20" y="20" width="100" height="44" as="geometry"/></mxCell></root></mxGraphModel>';
 	    const STATUS_ICONS = {
-		      context: LIQUID_ICONS.references,
+		      context: LIQUID_ICONS.contextLens,
 		      database: LIQUID_ICONS.database,
 		      diagnostics: LIQUID_ICONS.diagnostics,
-	      panelBottomClose: LIQUID_ICONS.panelBottomClose,
-	      panelBottomOpen: LIQUID_ICONS.panelBottomOpen,
+	      panelBottomClose: LIQUID_ICONS.panelBottomCollapseSimple,
+	      panelBottomOpen: LIQUID_ICONS.panelBottomExpandSimple,
 	      shieldAlert: LIQUID_ICONS.diagnostics,
 	      shieldCheck: LIQUID_ICONS.shield,
 		      shieldOff: LIQUID_ICONS.shield,
 	      tool: LIQUID_ICONS.tool,
 	      toolsOff: LIQUID_ICONS.toolDisabled,
-		      skill: LIQUID_ICONS.references,
-		      usage: LIQUID_ICONS.sparkle,
-		      completion: LIQUID_ICONS.completion,
+		      skill: LIQUID_ICONS.skillBlocks,
+			      usage: LIQUID_ICONS.sparkle,
+			      goal: LIQUID_ICONS.goalTarget,
+			      completion: LIQUID_ICONS.completion,
 		      queue: LIQUID_ICONS.send,
 		    };
     const RAG_EMBEDDING_BATCH_SIZE_DEFAULT = 64;
@@ -4875,6 +5969,14 @@ ${codiconFontFace}    .codicon {
     const RAG_EMBEDDING_CHECKPOINT_CHUNK_INTERVAL_DEFAULT = 8192;
     const RAG_EMBEDDING_CHECKPOINT_INTERVAL_DEFAULT_MS = 120000;
 	    let state = {};
+      let activeMainView = webviewState().activeMainView === "usage" ? "usage" : "chat";
+      let usageActivityMode = webviewState().usageActivityMode === "weekly" || webviewState().usageActivityMode === "cumulative"
+        ? webviewState().usageActivityMode
+        : "daily";
+      const USAGE_DAY_MS = 24 * 60 * 60 * 1000;
+      let hoveredUsageBucketId = "";
+      let selectedUsageBucketId = "";
+      let usageBucketLookup = new Map();
 			    let pendingAction = "";
 	        let connectionRequestId = 0;
 	        let pendingConnectionRequestId = 0;
@@ -4911,10 +6013,12 @@ ${codiconFontFace}    .codicon {
     let promptHistoryEntries = [];
     let promptHistorySignature = "";
     let promptHistoryIndex = -1;
-    let promptHistoryDraft = "";
-    let restoringPromptHistory = false;
-    let optimisticQueuedSends = [];
-    let activeActivityElapsedTimer = 0;
+	    let promptHistoryDraft = "";
+	    let restoringPromptHistory = false;
+	    let optimisticQueuedSends = [];
+	    let goalInputMode = webviewState().goalInputMode === true;
+	    let pendingGoalObjective = "";
+	    let activeActivityElapsedTimer = 0;
     const restoredComposerDraft = composerDraftFromWebviewState();
     let modelMenuOpen = false;
     let agentMenuOpen = false;
@@ -4971,16 +6075,17 @@ ${codiconFontFace}    .codicon {
     }, { capture: true, passive: false });
     messagesRoot.addEventListener("click", onMessagesClick);
     el("toolApprovalBanner").addEventListener("click", onMessagesClick);
-    messagesRoot.addEventListener("touchstart", (event) => {
-      if (isNestedMessageScroller(event.target)) pauseAutoFollowForUser();
-    }, { capture: true, passive: true });
-    el("jumpLatest").addEventListener("click", jumpToLatestMessage);
-    window.addEventListener("resize", () => {
-      renderShell();
-      positionModelMenu();
-      positionAgentMenu();
-      positionComposerMoreMenu();
-    });
+	    messagesRoot.addEventListener("touchstart", (event) => {
+	      if (isNestedMessageScroller(event.target)) pauseAutoFollowForUser();
+	    }, { capture: true, passive: true });
+	    el("jumpLatest").addEventListener("click", jumpToLatestMessage);
+		    window.addEventListener("resize", () => {
+		      renderShell();
+		      positionModelMenu();
+		      positionAgentMenu();
+		      positionComposerMoreMenu();
+		      if (isDiagramViewerOpen()) fitDiagramViewer();
+		    });
 	    el("historyToggle").addEventListener("click", () => {
 	      historyTouched = true;
 	      historyOpen = !historyOpen;
@@ -4993,8 +6098,15 @@ ${codiconFontFace}    .codicon {
 	    });
 	    el("selectAllHistorySessions").addEventListener("click", () => {
 	      const sessionIDs = historySessionIds();
-	      if (selectedHistorySessionIds.size === sessionIDs.length) selectedHistorySessionIds.clear();
-	      else selectedHistorySessionIds = new Set(sessionIDs);
+	      const selectedLiveCount = sessionIDs.filter((sessionID) => selectedHistorySessionIds.has(sessionID)).length;
+	      const allSelected = sessionIDs.length > 0 && selectedLiveCount === sessionIDs.length;
+	      if (allSelected) {
+	        selectedHistorySessionIds.clear();
+	        historyBulkSelectMode = false;
+	      } else {
+	        selectedHistorySessionIds = new Set(sessionIDs);
+	        historyBulkSelectMode = sessionIDs.length > 0;
+	      }
 	      render();
 	    });
 	    el("deleteSelectedHistorySessions").addEventListener("click", () => {
@@ -5017,6 +6129,12 @@ ${codiconFontFace}    .codicon {
 	      settingsOpen = !settingsOpen;
 	      render();
 	    });
+      el("usagePage").addEventListener("click", onUsagePageClick);
+      el("usagePage").addEventListener("mouseover", onUsagePagePointerOver);
+      el("usagePage").addEventListener("mouseleave", clearHoveredUsageBucket);
+      el("usagePage").addEventListener("focusin", onUsagePageFocusIn);
+      el("usagePage").addEventListener("focusout", onUsagePageFocusOut);
+      el("usagePage").addEventListener("keydown", onUsagePageKeydown);
       for (const button of Array.from(document.querySelectorAll("[data-settings-section]"))) {
         button.addEventListener("click", () => {
           activeSettingsSection = button.dataset.settingsSection || "connect";
@@ -5041,20 +6159,32 @@ ${codiconFontFace}    .codicon {
 	    el("openOutput").addEventListener("click", () => vscode.postMessage({ type: "openOutput" }));
 		    el("newSession").addEventListener("click", requestNewSession);
     el("composerStatusToggle").addEventListener("click", toggleComposerPanel);
-    bindComposerStatusPill("contextStatusPill", "context", true);
-    bindComposerStatusPill("indexStatusPill", "index", true);
+	    bindComposerStatusPill("contextStatusPill", "context", true);
+		    bindGoalStatusPill();
+		    bindGoalSummaryBanner();
+		    bindGoalResumePrompt();
+	    bindComposerStatusPill("indexStatusPill", "index", true);
     bindComposerStatusPill("ragStatusPill", "rag", true);
     bindComposerStatusPill("documentRagStatusPill", "documentRag", true);
     bindComposerStatusPill("permissionStatusPill", "permission", false);
     bindComposerStatusPill("skillsStatusPill", "skills", true);
     bindComposerStatusPill("guardStatusPill", "guard", false);
     bindComposerStatusPill("usageStatusPill", "usage", true);
-    bindComposerStatusPill("completionStatusPill", "completion", true);
-    bindComposerStatusPill("queueStatusPill", "queue", true);
-    el("composerStatusPopover").addEventListener("click", onComposerStatusPopoverClick);
+	    bindComposerStatusPill("completionStatusPill", "completion", true);
+	    bindComposerStatusPill("queueStatusPill", "queue", true);
+	    el("diagramViewerClose").addEventListener("click", closeDiagramViewer);
+	    el("diagramViewerZoomOut").addEventListener("click", () => setDiagramViewerZoom(diagramViewerZoom - DIAGRAM_ZOOM_STEP));
+	    el("diagramViewerZoomIn").addEventListener("click", () => setDiagramViewerZoom(diagramViewerZoom + DIAGRAM_ZOOM_STEP));
+	    el("diagramViewerFit").addEventListener("click", fitDiagramViewer);
+	    enableDiagramViewerPan(el("diagramViewerCanvas"));
+	    el("composerStatusPopover").addEventListener("click", onComposerStatusPopoverClick);
     el("composerStatusPopover").addEventListener("mouseenter", cancelComposerHoverClose);
     el("composerStatusPopover").addEventListener("mouseleave", () => scheduleComposerHoverClose());
-    el("refreshModels").addEventListener("click", () => vscode.postMessage({ type: "refreshModels" }));
+    el("refreshModels").addEventListener("click", () => {
+      composerMoreMenuOpen = false;
+      renderComposerMoreMenu();
+      vscode.postMessage({ type: "refreshModels" });
+    });
     el("modelSelect").addEventListener("change", onModelSelect);
     el("modelTrigger").addEventListener("click", (event) => {
       event.stopPropagation();
@@ -5097,9 +6227,14 @@ ${codiconFontFace}    .codicon {
       if (hadComposerMoreMenu) renderComposerMoreMenu();
       if (hadStatusPopover) renderComposerStatusBar();
     });
-    window.addEventListener("keydown", (event) => {
-      if (event.key !== "Escape") return;
-      const hadPopup = modelMenuOpen || agentMenuOpen || composerMoreMenuOpen || Boolean(activeComposerStatusPopover()) || el("suggestions").classList.contains("open");
+	    window.addEventListener("keydown", (event) => {
+	      if (event.key !== "Escape") return;
+	      if (isDiagramViewerOpen()) {
+	        event.preventDefault();
+	        closeDiagramViewer();
+	        return;
+	      }
+	      const hadPopup = modelMenuOpen || agentMenuOpen || composerMoreMenuOpen || Boolean(activeComposerStatusPopover()) || el("suggestions").classList.contains("open");
       if (!hadPopup) return;
       event.preventDefault();
       modelMenuOpen = false;
@@ -5137,7 +6272,11 @@ ${codiconFontFace}    .codicon {
         renderComposerMoreMenu();
         vscode.postMessage({ type: "addFile" });
       });
-	    el("attach").addEventListener("click", () => vscode.postMessage({ type: "pickWorkspaceFilesForMessage" }));
+	    el("attach").addEventListener("click", () => {
+        composerMoreMenuOpen = false;
+        renderComposerMoreMenu();
+        vscode.postMessage({ type: "pickWorkspaceFilesForMessage" });
+      });
 	    el("send").addEventListener("click", onSendButtonClick);
 	    el("input").addEventListener("input", onComposerInput);
 	    el("input").addEventListener("keydown", onComposerKeydown);
@@ -5159,10 +6298,11 @@ ${codiconFontFace}    .codicon {
 	      if (event.data.type === "state") {
 	        const nextState = event.data.state || {};
 		        const nextConnectionState = nextState.connectionState || "disconnected";
-		        const shouldCloseSettings = !pendingAction && nextConnectionState === "connected" && lastConnectionState !== "connected";
-            reconcileNewSessionPending(nextState);
-		        state = nextState;
-		        reconcileHistorySelection();
+			        const shouldCloseSettings = !pendingAction && nextConnectionState === "connected" && lastConnectionState !== "connected";
+	            reconcileNewSessionPending(nextState);
+			        state = nextState;
+	        reconcileGoalInputModeAfterState();
+			        reconcileHistorySelection();
 		        reconcileOptimisticQueuedSends(state.queuedSends);
 	        syncPromptHistoryFromState();
 	        if (shouldCloseSettings) settingsOpen = false;
@@ -5474,11 +6614,11 @@ ${codiconFontFace}    .codicon {
 	      renderModelTrigger();
 	    }
 
-      function onSendButtonClick() {
-        if (state.sending && !hasComposerDraft()) {
-          vscode.postMessage({ type: "cancelSend" });
-          setNotice("Stopping current request...");
-          return;
+	      function onSendButtonClick() {
+	        if (!isGoalInputModeActive() && state.sending && !hasComposerDraft()) {
+	          vscode.postMessage({ type: "cancelSend" });
+	          setNotice("Stopping current request...");
+	          return;
         }
         send();
       }
@@ -5490,7 +6630,8 @@ ${codiconFontFace}    .codicon {
         button.addEventListener("click", (event) => {
           input.checked = !input.checked;
           input.dispatchEvent(new Event("change", { bubbles: true }));
-          if (popoverName) {
+          const isComposerMoreItem = Boolean(button.closest("#composerMoreMenu"));
+          if (popoverName && !isComposerMoreItem) {
             event.stopPropagation();
             cancelComposerHoverClose();
             composerPinnedStatusPopover = popoverName;
@@ -5499,6 +6640,7 @@ ${codiconFontFace}    .codicon {
             renderComposerStatusBar();
           } else {
             renderComposerToggles();
+            renderComposerMoreMenu();
           }
         });
         input.addEventListener("change", renderComposerToggles);
@@ -5674,12 +6816,16 @@ ${codiconFontFace}    .codicon {
       setNotice(notice || (skippedCount ? "Some items were skipped." : ""));
     }
 
-    function send() {
-      const queueing = Boolean(state.sending);
-      let text = el("input").value.trim();
-	      if (!text && hasExplicitContext()) {
-	        text = "Please review the referenced context.";
+	    function send() {
+	      const queueing = Boolean(state.sending);
+	      let text = el("input").value.trim();
+	      if (isGoalInputModeActive()) {
+	        sendGoalObjective(text);
+	        return;
 	      }
+		      if (!text && hasExplicitContext()) {
+		        text = "Please review the referenced context.";
+		      }
 	      if (!text) {
 	        setNotice("Type a message or attach context.");
 	        el("input").focus();
@@ -5701,17 +6847,19 @@ ${codiconFontFace}    .codicon {
 	        includeOpenFiles: false,
 	        includeDiagnostics: el("diag").checked,
 	        includeGitDiff: el("diff").checked
-	      };
-	      const clientQueueID = queueing ? nextClientQueueID() : "";
-	      if (queueing) {
-	        optimisticQueuedSends = [
-	          ...optimisticQueuedSends,
-	          {
-	            id: clientQueueID,
-	            text,
-	            options: sendOptions,
-	            mentionedFiles: sendMentionedFiles,
-	            optimistic: true
+		      };
+		      const clientQueueID = queueing ? nextClientQueueID() : "";
+		      const clientSendID = queueing ? "" : nextClientSendID();
+		      if (queueing) {
+		        optimisticQueuedSends = [
+		          ...optimisticQueuedSends,
+		          {
+		            id: clientQueueID,
+		            kind: "message",
+		            text,
+		            options: sendOptions,
+		            mentionedFiles: sendMentionedFiles,
+		            optimistic: true
 	          }
 	        ];
 	        renderQueuedSendList();
@@ -5721,13 +6869,14 @@ ${codiconFontFace}    .codicon {
 	      appendPromptHistoryEntry(text);
 	      resetPromptHistoryNavigation();
 	      enableAutoFollowMessages();
-	      vscode.postMessage({
-        type: "sendMessage",
-        clientQueueID: clientQueueID || undefined,
-        text,
-        mentionedFiles: sendMentionedFiles,
-        options: sendOptions
-      });
+		      vscode.postMessage({
+	        type: "sendMessage",
+	        clientQueueID: clientQueueID || undefined,
+	        clientSendID: clientSendID || undefined,
+	        text,
+	        mentionedFiles: sendMentionedFiles,
+	        options: sendOptions
+	      });
       el("input").value = "";
       mentionedFiles = [];
       mentionResults = [];
@@ -5735,8 +6884,57 @@ ${codiconFontFace}    .codicon {
       renderMentionChips();
       renderSuggestions();
       renderSendButton();
-      setNotice(queueing ? queuedNoticeAfterSubmit() : "");
-    }
+	      setNotice(queueing ? queuedNoticeAfterSubmit() : "");
+	    }
+
+	    function sendGoalObjective(text) {
+	      const objective = String(text || "").trim();
+		      if (!objective) {
+		        setNotice("Describe a goal before sending.");
+		        el("input").focus();
+		        return;
+		      }
+		      if (state.sending) {
+		        sendQueuedGoalObjective(objective);
+		        return;
+		      }
+		      pendingGoalObjective = objective;
+		      vscode.postMessage({ type: "createGoal", objective });
+		      setNotice("Starting goal...");
+		      renderSendButton();
+		    }
+
+		    function sendQueuedGoalObjective(objective) {
+		      if (queueIsFull()) {
+		        setNotice(queueFullNotice());
+		        el("input").focus();
+		        return;
+		      }
+		      const clientQueueID = nextClientQueueID();
+		      optimisticQueuedSends = [
+		        ...optimisticQueuedSends,
+		        {
+		          id: clientQueueID,
+		          kind: "goal",
+		          text: objective,
+		          optimistic: true
+		        }
+		      ];
+		      vscode.postMessage({ type: "createGoal", objective, clientQueueID });
+		      el("input").value = "";
+		      mentionedFiles = [];
+		      mentionResults = [];
+		      goalInputMode = false;
+		      persistGoalInputMode();
+		      clearComposerDraft();
+		      renderMentionChips();
+		      renderSuggestions();
+		      renderComposerInputMode();
+		      renderQueuedSendList();
+		      renderComposerStatusBar();
+		      renderSendButton();
+		      setNotice(goalQueuedNoticeAfterSubmit());
+		    }
 
     function hasComposerDraft() {
       return Boolean(el("input").value.trim() || mentionedFiles.length > 0);
@@ -5750,15 +6948,23 @@ ${codiconFontFace}    .codicon {
       return "Queued " + queuedSendCount() + "/" + queuedSendLimit() + ". Wait for the current reply to finish.";
     }
 
-    function queuedNoticeAfterSubmit() {
-      return "Queued " + queuedSendCount() + "/" + queuedSendLimit() + ".";
-    }
+	    function queuedNoticeAfterSubmit() {
+	      return "Queued " + queuedSendCount() + "/" + queuedSendLimit() + ".";
+	    }
 
-    function nextClientQueueID() {
-      return "client-queued-" + Date.now() + "-" + Math.random().toString(36).slice(2);
-    }
+	    function goalQueuedNoticeAfterSubmit() {
+	      return "Goal queued. It will start after the current reply.";
+	    }
 
-    function applyQueueSnapshot(message) {
+	    function nextClientQueueID() {
+	      return "client-queued-" + Date.now() + "-" + Math.random().toString(36).slice(2);
+	    }
+
+	    function nextClientSendID() {
+	      return "client-send-" + Date.now() + "-" + Math.random().toString(36).slice(2);
+	    }
+
+	    function applyQueueSnapshot(message) {
       const queuedSends = normalizeQueuedSends(message && message.queuedSends, false);
       state = {
         ...state,
@@ -5794,18 +7000,21 @@ ${codiconFontFace}    .codicon {
         .filter(Boolean);
     }
 
-    function normalizeQueuedSend(item, optimistic) {
-      if (!item || typeof item !== "object") return undefined;
-      const id = typeof item.id === "string" && item.id ? item.id : nextClientQueueID();
-      const text = typeof item.text === "string" ? item.text : "";
-      return {
-        id,
-        text,
-        options: item.options && typeof item.options === "object" ? item.options : {},
-        mentionedFiles: normalizeDraftMentionedFiles(item.mentionedFiles),
-        optimistic: Boolean(optimistic || item.optimistic)
-      };
-    }
+	    function normalizeQueuedSend(item, optimistic) {
+	      if (!item || typeof item !== "object") return undefined;
+	      const id = typeof item.id === "string" && item.id ? item.id : nextClientQueueID();
+	      const kind = item.kind === "goal" ? "goal" : "message";
+	      const text = typeof item.text === "string" ? item.text : "";
+	      return {
+	        id,
+	        kind,
+	        text,
+	        options: item.options && typeof item.options === "object" ? item.options : {},
+	        mentionedFiles: normalizeDraftMentionedFiles(item.mentionedFiles),
+	        tokenBudget: Number.isFinite(Number(item.tokenBudget)) ? Number(item.tokenBudget) : undefined,
+	        optimistic: Boolean(optimistic || item.optimistic)
+	      };
+	    }
 
     function looksLikeExportRequest(text) {
       return /(^\\/export\\b|导出|保存|另存|存成|下载|markdown|\\.md\\b|\\bmd\\b|\\bexport\\b|\\bsave\\b|\\bdownload\\b)/i.test(text.trim());
@@ -5961,11 +7170,26 @@ ${codiconFontFace}    .codicon {
       renderSendButton();
     }
 
-    function restoreQueuedSendDraft(message) {
-      const options = message && typeof message.options === "object" ? message.options : {};
-      const text = typeof message.text === "string" ? message.text : "";
-      el("input").value = text;
-      mentionedFiles = hydrateLinkedMentionFiles(normalizeDraftMentionedFiles(message.mentionedFiles), text);
+	    function restoreQueuedSendDraft(message) {
+	      const options = message && typeof message.options === "object" ? message.options : {};
+	      const text = typeof message.text === "string" ? message.text : "";
+	      if (message && message.kind === "goal") {
+	        setGoalInputMode(true, { focus: false });
+	        el("input").value = text;
+	        mentionedFiles = [];
+	        mentionResults = [];
+	        resetPromptHistoryNavigation();
+	        saveComposerDraft();
+	        renderMentionChips();
+	        renderSuggestions();
+	        renderComposerToggles();
+	        renderSendButton();
+	        setNotice("Queued goal restored for editing.");
+	        el("input").focus();
+	        return;
+	      }
+	      el("input").value = text;
+	      mentionedFiles = hydrateLinkedMentionFiles(normalizeDraftMentionedFiles(message.mentionedFiles), text);
       if (Object.prototype.hasOwnProperty.call(options, "includeSelection")) el("sel").checked = Boolean(options.includeSelection);
       if (Object.prototype.hasOwnProperty.call(options, "includeCurrentFile")) el("file").checked = Boolean(options.includeCurrentFile);
       if (Object.prototype.hasOwnProperty.call(options, "includeDiagnostics")) el("diag").checked = Boolean(options.includeDiagnostics);
@@ -6173,6 +7397,108 @@ ${codiconFontFace}    .codicon {
 	      return mentionedFiles.length > 0 || contextItems().length > 0;
 	    }
 
+      function setMainView(view) {
+        const nextView = view === "usage" ? "usage" : "chat";
+        if (activeMainView === nextView) return;
+        activeMainView = nextView;
+        vscode.setState({
+          ...webviewState(),
+          activeMainView,
+          usageActivityMode
+        });
+        if (activeMainView === "usage") vscode.postMessage({ type: "loadUsageStats" });
+        render();
+      }
+
+      function onUsagePageClick(event) {
+        const backButton = event.target && event.target.closest ? event.target.closest("[data-usage-back-to-chat]") : undefined;
+        if (backButton) {
+          setMainView("chat");
+          return;
+        }
+        const bucketButton = event.target && event.target.closest ? event.target.closest("[data-usage-bucket-id]") : undefined;
+        if (bucketButton) {
+          const bucketId = bucketButton.getAttribute("data-usage-bucket-id") || "";
+          if (bucketId && selectedUsageBucketId === bucketId) {
+            selectedUsageBucketId = "";
+            hoveredUsageBucketId = "";
+          } else {
+            selectedUsageBucketId = bucketId;
+            hoveredUsageBucketId = bucketId;
+          }
+          updateUsageHeatmapSelectionState();
+          renderUsageBucketDetail();
+          return;
+        }
+        const modeButton = event.target && event.target.closest ? event.target.closest("[data-usage-mode]") : undefined;
+        if (modeButton) {
+          usageActivityMode = modeButton.getAttribute("data-usage-mode") || "daily";
+          clearUsageBucketInteraction();
+          vscode.setState({
+            ...webviewState(),
+            activeMainView,
+            usageActivityMode
+          });
+          renderUsagePage();
+          return;
+        }
+        const refreshButton = event.target && event.target.closest ? event.target.closest("[data-usage-refresh]") : undefined;
+        if (refreshButton) {
+          vscode.postMessage({ type: "loadUsageStats" });
+        }
+      }
+
+      function onUsagePagePointerOver(event) {
+        const bucketButton = event.target && event.target.closest ? event.target.closest("[data-usage-bucket-id]") : undefined;
+        if (!bucketButton) return;
+        const bucketId = bucketButton.getAttribute("data-usage-bucket-id") || "";
+        if (!bucketId || hoveredUsageBucketId === bucketId) return;
+        hoveredUsageBucketId = bucketId;
+        updateUsageHeatmapSelectionState();
+        renderUsageBucketDetail();
+      }
+
+      function onUsagePageFocusIn(event) {
+        const bucketButton = event.target && event.target.closest ? event.target.closest("[data-usage-bucket-id]") : undefined;
+        if (!bucketButton) return;
+        const bucketId = bucketButton.getAttribute("data-usage-bucket-id") || "";
+        if (!bucketId || hoveredUsageBucketId === bucketId) return;
+        hoveredUsageBucketId = bucketId;
+        updateUsageHeatmapSelectionState();
+        renderUsageBucketDetail();
+      }
+
+      function onUsagePageFocusOut(event) {
+        const related = event.relatedTarget && event.relatedTarget.closest ? event.relatedTarget.closest("[data-usage-bucket-id]") : undefined;
+        if (related) return;
+        if (!hoveredUsageBucketId) return;
+        hoveredUsageBucketId = "";
+        updateUsageHeatmapSelectionState();
+        renderUsageBucketDetail();
+      }
+
+      function onUsagePageKeydown(event) {
+        if (event.key !== "Escape") return;
+        if (!selectedUsageBucketId && !hoveredUsageBucketId) return;
+        event.preventDefault();
+        event.stopPropagation();
+        clearUsageBucketInteraction();
+        updateUsageHeatmapSelectionState();
+        renderUsageBucketDetail();
+      }
+
+      function clearHoveredUsageBucket() {
+        if (!hoveredUsageBucketId) return;
+        hoveredUsageBucketId = "";
+        updateUsageHeatmapSelectionState();
+        renderUsageBucketDetail();
+      }
+
+      function clearUsageBucketInteraction() {
+        hoveredUsageBucketId = "";
+        selectedUsageBucketId = "";
+      }
+
 	    function render() {
 	      renderShell();
 	      renderConnection();
@@ -6180,6 +7506,7 @@ ${codiconFontFace}    .codicon {
 	      renderSessions();
         renderNewSessionButton();
 	      renderMessages();
+        renderUsagePage();
       renderToolApprovalBanner();
 	      renderCodeIntelligence();
 		      renderModelSelector();
@@ -6192,12 +7519,15 @@ ${codiconFontFace}    .codicon {
 	      el("diag").checked = Boolean(state.defaults && state.defaults.includeDiagnostics);
 	      el("diff").checked = Boolean(state.defaults && state.defaults.includeGitDiff);
 	        renderComposerToggles();
-	        renderContextChips();
-	        renderQueuedSendList();
-	        renderComposerMoreMenu();
-	      renderSendButton();
-	      renderComposerStatusBar();
-		    }
+			        renderContextChips();
+			        renderQueuedSendList();
+			        renderComposerMoreMenu();
+			        renderGoalSummaryBanner();
+			        renderGoalResumePrompt();
+			      renderComposerInputMode();
+		      renderSendButton();
+		      renderComposerStatusBar();
+			    }
 
       function requestNewSession() {
         if (newSessionPending) return;
@@ -6227,37 +7557,189 @@ ${codiconFontFace}    .codicon {
         }
       }
 
-      function renderNewSessionButton() {
-        const button = el("newSession");
-        if (!button) return;
+	      function renderNewSessionButton() {
+	        const button = el("newSession");
+	        if (!button) return;
         button.disabled = Boolean(newSessionPending);
         button.classList.toggle("is-loading", Boolean(newSessionPending));
         const label = newSessionPending ? "Creating new session" : "New session";
         button.title = label;
-        button.setAttribute("aria-label", label);
-      }
+	        button.setAttribute("aria-label", label);
+	      }
 
-		    function renderSendButton() {
-	      const blockedByGuard = localOnlyAgentBlocked() && !looksLikeExportRequest(el("input").value);
-        const button = el("send");
-        const queueing = Boolean(state.sending && hasComposerDraft());
-        const cancellable = Boolean(state.sending && !queueing && state.sendCancellable !== false);
-        const loading = Boolean(state.sending && !queueing && !cancellable);
-	      button.disabled = Boolean((!state.sending && blockedByGuard) || (queueing && queueIsFull()));
-        const label = blockedByGuard && !state.sending
-          ? "Select an agent before sending"
-          : queueing
-            ? "Queue message"
+	      function renderComposerInputMode() {
+	        const input = el("input");
+	        if (!input) return;
+	        const active = isGoalInputModeActive();
+	        input.placeholder = active ? "Describe the goal..." : "Ask ChipMate…";
+	        input.setAttribute("aria-label", active ? "Describe the goal to create" : "Ask ChipMate");
+	        const composer = input.closest(".composer");
+	        if (composer) composer.classList.toggle("goalInputMode", active);
+	      }
+
+		    function renderGoalSummaryBanner() {
+		      const button = el("goalSummaryBanner");
+		      if (!button) return;
+		      const goal = state.goal || null;
+	      if (!goal) {
+	        button.hidden = true;
+	        button.textContent = "";
+	        button.setAttribute("aria-expanded", "false");
+	        return;
+	      }
+	      const status = String(goal.status || "active");
+	      const operation = state.goalOperation || null;
+	      const running = Boolean(operation && operation.active);
+	      const kind = goalStatusKind(status);
+	      const objective = String(goal.objective || "").trim() || "No objective";
+	      const usage = goalSummaryUsage(goal);
+	      const label = goalSummaryStatusLabel(status, running);
+	      const title = label + ": " + objective + (usage ? " · " + usage : "");
+	      button.hidden = false;
+	      button.className = "goalSummaryBanner oc-liquid-chip " + kind + (running ? " is-running" : "") + (activeComposerStatusPopover() === "goal" ? " open" : "");
+	      button.title = title;
+	      button.setAttribute("aria-label", "Current ChipMate goal. " + title);
+	      button.setAttribute("aria-expanded", activeComposerStatusPopover() === "goal" ? "true" : "false");
+	      button.textContent = "";
+
+	      const icon = document.createElement("span");
+	      icon.className = "goalSummaryIcon";
+	      icon.setAttribute("aria-hidden", "true");
+	      icon.innerHTML = toolbarIconMarkup(STATUS_ICONS.goal);
+
+	      const copy = document.createElement("span");
+	      copy.className = "goalSummaryCopy";
+	      const text = document.createElement("span");
+	      text.className = "goalSummaryText";
+	      const statusText = document.createElement("span");
+	      statusText.className = "goalSummaryStatus";
+	      statusText.textContent = label;
+	      const objectiveText = document.createElement("span");
+	      objectiveText.className = "goalSummaryObjective";
+	      objectiveText.textContent = objective;
+	      text.append(statusText, objectiveText);
+	      copy.appendChild(text);
+	      if (usage) {
+	        const meta = document.createElement("span");
+	        meta.className = "goalSummaryMeta";
+	        meta.textContent = usage;
+	        copy.appendChild(meta);
+	      }
+
+	      button.append(icon, copy);
+	      if (running) {
+	        const badge = document.createElement("span");
+	        badge.className = "goalSummaryBadge";
+	        badge.textContent = String(Math.max(1, Number(operation.turnCount || 1)));
+	        badge.title = "Goal operation turn " + formatCount(operation.turnCount || 1);
+		        button.appendChild(badge);
+		      }
+		    }
+
+		    function renderGoalResumePrompt() {
+		      const root = el("goalResumePrompt");
+		      if (!root) return;
+		      const goal = state.goal || null;
+		      const status = String((goal && goal.status) || "");
+		      const resumable = Boolean(goal && (status === "paused" || status === "blocked" || status === "usage_limited"));
+		      if (!resumable) {
+		        root.hidden = true;
+		        root.textContent = "";
+		        return;
+		      }
+		      const objective = String(goal.objective || "").trim() || "No objective";
+		      const label = goalResumePromptTitle(status);
+		      root.hidden = false;
+		      root.className = "goalResumePrompt oc-liquid-chip " + goalStatusKind(status);
+		      root.setAttribute("aria-label", label + ": " + objective);
+		      root.textContent = "";
+
+		      const icon = document.createElement("span");
+		      icon.className = "goalSummaryIcon";
+		      icon.setAttribute("aria-hidden", "true");
+		      icon.innerHTML = toolbarIconMarkup(STATUS_ICONS.goal);
+
+		      const copy = document.createElement("span");
+		      copy.className = "goalResumeCopy";
+		      const title = document.createElement("span");
+		      title.className = "goalResumeTitle";
+		      title.textContent = label;
+		      const objectiveText = document.createElement("span");
+		      objectiveText.className = "goalResumeObjective";
+		      objectiveText.textContent = objective;
+		      copy.append(title, objectiveText);
+
+		      const actions = document.createElement("span");
+		      actions.className = "goalResumeActions";
+		      actions.append(
+		        goalResumeButton("resumeGoal", "Resume", true),
+		        goalResumeButton("clearGoal", "Clear", false),
+		      );
+
+		      root.append(icon, copy, actions);
+		    }
+
+		    function goalResumePromptTitle(status) {
+		      if (status === "blocked") return "Goal blocked. Resume when ready.";
+		      if (status === "usage_limited") return "Goal paused by usage limit.";
+		      return "Goal paused.";
+		    }
+
+		    function goalResumeButton(action, label, primary) {
+		      const button = document.createElement("button");
+		      button.type = "button";
+		      button.className = "goalResumeAction oc-liquid-btn" + (primary ? " is-active" : "");
+		      button.setAttribute("data-goal-action", action);
+		      button.textContent = label;
+		      button.title = label + " ChipMate goal";
+		      return button;
+		    }
+
+		    function goalSummaryStatusLabel(status, running) {
+	      if (status === "paused") return "已暂停的目标";
+	      if (status === "blocked") return "受阻的目标";
+	      if (status === "usage_limited") return "用量受限目标";
+	      if (status === "budget_limited") return "预算受限目标";
+	      if (status === "complete") return "已完成目标";
+	      return running ? "进行中的目标" : "当前目标";
+	    }
+
+	    function goalSummaryUsage(goal) {
+	      const pieces = [];
+	      const tokensUsed = Number(goal && goal.tokensUsed || 0);
+	      const tokenBudget = Number(goal && goal.tokenBudget || 0);
+	      if (tokenBudget > 0) pieces.push(formatCompactCount(tokensUsed) + "/" + formatCompactCount(tokenBudget) + " tokens");
+	      else if (tokensUsed > 0) pieces.push(formatCompactCount(tokensUsed) + " tokens");
+	      const timeUsedMs = Number(goal && goal.timeUsedSeconds || 0) * 1000;
+	      if (timeUsedMs > 0) pieces.push(formatDuration(timeUsedMs));
+	      return pieces.join(" · ");
+	    }
+
+			    function renderSendButton() {
+			      const goalMode = isGoalInputModeActive();
+			      const blockedByGuard = localOnlyAgentBlocked() && !looksLikeExportRequest(el("input").value);
+		        const button = el("send");
+		        const queueing = Boolean(!goalMode && state.sending && hasComposerDraft());
+		        const goalQueueing = Boolean(goalMode && state.sending);
+		        const cancellable = Boolean(!goalMode && state.sending && !queueing && state.sendCancellable !== false);
+		        const loading = Boolean(!goalMode && state.sending && !queueing && !cancellable);
+			      button.disabled = Boolean((!goalMode && !state.sending && blockedByGuard) || (queueing && queueIsFull()) || (goalQueueing && queueIsFull()));
+		        const label = goalMode
+		          ? (goalQueueing ? "Queue goal" : "Create goal")
+		          : blockedByGuard && !state.sending
+		          ? "Select an agent before sending"
+		          : queueing
+	            ? "Queue message"
           : cancellable
             ? "Stop current request"
             : loading
               ? "Sending message"
               : "Send message";
-        button.classList.toggle("is-active", cancellable);
-        button.classList.toggle("is-loading", loading);
-        button.classList.toggle("is-queued", queueing);
-        setSendButtonContent(button, cancellable ? "stop" : "send", label, loading);
-	    }
+	        button.classList.toggle("is-active", cancellable);
+	        button.classList.toggle("is-loading", loading);
+	        button.classList.toggle("is-queued", queueing || goalQueueing);
+	        setSendButtonContent(button, cancellable ? "stop" : "send", label, loading);
+		    }
 
     function renderToolApprovalBanner() {
       const banner = el("toolApprovalBanner");
@@ -6328,11 +7810,575 @@ ${codiconFontFace}    .codicon {
       const widthClass = window.innerWidth >= 760 ? "history-wide" : "history-narrow";
       const mode = currentViewMode();
       el("app").className = "app mode-" + mode + " " + (historyOpen ? "history-open" : "history-closed") + " " + widthClass;
+      const chatActive = activeMainView !== "usage";
+      const messages = el("messages");
+      const usagePage = el("usagePage");
+      const composer = document.querySelector(".composerWrap");
+      const chatMain = document.querySelector(".chatMain");
+      if (chatMain) {
+        chatMain.classList.toggle("view-chat", chatActive);
+        chatMain.classList.toggle("view-usage", !chatActive);
+      }
+      messages.hidden = !chatActive;
+      usagePage.hidden = chatActive;
+      if (composer) composer.hidden = !chatActive;
+      el("jumpLatest").hidden = !chatActive;
+      if (!chatActive) el("jumpLatest").classList.remove("visible");
+      if (!chatActive && state.connectionState === "connected" && !state.loadingUsageStats && !state.usageStats) {
+        vscode.postMessage({ type: "loadUsageStats" });
+      }
     }
 
     function currentViewMode() {
       if (settingsOpen) return "settings-page";
       return (state.connectionState || "disconnected") === "connected" ? "chat" : "connection-only";
+    }
+
+    function renderUsagePage() {
+      const root = el("usagePageContent");
+      if (!root) return;
+      root.textContent = "";
+      root.className = "";
+      const header = usageHeaderNode(state.usageStats || null);
+      if (state.loadingUsageStats) {
+        root.className = "usageActivityPanel";
+        root.append(header, usageStatePanel("sparkle", "Loading usage", "Reading the local Chat usage ledger."));
+        return;
+      }
+      if (state.usageStatsError) {
+        root.className = "usageActivityPanel";
+        root.append(header, usageStatePanel("diagnostics", "用量暂不可用", state.usageStatsError));
+        return;
+      }
+      const stats = state.usageStats;
+      if (!stats || !stats.hasData) {
+        root.className = "usageActivityPanel";
+        root.append(header, usageStatePanel("sparkle", "暂无对话令牌活动", "新的对话回复会记录到本地。Provider 返回的用量会标记为真实统计；本地回退估算会标记为估算统计。"));
+        return;
+      }
+      root.className = "usageActivityPanel";
+      root.append(header, usageSummaryNode(stats), usageActivityNode(stats));
+    }
+
+    function usageStatePanel(iconName, titleText, copyText) {
+      const panel = document.createElement("div");
+      panel.className = "usageState";
+      panel.appendChild(usageStateNode(iconName, titleText, copyText));
+      return panel;
+    }
+
+    function usageStateNode(iconName, titleText, copyText) {
+      const inner = document.createElement("div");
+      inner.className = "usageStateInner";
+      const icon = document.createElement("div");
+      icon.className = "usageStateIcon";
+      icon.setAttribute("aria-hidden", "true");
+      appendLiquidIcon(icon, iconName);
+      const title = document.createElement("div");
+      title.className = "usageStateTitle";
+      title.textContent = titleText;
+      const copy = document.createElement("div");
+      copy.className = "usageStateCopy";
+      copy.textContent = copyText;
+      inner.append(icon, title, copy);
+      return inner;
+    }
+
+    function usageHeaderNode(stats) {
+      const header = document.createElement("div");
+      header.className = "usageHeader";
+      const titleBlock = document.createElement("div");
+      titleBlock.className = "usageTitleBlock";
+      const title = document.createElement("div");
+      title.className = "usageTitle";
+      title.textContent = "对话令牌活动";
+      const subtitle = document.createElement("div");
+      subtitle.className = "usageSubtitle";
+      subtitle.textContent = stats ? usageHeaderSubtitle(stats) : "本地账本 · 仅统计对话 · 本地历史";
+      titleBlock.append(title, subtitle);
+      const actions = document.createElement("div");
+      actions.className = "usageHeaderActions";
+      const back = document.createElement("button");
+      back.className = "usageBackToChat oc-icon-btn oc-liquid-btn";
+      back.type = "button";
+      back.setAttribute("data-usage-back-to-chat", "true");
+      setIconOnlyButton(back, "closePanel", "返回 Chat");
+      const refresh = document.createElement("button");
+      refresh.className = "usageRefresh oc-icon-btn oc-liquid-btn";
+      refresh.type = "button";
+      refresh.setAttribute("data-usage-refresh", "true");
+      setIconOnlyButton(refresh, "refresh", "刷新用量统计");
+      actions.append(back, refresh);
+      header.append(titleBlock, actions);
+      return header;
+    }
+
+    function usageHeaderSubtitle(stats) {
+      const generated = stats.generatedAt ? "更新于 " + formatDateTime(stats.generatedAt) : "本地账本";
+      const range = stats.rangeDays ? "最近 " + stats.rangeDays + " 天" : "本地历史";
+      return generated + " · 仅统计对话 · " + range;
+    }
+
+    function usageSummaryNode(stats) {
+      const summary = stats.summary || {};
+      const strip = document.createElement("div");
+      strip.className = "usageMetricStrip";
+      strip.append(
+        usageMetricNode(formatTokenCount(summary.totalTokens), "累计令牌", usageReportedEstimatedLabel(summary)),
+        usageMetricNode(formatTokenCount(summary.peakDayTokens), "峰值日期", summary.peakDay ? shortDateLabel(summary.peakDay) : "暂无峰值"),
+        usageMetricNode(summary.longestTaskMs ? formatTaskDuration(summary.longestTaskMs) : "0秒", "最长任务", "单次对话回复"),
+        usageMetricNode(String(summary.currentStreakDays || 0), "当前连续", "活跃天数"),
+        usageMetricNode(String(summary.longestStreakDays || 0), "最长连续", formatCount(summary.recordedResponses || 0) + " 次回复"),
+      );
+      return strip;
+    }
+
+    function usageReportedEstimatedLabel(summary) {
+      const reported = Number(summary.reportedTokens || 0);
+      const estimated = Number(summary.estimatedTokens || 0);
+      if (!reported && !estimated) return "暂无用量";
+      if (!estimated) return "真实统计";
+      if (!reported) return "估算统计";
+      return formatTokenCount(reported) + " 真实统计 · " + formatTokenCount(estimated) + " 估算统计";
+    }
+
+    function usageMetricNode(value, label, detail) {
+      const node = document.createElement("div");
+      node.className = "usageMetric";
+      const valueNode = document.createElement("div");
+      valueNode.className = "usageMetricValue";
+      valueNode.textContent = value;
+      valueNode.title = value;
+      const labelNode = document.createElement("div");
+      labelNode.className = "usageMetricLabel";
+      labelNode.textContent = label;
+      const detailNode = document.createElement("div");
+      detailNode.className = "usageMetricDetail";
+      detailNode.textContent = detail || "";
+      detailNode.title = detail || "";
+      node.append(valueNode, labelNode, detailNode);
+      return node;
+    }
+
+    function usageActivityNode(stats) {
+      const panel = document.createElement("section");
+      panel.className = "usageActivityPanel";
+      const head = document.createElement("div");
+      head.className = "usageActivityHead";
+      const titleBlock = document.createElement("div");
+      titleBlock.className = "usageTitleBlock";
+      const title = document.createElement("div");
+      title.className = "sectionTitle";
+      title.textContent = "令牌活动";
+      const subtitle = document.createElement("div");
+      subtitle.className = "usageSubtitle";
+      subtitle.textContent = usageActivitySubtitle(stats);
+      titleBlock.append(title, subtitle);
+      head.append(titleBlock, usageModeTabsNode());
+
+      const wrap = document.createElement("div");
+      wrap.className = "usageHeatmapWrap";
+      const display = usageDisplayData(stats);
+      if (usageActivityMode === "daily") wrap.appendChild(usageCalendarScrollerNode(display));
+      else wrap.appendChild(usageHeatmapNode(display.entries, display));
+      wrap.appendChild(usageBucketDetailNode());
+      wrap.appendChild(usageHeatLegendNode());
+      wrap.appendChild(usageBreakdownNode(stats));
+      panel.append(head, wrap);
+      return panel;
+    }
+
+    function usageActivitySubtitle(stats) {
+      const buckets = usageBucketsForMode(stats);
+      const active = buckets.filter((bucket) => Number(bucket && bucket.total) > 0).length;
+      const label = usageActivityMode === "daily" ? "个活跃日" : usageActivityMode === "weekly" ? "个活跃周" : "个统计点";
+      return formatCount(active) + label + " · 估算单元格使用虚线边框";
+    }
+
+    function usageModeTabsNode() {
+      const tabs = document.createElement("div");
+      tabs.className = "usageModeTabs";
+      tabs.setAttribute("role", "tablist");
+      tabs.setAttribute("aria-label", "用量统计粒度");
+      for (const item of [
+        ["daily", "每日"],
+        ["weekly", "每周"],
+        ["cumulative", "累计"],
+      ]) {
+        const mode = item[0];
+        const button = document.createElement("button");
+        button.className = "usageModeTab oc-chip oc-liquid-chip" + (usageActivityMode === mode ? " is-active" : "");
+        button.type = "button";
+        button.setAttribute("data-usage-mode", mode);
+        button.setAttribute("role", "tab");
+        button.setAttribute("aria-selected", usageActivityMode === mode ? "true" : "false");
+        button.textContent = item[1];
+        tabs.appendChild(button);
+      }
+      return tabs;
+    }
+
+    function usageBucketsForMode(stats) {
+      const mode = usageActivityMode === "weekly" ? "weekly" : usageActivityMode === "cumulative" ? "cumulative" : "daily";
+      const buckets = stats && Array.isArray(stats[mode]) ? stats[mode] : [];
+      return buckets.filter(Boolean);
+    }
+
+    function usageDisplayData(stats) {
+      const buckets = usageBucketsForMode(stats);
+      if (usageActivityMode === "daily") return usageDailyCalendarData(buckets);
+      const entries = buckets.map((bucket) => usageBucketEntry(bucket));
+      syncUsageBucketLookup(entries);
+      return {
+        entries,
+        weekCount: Math.max(1, entries.length),
+        monthAnchors: [],
+      };
+    }
+
+    function usageDailyCalendarData(buckets) {
+      const sorted = buckets.slice().sort((left, right) => Number(left && left.startAt) - Number(right && right.startAt));
+      if (sorted.length === 0) {
+        syncUsageBucketLookup([]);
+        return {
+          entries: [],
+          weekCount: 1,
+          monthAnchors: [],
+        };
+      }
+      const firstBucket = sorted[0];
+      const lastBucket = sorted[sorted.length - 1];
+      const calendarStart = startOfUsageWeekMonday(firstBucket.startAt);
+      const calendarEnd = endOfUsageWeekSunday(Math.max(lastBucket.endAt - 1, lastBucket.startAt));
+      const bucketByKey = new Map(sorted.map((bucket) => [bucket.key, bucket]));
+      const entries = [];
+      for (let time = calendarStart; time <= calendarEnd; time += USAGE_DAY_MS) {
+        const key = usageDayKey(time);
+        const bucket = bucketByKey.get(key);
+        entries.push(usageBucketEntry(bucket || emptyUsageCalendarBucket(time), !bucket));
+      }
+      const weekCount = Math.max(1, Math.ceil(entries.length / 7));
+      const monthAnchors = usageMonthAnchors(firstBucket.startAt, lastBucket.startAt, calendarStart);
+      syncUsageBucketLookup(entries);
+      return {
+        entries,
+        weekCount,
+        monthAnchors,
+      };
+    }
+
+    function usageMonthAnchors(firstVisibleTime, lastVisibleTime, calendarStart) {
+      const anchors = [];
+      const firstVisibleDay = startOfUsageDay(firstVisibleTime);
+      const lastVisibleDay = startOfUsageDay(lastVisibleTime);
+      const firstDate = new Date(firstVisibleDay);
+      let year = firstDate.getFullYear();
+      let month = firstDate.getMonth();
+      while (true) {
+        const monthStart = new Date(year, month, 1).getTime();
+        const anchorTime = anchors.length === 0 ? firstVisibleDay : monthStart;
+        if (anchorTime > lastVisibleDay) break;
+        const column = usageCalendarWeekColumn(anchorTime, calendarStart);
+        anchors.push({
+          key: String(year) + "-" + String(month + 1).padStart(2, "0"),
+          label: usageMonthShortLabel(anchorTime),
+          column,
+        });
+        month += 1;
+        if (month > 11) {
+          month = 0;
+          year += 1;
+        }
+      }
+      return anchors;
+    }
+
+    function usageCalendarWeekColumn(time, calendarStart) {
+      return Math.max(0, Math.floor((startOfUsageWeekMonday(time) - calendarStart) / (USAGE_DAY_MS * 7)));
+    }
+
+    function usageCalendarScrollerNode(display) {
+      const scroller = document.createElement("div");
+      scroller.className = "usageCalendarScroller";
+      const inner = document.createElement("div");
+      inner.className = "usageCalendarInner";
+      inner.append(usageMonthTrackNode(display), usageHeatmapNode(display.entries, display));
+      scroller.appendChild(inner);
+      return scroller;
+    }
+
+    function usageMonthTrackNode(display) {
+      const track = document.createElement("div");
+      track.className = "usageMonthTrack";
+      track.setAttribute("aria-hidden", "true");
+      track.style.gridTemplateColumns = "repeat(" + Math.max(1, Number(display && display.weekCount) || 1) + ", var(--usage-cell-size))";
+      for (const anchor of display && Array.isArray(display.monthAnchors) ? display.monthAnchors : []) {
+        const label = document.createElement("span");
+        label.className = "usageMonthLabel";
+        label.textContent = anchor.label;
+        label.style.gridColumn = String(Math.max(1, Number(anchor.column) + 1));
+        track.appendChild(label);
+      }
+      return track;
+    }
+
+    function usageHeatmapNode(entries, options = {}) {
+      const grid = document.createElement("div");
+      grid.className = "usageHeatmapGrid " + usageActivityMode;
+      grid.setAttribute("aria-label", "令牌用量热力图");
+      if (usageActivityMode === "daily") {
+        grid.style.gridTemplateColumns = "repeat(" + Math.max(1, Number(options.weekCount) || 1) + ", var(--usage-cell-size))";
+      }
+      const buckets = Array.isArray(entries) ? entries.map((entry) => entry.bucket) : [];
+      const maxTotal = Math.max(1, ...buckets.map((bucket) => Number(bucket && bucket.total) || 0));
+      for (const entry of Array.isArray(entries) ? entries : []) {
+        const bucket = entry.bucket;
+        const level = usageBucketLevel(bucket, maxTotal);
+        const cell = document.createElement("button");
+        cell.className = "usageHeatCell level-" + level + (Number(bucket.estimatedTotal || 0) > 0 ? " estimated" : "");
+        cell.type = "button";
+        cell.setAttribute("aria-label", usageBucketTitle(bucket));
+        cell.setAttribute("data-usage-bucket-id", entry.id);
+        cell.setAttribute("aria-pressed", selectedUsageBucketId === entry.id ? "true" : "false");
+        cell.classList.toggle("is-preview", hoveredUsageBucketId === entry.id && selectedUsageBucketId !== entry.id);
+        cell.classList.toggle("is-active", selectedUsageBucketId === entry.id);
+        grid.appendChild(cell);
+      }
+      return grid;
+    }
+
+    function usageBucketLevel(bucket, maxTotal) {
+      const total = Number(bucket && bucket.total) || 0;
+      if (total <= 0) return 0;
+      return Math.max(1, Math.min(5, Math.ceil((total / Math.max(1, maxTotal)) * 5)));
+    }
+
+    function usageBucketTitle(bucket) {
+      const total = Number(bucket && bucket.total) || 0;
+      const parts = [
+        usageBucketLabel(bucket),
+        formatTokenCount(total) + " 令牌",
+        formatCount(bucket && bucket.count) + " 次回复",
+        formatTokenCount(bucket && bucket.reportedTotal) + " 真实统计",
+        formatTokenCount(bucket && bucket.estimatedTotal) + " 估算统计",
+      ];
+      return parts.filter(Boolean).join(" · ");
+    }
+
+    function usageBucketLabel(bucket) {
+      if (!bucket) return "用量分桶";
+      if (usageActivityMode === "daily") return formatUsageDayLabel(bucket.startAt);
+      if (usageActivityMode === "weekly") return formatUsageRangeLabel(bucket.startAt, Math.max((bucket.endAt || bucket.startAt) - 1, bucket.startAt));
+      if (usageActivityMode === "cumulative") return "截至 " + formatUsageDayLabel(Math.max((bucket.endAt || bucket.startAt) - 1, bucket.startAt));
+      return bucket.label || bucket.key || "用量分桶";
+    }
+
+    function usageBucketEntry(bucket, placeholder = false) {
+      return {
+        id: usageBucketSelectionId(bucket),
+        bucket,
+        placeholder: Boolean(placeholder),
+      };
+    }
+
+    function usageBucketSelectionId(bucket) {
+      const safeBucket = bucket || emptyUsageCalendarBucket(Date.now());
+      return usageActivityMode + ":" + String(safeBucket.key || "") + ":" + String(safeBucket.startAt || 0) + ":" + String(safeBucket.endAt || 0);
+    }
+
+    function emptyUsageCalendarBucket(time) {
+      const startAt = startOfUsageDay(time);
+      return {
+        key: usageDayKey(startAt),
+        label: usageDayKey(startAt),
+        startAt,
+        endAt: startAt + USAGE_DAY_MS,
+        total: 0,
+        input: 0,
+        output: 0,
+        reasoning: 0,
+        cacheRead: 0,
+        cacheWrite: 0,
+        reportedTotal: 0,
+        estimatedTotal: 0,
+        count: 0,
+        reportedCount: 0,
+        estimatedCount: 0,
+      };
+    }
+
+    function usageDayKey(time) {
+      const date = new Date(startOfUsageDay(time));
+      const year = date.getFullYear();
+      const month = String(date.getMonth() + 1).padStart(2, "0");
+      const day = String(date.getDate()).padStart(2, "0");
+      return String(year) + "-" + month + "-" + day;
+    }
+
+    function startOfUsageDay(time) {
+      const date = new Date(time);
+      date.setHours(0, 0, 0, 0);
+      return date.getTime();
+    }
+
+    function startOfUsageWeekMonday(time) {
+      const start = startOfUsageDay(time);
+      const date = new Date(start);
+      const day = date.getDay();
+      const offset = day === 0 ? 6 : day - 1;
+      return start - offset * USAGE_DAY_MS;
+    }
+
+    function endOfUsageWeekSunday(time) {
+      return startOfUsageWeekMonday(time) + 6 * USAGE_DAY_MS;
+    }
+
+    function usageMonthShortLabel(time) {
+      const date = new Date(time);
+      return String(date.getMonth() + 1) + "月";
+    }
+
+    function syncUsageBucketLookup(entries) {
+      usageBucketLookup = new Map((Array.isArray(entries) ? entries : []).map((entry) => [entry.id, entry]));
+      if (selectedUsageBucketId && !usageBucketLookup.has(selectedUsageBucketId)) selectedUsageBucketId = "";
+      if (hoveredUsageBucketId && !usageBucketLookup.has(hoveredUsageBucketId)) hoveredUsageBucketId = "";
+    }
+
+    function usageBucketDetailNode() {
+      const card = document.createElement("section");
+      card.id = "usageBucketDetail";
+      card.className = "usageDetailCard is-empty";
+      renderUsageBucketDetail(card);
+      return card;
+    }
+
+    function renderUsageBucketDetail(node) {
+      const card = node || el("usageBucketDetail");
+      if (!card) return;
+      card.textContent = "";
+      const entry = currentUsageBucketEntry();
+      if (!entry) {
+        card.className = "usageDetailCard is-empty";
+        const title = document.createElement("div");
+        title.className = "usageDetailTitle";
+        title.textContent = "选择一个统计点";
+        const hint = document.createElement("div");
+        hint.className = "usageDetailHint";
+        hint.textContent = "悬停、聚焦或点击上方格子，查看该日、该周或该累计点的详细令牌数据。";
+        card.append(title, hint);
+        return;
+      }
+      const bucket = entry.bucket;
+      card.className = "usageDetailCard";
+      const header = document.createElement("div");
+      header.className = "usageDetailHeader";
+      const title = document.createElement("div");
+      title.className = "usageDetailTitle";
+      title.textContent = usageBucketLabel(bucket);
+      const meta = document.createElement("div");
+      meta.className = "usageDetailMeta";
+      meta.textContent = selectedUsageBucketId === entry.id ? "已固定" : "悬停预览";
+      header.append(title, meta);
+      const hint = document.createElement("div");
+      hint.className = "usageDetailHint";
+      hint.textContent = formatTokenCount(bucket.reportedTotal || 0) + " 真实统计 · " + formatTokenCount(bucket.estimatedTotal || 0) + " 估算统计";
+      const grid = document.createElement("div");
+      grid.className = "usageDetailGrid";
+      grid.append(
+        usageDetailMetricNode("总令牌", formatTokenCount(bucket.total || 0)),
+        usageDetailMetricNode("回复数", formatCount(bucket.count || 0)),
+        usageDetailMetricNode("真实统计", formatTokenCount(bucket.reportedTotal || 0)),
+        usageDetailMetricNode("估算统计", formatTokenCount(bucket.estimatedTotal || 0)),
+        usageDetailMetricNode("输入", formatTokenCount(bucket.input || 0)),
+        usageDetailMetricNode("输出", formatTokenCount(bucket.output || 0)),
+        usageDetailMetricNode("推理", formatTokenCount(bucket.reasoning || 0)),
+        usageDetailMetricNode("缓存读", formatTokenCount(bucket.cacheRead || 0)),
+        usageDetailMetricNode("缓存写", formatTokenCount(bucket.cacheWrite || 0)),
+      );
+      card.append(header, hint, grid);
+    }
+
+    function usageDetailMetricNode(label, value) {
+      const item = document.createElement("div");
+      item.className = "usageDetailMetric";
+      const labelNode = document.createElement("div");
+      labelNode.className = "usageDetailMetricLabel";
+      labelNode.textContent = label;
+      const valueNode = document.createElement("div");
+      valueNode.className = "usageDetailMetricValue";
+      valueNode.textContent = value;
+      item.append(labelNode, valueNode);
+      return item;
+    }
+
+    function currentUsageBucketEntry() {
+      if (hoveredUsageBucketId && usageBucketLookup.has(hoveredUsageBucketId)) return usageBucketLookup.get(hoveredUsageBucketId);
+      if (selectedUsageBucketId && usageBucketLookup.has(selectedUsageBucketId)) return usageBucketLookup.get(selectedUsageBucketId);
+      return undefined;
+    }
+
+    function updateUsageHeatmapSelectionState() {
+      const root = el("usagePage");
+      if (!root) return;
+      for (const cell of Array.from(root.querySelectorAll("[data-usage-bucket-id]"))) {
+        const bucketId = cell.getAttribute("data-usage-bucket-id") || "";
+        const active = Boolean(selectedUsageBucketId) && selectedUsageBucketId === bucketId;
+        const preview = Boolean(hoveredUsageBucketId) && hoveredUsageBucketId === bucketId && !active;
+        cell.classList.toggle("is-active", active);
+        cell.classList.toggle("is-preview", preview);
+        cell.setAttribute("aria-pressed", active ? "true" : "false");
+      }
+    }
+
+    function formatUsageDayLabel(time) {
+      const date = new Date(startOfUsageDay(time));
+      return String(date.getFullYear()) + "年" + String(date.getMonth() + 1) + "月" + String(date.getDate()) + "日";
+    }
+
+    function formatUsageRangeLabel(startAt, endAt) {
+      return formatUsageDayLabel(startAt) + " - " + formatUsageDayLabel(endAt);
+    }
+
+    function usageHeatLegendNode() {
+      const legend = document.createElement("div");
+      legend.className = "usageHeatLegend";
+      const low = document.createElement("span");
+      low.textContent = "少";
+      const swatches = document.createElement("span");
+      swatches.className = "usageLegendSwatches";
+      for (let level = 0; level <= 5; level += 1) {
+        const swatch = document.createElement("span");
+        swatch.className = "usageLegendSwatch level-" + level;
+        swatch.setAttribute("aria-hidden", "true");
+        swatches.appendChild(swatch);
+      }
+      const high = document.createElement("span");
+      high.textContent = "多";
+      legend.append(low, swatches, high);
+      return legend;
+    }
+
+    function usageBreakdownNode(stats) {
+      const summary = stats.summary || {};
+      const line = document.createElement("div");
+      line.className = "usageBreakdown";
+      line.append(
+        usageBreakdownItem("reported", formatCount(summary.reportedResponses || 0) + " 次真实回复"),
+        usageBreakdownItem("estimated", formatCount(summary.estimatedResponses || 0) + " 次估算回复"),
+      );
+      return line;
+    }
+
+    function usageBreakdownItem(kind, label) {
+      const item = document.createElement("span");
+      item.className = "usageBreakdownItem";
+      const dot = document.createElement("span");
+      dot.className = "usageDot " + kind;
+      dot.setAttribute("aria-hidden", "true");
+      const text = document.createElement("span");
+      text.textContent = label;
+      item.append(dot, text);
+      return item;
     }
 
 		    function renderConnection() {
@@ -6618,26 +8664,158 @@ ${codiconFontFace}    .codicon {
 
       function renderComposerToggles() {
         const configs = [
-          { input: "file", button: "fileToggle", label: "Include current file", icon: "file" },
-          { input: "sel", button: "selToggle", label: "Include editor selection", icon: "selection" },
-          { input: "diag", button: "diagToggle", label: diagnosticsToggleLabel(), icon: "diagnostics", badge: diagnosticsBadgeText(), popover: "diagnostics" },
-          { input: "diff", button: "diffToggle", label: "Include git diff", icon: "diff" },
+          { input: "file", button: "fileToggle", label: "Include current file", menuLabel: "Current file", meta: "Send the active editor file", icon: "file" },
+          { input: "sel", button: "selToggle", label: "Include editor selection", menuLabel: "Selection", meta: "Send the current editor selection", icon: "selection" },
+          { input: "diag", button: "diagToggle", label: diagnosticsToggleLabel(), menuLabel: "Diagnostics", meta: "Send workspace diagnostics", icon: "diagnostics", badge: diagnosticsBadgeText(), popover: "diagnostics" },
+          { input: "diff", button: "diffToggle", label: "Include git diff", menuLabel: "Git diff", meta: "Send the current workspace diff", icon: "diff" },
         ];
         for (const config of configs) {
           const input = el(config.input);
           const button = el(config.button);
           if (!input || !button) continue;
           const pressed = Boolean(input.checked);
-          button.setAttribute("aria-pressed", pressed ? "true" : "false");
-          button.classList.toggle("is-active", pressed);
-          setIconOnlyButton(button, config.icon, config.label);
-          if (config.popover) {
-            button.setAttribute("aria-haspopup", "dialog");
-            button.setAttribute("aria-expanded", activeComposerStatusPopover() === config.popover ? "true" : "false");
-            button.setAttribute("aria-controls", "composerStatusPopover");
+          if (button.classList.contains("composerMoreItem")) {
+            setComposerMoreToggleButton(button, config, pressed);
+          } else {
+            button.setAttribute("aria-pressed", pressed ? "true" : "false");
+            button.classList.toggle("is-active", pressed);
+            setIconOnlyButton(button, config.icon, config.label);
+            if (config.popover) {
+              button.setAttribute("aria-haspopup", "dialog");
+              button.setAttribute("aria-expanded", activeComposerStatusPopover() === config.popover ? "true" : "false");
+              button.setAttribute("aria-controls", "composerStatusPopover");
+            }
+            renderLiquidBadge(button, config.badge);
           }
-          renderLiquidBadge(button, config.badge);
         }
+        renderComposerMoreActionButtons();
+        renderComposerMoreTrigger();
+      }
+
+      function setComposerMoreToggleButton(button, config, checked) {
+        button.textContent = "";
+        button.disabled = false;
+        button.className = "modelMenuItem composerMoreItem composerMoreToggle" + (checked ? " active" : "");
+        button.setAttribute("role", "menuitemcheckbox");
+        button.setAttribute("aria-checked", checked ? "true" : "false");
+        button.setAttribute("aria-label", config.label);
+        button.title = config.label;
+        appendComposerMoreIcon(button, config.icon);
+        appendComposerMoreCopy(button, config.menuLabel || config.label, config.meta || "");
+        appendComposerMoreState(button, checked, config.badge || "");
+      }
+
+      function renderComposerMoreActionButtons() {
+        setComposerMoreActionButton(el("attach"), {
+          icon: "attach",
+          label: "Attach file",
+          meta: "Attach to this prompt",
+          title: "Attach workspace file to this message",
+        });
+        setComposerMoreActionButton(el("addPersistentContext"), {
+          icon: "file",
+          label: "Persistent context",
+          meta: "Keep a file across prompts",
+          title: "Add persistent context file",
+        });
+        setComposerMoreActionButton(el("refreshModels"), {
+          icon: "refresh",
+          label: state.loadingModels ? "Refreshing models" : "Refresh models",
+          meta: "Reload provider model list",
+          title: state.loadingModels ? "Refreshing models" : "Refresh models",
+          disabled: Boolean(state.loadingModels),
+          loading: Boolean(state.loadingModels),
+        });
+        setComposerMoreActionButton(el("exportMarkdown"), {
+          icon: "file",
+          label: "Export Markdown",
+          meta: "Save current chat",
+          title: "Export current chat to Markdown",
+        });
+      }
+
+      function setComposerMoreActionButton(button, input) {
+        if (!button) return;
+        button.textContent = "";
+        button.disabled = Boolean(input.disabled);
+        button.className = "modelMenuItem composerMoreItem composerMoreAction" + (input.disabled ? " disabled" : "");
+        button.setAttribute("role", "menuitem");
+        button.setAttribute("aria-label", input.title || input.label);
+        button.title = input.title || input.label;
+        appendComposerMoreIcon(button, input.icon);
+        appendComposerMoreCopy(button, input.label, input.meta || "");
+        appendComposerMoreState(button, false, input.loading ? "…" : "");
+      }
+
+      function appendComposerMoreIcon(button, iconName) {
+        const icon = document.createElement("span");
+        icon.className = "composerMoreItemIcon";
+        icon.setAttribute("aria-hidden", "true");
+        appendMarkup(icon, LIQUID_ICONS[iconName] || LIQUID_ICONS.more);
+        button.appendChild(icon);
+      }
+
+      function appendComposerMoreCopy(button, label, meta) {
+        const copy = document.createElement("span");
+        copy.className = "composerMoreItemCopy";
+        const name = document.createElement("span");
+        name.className = "modelMenuName";
+        name.textContent = label;
+        copy.appendChild(name);
+        const detail = document.createElement("span");
+        detail.className = "modelMenuMeta";
+        detail.textContent = meta;
+        copy.appendChild(detail);
+        button.appendChild(copy);
+      }
+
+      function appendComposerMoreState(button, checked, badgeText) {
+        const stateNode = document.createElement("span");
+        stateNode.className = "composerMoreItemState";
+        stateNode.setAttribute("aria-hidden", "true");
+        if (badgeText) {
+          const badge = document.createElement("span");
+          badge.className = "composerMoreBadge";
+          badge.textContent = badgeText;
+          stateNode.appendChild(badge);
+        } else if (checked) {
+          appendMarkup(stateNode, LIQUID_ICONS.apply || "✓");
+        }
+        button.appendChild(stateNode);
+      }
+
+      function composerMoreHasCustomContext() {
+        return !el("file").checked || !el("sel").checked || el("diag").checked || el("diff").checked;
+      }
+
+      function renderComposerMoreTrigger() {
+        const trigger = el("composerMore");
+        if (!trigger) return;
+        const customized = composerMoreHasCustomContext();
+        const label = customized ? "Add context and actions; context customized" : "Add context and actions";
+        setComposerAddButton(trigger, label);
+        trigger.className = "composerAddButton composerMoreButton chat-toolbar-icon-button"
+          + (composerMoreMenuOpen ? " open" : "")
+          + (customized ? " has-context" : "");
+        trigger.setAttribute("aria-haspopup", "menu");
+        trigger.setAttribute("aria-controls", "composerMoreMenu");
+        trigger.setAttribute("aria-expanded", composerMoreMenuOpen ? "true" : "false");
+      }
+
+      function setComposerAddButton(button, label) {
+        if (!button) return;
+        button.textContent = "";
+        if (button.tagName === "BUTTON" && !button.getAttribute("type")) button.type = "button";
+        const glyph = document.createElement("span");
+        glyph.className = "composerAddGlyph";
+        glyph.setAttribute("aria-hidden", "true");
+        glyph.textContent = "+";
+        const sr = document.createElement("span");
+        sr.className = "srOnly";
+        sr.textContent = label;
+        button.append(glyph, sr);
+        button.title = label;
+        button.setAttribute("aria-label", label);
       }
 
       function diagnosticsBadgeText() {
@@ -6872,9 +9050,11 @@ ${codiconFontFace}    .codicon {
       toggleFull.textContent = toggleLabel;
       toggleShort.textContent = toggleShortLabel;
 
-      const context = composerContextStatus();
-      updateStatusPill(el("contextStatusPill"), context);
-      const index = composerIndexStatus();
+	      const context = composerContextStatus();
+	      updateStatusPill(el("contextStatusPill"), context);
+	      const goal = composerGoalStatus();
+	      updateStatusPill(el("goalStatusPill"), goal);
+	      const index = composerIndexStatus();
       updateStatusPill(el("indexStatusPill"), index);
       const rag = composerRagStatus();
       updateStatusPill(el("ragStatusPill"), rag);
@@ -6891,7 +9071,8 @@ ${codiconFontFace}    .codicon {
       const completion = composerCompletionStatus();
       updateStatusPill(el("completionStatusPill"), completion);
       const queue = composerQueueStatus();
-      updateStatusPill(el("queueStatusPill"), queue);
+	      updateStatusPill(el("queueStatusPill"), queue);
+	      renderGoalSummaryBanner();
       renderComposerProgress();
       renderComposerStatusPopover();
     }
@@ -6976,17 +9157,58 @@ ${codiconFontFace}    .codicon {
       insertInlineBadge(node, badge);
     }
 
-    function bindComposerStatusPill(id, name, hover) {
-      const node = el(id);
-      node.addEventListener("click", (event) => toggleComposerStatusPopover(event, name));
+	    function bindComposerStatusPill(id, name, hover) {
+	      const node = el(id);
+	      node.addEventListener("click", (event) => toggleComposerStatusPopover(event, name));
       if (!hover) return;
       node.addEventListener("mouseenter", () => showComposerHoverPopover(name));
       node.addEventListener("mouseleave", () => scheduleComposerHoverClose(name));
       node.addEventListener("focus", () => showComposerHoverPopover(name));
-      node.addEventListener("blur", () => scheduleComposerHoverClose(name));
-    }
+	      node.addEventListener("blur", () => scheduleComposerHoverClose(name));
+	    }
 
-    function toggleComposerStatusPopover(event, name) {
+	    function bindGoalStatusPill() {
+	      const node = el("goalStatusPill");
+	      node.addEventListener("click", onGoalStatusPillClick);
+	    }
+
+		    function bindGoalSummaryBanner() {
+		      const node = el("goalSummaryBanner");
+		      node.addEventListener("click", onGoalSummaryBannerClick);
+		    }
+
+		    function bindGoalResumePrompt() {
+		      const node = el("goalResumePrompt");
+		      node.addEventListener("click", (event) => {
+		        const target = event.target;
+		        const action = target && target.closest ? target.closest("[data-goal-action]") : null;
+		        if (!action) return;
+		        event.stopPropagation();
+		        handleGoalAction(action.getAttribute("data-goal-action") || "");
+		      });
+		    }
+
+		    function onGoalStatusPillClick(event) {
+	      event.stopPropagation();
+	      if (state.goal) {
+	        toggleComposerStatusPopover(event, "goal");
+	        return;
+	      }
+	      closeComposerPopups();
+	      closeComposerStatusPopoverState();
+	      setGoalInputMode(!goalInputMode, { focus: true });
+	    }
+
+	    function onGoalSummaryBannerClick(event) {
+	      event.stopPropagation();
+	      if (!state.goal) return;
+	      composerPinnedStatusPopover = "goal";
+	      composerHoverStatusPopover = "";
+	      closeComposerPopups();
+	      renderComposerStatusBar();
+	    }
+
+	    function toggleComposerStatusPopover(event, name) {
       event.stopPropagation();
       cancelComposerHoverClose();
       composerPinnedStatusPopover = composerPinnedStatusPopover === name ? "" : name;
@@ -7002,8 +9224,9 @@ ${codiconFontFace}    .codicon {
       root.className = "composerStatusPopover" + (activePopover ? " open " + activePopover + "Popover" : "");
       root.setAttribute("aria-hidden", activePopover ? "false" : "true");
       if (!activePopover) return;
-	      if (activePopover === "context") renderContextStatusPopover(root);
-	      if (activePopover === "diagnostics") renderDiagnosticsStatusPopover(root);
+		      if (activePopover === "context") renderContextStatusPopover(root);
+		      if (activePopover === "goal") renderGoalStatusPopover(root);
+		      if (activePopover === "diagnostics") renderDiagnosticsStatusPopover(root);
 	      if (activePopover === "index") renderIndexStatusPopover(root);
 	      if (activePopover === "rag") renderRagStatusPopover(root);
 	      if (activePopover === "documentRag") renderDocumentRagStatusPopover(root);
@@ -7035,7 +9258,7 @@ ${codiconFontFace}    .codicon {
         if (name && composerHoverStatusPopover !== name) return;
         const popover = el("composerStatusPopover");
         const active = document.activeElement;
-        const activeStatusPill = active && active.closest && active.closest("#contextStatusPill, #indexStatusPill, #ragStatusPill, #documentRagStatusPill, #permissionStatusPill, #skillsStatusPill, #guardStatusPill, #usageStatusPill, #completionStatusPill, #queueStatusPill");
+        const activeStatusPill = active && active.closest && active.closest("#contextStatusPill, #goalStatusPill, #goalSummaryBanner, #indexStatusPill, #ragStatusPill, #documentRagStatusPill, #permissionStatusPill, #skillsStatusPill, #guardStatusPill, #usageStatusPill, #completionStatusPill, #queueStatusPill");
         if (popover.matches(":hover") || popover.matches(":focus-within") || activeStatusPill) return;
         composerHoverStatusPopover = "";
         renderComposerStatusBar();
@@ -7048,16 +9271,63 @@ ${codiconFontFace}    .codicon {
       composerHoverCloseTimer = 0;
     }
 
-    function closeComposerStatusPopoverState() {
-      cancelComposerHoverClose();
-      composerPinnedStatusPopover = "";
-      composerHoverStatusPopover = "";
-    }
+	    function closeComposerStatusPopoverState() {
+	      cancelComposerHoverClose();
+	      composerPinnedStatusPopover = "";
+	      composerHoverStatusPopover = "";
+	    }
 
-	    function composerContextStatus() {
-	      const detail = contextStatusDetail();
-	      return {
-	        text: "Context",
+	    function setGoalInputMode(enabled, options) {
+	      goalInputMode = Boolean(enabled);
+	      persistGoalInputMode();
+	      if (goalInputMode) closeComposerStatusPopoverState();
+	      renderComposerInputMode();
+	      renderComposerStatusBar();
+	      renderSendButton();
+	      if (goalInputMode && (!options || options.focus !== false)) requestAnimationFrame(() => el("input").focus());
+	    }
+
+	    function persistGoalInputMode() {
+	      const nextState = { ...webviewState() };
+	      if (goalInputMode) nextState.goalInputMode = true;
+	      else delete nextState.goalInputMode;
+	      vscode.setState(nextState);
+	    }
+
+	    function isGoalInputModeActive() {
+	      if (!goalInputMode) return false;
+	      const goal = state.goal || null;
+	      if (!goal) return true;
+	      return String(goal.status || "active") === "complete";
+	    }
+
+	    function reconcileGoalInputModeAfterState() {
+	      const goal = state.goal || null;
+	      if (!goal) return;
+	      const status = String(goal.status || "active");
+	      if (pendingGoalObjective && status === "active" && String(goal.objective || "").trim() === pendingGoalObjective) {
+	        pendingGoalObjective = "";
+	        goalInputMode = false;
+	        persistGoalInputMode();
+	        composerPinnedStatusPopover = "goal";
+	        composerHoverStatusPopover = "";
+	        el("input").value = "";
+	        mentionedFiles = [];
+	        mentionResults = [];
+	        clearComposerDraft();
+	        setNotice("Goal started.");
+	        return;
+	      }
+	      if (goalInputMode && status !== "complete") {
+	        goalInputMode = false;
+	        persistGoalInputMode();
+	      }
+	    }
+
+		    function composerContextStatus() {
+		      const detail = contextStatusDetail();
+		      return {
+		        text: "Context",
 	        title: detail,
 		        className: "composerStatusPill chat-toolbar-icon-button oc-icon-btn oc-liquid-btn context",
 	        popover: "context",
@@ -7115,6 +9385,64 @@ ${codiconFontFace}    .codicon {
 		        iconHtml: indexStatusIconHtml(view.kind, "${documentRagStatusCodicon}", view.badgeKind),
 		      };
 		    }
+
+	    function composerGoalStatus() {
+	      const goal = state.goal || null;
+	      const operation = state.goalOperation || null;
+	      if (isGoalInputModeActive()) {
+	        return {
+	          text: "Goal mode",
+	          title: "Goal mode: the next send will create a ChipMate goal.",
+	          className: "composerStatusPill goalTrigger oc-chip oc-liquid-chip goal active",
+	          popover: "goal",
+	          ariaLabel: "ChipMate goal mode. The next send will create a goal.",
+	          icon: STATUS_ICONS.goal,
+	          showText: true,
+	        };
+	      }
+	      if (!goal) {
+	        return {
+	          text: "Goal",
+	          title: "No active ChipMate goal",
+	          className: "composerStatusPill goalTrigger oc-chip oc-liquid-chip goal is-empty",
+	          popover: "goal",
+	          ariaLabel: "ChipMate goal: inactive",
+	          icon: STATUS_ICONS.goal,
+	          showText: true,
+	        };
+	      }
+	      const status = String(goal.status || "active");
+	      const label = goalStatusLabel(status);
+	      const running = Boolean(operation && operation.active);
+	      const tokens = goal.tokenBudget ? " · " + formatCompactCount(goal.tokensUsed || 0) + "/" + formatCompactCount(goal.tokenBudget) : "";
+	      const title = label + tokens + ": " + compactActivityText(goal.objective || "");
+	      return {
+	        text: running ? "Goal running" : "Goal " + label,
+	        title,
+	        className: "composerStatusPill goalTrigger oc-chip oc-liquid-chip goal " + goalStatusKind(status),
+	        popover: "goal",
+	        ariaLabel: "ChipMate goal: " + title,
+	        icon: STATUS_ICONS.goal,
+	        showText: true,
+	        badgeText: running ? String(Math.max(1, Number(operation.turnCount || 1))) : "",
+	      };
+	    }
+
+	    function goalStatusLabel(status) {
+	      if (status === "paused") return "paused";
+	      if (status === "blocked") return "blocked";
+	      if (status === "usage_limited") return "usage limited";
+	      if (status === "budget_limited") return "budget limited";
+	      if (status === "complete") return "complete";
+	      return "active";
+	    }
+
+	    function goalStatusKind(status) {
+	      if (status === "usage_limited") return "usage-limited";
+	      if (status === "budget_limited") return "budget-limited";
+	      if (status === "paused" || status === "blocked" || status === "complete") return status;
+	      return "active";
+	    }
 
 	    function ragStatusView(rag) {
 	      if (!rag || rag.availability === "not-configured") {
@@ -7665,9 +9993,9 @@ ${codiconFontFace}    .codicon {
 	      if (actionRoot.childElementCount) root.appendChild(actionRoot);
 	    }
 
-	    function renderDocumentRagStatusPopover(root) {
-	      const documentRag = state.documentRag;
-	      const view = documentRagStatusView(documentRag);
+		    function renderDocumentRagStatusPopover(root) {
+		      const documentRag = state.documentRag;
+		      const view = documentRagStatusView(documentRag);
 	      const detail = documentRagMeta(documentRag);
 	      appendStatusPopoverHeader(root, view.label, detail);
 	      if (documentRag) {
@@ -7689,11 +10017,58 @@ ${codiconFontFace}    .codicon {
 	        if (action.message) button.setAttribute("data-code-graph-action", action.message);
 	        actionRoot.appendChild(button);
 	      }
-	      if (actionRoot.childElementCount) root.appendChild(actionRoot);
+		      if (actionRoot.childElementCount) root.appendChild(actionRoot);
+		    }
+
+	    function renderGoalStatusPopover(root) {
+	      const goal = state.goal || null;
+	      const operation = state.goalOperation || null;
+	      if (!goal) {
+	        appendStatusPopoverHeader(root, goalInputMode ? "Goal mode" : "Goal inactive", goalInputMode ? "The next prompt you send will become this session's goal." : "Click Goal to write the next prompt as a persistent session goal.");
+	        return;
+	      }
+
+	      const status = String(goal.status || "active");
+	      appendStatusPopoverHeader(root, "Goal " + goalStatusLabel(status), compactActivityText(goal.objective || ""));
+	      const rows = statusRows();
+	      appendStatusRow(rows, "Tokens: " + formatCompactCount(goal.tokensUsed || 0) + (goal.tokenBudget ? " / " + formatCompactCount(goal.tokenBudget) : ""));
+	      appendStatusRow(rows, "Time: " + formatDuration(Number(goal.timeUsedSeconds || 0) * 1000));
+	      if (operation && operation.active) appendStatusRow(rows, "Operation: running turn " + formatCount(operation.turnCount || 1));
+	      root.appendChild(rows);
+
+	      const actions = document.createElement("div");
+	      actions.className = "goalActions";
+	      actions.appendChild(goalActionButton("editGoal", "edit", "Edit", true));
+	      if (status === "active") {
+	        actions.appendChild(goalActionButton("pauseGoal", "pause", "Pause", false));
+	      } else if (status === "paused" || status === "blocked" || status === "usage_limited") {
+	        actions.appendChild(goalActionButton("resumeGoal", "play", "Resume", true));
+	      } else if (status === "complete") {
+	        actions.appendChild(goalActionButton("createGoal", "add", "New", true));
+	      }
+	      actions.appendChild(goalActionButton("clearGoal", "trash", "Clear", false, "danger"));
+	      root.appendChild(actions);
 	    }
 
-	    function renderPermissionStatusPopover(root) {
-      const current = permissionMode();
+	    function goalActionButton(action, iconName, label, primary, extraClass) {
+	      const button = document.createElement("button");
+	      button.type = "button";
+	      button.className = "goalActionButton oc-liquid-btn" + (primary ? " is-active" : "") + (extraClass ? " " + extraClass : "");
+	      button.setAttribute("data-goal-action", action);
+	      button.title = label + " ChipMate goal";
+	      const icon = document.createElement("span");
+	      icon.className = "goalActionIcon";
+	      icon.setAttribute("aria-hidden", "true");
+	      icon.innerHTML = LIQUID_ICONS[iconName] || STATUS_ICONS.goal;
+	      const text = document.createElement("span");
+	      text.className = "goalActionLabel";
+	      text.textContent = label;
+	      button.append(icon, text);
+	      return button;
+	    }
+
+		    function renderPermissionStatusPopover(root) {
+	      const current = permissionMode();
       const enabled = toolsEnabled();
       appendStatusPopoverHeader(root, enabled ? permissionModeLabel(current) : "工具关闭", enabled ? permissionModeDetail(current) : "模型工具调用已关闭，权限模式暂不生效。");
       const toggle = document.createElement("button");
@@ -7789,6 +10164,16 @@ ${codiconFontFace}    .codicon {
     function renderUsageStatusPopover(root) {
       const usage = state.usage || {};
       appendStatusPopoverHeader(root, usage.summary || "Usage pending", usage.detail || "Connect to load token usage.");
+      const actions = document.createElement("div");
+      actions.className = "statusPopoverActions";
+      const open = document.createElement("button");
+      open.className = "statusActionButton primary";
+      open.type = "button";
+      open.textContent = "Usage";
+      open.title = "Open Chat token usage";
+      open.setAttribute("data-open-usage-view", "true");
+      actions.appendChild(open);
+      root.appendChild(actions);
     }
 
     function renderCompletionStatusPopover(root) {
@@ -7880,12 +10265,17 @@ ${codiconFontFace}    .codicon {
 	      if (item.truncated) appendStatusRow(root, "Selection preview truncated.");
 	    }
 
-	    function onComposerStatusPopoverClick(event) {
-	      event.stopPropagation();
-	      const target = event.target;
-		      const removeContext = target.closest("[data-remove-context-item]");
-	      if (removeContext) {
-	        const id = removeContext.getAttribute("data-remove-context-item") || "";
+		    function onComposerStatusPopoverClick(event) {
+		      event.stopPropagation();
+		      const target = event.target;
+	      const goalAction = target.closest("[data-goal-action]");
+	      if (goalAction) {
+	        handleGoalAction(goalAction.getAttribute("data-goal-action") || "");
+	        return;
+	      }
+			      const removeContext = target.closest("[data-remove-context-item]");
+		      if (removeContext) {
+		        const id = removeContext.getAttribute("data-remove-context-item") || "";
 	        if (selectedContextItemId === id) selectedContextItemId = "";
 	        vscode.postMessage({ type: "removeContextItem", id });
 		        return;
@@ -7937,10 +10327,35 @@ ${codiconFontFace}    .codicon {
 	        openCompleteSettingsFromPopover();
 	        return;
 	      }
-	      onCodeGraphAction(event);
+      const usageView = target.closest("[data-open-usage-view]");
+      if (usageView) {
+        closeComposerStatusPopoverState();
+        setMainView("usage");
+        return;
+      }
+		      onCodeGraphAction(event);
+		    }
+
+	    function handleGoalAction(action) {
+	      if (action === "createGoal") {
+	        closeComposerStatusPopoverState();
+	        setGoalInputMode(true, { focus: true });
+	        return;
+	      }
+	      if (action === "editGoal") {
+	        vscode.postMessage({ type: "editGoal" });
+	        closeComposerStatusPopoverState();
+	        renderComposerStatusBar();
+	        return;
+	      }
+	      if (action === "pauseGoal" || action === "resumeGoal" || action === "clearGoal") {
+	        vscode.postMessage({ type: action });
+	        closeComposerStatusPopoverState();
+	        renderComposerStatusBar();
+	      }
 	    }
 
-	    function openRagSettingsFromPopover() {
+			    function openRagSettingsFromPopover() {
 	      activeSettingsSection = "rag";
 	      settingsOpen = true;
 	      closeComposerStatusPopoverState();
@@ -7970,7 +10385,7 @@ ${codiconFontFace}    .codicon {
 			      const allSelected = total > 0 && selectedCount === total;
 			      el("historyTitle").textContent = historyBulkSelectMode ? selectedCount + " selected" : "History";
 			      el("selectHistorySessions").hidden = total === 0;
-			      el("selectAllHistorySessions").hidden = !historyBulkSelectMode;
+			      el("selectAllHistorySessions").hidden = total === 0;
 			      el("deleteSelectedHistorySessions").hidden = !historyBulkSelectMode;
 			      el("refreshHistory").hidden = historyBulkSelectMode;
 			      el("closeHistory").hidden = historyBulkSelectMode;
@@ -8092,6 +10507,7 @@ ${codiconFontFace}    .codicon {
 	      const messages = state.messages || [];
 	      const stick = autoFollowMessages && (userNearBottom || forceNextMessageFollow);
 	      const previousScrollTop = root.scrollTop;
+	      const scrollAnchor = stick ? undefined : captureMessagesScrollAnchor(root);
 	      const horizontalScrollState = collectMessageHorizontalScrollState(root);
 	      if (state.loadingMessages && messages.length === 0) {
 	        const loading = document.createElement("div");
@@ -8134,8 +10550,10 @@ ${codiconFontFace}    .codicon {
 	          renderJumpLatest();
 	          return;
 	        }
-	        const maxScrollTop = Math.max(0, root.scrollHeight - root.clientHeight);
-	        root.scrollTop = Math.min(previousScrollTop, maxScrollTop);
+	        if (!restoreMessagesScrollAnchor(root, scrollAnchor)) {
+	          const maxScrollTop = Math.max(0, root.scrollHeight - root.clientHeight);
+	          root.scrollTop = Math.min(previousScrollTop, maxScrollTop);
+	        }
 	        userNearBottom = isNearBottom(root);
 	        if (userNearBottom) autoFollowMessages = true;
 	        forceNextMessageFollow = false;
@@ -8169,6 +10587,41 @@ ${codiconFontFace}    .codicon {
 	        root.removeChild(cursor);
 	        cursor = next;
 	      }
+	    }
+
+	    function captureMessagesScrollAnchor(root) {
+	      const rootRect = root.getBoundingClientRect ? root.getBoundingClientRect() : { top: 0, bottom: root.clientHeight };
+	      const topLimit = rootRect.top + 6;
+	      const bottomLimit = rootRect.bottom || (rootRect.top + root.clientHeight);
+	      for (const node of Array.from(root.querySelectorAll(".timelineItem[data-message-key]"))) {
+	        const rect = node.getBoundingClientRect ? node.getBoundingClientRect() : undefined;
+	        if (!rect) continue;
+	        if (rect.bottom <= topLimit || rect.top >= bottomLimit) continue;
+	        return {
+	          key: node.getAttribute("data-message-key") || "",
+	          topOffset: rect.top - rootRect.top
+	        };
+	      }
+	      return undefined;
+	    }
+
+	    function restoreMessagesScrollAnchor(root, anchor) {
+	      if (!anchor || !anchor.key) return false;
+	      const node = findMessageNodeByKey(root, anchor.key);
+	      if (!node || !node.getBoundingClientRect) return false;
+	      const rootRect = root.getBoundingClientRect ? root.getBoundingClientRect() : { top: 0 };
+	      const rect = node.getBoundingClientRect();
+	      const delta = rect.top - rootRect.top - anchor.topOffset;
+	      const maxScrollTop = Math.max(0, root.scrollHeight - root.clientHeight);
+	      root.scrollTop = Math.max(0, Math.min(maxScrollTop, root.scrollTop + delta));
+	      return true;
+	    }
+
+	    function findMessageNodeByKey(root, key) {
+	      for (const node of Array.from(root.querySelectorAll(".timelineItem[data-message-key]"))) {
+	        if (node.getAttribute("data-message-key") === key) return node;
+	      }
+	      return undefined;
 	    }
 
 	    function updateExistingMessageNode(node, entry) {
@@ -8259,15 +10712,59 @@ ${codiconFontFace}    .codicon {
 		      });
 		    }
 
-		    function restoreNestedScrollList(nodes, values, property) {
-	      if (!values) return;
-	      Array.from(nodes).forEach((node, index) => {
-	        const value = values[index] || 0;
-	        if (value > 0) node[property] = value;
-	      });
-	    }
+			    function restoreNestedScrollList(nodes, values, property) {
+		      if (!values) return;
+		      Array.from(nodes).forEach((node, index) => {
+		        const value = values[index] || 0;
+		        if (value > 0) node[property] = value;
+		      });
+		    }
 
-	    function handleMessagesScroll(root) {
+		    function preserveMessagesScrollDuringDiagramRender(block, mutate) {
+		      const root = el("messages");
+		      if (!root || !block || !block.isConnected) return mutate();
+		      const before = diagramViewportMetrics(root, block);
+		      const beforeScrollTop = root.scrollTop;
+		      const shouldFollowLatest = autoFollowMessages && (userNearBottom || isNearBottom(root) || forceNextMessageFollow);
+		      const result = mutate();
+		      if (!root.isConnected || !block.isConnected) return result;
+		      if (shouldFollowLatest) {
+		        root.scrollTop = root.scrollHeight;
+		        userNearBottom = true;
+		        autoFollowMessages = true;
+		      } else {
+		        const after = diagramViewportMetrics(root, block);
+		        const delta = diagramScrollAnchorDelta(before, after, root.clientHeight);
+		        const maxScrollTop = Math.max(0, root.scrollHeight - root.clientHeight);
+		        root.scrollTop = Math.max(0, Math.min(maxScrollTop, beforeScrollTop + delta));
+		        userNearBottom = isNearBottom(root);
+		        autoFollowMessages = false;
+		      }
+		      forceNextMessageFollow = false;
+		      lastMessagesScrollTop = root.scrollTop;
+		      renderJumpLatest();
+		      return result;
+		    }
+
+		    function diagramViewportMetrics(root, block) {
+		      const rootRect = root.getBoundingClientRect ? root.getBoundingClientRect() : { top: 0 };
+		      const blockRect = block.getBoundingClientRect ? block.getBoundingClientRect() : { top: 0, bottom: 0, height: 0 };
+		      const top = blockRect.top - rootRect.top;
+		      const bottom = blockRect.bottom - rootRect.top;
+		      return {
+		        top,
+		        bottom,
+		        height: Math.max(0, blockRect.height || bottom - top),
+		      };
+		    }
+
+		    function diagramScrollAnchorDelta(before, after, viewportHeight) {
+		      if (before.bottom <= 0) return after.height - before.height;
+		      if (before.top < viewportHeight && before.bottom > 0) return after.top - before.top;
+		      return 0;
+		    }
+
+		    function handleMessagesScroll(root) {
 	      const nextNearBottom = isNearBottom(root);
 	      const movedUp = root.scrollTop < lastMessagesScrollTop - 1;
 	      userNearBottom = nextNearBottom;
@@ -8280,27 +10777,48 @@ ${codiconFontFace}    .codicon {
 	      renderJumpLatest();
 	    }
 
-	    function redirectNestedVerticalWheel(event, root) {
-	      const nested = nestedMessageScroller(event.target);
-	      if (!nested) return false;
-	      if (nested.classList && nested.classList.contains("diagramCanvas") && nested.classList.contains("zoomed-in")) {
-	        pauseAutoFollowForUser();
-	        return false;
-	      }
-	      if (!isPlainVerticalWheel(event)) {
-	        pauseAutoFollowForUser();
-	        return false;
+		    function redirectNestedVerticalWheel(event, root) {
+		      const nested = nestedMessageScroller(event.target);
+		      if (!nested) return false;
+		      if (nested.classList && nested.classList.contains("diagramCanvas") && nested.classList.contains("zoomed-in")) {
+		        return redirectZoomedDiagramWheel(event, root, nested);
+		      }
+		      if (!isPlainVerticalWheel(event)) {
+		        pauseAutoFollowForUser();
+		        return false;
 	      }
 	      if (event.deltaY < 0) pauseAutoFollowForUser();
 	      event.preventDefault();
 	      root.scrollTop += event.deltaY;
-	      handleMessagesScroll(root);
-	      return true;
-	    }
+		      handleMessagesScroll(root);
+		      return true;
+		    }
 
-	    function isPlainVerticalWheel(event) {
-	      if (event.shiftKey) return false;
-	      return Math.abs(event.deltaY) > Math.abs(event.deltaX);
+		    function redirectZoomedDiagramWheel(event, root, canvas) {
+		      if (!isPlainVerticalWheel(event)) {
+		        pauseAutoFollowForUser();
+		        return false;
+		      }
+		      const previousCanvasScrollTop = canvas.scrollTop;
+		      const nextCanvasScrollTop = clampScrollTop(canvas, canvas.scrollTop + event.deltaY);
+		      canvas.scrollTop = nextCanvasScrollTop;
+		      const consumedDeltaY = nextCanvasScrollTop - previousCanvasScrollTop;
+		      const remainingDeltaY = event.deltaY - consumedDeltaY;
+		      pauseAutoFollowForUser();
+		      event.preventDefault();
+		      root.scrollTop += remainingDeltaY;
+		      handleMessagesScroll(root);
+		      return true;
+		    }
+
+		    function clampScrollTop(node, value) {
+		      const maxScrollTop = Math.max(0, node.scrollHeight - node.clientHeight);
+		      return Math.max(0, Math.min(maxScrollTop, value));
+		    }
+
+		    function isPlainVerticalWheel(event) {
+		      if (event.shiftKey) return false;
+		      return Math.abs(event.deltaY) > Math.abs(event.deltaX);
 	    }
 
 	    function pauseAutoFollowForUser() {
@@ -8326,8 +10844,9 @@ ${codiconFontFace}    .codicon {
 
 	    function renderJumpLatest() {
 	      const button = el("jumpLatest");
-	      const visible = Boolean(!autoFollowMessages && !userNearBottom && messageHasAnyContent(state.messages || []));
+	      const visible = Boolean(activeMainView !== "usage" && !autoFollowMessages && !userNearBottom && messageHasAnyContent(state.messages || []));
 	      button.classList.toggle("visible", visible);
+        button.hidden = activeMainView === "usage";
 	      button.setAttribute("aria-hidden", visible ? "false" : "true");
 	      button.tabIndex = visible ? 0 : -1;
 	    }
@@ -8473,7 +10992,7 @@ ${codiconFontFace}    .codicon {
 
     function messageHasContent(item) {
       if (item.text) return true;
-      return (item.parts || []).some((part) => part.text || part.detail || part.status || part.xml || part.type === "diagram");
+      return (item.parts || []).some((part) => part.text || part.detail || part.status || part.xml || part.type === "diagram" || part.type === "wordRender" || part.type === "runProgress");
     }
 
 	    function emptyState() {
@@ -8612,6 +11131,7 @@ ${codiconFontFace}    .codicon {
         const block = blocks[index];
         block.dataset.messageId = messageId;
         block.dataset.sessionId = String(state.currentSessionID || "");
+        block.dataset.messageMode = String(item && item.mode || "");
         block.dataset.diagramIndex = String(index + 1);
         if (!block.dataset.diagramId) {
           block.dataset.diagramId = messageId + "-diagram-" + (index + 1);
@@ -8866,6 +11386,7 @@ ${codiconFontFace}    .codicon {
       const parts = item.parts || [];
       const reasoningParts = parts.filter((part) => part.type === "reasoning");
       const clarificationParts = parts.filter((part) => part.type === "clarification");
+      const runProgressParts = parts.filter((part) => part.type === "runProgress");
       const diagramParts = parts.filter((part) => part.type === "diagram");
       const toolParts = parts.filter((part) => part.type === "tool");
       const liveToolActivity = toolLiveActivityStatus(options && options.liveToolActivity, toolParts);
@@ -8873,20 +11394,24 @@ ${codiconFontFace}    .codicon {
       const docTimelineParts = parts.filter((part) => part.type === "docAgentTimeline");
       const docConflictParts = parts.filter((part) => part.type === "docAgentConflictReview");
       const generatedParts = parts.filter((part) => part.type === "generatedDocument");
+      const wordRenderParts = parts.filter((part) => part.type === "wordRender");
       for (const part of reasoningParts) {
         root.appendChild(partCard(part, "Thinking", "reasoning"));
       }
       for (const part of clarificationParts) {
         root.appendChild(clarificationCard(part));
       }
-      for (const part of diagramParts) {
-        root.appendChild(diagramPartCard(part));
+      for (const part of runProgressParts) {
+        root.appendChild(runProgressCard(part));
+      }
+      if (liveToolActivity) {
+        root.appendChild(toolLiveActivityRow(liveToolActivity));
       }
       if (toolParts.length > 0) {
         root.appendChild(toolGroupCard(toolParts));
       }
-      if (liveToolActivity) {
-        root.appendChild(toolLiveActivityRow(liveToolActivity));
+      for (const part of diagramParts) {
+        root.appendChild(diagramPartCard(part));
       }
       for (const part of warningParts) {
         root.appendChild(partCard(part, "Warning: workspace filesystem tool used", "serverWarning"));
@@ -8899,6 +11424,9 @@ ${codiconFontFace}    .codicon {
       }
       for (const part of generatedParts) {
         root.appendChild(generatedDocumentCard(part));
+      }
+      for (const part of wordRenderParts) {
+        root.appendChild(wordRenderCard(part));
       }
     }
 
@@ -8984,10 +11512,23 @@ ${codiconFontFace}    .codicon {
       return node;
     }
 
-    function diagramPartCard(part) {
-      if (String(part.kind || "").toLowerCase() === "drawio") {
-        const block = drawioDiagramBlock(part.title || "drawio", part.xml || "", {
-          diagramId: part.diagramId || "",
+	    function diagramPartCard(part) {
+	      if (String(part.kind || "").toLowerCase() === "mermaid") {
+	        if (part.displayMode === "artifact" || part.source === "tool") return mermaidArtifactCard(part);
+	        const block = diagramBlock("mermaid", part.sourceText || part.xml || "");
+	        block.dataset.diagramSource = part.source || "tool";
+	        if (part.diagramId) block.dataset.diagramId = part.diagramId;
+	        if (Array.isArray(part.warnings) && part.warnings.length) {
+	          const warning = diagramStatus(part.warnings.slice(0, 4).join(" "), false);
+	          warning.className += " diagramToolWarning";
+	          const canvas = block.querySelector(".diagramCanvas");
+	          block.insertBefore(warning, canvas || null);
+	        }
+	        return block;
+	      }
+	      if (String(part.kind || "").toLowerCase() === "drawio") {
+	        const block = drawioDiagramBlock(part.title || "drawio", part.xml || "", {
+	          diagramId: part.diagramId || "",
         });
         block.dataset.diagramSource = part.source || "tool";
         if (Array.isArray(part.warnings) && part.warnings.length) {
@@ -8999,6 +11540,87 @@ ${codiconFontFace}    .codicon {
         return block;
       }
       return partCard(part, part.title || "Diagram", "diagramPart");
+    }
+
+    function mermaidArtifactCard(part) {
+      const details = document.createElement("details");
+      details.className = "toolCard mermaidArtifactCard";
+      details.dataset.diagramId = part.diagramId || "";
+      const summary = document.createElement("summary");
+      summary.textContent = mermaidArtifactSummary(part);
+      const body = document.createElement("div");
+      body.className = "mermaidArtifactBody";
+      const meta = document.createElement("div");
+      meta.className = "mermaidArtifactMeta";
+      appendMermaidArtifactStat(meta, "PNG", part.pngPath ? "已生成" : "未生成");
+      if (part.renderProvider) appendMermaidArtifactStat(meta, "Renderer", part.renderProvider);
+      if (part.fallbackUsed) appendMermaidArtifactStat(meta, "Fallback", "已使用");
+      if (part.width || part.height) appendMermaidArtifactStat(meta, "Size", String(part.width || "?") + "x" + String(part.height || "?"));
+      if (meta.childElementCount) body.appendChild(meta);
+      const paths = [part.mmdPath ? "Source: " + part.mmdPath : "", part.pngPath ? "PNG: " + part.pngPath : ""].filter(Boolean).join("\\n");
+      if (paths) {
+        const pathNode = document.createElement("div");
+        pathNode.className = "mermaidArtifactPath";
+        pathNode.textContent = paths;
+        body.appendChild(pathNode);
+      }
+      const actions = document.createElement("div");
+      actions.className = "mermaidArtifactActions";
+      if (part.pngPath) actions.appendChild(openGeneratedArtifactButton(part.pngPath, "打开 PNG", "external"));
+      if (part.mmdPath) actions.appendChild(openGeneratedArtifactButton(part.mmdPath, "打开 .mmd", "external"));
+      const copy = document.createElement("button");
+      copy.type = "button";
+      copy.className = "statusActionButton";
+      copy.textContent = "复制源码";
+      copy.title = "复制 Mermaid 源码";
+      copy.addEventListener("click", () => copyTextWithFeedback(part.sourceText || "", copy, "已复制 Mermaid 源码。"));
+      actions.appendChild(copy);
+      if (actions.childElementCount) body.appendChild(actions);
+      if (Array.isArray(part.warnings) && part.warnings.length) {
+        const warnings = document.createElement("pre");
+        warnings.className = "wordRenderWarnings";
+        warnings.textContent = part.warnings.slice(0, 8).join("\\n");
+        body.appendChild(warnings);
+      }
+      const preview = document.createElement("div");
+      preview.className = "mermaidArtifactPreview";
+      preview.dataset.pendingMermaidPreview = "true";
+      body.appendChild(preview);
+      details.addEventListener("toggle", () => {
+        if (!details.open || preview.dataset.pendingMermaidPreview !== "true") return;
+        preview.dataset.pendingMermaidPreview = "false";
+        const block = diagramBlock("mermaid", part.sourceText || part.xml || "");
+        block.dataset.diagramSource = part.source || "tool";
+        if (part.diagramId) block.dataset.diagramId = part.diagramId;
+        preview.appendChild(block);
+      });
+      details.append(summary, body);
+      return details;
+    }
+
+    function mermaidArtifactSummary(part) {
+      const title = part.title || "Mermaid 图表";
+      const provider = part.renderProvider ? " · " + part.renderProvider : "";
+      const fallback = part.fallbackUsed ? " · fallback" : "";
+      const png = part.pngPath ? " · PNG 已生成" : " · PNG 未生成";
+      return title + png + provider + fallback;
+    }
+
+    function appendMermaidArtifactStat(root, label, value) {
+      const item = document.createElement("span");
+      item.className = "mermaidArtifactStat";
+      item.textContent = label + ": " + value;
+      root.appendChild(item);
+    }
+
+    function openGeneratedArtifactButton(path, label, mode) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = label.indexOf("PNG") >= 0 ? "statusActionButton primary" : "statusActionButton";
+      button.textContent = label;
+      button.title = label + ": " + path;
+      button.addEventListener("click", () => vscode.postMessage({ type: "openGeneratedDocument", path, mode: mode || "external" }));
+      return button;
     }
 
     function partCard(part, summaryText, className) {
@@ -9267,6 +11889,87 @@ ${codiconFontFace}    .codicon {
       return "Tool: " + (part.title || "tool") + (part.status ? " - " + part.status : "");
     }
 
+    function runProgressCard(part) {
+      const details = document.createElement("details");
+      details.className = "toolCard runProgressCard";
+      details.open = part.status !== "completed" && part.status !== "warning";
+      const summary = document.createElement("summary");
+      summary.textContent = runProgressSummary(part);
+      const body = document.createElement("div");
+      body.className = "runProgressBody";
+      const stats = document.createElement("div");
+      stats.className = "runProgressStats";
+      appendRunProgressStat(stats, "状态", runProgressStatusLabel(part.status));
+      if (part.total) appendRunProgressStat(stats, "进度", String(part.current || 0) + "/" + String(part.total));
+      appendRunProgressStat(stats, "Warning", String(part.warningCount || 0));
+      appendRunProgressStat(stats, "Fallback", String(part.fallbackCount || 0));
+      if (part.startedAt) appendRunProgressStat(stats, "耗时", elapsedLabel(part.startedAt));
+      const list = document.createElement("div");
+      list.className = "runProgressList";
+      const items = Array.isArray(part.items) ? part.items.slice(-36) : [];
+      for (const item of items) list.appendChild(runProgressItemRow(item));
+      if (!items.length) {
+        const empty = document.createElement("div");
+        empty.className = "runProgressItemDetail";
+        empty.textContent = "等待工具进度。";
+        list.appendChild(empty);
+      }
+      body.append(stats, list);
+      details.append(summary, body);
+      return details;
+    }
+
+    function runProgressSummary(part) {
+      const base = part.title || "执行进度";
+      const progress = part.total ? " · " + String(part.current || 0) + "/" + String(part.total) : "";
+      const warning = part.warningCount ? " · Warning " + String(part.warningCount) : "";
+      const fallback = part.fallbackCount ? " · Fallback " + String(part.fallbackCount) : "";
+      return base + " · " + runProgressStatusLabel(part.status) + progress + warning + fallback;
+    }
+
+    function appendRunProgressStat(root, label, value) {
+      const item = document.createElement("span");
+      item.className = "runProgressStat";
+      item.textContent = label + ": " + value;
+      root.appendChild(item);
+    }
+
+    function runProgressItemRow(item) {
+      const row = document.createElement("div");
+      row.className = "runProgressItem";
+      const head = document.createElement("div");
+      head.className = "runProgressItemHead";
+      const title = document.createElement("span");
+      title.textContent = item.title || item.tool || "step";
+      const status = document.createElement("span");
+      status.className = "runProgressItemStatus";
+      status.textContent = runProgressStatusLabel(item.status);
+      head.append(title, status);
+      row.appendChild(head);
+      const detailText = [
+        item.detail || "",
+        item.artifactPath ? "artifact: " + item.artifactPath : "",
+        item.path && item.path !== item.artifactPath ? "path: " + item.path : "",
+        item.provider ? "provider: " + item.provider : "",
+        item.fallbackUsed ? "fallback: true" : "",
+      ].filter(Boolean).join("\\n");
+      if (detailText) {
+        const detail = document.createElement("div");
+        detail.className = "runProgressItemDetail";
+        detail.textContent = detailText;
+        row.appendChild(detail);
+      }
+      return row;
+    }
+
+    function runProgressStatusLabel(status) {
+      if (status === "completed") return "完成";
+      if (status === "warning") return "有提示";
+      if (status === "failed") return "失败";
+      if (status === "skipped") return "已跳过";
+      return "运行中";
+    }
+
     function docAgentTimelineCard(part) {
       const details = document.createElement("details");
       details.className = "toolCard docAgentTimelineCard";
@@ -9498,6 +12201,189 @@ ${codiconFontFace}    .codicon {
         card.appendChild(warnings);
       }
       return card;
+    }
+
+    function wordRenderCard(part) {
+      const card = document.createElement("div");
+      card.className = "toolCard wordRenderCard";
+      const title = document.createElement("div");
+      title.className = "wordRenderTitle";
+      title.textContent = "Word 渲染质检";
+      const meta = document.createElement("div");
+      meta.className = "wordRenderMeta";
+      const skipped = part.visualQaStatus === "skipped" || part.attempted === false;
+      const state = part.ok === false
+        ? "有风险"
+        : skipped
+          ? "已跳过视觉 QA：" + wordRenderSkipReasonText(part.skipReason)
+          : "已生成页面证据";
+      meta.textContent = [
+        part.path || "",
+        "状态 " + state,
+        "页数 " + String(part.pageCount || 0),
+      ].filter(Boolean).join(" · ");
+      card.append(title, meta);
+      const visualQa = wordRenderVisualQaCoverageText(part);
+      if (visualQa) {
+        const visualQaNode = document.createElement("div");
+        visualQaNode.className = "wordRenderMeta";
+        visualQaNode.textContent = visualQa;
+        card.appendChild(visualQaNode);
+      }
+      const artifacts = wordRenderArtifactText(part);
+      if (artifacts) {
+        const artifactNode = document.createElement("div");
+        artifactNode.className = "wordRenderArtifacts";
+        artifactNode.textContent = artifacts;
+        card.appendChild(artifactNode);
+      }
+      const actions = wordRenderActions(part);
+      if (actions.childElementCount) card.appendChild(actions);
+      const previews = wordRenderPreviewStrip(part);
+      if (previews) card.appendChild(previews);
+      const summary = wordRenderSummaryText(part);
+      if (summary) {
+        const summaryNode = document.createElement("div");
+        summaryNode.className = "wordRenderSummary";
+        summaryNode.textContent = summary;
+        card.appendChild(summaryNode);
+      }
+      if (Array.isArray(part.warnings) && part.warnings.length) {
+        const warnings = document.createElement("pre");
+        warnings.className = "wordRenderWarnings";
+        warnings.textContent = part.warnings.slice(0, 8).join("\\n");
+        card.appendChild(warnings);
+      }
+      return card;
+    }
+
+    function wordRenderActions(part) {
+      const actions = document.createElement("div");
+      actions.className = "wordRenderActions";
+      if (part.pdfArtifactPath) {
+        const openPdf = document.createElement("button");
+        openPdf.type = "button";
+        openPdf.className = "statusActionButton primary";
+        openPdf.textContent = "打开 PDF";
+        openPdf.title = "打开渲染后的 PDF artifact";
+        openPdf.addEventListener("click", () => vscode.postMessage({ type: "openGeneratedDocument", path: part.pdfArtifactPath, mode: "external" }));
+        actions.appendChild(openPdf);
+      }
+      const pages = Array.isArray(part.pagePngPaths) ? part.pagePngPaths : [];
+      if (pages[0]) {
+        const openPng = document.createElement("button");
+        openPng.type = "button";
+        openPng.className = "statusActionButton";
+        openPng.textContent = "打开首个 PNG";
+        openPng.title = "打开第一页 PNG artifact";
+        openPng.addEventListener("click", () => vscode.postMessage({ type: "openGeneratedDocument", path: pages[0], mode: "external" }));
+        actions.appendChild(openPng);
+      }
+      if (part.pdfArtifactPath || pages[0]) {
+        const reveal = document.createElement("button");
+        reveal.type = "button";
+        reveal.className = "statusActionButton";
+        reveal.textContent = "显示 artifact";
+        reveal.title = "在 Finder 或系统资源管理器中显示渲染 artifact";
+        reveal.addEventListener("click", () => vscode.postMessage({ type: "openGeneratedDocument", path: part.pdfArtifactPath || pages[0], mode: "reveal" }));
+        actions.appendChild(reveal);
+      }
+      return actions;
+    }
+
+    function wordRenderSkipReasonText(reason) {
+      switch (String(reason || "")) {
+        case "remote-unconfigured":
+          return "远端服务未配置";
+        case "remote-unavailable":
+          return "远端服务连接失败";
+        case "remote-invalid-response":
+          return "远端响应异常";
+        case "artifact-persist-failed":
+          return "artifact 保存失败";
+        default:
+          return "远端不可用";
+      }
+    }
+
+    function wordRenderVisualQaCoverageText(part) {
+      const coverage = part && typeof part.visualQaCoverage === "object" ? part.visualQaCoverage : undefined;
+      if (!coverage) return "";
+      if (String(coverage.mode || "") === "skipped") {
+        return "视觉 QA：已跳过（" + wordRenderSkipReasonText(part.skipReason) + "）";
+      }
+      const total = Number(coverage.totalPages || part.pageCount || 0);
+      const queued = Number(coverage.queuedPages || 0);
+      const batchCount = Number(coverage.batchCount || 0);
+      const batchSize = Number(coverage.batchSize || 0);
+      const mode = String(coverage.mode || "");
+      if (!total && !queued) return "";
+      const status = mode === "summary-only" ? "视觉 QA：summary-only" : "图片 QA 队列";
+      return [
+        status + " " + String(queued || 0) + "/" + String(total || queued || 0) + " 页",
+        batchCount ? String(batchCount) + " 批" : "",
+        batchSize ? "每批 " + String(batchSize) + " 页" : "",
+      ].filter(Boolean).join(" · ");
+    }
+
+    function wordRenderPreviewStrip(part) {
+      const uris = Array.isArray(part.pagePngPreviewUris) ? part.pagePngPreviewUris.filter(Boolean).slice(0, 4) : [];
+      if (!uris.length) return undefined;
+      const pages = Array.isArray(part.pagePngPaths) ? part.pagePngPaths : [];
+      const strip = document.createElement("div");
+      strip.className = "wordRenderPreviewStrip";
+      for (const [index, uri] of uris.entries()) {
+        const item = document.createElement("div");
+        item.className = "wordRenderPreviewItem";
+        const image = document.createElement("img");
+        image.className = "wordRenderPreviewImage";
+        image.loading = "lazy";
+        image.alt = "Word render page " + String(index + 1);
+        image.src = uri;
+        const caption = document.createElement("div");
+        caption.className = "wordRenderPreviewCaption";
+        caption.textContent = "page " + String(index + 1) + (pages[index] ? " · " + pages[index] : "");
+        item.append(image, caption);
+        strip.appendChild(item);
+      }
+      if (pages.length > uris.length) {
+        const more = document.createElement("div");
+        more.className = "wordRenderPreviewCaption";
+        more.textContent = "另有 " + String(pages.length - uris.length) + " 页 PNG artifact";
+        strip.appendChild(more);
+      }
+      return strip;
+    }
+
+    function wordRenderArtifactText(part) {
+      const lines = [];
+      if (part.renderArtifactDir) lines.push("artifact: " + part.renderArtifactDir);
+      if (part.pdfArtifactPath) lines.push("pdf: " + part.pdfArtifactPath);
+      const pages = Array.isArray(part.pagePngPaths) ? part.pagePngPaths : [];
+      if (pages.length) {
+        const shown = pages.slice(0, 6).map((path, index) => "page " + String(index + 1) + ": " + path);
+        lines.push(shown.join("\\n"));
+        if (pages.length > shown.length) lines.push("..." + String(pages.length - shown.length) + " more page PNG(s)");
+      }
+      return lines.join("\\n");
+    }
+
+    function wordRenderSummaryText(part) {
+      const summaries = Array.isArray(part.pageVisualSummaries) ? part.pageVisualSummaries.slice(0, 4) : [];
+      const lines = [];
+      for (const summary of summaries) {
+        if (!summary || typeof summary !== "object") continue;
+        const page = summary.page || "?";
+        const inkRatio = typeof summary.inkRatio === "number" ? "ink " + (summary.inkRatio * 100).toFixed(2) + "%" : "";
+        const bounds = summary.contentBounds && typeof summary.contentBounds === "object"
+          ? "bounds " + ["left", "top", "right", "bottom"].map((key) => summary.contentBounds[key]).join("/")
+          : "";
+        const edge = summary.edgeInk && typeof summary.edgeInk === "object"
+          ? "edge " + Object.keys(summary.edgeInk).filter((key) => summary.edgeInk[key]).join(",")
+          : "";
+        lines.push(["page " + page, inkRatio, bounds, edge].filter(Boolean).join(" · "));
+      }
+      return lines.join("\\n");
     }
 
     function renderMarkdownInto(root, text) {
@@ -10120,15 +13006,16 @@ ${codiconFontFace}    .codicon {
 	      zoomOut.type = "button";
 	      setIconOnlyButton(zoomOut, "zoomOut", "Zoom out diagram");
 	      zoomOut.addEventListener("click", () => setDiagramZoom(block, diagramZoomValue(block) - DIAGRAM_ZOOM_STEP));
-	      const zoomIn = document.createElement("button");
-	      zoomIn.className = "diagramZoom diagramZoomIn oc-icon-btn oc-liquid-btn";
-	      zoomIn.type = "button";
-	      setIconOnlyButton(zoomIn, "zoomIn", "Zoom in diagram");
-	      zoomIn.addEventListener("click", () => setDiagramZoom(block, diagramZoomValue(block) + DIAGRAM_ZOOM_STEP));
-	      const exportPng = document.createElement("button");
-	      exportPng.className = "exportMermaidImage oc-icon-btn oc-liquid-btn";
-	      exportPng.type = "button";
-	      setIconOnlyButton(exportPng, "save", "Export Mermaid diagram as PNG");
+		      const zoomIn = document.createElement("button");
+		      zoomIn.className = "diagramZoom diagramZoomIn oc-icon-btn oc-liquid-btn";
+		      zoomIn.type = "button";
+		      setIconOnlyButton(zoomIn, "zoomIn", "Zoom in diagram");
+		      zoomIn.addEventListener("click", () => setDiagramZoom(block, diagramZoomValue(block) + DIAGRAM_ZOOM_STEP));
+			      const viewer = diagramViewerButton(block, "Mermaid diagram");
+		      const exportPng = document.createElement("button");
+		      exportPng.className = "exportMermaidImage oc-icon-btn oc-liquid-btn";
+		      exportPng.type = "button";
+		      setIconOnlyButton(exportPng, "save", "Export Mermaid diagram as PNG");
 	      exportPng.addEventListener("click", () => exportMermaidDiagramImage(block, exportPng));
 	      const source = document.createElement("button");
 	      source.className = "toggleDiagramSource oc-icon-btn oc-liquid-btn";
@@ -10140,7 +13027,7 @@ ${codiconFontFace}    .codicon {
 	      copy.type = "button";
 	      setIconOnlyButton(copy, "copy", "Copy Mermaid source");
 	      copy.addEventListener("click", () => copyCode(codeText, copy));
-	      actions.append(zoomOut, zoomIn, exportPng, source, copy);
+		      actions.append(zoomOut, zoomIn, viewer, exportPng, source, copy);
 	      head.append(label, actions);
 	      const canvas = document.createElement("div");
 	      canvas.className = "diagramCanvas";
@@ -10160,7 +13047,7 @@ ${codiconFontFace}    .codicon {
 	      block.append(head, canvas, sourcePre);
 	      setDiagramZoom(block, DIAGRAM_ZOOM_DEFAULT);
 	      disableDiagramZoom(block);
-	      renderMermaidDiagram(block, canvas, codeText);
+	      renderMermaidDiagram(block, canvas, codeText, language || "mermaid");
 	      return block;
 	    }
 
@@ -10186,14 +13073,15 @@ ${codiconFontFace}    .codicon {
       zoomOut.type = "button";
       setIconOnlyButton(zoomOut, "zoomOut", "Zoom out diagram");
       zoomOut.addEventListener("click", () => setDiagramZoom(block, diagramZoomValue(block) - DIAGRAM_ZOOM_STEP));
-      const zoomIn = document.createElement("button");
-      zoomIn.className = "diagramZoom diagramZoomIn oc-icon-btn oc-liquid-btn";
-      zoomIn.type = "button";
-      setIconOnlyButton(zoomIn, "zoomIn", "Zoom in diagram");
-      zoomIn.addEventListener("click", () => setDiagramZoom(block, diagramZoomValue(block) + DIAGRAM_ZOOM_STEP));
-      const exportPng = document.createElement("button");
-      exportPng.className = "exportDrawioImage oc-icon-btn oc-liquid-btn";
-      exportPng.type = "button";
+	      const zoomIn = document.createElement("button");
+	      zoomIn.className = "diagramZoom diagramZoomIn oc-icon-btn oc-liquid-btn";
+	      zoomIn.type = "button";
+	      setIconOnlyButton(zoomIn, "zoomIn", "Zoom in diagram");
+	      zoomIn.addEventListener("click", () => setDiagramZoom(block, diagramZoomValue(block) + DIAGRAM_ZOOM_STEP));
+	      const viewer = diagramViewerButton(block, "draw.io diagram");
+	      const exportPng = document.createElement("button");
+	      exportPng.className = "exportDrawioImage oc-icon-btn oc-liquid-btn";
+	      exportPng.type = "button";
       exportPng.disabled = true;
       setDrawioExportUnavailable(exportPng, "Draw.io PNG export is available after the preview renders.");
       let renderedPngDataUri = "";
@@ -10219,7 +13107,7 @@ ${codiconFontFace}    .codicon {
       copy.type = "button";
       setIconOnlyButton(copy, "copy", "Copy draw.io source");
       copy.addEventListener("click", () => copyCode(codeText, copy));
-      actions.append(zoomOut, zoomIn, exportPng, source, copy);
+	      actions.append(zoomOut, zoomIn, viewer, exportPng, source, copy);
       head.append(label, actions);
       const canvas = document.createElement("div");
       canvas.className = "diagramCanvas";
@@ -10271,7 +13159,167 @@ ${codiconFontFace}    .codicon {
       return status;
 	    }
 
-	    async function exportMermaidDiagramImage(block, button) {
+	    function diagramZoomSurface(...children) {
+	      const surface = document.createElement("div");
+	      surface.className = "diagramZoomSurface";
+	      surface.append(...children);
+	      return surface;
+	    }
+
+	    function diagramViewerButton(block, title) {
+	      const viewer = document.createElement("button");
+	      viewer.className = "openDiagramViewer oc-icon-btn oc-liquid-btn";
+	      viewer.type = "button";
+	      viewer.disabled = true;
+	      viewer.dataset.diagramViewerTitle = title || "Diagram viewer";
+	      setIconOnlyButton(viewer, "expand", "Open diagram viewer");
+	      viewer.addEventListener("click", () => openDiagramViewer(block, viewer));
+	      return viewer;
+	    }
+
+	    function openDiagramViewer(block, opener) {
+	      const viewer = el("diagramViewer");
+	      const canvas = el("diagramViewerCanvas");
+	      const target = el("diagramViewerSurface");
+	      const surface = block && block.querySelector ? block.querySelector(".diagramZoomSurface") : undefined;
+	      const clone = cloneDiagramForViewer(surface);
+	      if (!viewer || !canvas || !target || !clone) {
+	        setNotice("Diagram viewer is not available for this diagram yet.");
+	        return;
+	      }
+	      diagramViewerOpener = opener || undefined;
+	      el("diagramViewerTitle").textContent = opener && opener.dataset ? (opener.dataset.diagramViewerTitle || "Diagram viewer") : "Diagram viewer";
+	      target.replaceChildren(clone);
+	      viewer.hidden = false;
+	      viewer.removeAttribute("hidden");
+	      viewer.setAttribute("aria-hidden", "false");
+	      viewer.setAttribute("aria-modal", "true");
+	      fitDiagramViewer();
+	      if (clone.matches && clone.matches("img.drawioImage") && !clone.complete) {
+	        clone.addEventListener("load", fitDiagramViewer, { once: true });
+	      }
+	      canvas.focus();
+	    }
+
+	    function closeDiagramViewer() {
+	      const viewer = el("diagramViewer");
+	      const surface = el("diagramViewerSurface");
+	      if (!viewer || viewer.hidden) return;
+	      viewer.hidden = true;
+	      viewer.setAttribute("hidden", "");
+	      viewer.setAttribute("aria-hidden", "true");
+	      viewer.removeAttribute("aria-modal");
+	      if (surface) surface.replaceChildren();
+	      if (diagramViewerOpener && diagramViewerOpener.focus) diagramViewerOpener.focus();
+	      diagramViewerOpener = undefined;
+	    }
+
+	    function isDiagramViewerOpen() {
+	      const viewer = el("diagramViewer");
+	      return Boolean(viewer && !viewer.hidden);
+	    }
+
+	    function cloneDiagramForViewer(surface) {
+	      const source = surface && surface.querySelector ? surface.querySelector("svg, img.drawioImage") : undefined;
+	      if (!source) return undefined;
+	      const clone = source.cloneNode(true);
+	      if (clone.removeAttribute) clone.removeAttribute("style");
+	      if (clone.matches && clone.matches("img.drawioImage")) {
+	        clone.draggable = false;
+	        clone.alt = source.alt || "Rendered diagram";
+	      }
+	      return clone;
+	    }
+
+	    function fitDiagramViewer() {
+	      const canvas = el("diagramViewerCanvas");
+	      const surface = el("diagramViewerSurface");
+	      if (!canvas || !surface) return;
+	      const baseSize = diagramViewerBaseSize(surface);
+	      const fitWidth = Math.max(1, canvas.clientWidth - 24);
+	      const fitHeight = Math.max(1, canvas.clientHeight - 24);
+	      const fitZoom = Math.min(1, fitWidth / baseSize.width, fitHeight / baseSize.height);
+	      setDiagramViewerZoom(fitZoom);
+	      canvas.scrollLeft = 0;
+	      canvas.scrollTop = 0;
+	    }
+
+	    function setDiagramViewerZoom(value) {
+	      const canvas = el("diagramViewerCanvas");
+	      const surface = el("diagramViewerSurface");
+	      if (!canvas || !surface) return;
+	      diagramViewerZoom = normalizeDiagramViewerZoom(value);
+	      const baseSize = diagramViewerBaseSize(surface);
+	      surface.style.setProperty("--diagram-viewer-content-width", Math.max(1, Math.round(baseSize.width * diagramViewerZoom)) + "px");
+	      surface.style.setProperty("--diagram-viewer-content-height", Math.max(1, Math.round(baseSize.height * diagramViewerZoom)) + "px");
+	      const zoomOut = el("diagramViewerZoomOut");
+	      const zoomIn = el("diagramViewerZoomIn");
+	      if (zoomOut) zoomOut.disabled = diagramViewerZoom <= DIAGRAM_VIEWER_ZOOM_MIN;
+	      if (zoomIn) zoomIn.disabled = diagramViewerZoom >= DIAGRAM_VIEWER_ZOOM_MAX;
+	    }
+
+	    function normalizeDiagramViewerZoom(value) {
+	      const raw = Number.isFinite(value) ? value : DIAGRAM_ZOOM_DEFAULT;
+	      const stepped = Math.round(raw / DIAGRAM_ZOOM_STEP) * DIAGRAM_ZOOM_STEP;
+	      return Math.max(DIAGRAM_VIEWER_ZOOM_MIN, Math.min(DIAGRAM_VIEWER_ZOOM_MAX, Number(stepped.toFixed(2))));
+	    }
+
+	    function diagramViewerBaseSize(surface) {
+	      const intrinsic = diagramZoomIntrinsicSize(surface);
+	      if (intrinsic && intrinsic.width > 0 && intrinsic.height > 0) return intrinsic;
+	      const rect = surface && surface.getBoundingClientRect ? surface.getBoundingClientRect() : { width: 0, height: 0 };
+	      return {
+	        width: Math.max(1, rect.width || 800),
+	        height: Math.max(1, rect.height || 600),
+	      };
+	    }
+
+	    function enableDiagramViewerPan(canvas) {
+	      if (!canvas || canvas.dataset.diagramViewerPanReady === "true") return;
+	      canvas.dataset.diagramViewerPanReady = "true";
+	      let activePointerId = undefined;
+	      let startClientX = 0;
+	      let startClientY = 0;
+	      let startScrollLeft = 0;
+	      let startScrollTop = 0;
+
+	      canvas.addEventListener("pointerdown", (event) => {
+	        if (event.button !== 0 || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
+	        activePointerId = event.pointerId;
+	        startClientX = event.clientX;
+	        startClientY = event.clientY;
+	        startScrollLeft = canvas.scrollLeft;
+	        startScrollTop = canvas.scrollTop;
+	        canvas.classList.add("diagramDragging");
+	        canvas.setPointerCapture(event.pointerId);
+	        event.preventDefault();
+	      });
+
+	      canvas.addEventListener("pointermove", (event) => {
+	        if (activePointerId !== event.pointerId) return;
+	        canvas.scrollLeft = startScrollLeft - (event.clientX - startClientX);
+	        canvas.scrollTop = startScrollTop - (event.clientY - startClientY);
+	        event.preventDefault();
+	      });
+
+	      const endPan = (event) => {
+	        if (activePointerId !== event.pointerId) return;
+	        if (canvas.hasPointerCapture && canvas.hasPointerCapture(event.pointerId)) {
+	          canvas.releasePointerCapture(event.pointerId);
+	        }
+	        activePointerId = undefined;
+	        canvas.classList.remove("diagramDragging");
+	      };
+
+	      canvas.addEventListener("pointerup", endPan);
+	      canvas.addEventListener("pointercancel", endPan);
+	      canvas.addEventListener("lostpointercapture", () => {
+	        activePointerId = undefined;
+	        canvas.classList.remove("diagramDragging");
+	      });
+	    }
+
+		    async function exportMermaidDiagramImage(block, button) {
 	      const previousLabel = button ? (button.getAttribute("aria-label") || button.title || "Export Mermaid diagram as PNG") : "";
 	      try {
 	        const svg = block && block.dataset && block.dataset.diagramRendered === "true"
@@ -10295,6 +13343,7 @@ ${codiconFontFace}    .codicon {
 	    async function registerDiagramVisualEvidence(block, input) {
 	      try {
 	        if (!block || !block.dataset) return;
+	        if (block.dataset.messageMode === "mermaid-repair") return;
 	        if (!block.dataset.messageId) {
 	          if (!input.retry) setTimeout(() => void registerDiagramVisualEvidence(block, Object.assign({}, input, { retry: true })), 0);
 	          return;
@@ -10527,7 +13576,7 @@ ${codiconFontFace}    .codicon {
 	      return background;
 	    }
 
-	    async function renderMermaidDiagram(block, canvas, codeText) {
+	    async function renderMermaidDiagram(block, canvas, codeText, language) {
       const source = String(codeText || "");
       if (!source.trim()) {
         renderMermaidFallback(block, canvas, "Empty Mermaid diagram.");
@@ -10543,27 +13592,75 @@ ${codiconFontFace}    .codicon {
         return;
       }
       const renderId = "chipmate-mermaid-" + (++mermaidRenderSerial);
-      try {
-        const result = await mermaid.render(renderId, source);
-	        if (!canvas.isConnected) return;
-	        canvas.innerHTML = result && result.svg ? result.svg : "";
-	        if (!canvas.firstChild) {
-	          canvas.appendChild(diagramStatus("Mermaid produced an empty diagram.", true));
-	          disableDiagramZoom(block);
-	          return;
-	        }
-	        block.dataset.diagramRendered = "true";
-	        setDiagramZoom(block, diagramZoomValue(block));
-	        void registerDiagramVisualEvidence(block, {
-	          kind: "mermaid",
-	          title: "Mermaid diagram",
+	      try {
+	        const result = await mermaid.render(renderId, source);
+		        if (!canvas.isConnected) return;
+		        const svg = preserveMessagesScrollDuringDiagramRender(block, () => {
+		          const surface = diagramZoomSurface();
+		          surface.innerHTML = result && result.svg ? result.svg : "";
+		          canvas.replaceChildren(surface);
+		          const renderedSvg = surface.querySelector("svg");
+		          if (!renderedSvg) {
+		            canvas.replaceChildren(diagramStatus("Mermaid produced an empty diagram.", true));
+		            disableDiagramZoom(block);
+		            return undefined;
+		          }
+		          block.dataset.diagramRendered = "true";
+		          setDiagramZoom(block, diagramZoomValue(block));
+		          return renderedSvg;
+		        });
+		        if (!svg) return;
+		        void registerDiagramVisualEvidence(block, {
+		          kind: "mermaid",
+		          title: "Mermaid diagram",
 	          source,
-	          svg: canvas.querySelector("svg"),
+	          svg,
 	        });
 	      } catch (error) {
-	        renderMermaidFallback(block, canvas, "Mermaid render failed: " + diagramErrorMessage(error));
+	        const message = diagramErrorMessage(error);
+	        renderMermaidFallback(block, canvas, "Mermaid render failed: " + message);
+	        postMermaidRenderFailed(block, {
+	          source,
+	          error: message,
+	          language: language || "mermaid",
+	        });
 	      }
     }
+
+	    function postMermaidRenderFailed(block, input) {
+	      try {
+	        if (!block || !block.dataset) return;
+	        if (!block.dataset.messageId) {
+	          if (!input.retry) setTimeout(() => postMermaidRenderFailed(block, Object.assign({}, input, { retry: true })), 0);
+	          return;
+	        }
+	        const source = String(input.source || "");
+	        const error = String(input.error || "");
+	        if (!source.trim() || !error.trim()) return;
+	        const sourceHash = hashString(source);
+	        const key = [
+	          block.dataset.sessionId || "",
+	          block.dataset.messageId || "",
+	          block.dataset.diagramId || "",
+	          sourceHash,
+	          hashString(error),
+	        ].join(":");
+	        if (postedMermaidRenderFailures.has(key)) return;
+	        postedMermaidRenderFailures.add(key);
+	        vscode.postMessage({
+	          type: "mermaidRenderFailed",
+	          sessionID: block.dataset.sessionId || "",
+	          messageId: block.dataset.messageId || "",
+	          diagramId: block.dataset.diagramId || "",
+	          sourceHash,
+	          source,
+	          error,
+	          language: input.language || "mermaid",
+	        });
+	      } catch {
+	        // Rendering already fell back to source view; repair telemetry is best effort.
+	      }
+	    }
 
     function initializeMermaid() {
       const mermaid = globalThis.mermaid;
@@ -10572,7 +13669,8 @@ ${codiconFontFace}    .codicon {
         mermaid.initialize({
           startOnLoad: false,
           securityLevel: "strict",
-          theme: mermaidTheme(),
+          theme: "base",
+          themeVariables: mermaidThemeVariables(),
           htmlLabels: false,
           flowchart: { htmlLabels: false }
         });
@@ -10581,18 +13679,38 @@ ${codiconFontFace}    .codicon {
       return mermaid;
     }
 
-    function mermaidTheme() {
-      const root = document.documentElement;
-      const body = document.body;
-      return root.classList.contains("vscode-dark") || body.classList.contains("vscode-dark") ? "dark" : "default";
+    function mermaidThemeVariables() {
+      // Keep diagram paper light for readability and PNG export parity in dark VS Code themes.
+      return {
+        background: "#ffffff",
+        mainBkg: "#ffffff",
+        primaryColor: "#f8fafc",
+        primaryTextColor: "#111827",
+        primaryBorderColor: "#94a3b8",
+        secondaryColor: "#eef6ff",
+        secondaryTextColor: "#111827",
+        secondaryBorderColor: "#93c5fd",
+        tertiaryColor: "#f7f7fb",
+        tertiaryTextColor: "#111827",
+        tertiaryBorderColor: "#c4b5fd",
+        clusterBkg: "#f8fafc",
+        clusterBorder: "#cbd5e1",
+        textColor: "#111827",
+        nodeTextColor: "#111827",
+        lineColor: "#475569",
+        edgeLabelBackground: "#ffffff",
+        fontFamily: "var(--vscode-editor-font-family, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif)"
+      };
     }
 
-	    function renderMermaidFallback(block, canvas, message) {
-	      if (!canvas.isConnected) return;
-	      canvas.replaceChildren(diagramStatus(message, true));
-	      disableDiagramZoom(block);
-	      block.classList.add("show-source");
-	    }
+		    function renderMermaidFallback(block, canvas, message) {
+		      if (!canvas.isConnected) return;
+		      preserveMessagesScrollDuringDiagramRender(block, () => {
+		        canvas.replaceChildren(diagramStatus(message, true));
+		        disableDiagramZoom(block);
+		        block.classList.add("show-source");
+		      });
+		    }
 
     async function renderDrawioDiagram(block, canvas, codeText, cacheKey, onReady) {
       const source = String(codeText || "");
@@ -10610,14 +13728,16 @@ ${codiconFontFace}    .codicon {
       }
 
       const cacheState = drawioRenderCacheState(cacheKey);
-      if (cacheState === "miss") {
-        const warnings = drawioOfflineWarnings(source);
-        if (warnings.length) {
-          canvas.replaceChildren(diagramStatus(warnings.join(" "), false));
-        } else {
-          canvas.replaceChildren(diagramStatus("Rendering draw.io diagram...", false));
-        }
-      }
+	      if (cacheState === "miss") {
+	        const warnings = drawioOfflineWarnings(source);
+	        preserveMessagesScrollDuringDiagramRender(block, () => {
+	          if (warnings.length) {
+	            canvas.replaceChildren(diagramStatus(warnings.join(" "), false));
+	          } else {
+	            canvas.replaceChildren(diagramStatus("Rendering draw.io diagram...", false));
+	          }
+	        });
+	      }
 
       try {
         const result = await queueDrawioRuntimeExport(source, cacheKey);
@@ -10626,16 +13746,21 @@ ${codiconFontFace}    .codicon {
         if (!/^data:image\\/png;base64,/i.test(dataUri)) {
           throw new Error("Offline draw.io runtime did not return a PNG image.");
         }
-        const image = document.createElement("img");
-        image.className = "drawioImage";
-        image.alt = "Rendered draw.io diagram";
-        image.src = dataUri;
-        canvas.replaceChildren(image);
-        block.dataset.diagramRendered = "true";
-        setDiagramZoom(block, diagramZoomValue(block));
-        onReady(dataUri);
-      } catch (error) {
-        renderDrawioFallback(block, canvas, drawioFallbackSummary(error), {
+	        const image = document.createElement("img");
+	        image.className = "drawioImage";
+	        image.alt = "Rendered draw.io diagram";
+	        image.addEventListener("load", () => {
+	          preserveMessagesScrollDuringDiagramRender(block, () => setDiagramZoom(block, diagramZoomValue(block)));
+	        }, { once: true });
+	        image.src = dataUri;
+	        preserveMessagesScrollDuringDiagramRender(block, () => {
+	          canvas.replaceChildren(diagramZoomSurface(image));
+	          block.dataset.diagramRendered = "true";
+	          setDiagramZoom(block, diagramZoomValue(block));
+	          onReady(dataUri);
+	        });
+	      } catch (error) {
+	        renderDrawioFallback(block, canvas, drawioFallbackSummary(error), {
           code: drawioFailureCode(error),
           detail: diagramErrorMessage(error),
           showSource: shouldShowDrawioSourceOnFailure(error),
@@ -10643,15 +13768,17 @@ ${codiconFontFace}    .codicon {
       }
     }
 
-    function renderDrawioFallback(block, canvas, message, options) {
-      if (!canvas.isConnected) return;
-      const failureCode = options && options.code ? String(options.code) : "drawio.render_failed";
-      const detail = options && options.detail ? String(options.detail) : "";
-      canvas.replaceChildren(diagramStatus(message, true, failureCode + (detail ? ": " + detail : "")));
-      disableDiagramZoom(block);
-      setDrawioExportUnavailable(block.querySelector(".exportDrawioImage"), "Draw.io PNG export is unavailable until the preview renders.");
-      if (!options || options.showSource !== false) block.classList.add("show-source");
-    }
+	    function renderDrawioFallback(block, canvas, message, options) {
+	      if (!canvas.isConnected) return;
+	      const failureCode = options && options.code ? String(options.code) : "drawio.render_failed";
+	      const detail = options && options.detail ? String(options.detail) : "";
+	      preserveMessagesScrollDuringDiagramRender(block, () => {
+	        canvas.replaceChildren(diagramStatus(message, true, failureCode + (detail ? ": " + detail : "")));
+	        disableDiagramZoom(block);
+	        setDrawioExportUnavailable(block.querySelector(".exportDrawioImage"), "Draw.io PNG export is unavailable until the preview renders.");
+	        if (!options || options.showSource !== false) block.classList.add("show-source");
+	      });
+	    }
 
     function setDrawioExportUnavailable(button, label) {
       if (!button) return;
@@ -11002,15 +14129,69 @@ ${codiconFontFace}    .codicon {
       return canvas.scrollWidth > canvas.clientWidth + 1 || canvas.scrollHeight > canvas.clientHeight + 1;
     }
 
+    function updateDiagramZoomSurface(canvas, zoom) {
+      const surface = canvas.querySelector(".diagramZoomSurface");
+      if (!surface) return;
+      if (zoom <= DIAGRAM_ZOOM_DEFAULT) {
+        surface.style.removeProperty("--diagram-zoom-content-width");
+        surface.style.removeProperty("--diagram-zoom-content-height");
+        return;
+      }
+      const baseSize = diagramZoomBaseSize(canvas, surface);
+      surface.style.setProperty("--diagram-zoom-content-width", Math.max(1, Math.round(baseSize.width * zoom)) + "px");
+      surface.style.setProperty("--diagram-zoom-content-height", Math.max(1, Math.round(baseSize.height * zoom)) + "px");
+    }
+
+    function diagramZoomBaseSize(canvas, surface) {
+      const width = diagramCanvasInnerWidth(canvas);
+      const intrinsic = diagramZoomIntrinsicSize(surface);
+      if (intrinsic && intrinsic.width > 0 && intrinsic.height > 0) {
+        return { width, height: Math.max(1, width * (intrinsic.height / intrinsic.width)) };
+      }
+      const rect = surface.getBoundingClientRect ? surface.getBoundingClientRect() : { width: 0, height: 0 };
+      return {
+        width: Math.max(1, width || rect.width || 800),
+        height: Math.max(1, rect.height || canvas.clientHeight || 600),
+      };
+    }
+
+    function diagramCanvasInnerWidth(canvas) {
+      const rect = canvas.getBoundingClientRect ? canvas.getBoundingClientRect() : { width: 0 };
+      const style = getComputedStyle(canvas);
+      const paddingX = (parseFloat(style.paddingLeft) || 0) + (parseFloat(style.paddingRight) || 0);
+      return Math.max(1, (canvas.clientWidth || rect.width || 800) - paddingX);
+    }
+
+    function diagramCanvasMaxHeight() {
+      const root = el("messages");
+      const rootHeight = root && root.clientHeight ? root.clientHeight : window.innerHeight || 900;
+      return Math.max(220, Math.min(900, rootHeight - 48));
+    }
+
+    function diagramZoomIntrinsicSize(surface) {
+      const svg = surface.querySelector("svg");
+      if (svg) return svgExportSize(svg);
+      const image = surface.querySelector("img.drawioImage");
+      if (image) {
+        const rect = image.getBoundingClientRect ? image.getBoundingClientRect() : { width: 0, height: 0 };
+        const width = image.naturalWidth || image.width || rect.width || 0;
+        const height = image.naturalHeight || image.height || rect.height || 0;
+        if (width > 0 && height > 0) return { width, height };
+      }
+      return undefined;
+    }
+
 	    function setDiagramZoom(block, value) {
 	      const zoom = normalizeDiagramZoom(value);
 	      block.dataset.diagramZoom = String(zoom);
-	      const canvas = block.querySelector(".diagramCanvas");
-	      if (canvas) {
-	        canvas.style.setProperty("--diagram-zoom", String(zoom));
-	        canvas.style.setProperty("--diagram-zoom-width", Math.round(zoom * 100) + "%");
-	        canvas.classList.toggle("zoomed-in", zoom > DIAGRAM_ZOOM_DEFAULT);
-	        if (zoom <= DIAGRAM_ZOOM_DEFAULT) canvas.classList.remove("diagramDragging");
+		      const canvas = block.querySelector(".diagramCanvas");
+		      if (canvas) {
+		        canvas.style.setProperty("--diagram-zoom", String(zoom));
+		        canvas.style.setProperty("--diagram-zoom-width", Math.round(zoom * 100) + "%");
+		        canvas.style.setProperty("--diagram-canvas-max-height", diagramCanvasMaxHeight() + "px");
+		        updateDiagramZoomSurface(canvas, zoom);
+		        canvas.classList.toggle("zoomed-in", zoom > DIAGRAM_ZOOM_DEFAULT);
+		        if (zoom <= DIAGRAM_ZOOM_DEFAULT) canvas.classList.remove("diagramDragging");
 	      }
 	      updateDiagramZoomControls(block);
 	    }
@@ -11025,16 +14206,18 @@ ${codiconFontFace}    .codicon {
 	      return Math.max(DIAGRAM_ZOOM_MIN, Math.min(DIAGRAM_ZOOM_MAX, Number(stepped.toFixed(2))));
 	    }
 
-	    function updateDiagramZoomControls(block) {
-	      const zoom = diagramZoomValue(block);
-	      const rendered = block.dataset.diagramRendered === "true";
-	      const zoomOut = block.querySelector(".diagramZoomOut");
-	      const zoomIn = block.querySelector(".diagramZoomIn");
-	      if (zoomOut) zoomOut.disabled = !rendered || zoom <= DIAGRAM_ZOOM_MIN;
-	      if (zoomIn) zoomIn.disabled = !rendered || zoom >= DIAGRAM_ZOOM_MAX;
-	    }
+		    function updateDiagramZoomControls(block) {
+		      const zoom = diagramZoomValue(block);
+		      const rendered = block.dataset.diagramRendered === "true";
+		      const zoomOut = block.querySelector(".diagramZoomOut");
+		      const zoomIn = block.querySelector(".diagramZoomIn");
+		      const viewer = block.querySelector(".openDiagramViewer");
+		      if (zoomOut) zoomOut.disabled = !rendered || zoom <= DIAGRAM_ZOOM_MIN;
+		      if (zoomIn) zoomIn.disabled = !rendered || zoom >= DIAGRAM_ZOOM_MAX;
+		      if (viewer) viewer.disabled = !rendered;
+		    }
 
-	    function disableDiagramZoom(block) {
+			    function disableDiagramZoom(block) {
 	      block.dataset.diagramRendered = "false";
 	      updateDiagramZoomControls(block);
 	    }
@@ -11840,6 +15023,30 @@ ${codiconFontFace}    .codicon {
       return (Math.round(number / 100000) / 10).toFixed(1).replace(/\\.0$/, "") + "m";
     }
 
+    function formatTokenCount(value) {
+      const number = Number(value || 0);
+      const absolute = Math.abs(number);
+      if (absolute >= 100000000) return (Math.round(number / 10000000) / 10).toFixed(1).replace(/\\.0$/, "") + "B";
+      if (absolute >= 1000000) return (Math.round(number / 100000) / 10).toFixed(1).replace(/\\.0$/, "") + "M";
+      if (absolute >= 1000) return (Math.round(number / 100) / 10).toFixed(1).replace(/\\.0$/, "") + "K";
+      return String(Math.round(number));
+    }
+
+    function formatTaskDuration(value) {
+      const label = formatDuration(value);
+      return label
+        .replace(/h/g, "h")
+        .replace(/m/g, "m")
+        .replace(/s/g, "s");
+    }
+
+    function shortDateLabel(value) {
+      if (!value) return "";
+      const date = new Date(String(value).length <= 10 ? String(value) + "T00:00:00" : value);
+      if (Number.isNaN(date.getTime())) return String(value);
+      return date.toLocaleDateString([], { month: "short", day: "numeric" });
+    }
+
     function formatBytes(value) {
       const bytes = Number(value || 0);
       if (bytes < 1024) return bytes + " B";
@@ -11887,6 +15094,18 @@ ${codiconFontFace}    .codicon {
 	    function setIconButtonState(button, input) {
 	      button.disabled = Boolean(input.disabled);
 	      button.classList.toggle("loading", Boolean(input.loading));
+        if (button.classList.contains("composerMoreItem")) {
+          setComposerMoreActionButton(button, {
+            icon: "refresh",
+            label: input.label,
+            meta: "Reload provider model list",
+            title: input.label,
+            disabled: Boolean(input.disabled),
+            loading: Boolean(input.loading),
+          });
+          renderComposerMoreTrigger();
+          return;
+        }
         setIconOnlyButton(button, "refresh", input.label);
 	    }
 
@@ -12033,15 +15252,17 @@ ${codiconFontFace}    .codicon {
       renderComposerMoreMenu();
     }
 
-    function renderComposerMoreMenu() {
-      const trigger = el("composerMore");
-      const root = el("composerMoreMenu");
-      if (!trigger || !root) return;
-      trigger.setAttribute("aria-expanded", composerMoreMenuOpen ? "true" : "false");
-      root.className = "modelMenu composerMoreMenu" + (composerMoreMenuOpen ? " open" : "");
-      root.setAttribute("aria-hidden", composerMoreMenuOpen ? "false" : "true");
-      if (composerMoreMenuOpen) positionComposerMoreMenu();
-    }
+	    function renderComposerMoreMenu() {
+	      const trigger = el("composerMore");
+	      const root = el("composerMoreMenu");
+	      if (!trigger || !root) return;
+        renderComposerMoreActionButtons();
+        renderComposerMoreTrigger();
+	      trigger.setAttribute("aria-expanded", composerMoreMenuOpen ? "true" : "false");
+	      root.className = "modelMenu composerMoreMenu" + (composerMoreMenuOpen ? " open" : "");
+	      root.setAttribute("aria-hidden", composerMoreMenuOpen ? "false" : "true");
+	      if (composerMoreMenuOpen) positionComposerMoreMenu();
+	    }
 
     function positionComposerMoreMenu() {
       if (!composerMoreMenuOpen) return;
@@ -12290,12 +15511,14 @@ ${codiconFontFace}    .codicon {
 
 	    function queuedSendDisplayText(item) {
 	      const text = item && typeof item.text === "string" ? item.text.trim() : "";
+	      if (item && item.kind === "goal") return text ? "Goal: " + text : "Goal";
 	      return text || "Please review the referenced context.";
 	    }
 
 	    function queuedSendMeta(item, index, total) {
+	      const goal = item && item.kind === "goal";
 	      const files = normalizeDraftMentionedFiles(item && item.mentionedFiles);
-	      const parts = ["Queued " + String(index + 1) + "/" + String(total)];
+	      const parts = [goal ? "Goal queued " + String(index + 1) + "/" + String(total) : "Queued " + String(index + 1) + "/" + String(total)];
 	      if (item && item.optimistic) parts.push("Pending");
 	      if (files.length) parts.push(String(files.length) + " file" + (files.length === 1 ? "" : "s"));
 	      return parts.join(" · ");

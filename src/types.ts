@@ -324,6 +324,116 @@ export type ChipMateTokenUsage = {
   }
 }
 
+export type ChipMateUsageKind = "reported" | "estimated"
+
+export type ChipMateUsageRecord = {
+  id: string
+  source: "chat"
+  usageKind: ChipMateUsageKind
+  sessionID: string
+  messageID: string
+  createdAt: number
+  completedAt?: number
+  providerID?: string
+  modelID?: string
+  mode?: string
+  tokens: ChipMateTokenUsage
+  durationMs?: number
+}
+
+export type ChipMateUsageStatsOptions = {
+  contextLimitsByModelID?: Record<string, number>
+}
+
+export type ChipMateUsageBucket = {
+  key: string
+  label: string
+  startAt: number
+  endAt: number
+  total: number
+  input: number
+  output: number
+  reasoning: number
+  cacheRead: number
+  cacheWrite: number
+  reportedTotal: number
+  estimatedTotal: number
+  count: number
+  reportedCount: number
+  estimatedCount: number
+}
+
+export type ChipMateUsageStatsSnapshot = {
+  generatedAt: number
+  rangeDays: number
+  hasData: boolean
+  summary: {
+    totalTokens: number
+    reportedTokens: number
+    estimatedTokens: number
+    peakDayTokens: number
+    peakDay?: string
+    longestTaskMs?: number
+    currentStreakDays: number
+    longestStreakDays: number
+    activeDays: number
+    recordedResponses: number
+    reportedResponses: number
+    estimatedResponses: number
+  }
+  daily: ChipMateUsageBucket[]
+  weekly: ChipMateUsageBucket[]
+  cumulative: ChipMateUsageBucket[]
+}
+
+export type ThreadGoalStatus =
+  | "active"
+  | "paused"
+  | "blocked"
+  | "usage_limited"
+  | "budget_limited"
+  | "complete"
+
+export type ThreadGoal = {
+  threadID: string
+  goalID: string
+  objective: string
+  status: ThreadGoalStatus
+  tokenBudget?: number
+  tokensUsed: number
+  timeUsedSeconds: number
+  createdAt: number
+  updatedAt: number
+}
+
+export type ThreadGoalOperation = {
+  sessionID: string
+  active: boolean
+  startedAt: number
+  updatedAt: number
+  turnCount: number
+  currentTurnID?: string
+  status?: ThreadGoalStatus
+  objective?: string
+}
+
+export type RunProgressStatus = "running" | "completed" | "warning" | "failed" | "skipped"
+
+export type RunProgressItem = {
+  id: string
+  title: string
+  status: RunProgressStatus
+  detail?: string
+  tool?: string
+  phase?: string
+  path?: string
+  artifactPath?: string
+  provider?: string
+  fallbackUsed?: boolean
+  startedAt?: number
+  updatedAt?: number
+}
+
 export type ChipMateModelLimit = {
   context?: number
   output?: number
@@ -370,6 +480,7 @@ export type ChipMateMessageInfo = {
   mode?: string
   cost?: number
   tokens?: ChipMateTokenUsage
+  usageKind?: ChipMateUsageKind
   finish?: string
   summary?: unknown
   time?: {
@@ -411,14 +522,70 @@ export type ChipMatePart =
         metadata?: unknown
       }
     }
+	  | {
+	      type: "diagram"
+	      kind: "drawio"
+	      title?: string
+	      xml: string
+	      warnings?: string[]
+	      source?: "tool" | "fence"
+	      diagramId?: string
+	      toolCallID?: string
+	    }
+	  | {
+	      type: "diagram"
+	      kind: "mermaid"
+	      title?: string
+	      sourceText: string
+	      warnings?: string[]
+	      source?: "tool" | "fence"
+	      displayMode?: "expanded" | "artifact"
+	      diagramId?: string
+	      toolCallID?: string
+	      mmdPath?: string
+	      absoluteMmdPath?: string
+	      pngPath?: string
+	      absolutePngPath?: string
+	      width?: number
+	      height?: number
+	      renderProvider?: string
+	      fallbackUsed?: boolean
+	    }
   | {
-      type: "diagram"
-      kind: "drawio"
+      type: "runProgress"
       title?: string
-      xml: string
+      status?: RunProgressStatus
+      startedAt?: number
+      updatedAt?: number
+      current?: number
+      total?: number
+      warningCount?: number
+      fallbackCount?: number
+      items?: RunProgressItem[]
+    }
+  | {
+      type: "wordRender"
+      title?: string
+      path?: string
+      absolutePath?: string
+      renderArtifactDir?: string
+      pdfArtifactPath?: string
+      pagePngPaths?: string[]
+      pageCount?: number
+      attempted?: boolean
+      ok?: boolean
+      visualQaStatus?: "completed" | "skipped"
+      skipReason?: "remote-unconfigured" | "remote-unavailable" | "remote-invalid-response" | "artifact-persist-failed"
+      remoteEndpoint?: string
       warnings?: string[]
-      source?: "tool" | "fence"
-      diagramId?: string
+      pageVisualSummaries?: unknown[]
+      visualQaCoverage?: {
+        totalPages?: number
+        queuedPages?: number
+        batchSize?: number
+        batchCount?: number
+        mode?: string
+      }
       toolCallID?: string
     }
   | {
@@ -485,6 +652,10 @@ export type ChipMateEvent =
       }
     }
   | { type: "message.part.removed"; properties: { sessionID?: string; messageID?: string; partID?: string } }
+  | { type: "usage.updated"; properties: { sessionID?: string; messageID?: string } }
+  | { type: "goal.updated"; properties: { sessionID?: string; goal?: ThreadGoal } }
+  | { type: "goal.cleared"; properties: { sessionID?: string } }
+  | { type: "goal.operation.started" | "goal.operation.finished"; properties: { sessionID?: string; operation?: ThreadGoalOperation } }
   | { type: "session.status"; properties: { sessionID?: string; status?: ChipMateSessionStatus } }
   | { type: "session.error"; properties: { sessionID?: string; error?: ChipMateMessageInfo["error"] | { data?: { message?: string }; message?: string } } }
   | { type: "session.created" | "session.updated" | "session.deleted"; properties: { info?: ChipMateSession } }

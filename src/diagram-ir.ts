@@ -40,6 +40,88 @@ export type DiagramIrVisualProfileSuggestion = {
   signals: string[]
 }
 
+export type DiagramIrIssueSeverity = "warning" | "blocking"
+
+export type DiagramIrIssue = {
+  code: string
+  severity: DiagramIrIssueSeverity
+  message: string
+  refs?: Array<{ kind?: string; id?: string; label?: string }>
+}
+
+export type DiagramIrVisualPlanMainBackbone = {
+  nodes?: string[]
+  edges?: string[]
+  direction?: "down" | "right" | "left" | "up" | string
+}
+
+export type DiagramIrVisualPlanEdgePresentation = {
+  mode?: "line" | "rail" | "legend" | string
+  rail?: "left" | "right" | "top" | "bottom" | string
+  marker?: string
+  label?: string
+  detail?: string
+  style?: Record<string, unknown> | string
+  drawioStyle?: Record<string, unknown> | string
+}
+
+export type DiagramIrVisualPlanLegendItem = {
+  id?: string
+  marker?: string
+  label?: string
+  text?: string
+  detail?: string
+  nodeId?: string
+  edgeId?: string
+}
+
+export type DiagramIrVisualPlanLegend = {
+  position?: "right" | "bottom" | string
+  title?: string
+  items?: DiagramIrVisualPlanLegendItem[]
+}
+
+export type DiagramIrVisualPlanPortHint = {
+  nodeId?: string
+  containerId?: string
+  side?: "left" | "right" | "top" | "bottom" | string
+  order?: number
+}
+
+export type DiagramIrVisualPlanBusTrunk = {
+  orientation?: "horizontal" | "vertical" | string
+  side?: "left" | "right" | "top" | "bottom" | "middle" | string
+  lane?: number
+  label?: string
+}
+
+export type DiagramIrVisualPlanJunction = {
+  id?: string
+  edges?: string[]
+  label?: string
+  visible?: boolean
+}
+
+export type DiagramIrVisualPlanBus = {
+  id?: string
+  label?: string
+  edges?: string[]
+  direction?: "left" | "right" | "up" | "down" | string
+  trunk?: DiagramIrVisualPlanBusTrunk
+  junctions?: DiagramIrVisualPlanJunction[]
+  portHints?: Record<string, DiagramIrVisualPlanPortHint>
+}
+
+export type DiagramIrVisualPlan = {
+  layoutProfile?: string
+  mainBackbone?: DiagramIrVisualPlanMainBackbone
+  edgePresentation?: Record<string, DiagramIrVisualPlanEdgePresentation>
+  legend?: DiagramIrVisualPlanLegend
+  buses?: DiagramIrVisualPlanBus[]
+  regions?: unknown
+  styleHints?: Record<string, unknown>
+}
+
 export type DiagramIr = {
   version?: string
   title?: string
@@ -65,6 +147,7 @@ export type DiagramIr = {
   sourceArtifacts?: unknown[]
   referenceDiagrams?: unknown[]
   evidenceSummary?: unknown
+  visualPlan?: DiagramIrVisualPlan
 }
 
 export type DiagramIrCoverageReport = {
@@ -79,6 +162,7 @@ export type DiagramIrValidationResult = {
   ok: boolean
   diagramIr: DiagramIr
   drawioSpec: DrawioDiagramSpec
+  issues: DiagramIrIssue[]
   warnings: string[]
   gaps: string[]
   nextEvidenceSuggestions: Array<{ tool: string; reason: string; args: Record<string, string> }>
@@ -143,6 +227,7 @@ export function findDiagramIrInput(input: unknown): unknown | undefined {
     asRecord(record.layoutHints) ||
     asRecord(record.styleHints) ||
     asRecord(record.semanticHints) ||
+    asRecord(record.visualPlan) ||
     Array.isArray(record.referenceDiagrams) ||
     Array.isArray(record.sourceArtifacts)
   ) {
@@ -156,6 +241,7 @@ export function validateDiagramIr(input: unknown): DiagramIrValidationResult {
   const irRecord = asRecord(findDiagramIrInput(input)) ?? root
   const warnings: string[] = []
   const gaps: string[] = []
+  const issues: DiagramIrIssue[] = []
   const title = compactText(stringValue(root.title) || stringValue(irRecord.title) || "Diagram", 120)
   const diagramType = normalizeDiagramType(stringValue(root.diagramType) || stringValue(irRecord.diagramType) || inferDiagramType(irRecord))
   const layout = normalizeLayout(root.layout ?? irRecord.layoutHints ?? irRecord.layout, diagramType)
@@ -173,6 +259,7 @@ export function validateDiagramIr(input: unknown): DiagramIrValidationResult {
   const sourceArtifacts = arrayValues(irRecord.sourceArtifacts)
   const referenceDiagrams = arrayValues(irRecord.referenceDiagrams)
   const composition = normalizeComposition(root.composition ?? irRecord.composition, warnings)
+  const visualPlan = normalizeVisualPlan(root.visualPlan ?? irRecord.visualPlan, warnings) ?? normalizeLegendOnlyVisualPlan(irRecord.legend)
 
   const allEvidenceElements = [...nodes, ...edges, ...regions, ...containers, ...groups, ...lanes, ...buses, ...ports]
   const elementsWithEvidence = allEvidenceElements.filter(hasEvidence).length
@@ -193,13 +280,80 @@ export function validateDiagramIr(input: unknown): DiagramIrValidationResult {
       warnings.push(`Confidence on "${elementLabel(element)}" should be between 0 and 1.`)
     }
   }
-  for (const message of unusedBoundaryMessages({
+  for (const issue of unusedBoundaryIssues({
     boundaries: [...regions, ...containers, ...groups, ...lanes],
     nodes: [...nodes, ...ports, ...arrays],
     edges: [...edges, ...buses],
+    severity: complexDiagram ? "blocking" : "warning",
   })) {
-    warnings.push(message)
-    if (complexDiagram) gaps.push(message)
+    addValidationIssue({ issue, issues, warnings, gaps })
+  }
+  for (const message of visualPlanReferenceMessages({
+    visualPlan,
+    nodes: [...nodes, ...ports, ...arrays],
+    edges: [...edges, ...buses],
+  })) {
+    addValidationIssue({
+      issue: {
+        code: "diagram.visualPlan.invalid_reference",
+        severity: "blocking",
+        message,
+      },
+      issues,
+      warnings,
+      gaps,
+    })
+  }
+  for (const issue of visualPlanBusAmbiguityIssues({
+    diagramType,
+    visualPlan,
+    edges: [...edges, ...buses],
+  })) {
+    addValidationIssue({ issue, issues, warnings, gaps })
+  }
+  const requiresVisualPlan = requiresPathVisualPlan(diagramType) && structurallyDenseDiagram(nodes, edges, [...regions, ...containers, ...groups, ...lanes])
+  if (complexDiagram && requiresVisualPlan && !visualPlan) {
+    const message = "Complex DiagramIR is structurally dense but has no visualPlan; ask the model/active skill to provide mainBackbone, edgePresentation, and legend decisions instead of letting the renderer infer semantics."
+    addValidationIssue({
+      issue: {
+        code: "diagram.visualPlan.missing",
+        severity: "blocking",
+        message,
+      },
+      issues,
+      warnings,
+      gaps,
+    })
+  } else if (complexDiagram && requiresVisualPlan && visualPlan) {
+    if (!visualPlan.mainBackbone?.nodes?.length && !visualPlan.mainBackbone?.edges?.length) {
+      const message = "Complex DiagramIR visualPlan is missing mainBackbone; the model/active skill must identify the primary reading path."
+      addValidationIssue({
+        issue: {
+          code: "diagram.visualPlan.missing_mainBackbone",
+          severity: "blocking",
+          message,
+        },
+        issues,
+        warnings,
+        gaps,
+      })
+    }
+    if (!visualPlan.edgePresentation || Object.keys(visualPlan.edgePresentation).length === 0) {
+      const message = "Complex DiagramIR visualPlan is missing edgePresentation; the model/active skill must decide which edges render as line, rail, or legend."
+      addValidationIssue({
+        issue: {
+          code: "diagram.visualPlan.missing_edgePresentation",
+          severity: "blocking",
+          message,
+        },
+        issues,
+        warnings,
+        gaps,
+      })
+    }
+  }
+  for (const issue of legendLowInformationIssues(visualPlan)) {
+    addValidationIssue({ issue, issues, warnings, gaps })
   }
 
   const diagramIr: DiagramIr = {
@@ -227,6 +381,7 @@ export function validateDiagramIr(input: unknown): DiagramIrValidationResult {
     sourceArtifacts,
     referenceDiagrams,
     evidenceSummary: copyJsonValue(irRecord.evidenceSummary),
+    visualPlan,
   }
 
   if (diagramIr.subdiagrams?.length && composition.mode === "single") {
@@ -254,6 +409,7 @@ export function validateDiagramIr(input: unknown): DiagramIrValidationResult {
     ok: gaps.length === 0,
     diagramIr,
     drawioSpec,
+    issues: uniqueIssues(issues).slice(0, 80),
     warnings: unique(warnings).slice(0, 80),
     gaps: unique(gaps).slice(0, 40),
     nextEvidenceSuggestions: nextEvidenceSuggestions(diagramType, diagramIr, gaps),
@@ -332,7 +488,6 @@ function diagramIrToDrawioSpec(input: {
   }
   for (const edge of input.diagramIr.edges ?? []) edges.push(edgeFromIr(edge))
   for (const bus of input.diagramIr.buses ?? []) edges.push(busFromIr(bus))
-  addLegend(input.diagramIr.legend, nodes, containers)
 
   return {
     title: input.title,
@@ -347,6 +502,7 @@ function diagramIrToDrawioSpec(input: {
     theme: input.theme as DrawioDiagramSpec["theme"],
     style: input.root.style as DrawioDiagramSpec["style"],
     composition: input.diagramIr.composition,
+    visualPlan: input.diagramIr.visualPlan,
   }
 }
 
@@ -470,35 +626,6 @@ function arrayFromIr(item: DiagramIrElement, warnings: string[]) {
   return { container, nodes }
 }
 
-function addLegend(legend: unknown, nodes: DrawioNodeSpec[], containers: DrawioContainerSpec[]) {
-  const record = asRecord(legend)
-  const items = arrayRecords(record?.items)
-  if (!record && !items.length) return
-  const id = stringValue(record?.id) || "legend"
-  containers.push({
-    id,
-    label: stringValue(record?.title) || "Legend",
-    x: numberValue(record?.x) ?? 880,
-    y: numberValue(record?.y) ?? 40,
-    width: numberValue(record?.width) ?? 220,
-    height: numberValue(record?.height) ?? Math.max(90, items.length * 36 + 48),
-    drawioStyle: "fillColor=#ffffff;strokeColor=#94a3b8;dashed=1;",
-  })
-  items.slice(0, 12).forEach((item, index) => {
-    nodes.push({
-      id: stringValue(item.id) || `legend-${index + 1}`,
-      label: stringValue(item.label) || stringValue(item.text) || `Item ${index + 1}`,
-      parent: id,
-      shape: stringValue(item.shape) || "rectangle",
-      x: 20,
-      y: 42 + index * 32,
-      width: 180,
-      height: 24,
-      drawioStyle: item.drawioStyle as DrawioNodeSpec["drawioStyle"],
-    })
-  })
-}
-
 function nextEvidenceSuggestions(diagramType: string, diagramIr: DiagramIr, gaps: string[]) {
   if (!gaps.length) return []
   if (diagramType === "state-machine") {
@@ -515,10 +642,7 @@ function nextEvidenceSuggestions(diagramType: string, diagramIr: DiagramIr, gaps
 
 function isStateLike(item: Record<string, unknown>) {
   const role = normalizeKey(stringValue(item.visualRole) || stringValue(item.role) || stringValue(item.type) || stringValue(item.shape))
-  const label = normalizeKey(stringValue(item.label) || stringValue(item.title) || stringValue(item.text) || stringValue(item.id))
-  return role.includes("state") ||
-    role.includes("fsm") ||
-    /(?:^|[-_])(idle|wait|dispatch|complete|done|busy|error|ready|reclaim|flush|scan|folding)(?:$|[-_])/.test(label)
+  return role.includes("state") || role.includes("fsm")
 }
 
 function isModuleLike(item: Record<string, unknown>) {
@@ -543,14 +667,274 @@ function isTransitionLike(item: Record<string, unknown>) {
     pathRole.includes("cross-module")
 }
 
-function unusedBoundaryMessages(input: {
-  boundaries: Record<string, unknown>[]
+function normalizeVisualPlan(input: unknown, warnings: string[]): DiagramIrVisualPlan | undefined {
+  const record = asRecord(input)
+  if (!record) return undefined
+  const mainBackboneRecord = asRecord(record.mainBackbone)
+  const legendRecord = asRecord(record.legend)
+  const visualPlan: DiagramIrVisualPlan = {
+    layoutProfile: stringValue(record.layoutProfile),
+    mainBackbone: mainBackboneRecord
+      ? {
+        nodes: stringArray(mainBackboneRecord.nodes),
+        edges: stringArray(mainBackboneRecord.edges),
+        direction: stringValue(mainBackboneRecord.direction),
+      }
+      : undefined,
+    edgePresentation: normalizeEdgePresentation(record.edgePresentation, warnings),
+    legend: legendRecord
+      ? {
+        position: stringValue(legendRecord.position),
+        title: stringValue(legendRecord.title),
+        items: arrayRecords(legendRecord.items).map((item) => ({
+          id: stringValue(item.id),
+          marker: stringValue(item.marker),
+          label: stringValue(item.label),
+          text: stringValue(item.text),
+          detail: stringValue(item.detail),
+          nodeId: stringValue(item.nodeId),
+          edgeId: stringValue(item.edgeId),
+        })),
+      }
+      : undefined,
+    buses: normalizeVisualPlanBuses(record.buses, warnings),
+    regions: copyJsonValue(record.regions),
+    styleHints: copyRecord(record.styleHints),
+  }
+  if (visualPlan.edgePresentation) {
+    for (const [edgeId, presentation] of Object.entries(visualPlan.edgePresentation)) {
+      const mode = normalizeKey(stringValue(presentation.mode))
+      if (mode && !["line", "rail", "legend"].includes(mode)) {
+        warnings.push(`VisualPlan edgePresentation for "${edgeId}" has unknown mode "${presentation.mode}"; use line, rail, or legend.`)
+      }
+      const rail = normalizeKey(stringValue(presentation.rail))
+      if (rail && !["left", "right", "top", "bottom"].includes(rail)) {
+        warnings.push(`VisualPlan edgePresentation for "${edgeId}" has unknown rail "${presentation.rail}"; use left, right, top, or bottom.`)
+      }
+    }
+  }
+  return visualPlan
+}
+
+function normalizeVisualPlanBuses(input: unknown, warnings: string[]) {
+  const buses = arrayRecords(input)
+  if (!buses.length) return undefined
+  return buses.map((bus, index): DiagramIrVisualPlanBus => {
+    const id = stringValue(bus.id) || `bus-${index + 1}`
+    const trunk = asRecord(bus.trunk)
+    const portHintsRecord = asRecord(bus.portHints)
+    const portHints: Record<string, DiagramIrVisualPlanPortHint> = {}
+    if (portHintsRecord) {
+      for (const [key, value] of Object.entries(portHintsRecord)) {
+        const record = asRecord(value)
+        if (!record) {
+          warnings.push(`VisualPlan bus "${id}" portHint "${key}" should be an object.`)
+          continue
+        }
+        portHints[key] = {
+          nodeId: stringValue(record.nodeId),
+          containerId: stringValue(record.containerId),
+          side: stringValue(record.side),
+          order: numberHint(record.order),
+        }
+      }
+    }
+    return {
+      id,
+      label: stringValue(bus.label),
+      edges: stringArray(bus.edges),
+      direction: stringValue(bus.direction),
+      trunk: trunk
+        ? {
+          orientation: stringValue(trunk.orientation),
+          side: stringValue(trunk.side),
+          lane: numberHint(trunk.lane),
+          label: stringValue(trunk.label),
+        }
+        : undefined,
+      junctions: arrayRecords(bus.junctions).map((junction, junctionIndex) => ({
+        id: stringValue(junction.id) || `${id}-junction-${junctionIndex + 1}`,
+        edges: stringArray(junction.edges),
+        label: stringValue(junction.label),
+        visible: booleanHint(junction.visible),
+      })),
+      portHints: Object.keys(portHints).length ? portHints : undefined,
+    }
+  })
+}
+
+function normalizeLegendOnlyVisualPlan(input: unknown): DiagramIrVisualPlan | undefined {
+  const record = asRecord(input)
+  const items = arrayRecords(record?.items)
+  if (!record && !items.length) return undefined
+  return {
+    legend: {
+      position: stringValue(record?.position) || "right",
+      title: stringValue(record?.title) || "Legend / Evidence",
+      items: items.map((item, index) => ({
+        id: stringValue(item.id) || `legend-${index + 1}`,
+        marker: stringValue(item.marker),
+        label: stringValue(item.label),
+        text: stringValue(item.text),
+        detail: stringValue(item.detail),
+        nodeId: stringValue(item.nodeId),
+        edgeId: stringValue(item.edgeId),
+      })),
+    },
+  }
+}
+
+function normalizeEdgePresentation(input: unknown, warnings: string[]) {
+  const record = asRecord(input)
+  if (!record) return undefined
+  const result: Record<string, DiagramIrVisualPlanEdgePresentation> = {}
+  for (const [edgeId, value] of Object.entries(record)) {
+    const item = asRecord(value)
+    if (!item) {
+      warnings.push(`VisualPlan edgePresentation for "${edgeId}" should be an object.`)
+      continue
+    }
+    result[edgeId] = {
+      mode: stringValue(item.mode),
+      rail: stringValue(item.rail),
+      marker: stringValue(item.marker),
+      label: stringValue(item.label),
+      detail: stringValue(item.detail),
+      style: item.style as DiagramIrVisualPlanEdgePresentation["style"],
+      drawioStyle: item.drawioStyle as DiagramIrVisualPlanEdgePresentation["drawioStyle"],
+    }
+  }
+  return result
+}
+
+function visualPlanReferenceMessages(input: {
+  visualPlan: DiagramIrVisualPlan | undefined
   nodes: Record<string, unknown>[]
   edges: Record<string, unknown>[]
 }) {
   const messages: string[] = []
+  const plan = input.visualPlan
+  if (!plan) return messages
+  const nodeIds = new Set(input.nodes.map((node) => stringValue(node.id)).filter(Boolean))
+  const edgeIds = new Set(input.edges.map((edge) => stringValue(edge.id)).filter(Boolean))
+  for (const nodeId of plan.mainBackbone?.nodes ?? []) {
+    if (!nodeIds.has(nodeId)) messages.push(`VisualPlan mainBackbone references unknown node "${nodeId}".`)
+  }
+  for (const edgeId of plan.mainBackbone?.edges ?? []) {
+    if (!edgeIds.has(edgeId)) messages.push(`VisualPlan mainBackbone references unknown edge "${edgeId}".`)
+  }
+  for (const edgeId of Object.keys(plan.edgePresentation ?? {})) {
+    if (!edgeIds.has(edgeId)) messages.push(`VisualPlan edgePresentation references unknown edge "${edgeId}".`)
+  }
+  for (const bus of plan.buses ?? []) {
+    for (const edgeId of bus.edges ?? []) {
+      if (!edgeIds.has(edgeId)) messages.push(`VisualPlan bus "${bus.id || "<unnamed>"}" references unknown edge "${edgeId}".`)
+    }
+    for (const junction of bus.junctions ?? []) {
+      for (const edgeId of junction.edges ?? []) {
+        if (!edgeIds.has(edgeId)) messages.push(`VisualPlan bus junction "${junction.id || "<unnamed>"}" references unknown edge "${edgeId}".`)
+      }
+    }
+  }
+  for (const item of plan.legend?.items ?? []) {
+    if (item.nodeId && !nodeIds.has(item.nodeId)) messages.push(`VisualPlan legend item references unknown node "${item.nodeId}".`)
+    if (item.edgeId && !edgeIds.has(item.edgeId)) messages.push(`VisualPlan legend item references unknown edge "${item.edgeId}".`)
+  }
+  return unique(messages)
+}
+
+function visualPlanBusAmbiguityIssues(input: {
+  diagramType: string
+  visualPlan: DiagramIrVisualPlan | undefined
+  edges: Record<string, unknown>[]
+}) {
+  if (input.diagramType !== "soc-block" && input.diagramType !== "architecture") return []
+  const visibleBusEdges = input.edges.filter((edge) => {
+    const id = stringValue(edge.id)
+    if (!id) return false
+    const presentation = input.visualPlan?.edgePresentation?.[id]
+    if (presentation && normalizeKey(stringValue(presentation.mode)) === "legend") return false
+    const edgeKind = normalizeKey(stringValue(edge.edgeKind))
+    const pathRole = normalizeKey(stringValue(edge.pathRole))
+    return edgeKind === "bus" || pathRole === "bus"
+  })
+  if (visibleBusEdges.length < 2) return []
+  const groupedEdges = new Set<string>()
+  for (const bus of input.visualPlan?.buses ?? []) {
+    for (const edgeId of bus.edges ?? []) groupedEdges.add(edgeId)
+  }
+  const byEndpoint = new Map<string, string[]>()
+  for (const edge of visibleBusEdges) {
+    const id = stringValue(edge.id)
+    const source = stringValue(edge.source) || stringValue(edge.from)
+    const target = stringValue(edge.target) || stringValue(edge.to)
+    for (const endpoint of [source, target]) {
+      if (!endpoint) continue
+      const list = byEndpoint.get(endpoint) ?? []
+      list.push(id)
+      byEndpoint.set(endpoint, list)
+    }
+  }
+  const refs: Array<{ kind?: string; id?: string; label?: string }> = []
+  for (const [endpoint, edgeIds] of byEndpoint.entries()) {
+    const ungrouped = edgeIds.filter((edgeId) => !groupedEdges.has(edgeId))
+    if (ungrouped.length >= 2) {
+      refs.push({ kind: "node", id: endpoint, label: ungrouped.slice(0, 4).join(", ") })
+    }
+  }
+  if (!refs.length) return []
+  return [{
+    code: "diagram.visualPlan.bus_ambiguity",
+    severity: "warning" as const,
+    message: "Complex SoC/architecture DiagramIR has multiple visible bus edges sharing endpoints without visualPlan.buses grouping; ask the model/active skill to provide bus trunk, junction, or port hints instead of letting the renderer infer semantics.",
+    refs: refs.slice(0, 6),
+  }]
+}
+
+function structurallyDenseDiagram(nodes: Record<string, unknown>[], edges: Record<string, unknown>[], boundaries: Record<string, unknown>[]) {
+  return nodes.length >= 6 || edges.length >= 8 || boundaries.length >= 2
+}
+
+function requiresPathVisualPlan(diagramType: string) {
+  return diagramType === "business-flow" ||
+    diagramType === "code-flow" ||
+    diagramType === "call-flow" ||
+    diagramType === "state-machine" ||
+    diagramType === "flowchart"
+}
+
+function addValidationIssue(input: {
+  issue: DiagramIrIssue
+  issues: DiagramIrIssue[]
+  warnings: string[]
+  gaps: string[]
+}) {
+  input.issues.push(input.issue)
+  input.warnings.push(input.issue.message)
+  if (input.issue.severity === "blocking") input.gaps.push(input.issue.message)
+}
+
+function uniqueIssues(issues: DiagramIrIssue[]) {
+  const seen = new Set<string>()
+  const result: DiagramIrIssue[] = []
+  for (const issue of issues) {
+    const key = `${issue.code}:${issue.severity}:${issue.message}`
+    if (seen.has(key)) continue
+    seen.add(key)
+    result.push(issue)
+  }
+  return result
+}
+
+function unusedBoundaryIssues(input: {
+  boundaries: Record<string, unknown>[]
+  nodes: Record<string, unknown>[]
+  edges: Record<string, unknown>[]
+  severity: DiagramIrIssueSeverity
+}) {
+  const issues: DiagramIrIssue[] = []
   const boundaryIds = new Set(input.boundaries.map((boundary) => stringValue(boundary.id)).filter(Boolean))
-  if (!boundaryIds.size) return messages
+  if (!boundaryIds.size) return issues
   const assigned = new Set<string>()
   for (const node of input.nodes) {
     for (const key of ["parent", "region", "container", "group", "lane", "layer"]) {
@@ -565,13 +949,52 @@ function unusedBoundaryMessages(input: {
       if (boundaryIds.has(value)) incident.add(value)
     }
   }
+  const childBoundaryParents = new Set<string>()
+  for (const boundary of input.boundaries) {
+    for (const key of ["parent", "region", "container", "group", "lane", "layer"]) {
+      const value = stringValue(boundary[key])
+      if (boundaryIds.has(value)) childBoundaryParents.add(value)
+    }
+  }
   for (const boundary of input.boundaries) {
     const id = stringValue(boundary.id)
-    if (!id || assigned.has(id) || incident.has(id) || booleanHint(boundary.placeholder) || booleanHint(boundary.allowEmpty)) continue
+    if (
+      !id
+      || assigned.has(id)
+      || incident.has(id)
+      || childBoundaryParents.has(id)
+      || booleanHint(boundary.placeholder)
+      || booleanHint(boundary.allowEmpty)
+    ) continue
     const label = elementLabel(boundary)
-    messages.push(`DiagramIR container "${label}" has no assigned nodes or incident edges; assign nodes with parent/container/lane/region/group, remove the empty container, or mark allowEmpty/placeholder if it is intentional.`)
+    issues.push({
+      code: "diagram.container.unresolved_ownership",
+      severity: input.severity,
+      message: `DiagramIR container "${label}" has no assigned nodes or incident edges; assign nodes with parent/container/lane/region/group, remove the empty container, or mark allowEmpty/placeholder if it is intentional.`,
+      refs: [{ kind: "container", id, label }],
+    })
   }
-  return unique(messages)
+  return uniqueIssues(issues)
+}
+
+function legendLowInformationIssues(visualPlan: DiagramIrVisualPlan | undefined) {
+  const issues: DiagramIrIssue[] = []
+  for (const item of visualPlan?.legend?.items ?? []) {
+    const label = [item.label, item.text, item.detail].map(stringValue).filter(Boolean).join(" ")
+    const normalized = label.replace(/\s+/g, " ").trim()
+    if (!normalized) continue
+    const markerOnly = Boolean(item.marker) && normalized === item.marker
+    const repeatsTruncatedIdentifier = /(?:\.\.\.|…)/.test(normalized) && /[A-Za-z_][A-Za-z0-9_.$:/-]{12,}/.test(normalized)
+    const looksLikeBareIdentifier = normalized.length > 24 && /^[A-Za-z0-9_.$:/\-[\]\s]+$/.test(normalized) && !/\s(?:means|represents|indicates|because|when|说明|表示|代表|原因|条件|触发|进入)\s?/i.test(normalized)
+    if (!markerOnly && !repeatsTruncatedIdentifier && !looksLikeBareIdentifier) continue
+    issues.push({
+      code: "diagram.legend.low_information",
+      severity: "warning",
+      message: `VisualPlan legend item "${item.id || item.marker || normalized.slice(0, 32)}" looks like a repeated/truncated identifier; provide explanatory legend content if the item should be visible.`,
+      refs: [{ kind: "legend", id: item.id || item.marker, label: normalized.slice(0, 80) }],
+    })
+  }
+  return issues
 }
 
 function booleanHint(input: unknown) {
@@ -584,6 +1007,10 @@ function numberHint(input: unknown) {
 
 function arrayHint(input: unknown) {
   return Array.isArray(input) ? input : []
+}
+
+function stringArray(input: unknown) {
+  return Array.isArray(input) ? input.map((item) => stringValue(item)).filter(Boolean) : []
 }
 
 function normalizeLayout(input: unknown, diagramType: string) {

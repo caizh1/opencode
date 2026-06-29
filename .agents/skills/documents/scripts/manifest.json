@@ -1,0 +1,306 @@
+{
+  "schemaVersion": 2,
+  "version": "2026-06-28.w44",
+  "name": "chipmate-documents-helper-scripts",
+  "description": "Codex documents helper script catalog mapped to ChipMate's offline local Word tools and parity backlog.",
+  "executionPolicy": {
+    "directExecution": false,
+    "networkPolicy": "none",
+    "reason": "This documents helper catalog maps Codex scripts to native ChipMate tools and backlog items. Direct execution is available only for manifest v2 helper entries that opt in through execution.directExecution and the safe script execution boundary.",
+    "readTool": "chipmate_read_skill_resource",
+    "executionTool": "chipmate_run_skill_script"
+  },
+  "sources": {
+    "codexManifest": "C-Manifest",
+    "codexScripts": "C-Scripts",
+    "chipmateTools": "CM-Tools",
+    "chipmateSkill": "CM-Skill"
+  },
+  "helpers": [
+    {
+      "name": "helper_manifest_report",
+      "category": "diagnostics",
+      "chipmateEquivalent": ["chipmate_run_skill_script"],
+      "status": "executable",
+      "description": "Read-only diagnostic helper that summarizes this manifest and writes a bounded JSON artifact.",
+      "execution": {
+        "directExecution": true,
+        "runtime": "node",
+        "entrypoint": "scripts/helper_manifest_report.mjs",
+        "inputSchema": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {}
+        },
+        "outputArtifacts": [
+          {
+            "name": "helper-manifest-report",
+            "kind": "diagnostic-json",
+            "contentType": "application/json",
+            "path": "helper-manifest-report.json",
+            "required": true,
+            "description": "Documents helper catalog status report."
+          }
+        ],
+        "timeoutMs": 5000,
+        "maxOutputBytes": 8192,
+        "allowedExtensions": [".json"],
+        "networkPolicy": "none"
+      }
+    },
+    {
+      "name": "word_runtime_field_refresh_report",
+      "category": "diagnostics",
+      "chipmateEquivalent": ["refresh_word_native_fields", "chipmate_run_skill_script"],
+      "status": "executable",
+      "description": "Read-only diagnostic helper that reports local LibreOffice/native field refresh readiness and writes a bounded JSON artifact. Use native refresh_word_native_fields for actual DOCX refresh.",
+      "execution": {
+        "directExecution": true,
+        "runtime": "node",
+        "entrypoint": "scripts/word_runtime_field_refresh_report.mjs",
+        "inputSchema": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "documentPath": {
+              "type": "string",
+              "pathKind": "workspace",
+              "allowedExtensions": [".docx"],
+              "maxLength": 512
+            }
+          }
+        },
+        "outputArtifacts": [
+          {
+            "name": "word-runtime-field-refresh-report",
+            "kind": "diagnostic-json",
+            "contentType": "application/json",
+            "path": "word-runtime-field-refresh-report.json",
+            "required": true,
+            "description": "Local Word native field refresh readiness report."
+          }
+        ],
+        "timeoutMs": 5000,
+        "maxOutputBytes": 8192,
+        "allowedExtensions": [".docx", ".json"],
+        "networkPolicy": "none"
+      }
+    },
+    {
+      "codexScript": "a11y_audit.py",
+      "category": "render-quality",
+      "chipmateEquivalent": ["create_word_document", "DocxRenderQualityGate"],
+      "status": "native-tool"
+    },
+    {
+      "codexScript": "accept_tracked_changes.py",
+      "category": "tracked-changes",
+      "chipmateEquivalent": ["inspect_word_document", "apply_word_document_edits.acceptAllTrackedChanges", "apply_word_document_edits.rejectAllTrackedChanges"],
+      "status": "native-tool"
+    },
+    {
+      "codexScript": "add_tracked_replacements.py",
+      "category": "tracked-changes",
+      "chipmateEquivalent": ["apply_word_document_edits.replaceParagraphWithTrackedChange", "apply_word_document_edits.replaceParagraphWithRichTrackedChange", "apply_word_document_edits.replaceTextWithTrackedChange"],
+      "status": "native-tool"
+    },
+    {
+      "codexScript": "apply_template_styles.py",
+      "category": "templates",
+      "chipmateEquivalent": ["apply_word_template_styles"],
+      "status": "native-tool"
+    },
+    {
+      "codexScript": "captions_and_crossrefs.py",
+      "category": "captions-crossrefs",
+      "chipmateEquivalent": ["create_word_document", "apply_word_document_edits.updateCaptionText", "audit_word_document_fields"],
+      "status": "native-tool"
+    },
+    {
+      "codexScript": "comments_add.py",
+      "category": "comments",
+      "chipmateEquivalent": ["apply_word_document_edits.addComment"],
+      "status": "native-tool"
+    },
+    {
+      "codexScript": "comments_apply_patch.py",
+      "category": "comments",
+      "chipmateEquivalent": ["inspect_word_document", "apply_word_document_edits.updateCommentText", "apply_word_document_edits.setCommentResolved"],
+      "status": "native-tool"
+    },
+    {
+      "codexScript": "comments_extract.py",
+      "category": "comments",
+      "chipmateEquivalent": ["inspect_word_document"],
+      "status": "native-tool"
+    },
+    {
+      "codexScript": "comments_strip.py",
+      "category": "comments",
+      "chipmateEquivalent": ["apply_word_document_edits.removeAllComments"],
+      "status": "native-tool"
+    },
+    {
+      "codexScript": "content_controls.py",
+      "category": "forms",
+      "chipmateEquivalent": ["inspect_word_document", "apply_word_document_edits.fillContentControl"],
+      "status": "native-tool"
+    },
+    {
+      "codexScript": "docx_ooxml_patch.py",
+      "category": "ooxml-repair",
+      "chipmateEquivalent": ["apply_word_document_edits.patchOoxmlPart"],
+      "status": "native-tool"
+    },
+    {
+      "codexScript": "docx_table_to_csv.py",
+      "category": "tables",
+      "chipmateEquivalent": ["export_word_table_to_csv"],
+      "status": "native-tool"
+    },
+    {
+      "codexScript": "fields_materialize.py",
+      "category": "fields",
+      "chipmateEquivalent": ["materialize_word_seq_fields"],
+      "status": "native-tool"
+    },
+    {
+      "codexScript": "fields_report.py",
+      "category": "fields",
+      "chipmateEquivalent": ["audit_word_document_fields"],
+      "status": "native-tool"
+    },
+    {
+      "codexScript": "flatten_ref_fields.py",
+      "category": "fields",
+      "chipmateEquivalent": ["flatten_word_ref_fields"],
+      "status": "native-tool"
+    },
+    {
+      "codexScript": "footnotes_report.py",
+      "category": "notes",
+      "chipmateEquivalent": ["inspect_word_document"],
+      "status": "native-tool"
+    },
+    {
+      "codexScript": "google_docs_title_sanitize.py",
+      "category": "google-docs",
+      "chipmateEquivalent": ["offline Word scope decision"],
+      "status": "out-of-scope"
+    },
+    {
+      "codexScript": "heading_audit.py",
+      "category": "headings",
+      "chipmateEquivalent": ["inspect_word_document", "apply_word_document_edits.updateHeadingLevel", "DocxRenderQualityGate"],
+      "status": "native-tool"
+    },
+    {
+      "codexScript": "images_audit.py",
+      "category": "images",
+      "chipmateEquivalent": ["inspect_word_document", "apply_word_document_edits.updateImageAltText", "apply_word_document_edits.replaceImage"],
+      "status": "native-tool"
+    },
+    {
+      "codexScript": "insert_note.py",
+      "category": "notes",
+      "chipmateEquivalent": ["create_word_document", "apply_word_document_edits.insertSection", "apply_word_document_edits.updateNoteText"],
+      "status": "native-tool"
+    },
+    {
+      "codexScript": "insert_ref_fields.py",
+      "category": "fields",
+      "chipmateEquivalent": ["create_word_document", "apply_word_document_edits.replaceParagraphWithRichParagraph"],
+      "status": "native-tool"
+    },
+    {
+      "codexScript": "insert_toc.py",
+      "category": "toc-navigation",
+      "chipmateEquivalent": ["create_word_document"],
+      "status": "native-tool"
+    },
+    {
+      "codexScript": "internal_nav.py",
+      "category": "toc-navigation",
+      "chipmateEquivalent": ["create_word_document"],
+      "status": "native-tool"
+    },
+    {
+      "codexScript": "make_fixtures.py",
+      "category": "fixtures",
+      "chipmateEquivalent": ["bun run fixtures:docx"],
+      "status": "native-script"
+    },
+    {
+      "codexScript": "merge_docx_append.py",
+      "category": "merge",
+      "chipmateEquivalent": ["merge_word_documents"],
+      "status": "native-tool"
+    },
+    {
+      "codexScript": "privacy_scrub.py",
+      "category": "privacy",
+      "chipmateEquivalent": ["apply_word_document_edits.scrubDocumentMetadata"],
+      "status": "native-tool"
+    },
+    {
+      "codexScript": "redact_docx.py",
+      "category": "privacy",
+      "chipmateEquivalent": ["apply_word_document_edits.redactText"],
+      "status": "native-tool"
+    },
+    {
+      "codexScript": "render_and_diff.py",
+      "category": "compare-render",
+      "chipmateEquivalent": ["compare_word_documents", "render_word_document"],
+      "status": "native-tool"
+    },
+    {
+      "codexScript": "section_audit.py",
+      "category": "sections",
+      "chipmateEquivalent": ["inspect_word_document", "apply_word_document_edits.updateSectionPageSetup"],
+      "status": "native-tool"
+    },
+    {
+      "codexScript": "set_protection.py",
+      "category": "protection",
+      "chipmateEquivalent": ["create_word_document", "inspect_word_document", "apply_word_document_edits.setDocumentProtection"],
+      "status": "native-tool"
+    },
+    {
+      "codexScript": "style_lint.py",
+      "category": "styles",
+      "chipmateEquivalent": ["audit_word_document_styles"],
+      "status": "native-tool"
+    },
+    {
+      "codexScript": "style_normalize.py",
+      "category": "styles",
+      "chipmateEquivalent": ["normalize_word_document_styles"],
+      "status": "native-tool"
+    },
+    {
+      "codexScript": "table_geometry.py",
+      "category": "tables",
+      "chipmateEquivalent": ["create_word_document", "apply_word_document_edits.replaceTable"],
+      "status": "native-tool"
+    },
+    {
+      "codexScript": "watermark_add.py",
+      "category": "watermarks",
+      "chipmateEquivalent": ["apply_word_document_edits.addTextWatermark"],
+      "status": "native-tool"
+    },
+    {
+      "codexScript": "watermark_audit_remove.py",
+      "category": "watermarks",
+      "chipmateEquivalent": ["inspect_word_document", "apply_word_document_edits.removeWatermark"],
+      "status": "native-tool"
+    },
+    {
+      "codexScript": "xlsx_to_docx_table.py",
+      "category": "tables",
+      "chipmateEquivalent": ["extract_xlsx_table", "create_word_document", "apply_word_document_edits"],
+      "status": "native-tool"
+    }
+  ]
+}

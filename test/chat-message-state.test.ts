@@ -42,6 +42,18 @@ describe("chat message pending state", () => {
     expect(result.matchedPendingIDs.size).toBe(0)
   })
 
+  test("keeps a pending user message before it is bound to a remote session", () => {
+    const pending = pendingUser("local-unbound", "new session question", 2000)
+    pending.sessionID = undefined
+    const result = mergeRenderedChatMessages({
+      remoteMessages: [],
+      pendingMessages: [pending],
+    })
+
+    expect(result.messages.map((message) => message.id)).toEqual(["local-unbound"])
+    expect(result.matchedPendingIDs.size).toBe(0)
+  })
+
   test("uses context and attachment shape in duplicate fingerprints", () => {
     const base = {
       text: "inspect",

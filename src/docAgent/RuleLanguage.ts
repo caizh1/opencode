@@ -1,4 +1,5 @@
 import type { DocAgentModelProvider, DocumentPlan, GeneratedExampleSpec, RuleCardSpec, WordDocSpec } from "./types"
+import { plainTableRows } from "./TableSpecUtils"
 
 type RuleLanguageJson = {
   rules?: Partial<RuleCardSpec>[]
@@ -179,11 +180,20 @@ export function collectUntranslatedSpecText(spec: WordDocSpec) {
     for (const [index, item] of section.numberedItems?.entries() ?? []) {
       if (containsUntranslatedEnglishText(item)) issues.push(`${prefix}.numberedItems.${index}`)
     }
+    for (const [index, item] of section.definitionList?.entries() ?? []) {
+      if (containsUntranslatedEnglishText(item.term)) issues.push(`${prefix}.definitionList.${index}.term`)
+      if (containsUntranslatedEnglishText(item.definition)) issues.push(`${prefix}.definitionList.${index}.definition`)
+      if (item.note && containsUntranslatedEnglishText(item.note)) issues.push(`${prefix}.definitionList.${index}.note`)
+    }
+    for (const [index, item] of section.sourceList?.entries() ?? []) {
+      if (containsUntranslatedEnglishText(item.title)) issues.push(`${prefix}.sourceList.${index}.title`)
+      if (item.note && containsUntranslatedEnglishText(item.note)) issues.push(`${prefix}.sourceList.${index}.note`)
+    }
     for (const [tableIndex, table] of section.tables?.entries() ?? []) {
       for (const [index, header] of table.headers.entries()) {
         if (containsUntranslatedEnglishText(header)) issues.push(`${prefix}.tables.${tableIndex}.headers.${index}`)
       }
-      for (const [rowIndex, row] of table.rows.entries()) {
+      for (const [rowIndex, row] of plainTableRows(table).entries()) {
         for (const [cellIndex, cell] of row.entries()) {
           if (containsUntranslatedEnglishText(cell)) issues.push(`${prefix}.tables.${tableIndex}.rows.${rowIndex}.${cellIndex}`)
         }
@@ -279,10 +289,21 @@ function normalizeSectionReadableText(section: WordDocSpec["sections"][number]):
     paragraphs: section.paragraphs?.map(normalizeReportText),
     bullets: section.bullets?.map(normalizeReportText),
     numberedItems: section.numberedItems?.map(normalizeReportText),
+    definitionList: section.definitionList?.map((item) => ({
+      ...item,
+      term: normalizeReportText(item.term),
+      definition: normalizeReportText(item.definition),
+      note: item.note ? normalizeReportText(item.note) : undefined,
+    })),
+    sourceList: section.sourceList?.map((item) => ({
+      ...item,
+      title: normalizeReportText(item.title),
+      note: item.note ? normalizeReportText(item.note) : undefined,
+    })),
     tables: section.tables?.map((table) => ({
       ...table,
       headers: table.headers.map(normalizeReportText),
-      rows: table.rows.map((row) => row.map(normalizeReportText)),
+      rows: table.rows.map((row) => row.map((cell) => typeof cell === "string" ? normalizeReportText(cell) : { ...cell, text: normalizeReportText(cell.text) })),
     })),
     ruleCards: section.ruleCards?.map(normalizeRuleCardReadableText),
   }

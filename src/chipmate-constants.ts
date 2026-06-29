@@ -17,6 +17,7 @@ export const CHIPMATE_COMMANDS = {
   newSession: "chipmate.newSession",
   askSelection: "chipmate.askSelection",
   askCurrentFile: "chipmate.askCurrentFile",
+  designDocGenerate: "chipmate.designDoc.generate",
   addSelectionToContext: "chipmate.addSelectionToContext",
   addFileToContext: "chipmate.addFileToContext",
   clearContext: "chipmate.clearContext",

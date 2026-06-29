@@ -47,12 +47,25 @@ export type LiquidIconName =
   | "exitSelection"
   | "zoomIn"
   | "zoomOut"
+  | "expand"
   | "close"
+  | "panelBottomCollapseSimple"
+  | "panelBottomExpandSimple"
+  | "contextLens"
+  | "goalTarget"
+  | "skillBlocks"
   | "panelBottomClose"
   | "panelBottomOpen"
   | "more"
 
-type LiquidIconPath = string | { d: string; className?: string }
+type LiquidIconPath = string | {
+  d: string
+  className?: string
+  fill?: string
+  stroke?: string
+  strokeWidth?: string
+  opacity?: string
+}
 
 const liquidIconPaths = {
   chip: [
@@ -296,9 +309,47 @@ const liquidIconPaths = {
     "M8.5 10.7h4.4",
     "M14.5 14.5l4.9 4.9",
   ],
+  expand: [
+    "M5.2 9.2V5.2h4",
+    "M5.2 5.2l5.2 5.2",
+    "M18.8 14.8v4h-4",
+    "M18.8 18.8l-5.2-5.2",
+    "M14.8 5.2h4v4",
+    "M18.8 5.2l-5.2 5.2",
+    "M9.2 18.8h-4v-4",
+    "M5.2 18.8l5.2-5.2",
+  ],
   close: [
     "M6.4 6.4l11.2 11.2",
     "M17.6 6.4L6.4 17.6",
+  ],
+  panelBottomCollapseSimple: [
+    { d: "M12 3.9 20.4 11.55H3.6Z", fill: "currentColor", stroke: "none", opacity: "0.46" },
+    { d: "M12 20.1 3.6 12.45h16.8Z", fill: "currentColor", stroke: "none" },
+  ],
+  panelBottomExpandSimple: [
+    { d: "M12 3.9 20.4 11.55H3.6Z", fill: "currentColor", stroke: "none" },
+    { d: "M12 20.1 3.6 12.45h16.8Z", fill: "currentColor", stroke: "none", opacity: "0.46" },
+  ],
+  contextLens: [
+    "M7.7 5h6.1l3.5 3.4v8.1c0 1-.8 1.8-1.8 1.8H7.7c-1 0-1.8-.8-1.8-1.8V6.8c0-1 .8-1.8 1.8-1.8Z",
+    "M13.8 5v3.4h3.4",
+    "M4.2 7.9V5.4h2.5",
+    "M17.3 19.8h2.5v-2.5",
+    "M9 12.4h4.9",
+  ],
+  goalTarget: [
+    "M12 3.7a8.3 8.3 0 1 0 0 16.6 8.3 8.3 0 0 0 0-16.6Z",
+    "M12 7.4a4.6 4.6 0 1 0 0 9.2 4.6 4.6 0 0 0 0-9.2Z",
+    "M12 12h.1",
+    "M15.2 8.8l4.9-4.9M17.9 3.9h2.2v2.2",
+    "M12 2.8v2.1M12 19.1v2.1M2.8 12h2.1M19.1 12h2.1",
+  ],
+  skillBlocks: [
+    "M12 3.4 18.8 7.2v7.7L12 19.1l-6.8-4.2V7.2L12 3.4Z",
+    "M12 3.4v7.8M5.2 7.2 12 11.2l6.8-4M12 11.2v7.9",
+    "M5.2 9.2 3.3 10.4v5.2l4.1 2.5",
+    "M18.8 9.2l1.9 1.2v5.2l-4.1 2.5",
   ],
   panelBottomClose: [
     "M5.4 4.9h13.2c1.1 0 2 .9 2 2v10.2c0 1.1-.9 2-2 2H5.4c-1.1 0-2-.9-2-2V6.9c0-1.1.9-2 2-2Z",
@@ -326,14 +377,23 @@ export function liquidIcon(
   const a11y = options.decorative === false
     ? 'role="img"'
     : 'aria-hidden="true" focusable="false"'
-  const paths = liquidIconPaths[name].map((path) => {
+  const iconPaths: readonly LiquidIconPath[] = liquidIconPaths[name]
+  const paths = iconPaths.map((path) => {
     if (typeof path === "string") return `<path d="${path}"></path>`
     const pathClassName = path.className ? ` class="${safeClassName(path.className)}"` : ""
-    return `<path${pathClassName} d="${path.d}"></path>`
+    const fill = path.fill ? ` fill="${safeSvgAttribute(path.fill)}"` : ""
+    const stroke = path.stroke ? ` stroke="${safeSvgAttribute(path.stroke)}"` : ""
+    const strokeWidth = path.strokeWidth ? ` stroke-width="${safeSvgAttribute(path.strokeWidth)}"` : ""
+    const opacity = path.opacity ? ` opacity="${safeSvgAttribute(path.opacity)}"` : ""
+    return `<path${pathClassName}${fill}${stroke}${strokeWidth}${opacity} d="${path.d}"></path>`
   }).join("")
   return `<svg class="${className}" viewBox="0 0 24 24" ${a11y} fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">${paths}</svg>`
 }
 
 function safeClassName(value: string) {
   return value.trim().replace(/[^A-Za-z0-9_ -]/g, "").replace(/\s+/g, " ")
+}
+
+function safeSvgAttribute(value: string) {
+  return value.trim().replace(/["'<>]/g, "")
 }

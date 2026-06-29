@@ -35,6 +35,7 @@ describe("package-vsix script", () => {
     expect(collectVsixLocalDefaultSettings(localDefaultsFixture())).toEqual({
       "chipmate.provider.apiBaseUrl": "https://provider.example.test/v1",
       "chipmate.provider.chatModel": "chat-model",
+      "chipmate.wordRender.remoteEndpoint": "http://render.example.test:6001",
       "chipmate.rag.embedding.endpoint": "https://provider.example.test/v1/embeddings",
       "chipmate.rag.embedding.model": "embedding-model",
       "chipmate.rag.rerank.endpoint": "https://provider.example.test/v1/rerank",
@@ -50,6 +51,7 @@ describe("package-vsix script", () => {
     const properties = manifest.contributes.configuration.properties
     expect(properties["chipmate.provider.apiBaseUrl"].default).toBe("https://provider.example.test/v1")
     expect(properties["chipmate.provider.chatModel"].default).toBe("chat-model")
+    expect(properties["chipmate.wordRender.remoteEndpoint"].default).toBe("http://render.example.test:6001")
     expect(properties["chipmate.rag.embedding.endpoint"].default).toBe("https://provider.example.test/v1/embeddings")
     expect(properties["chipmate.rag.embedding.model"].default).toBe("embedding-model")
     expect(properties["chipmate.rag.rerank.endpoint"].default).toBe("https://provider.example.test/v1/rerank")
@@ -63,6 +65,14 @@ describe("package-vsix script", () => {
       ...localDefaultsFixture(),
       rag: { ...localDefaultsFixture().rag, allowedHosts: [] },
     })).toThrow("non-empty string array")
+  })
+
+  test("keeps word render local VSIX default optional", () => {
+    const settings = collectVsixLocalDefaultSettings({
+      ...localDefaultsFixture(),
+      wordRender: undefined,
+    })
+    expect(settings["chipmate.wordRender.remoteEndpoint"]).toBeUndefined()
   })
 
   test("runs the draw.io runtime gate before VSIX packaging", () => {
@@ -80,6 +90,9 @@ function localDefaultsFixture() {
     provider: {
       apiBaseUrl: "https://provider.example.test/v1",
       chatModel: "chat-model",
+    },
+    wordRender: {
+      remoteEndpoint: "http://render.example.test:6001",
     },
     rag: {
       embedding: {
@@ -102,6 +115,7 @@ function manifestFixture() {
         properties: {
           "chipmate.provider.apiBaseUrl": { default: "" },
           "chipmate.provider.chatModel": { default: "" },
+          "chipmate.wordRender.remoteEndpoint": { default: "" },
           "chipmate.rag.embedding.endpoint": { default: "" },
           "chipmate.rag.embedding.model": { default: "existing-embedding-model" },
           "chipmate.rag.rerank.endpoint": { default: "" },

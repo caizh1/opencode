@@ -1,5 +1,6 @@
 import { normalizeRuleCardForPlan } from "./DocumentPlanGenerator"
 import { normalizeRuleCardReadableText } from "./RuleLanguage"
+import { plainTableRows } from "./TableSpecUtils"
 import type { DocumentPlan, GeneratedExampleSpec, RuleCardSpec, SourceBackedBlock, SourceOrigin } from "./types"
 
 export type CandidateRuleClassification =
@@ -451,7 +452,7 @@ function blockText(block: SourceBackedBlock) {
     block.title,
     block.text,
     block.items?.join("\n"),
-    block.table ? [block.table.caption, block.table.headers.join(" | "), ...block.table.rows.map((row) => row.join(" | "))].filter(Boolean).join("\n") : "",
+    block.table ? [block.table.caption, block.table.headers.join(" | "), ...plainTableRows(block.table).map((row) => row.join(" | "))].filter(Boolean).join("\n") : "",
     block.codeBlock?.code,
     block.note,
   ].filter(Boolean).join("\n")

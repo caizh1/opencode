@@ -5,6 +5,7 @@ node_modules/
 out/
 .vscode-test/
 .completion-quality/
+artifacts/
 .chipmate/
 chipmate-ui-test-windows-*.zip
 chipmate-ui-test-windows-with-vscode-*.zip

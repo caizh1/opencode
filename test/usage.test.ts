@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
-import { normalizeTokenUsage, summarizeSessionUsage } from "../src/usage"
+import { estimateChatTokenUsage, normalizeProviderTokenUsage, normalizeTokenUsage, summarizeSessionUsage } from "../src/usage"
 import type { ChipMateMessage, ChipMateModelInfo } from "../src/types"
 
 describe("token usage summaries", () => {
@@ -94,6 +94,30 @@ describe("token usage summaries", () => {
     expect(usage.summary).not.toContain("Context 0")
   })
 
+  test("subtracts cache-read tokens from visible input and totals", () => {
+    const usage = summarizeSessionUsage({
+      messages: [assistant("m1", { input: 120_000, output: 1_100, reasoning: 100, cacheRead: 90_000, total: 121_200 })],
+      models: [model("deepseek/deepseek-v4-pro", 128_000)],
+      selectedModel: "",
+    })
+
+    expect(usage.summary).toBe("Context 30k / 128k | 98k left est.")
+    expect(usage.latest?.summary).toBe("30k in | 1.1k out | 100 reason")
+    expect(usage.latest?.detail).toContain("90k cache read")
+    expect(usage.total?.total).toBe(31_200)
+  })
+
+  test("ignores legacy accumulated reported usage that exceeds the model context", () => {
+    const usage = summarizeSessionUsage({
+      messages: [assistant("m1", { input: 384_200, output: 1_300, reasoning: 399, total: 385_899 })],
+      models: [model("deepseek/deepseek-v4-pro", 128_000)],
+      selectedModel: "",
+    })
+
+    expect(usage.status).toBe("unavailable")
+    expect(usage.summary).toBe("Usage unavailable")
+  })
+
   test("distinguishes pending usage from old servers without token fields", () => {
     expect(summarizeSessionUsage({ messages: [], models: [], selectedModel: "" })).toMatchObject({
       status: "pending",
@@ -129,6 +153,39 @@ describe("token usage summaries", () => {
     expect(normalizeTokenUsage({ input: -1, output: Number.NaN })).toBeUndefined()
   })
 
+  test("normalizes provider usage chunks with reasoning and cache tokens", () => {
+    expect(
+      normalizeProviderTokenUsage({
+        prompt_tokens: 120,
+        completion_tokens: 34,
+        total_tokens: 180,
+        completion_tokens_details: { reasoning_tokens: 26 },
+        prompt_tokens_details: { cached_tokens: 40 },
+      }),
+    ).toEqual({
+      total: 180,
+      input: 120,
+      output: 34,
+      reasoning: 26,
+      cache: { read: 40, write: undefined },
+    })
+  })
+
+  test("estimates chat usage from request messages and assistant text without storing content", () => {
+    const usage = estimateChatTokenUsage({
+      messages: [
+        { role: "system", content: "You are concise." },
+        { role: "user", content: [{ type: "text", text: "Explain local usage stats." }] },
+      ],
+      outputText: "Local usage stats are stored as aggregate counts.",
+      model: "qwen3",
+    })
+
+    expect(usage.input).toBeGreaterThan(0)
+    expect(usage.output).toBeGreaterThan(0)
+    expect(usage.total).toBe((usage.input ?? 0) + (usage.output ?? 0))
+  })
+
   test("keeps usage source and rendered strings free of mojibake separators", () => {
     const usage = summarizeSessionUsage({
       messages: [assistant("m1", { input: 24_100, output: 1100, reasoning: 0, cost: 0.002 })],
@@ -155,6 +212,8 @@ function assistant(
     completed?: boolean
     providerID?: string
     modelID?: string
+    cacheRead?: number
+    total?: number
   },
 ): ChipMateMessage {
   return {
@@ -169,7 +228,8 @@ function assistant(
         input: input.input,
         output: input.output,
         reasoning: input.reasoning,
-        cache: { read: 0, write: 0 },
+        total: input.total,
+        cache: { read: input.cacheRead ?? 0, write: 0 },
       },
     },
     parts: [],

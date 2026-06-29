@@ -24,6 +24,7 @@ import { RuleChunkFilter } from "./RuleChunkFilter"
 import { createWorkspaceSourceBlockPlacementCache } from "./SourceBlockPlacementCache"
 import { SourceBlockPlacementPlanner, type SourceBlockPlacementProgress } from "./SourceBlockPlacementPlanner"
 import { SourcePreservationExtractor } from "./SourcePreservationExtractor"
+import { plainTableRows } from "./TableSpecUtils"
 import { WordDocSpecGenerator } from "./WordDocSpecGenerator"
 import type {
   ConflictResolutionChoice,
@@ -629,7 +630,7 @@ function blockTextForContentKind(block: SourceBackedBlock) {
     block.title ?? "",
     block.text ?? "",
     block.items?.join("\n") ?? "",
-    block.table ? [block.table.caption ?? "", block.table.headers.join(" | "), ...block.table.rows.map((row) => row.join(" | "))].join("\n") : "",
+    block.table ? [block.table.caption ?? "", block.table.headers.join(" | "), ...plainTableRows(block.table).map((row) => row.join(" | "))].join("\n") : "",
     block.codeBlock?.code ?? "",
     block.note ?? "",
   ].filter(Boolean).join("\n")

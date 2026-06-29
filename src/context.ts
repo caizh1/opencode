@@ -345,7 +345,7 @@ export async function buildChatPromptWithEvidence(input: BuildChatPromptInput): 
   })
 
   if (input.settings.context.localOnlyMode) chunks.push(localContextContract(input.settings.tools.enabled))
-  chunks.push(drawioDiagramOutputGuidance(input.settings.tools.enabled))
+  chunks.push(diagramOutputGuidance(input.settings.tools.enabled))
 
   const hasLocalContext = hasUsableFileContext(context.summary) || Boolean(codeGraph?.text) || Boolean(analysisEvidence?.evidencePack.evidence.length) || Boolean(documentEvidence?.text)
 
@@ -1020,34 +1020,41 @@ function localContextContract(toolsEnabled: boolean) {
       ? "ChipMate workspace evidence tools may be available for targeted gap searches and drill-down reads; chipmate_validate_diagram_ir validates evidence-backed DiagramIR and chipmate_create_drawio_diagram may generate deterministic draw.io XML for direct chat rendering without writing files; chipmate_create_directory may create new workspace folders, chipmate_create_file may create new workspace text/code files, and chipmate_edit_file may modify existing workspace text/code files only by exact oldString/newString replacement when the user explicitly asks for local file changes. Do not request overwrites, fuzzy patches, deletes, renames, moves, commands, network calls, or remote server filesystem access."
       : "ChipMate workspace-host tools are disabled for this chat turn; do not request, simulate, or emit tool calls.",
     toolsEnabled
-      ? "Use chipmate_read_evidence for returned refIds, chipmate_read_skill_resource for active skill references/assets/scripts resources, and chipmate_read only when the user or evidence gives an explicit workspace path. If an existing file must change, read enough exact surrounding text first, then use chipmate_edit_file with a unique oldString or replaceAll when every exact occurrence should change."
+      ? "Use chipmate_read_evidence for returned refIds, chipmate_read_skill_resource for active skill references/assets/scripts/tasks resources, and chipmate_read only when the user or evidence gives an explicit workspace path. If an existing file must change, read enough exact surrounding text first, then use chipmate_edit_file with a unique oldString or replaceAll when every exact occurrence should change."
       : "If evidence points to a workspace-relative path but the needed content is missing, say what is missing and ask the user to open, attach, or @mention the file.",
   ].join("\n")
 }
 
-function drawioDiagramOutputGuidance(toolsEnabled: boolean) {
+function diagramOutputGuidance(toolsEnabled: boolean) {
   if (toolsEnabled) {
     return [
-      "Draw.io Diagram Output Contract:",
+      "Diagram Output Routing Contract:",
+      "Use Mermaid as the default format when the user asks to draw a flowchart, process flow, architecture diagram, sequence diagram, state diagram, or simple explanatory diagram and does not explicitly request another format.",
+      "Choose Mermaid syntax from the user's intent: use flowchart TD/LR for flow, process, and architecture diagrams; sequenceDiagram for interaction timelines; stateDiagram-v2 for state transitions; and subgraph blocks for module or layer boundaries.",
+      "For Mermaid output, return one fenced `mermaid` block with concise labels plus a short caption. Do not call draw.io tools for Mermaid output; collect code/document/reference evidence first only when the diagram content itself needs grounding.",
+      "Ask for clarification only when the diagram goal, target, or scope is missing. Do not ask whether to use Mermaid or draw.io when Mermaid is a safe default.",
+      "Use draw.io/diagrams.net only when the user explicitly asks for draw.io, drawio, diagrams.net, mxfile, mxGraphModel, or an editable draw.io asset; when repairing/exporting an existing draw.io diagram; or when the user accepts draw.io because Mermaid cannot express the required layout.",
       "When the user asks for a complex draw.io or diagrams.net diagram, first collect code/document/reference evidence, organize it as DiagramIR, call chipmate_validate_diagram_ir, then call chipmate_create_drawio_diagram as the final renderer.",
-      "The model or active skill decides the user-visible diagramType from intent and evidence: business-flow for business/process perspective, code-flow for entry/function/branch/return execution paths, state-machine for pure state transitions, architecture for module boundaries, and soc-block for chip/module/bus/port diagrams. Code evidence does not automatically mean code-flow.",
+      "For draw.io requests, the model or active skill decides the user-visible diagramType from intent and evidence: business-flow for business/process perspective, code-flow for entry/function/branch/return execution paths, state-machine for pure state transitions, architecture for module boundaries, and soc-block for chip/module/bus/port diagrams. Code evidence does not automatically mean code-flow.",
       "For simple illustrative diagrams, chipmate_create_drawio_diagram may be called directly with a structured spec instead of hand-authoring mxCell/mxGeometry XML.",
-      "chipmate_create_drawio_diagram always runs the Diagram Design Compiler before ELKJS layout. Provide semantic structure, visualRole, importance, edgeKind, pathRole, labelPriority, textParts, and layout/style/semantic hints; do not write raw draw.io coordinates unless the user explicitly asks for source.",
-      "For embedded process diagrams with modules plus FSM states/events, keep the requested diagramType such as business-flow or code-flow, and encode module/state/event semantics with semanticHints; the compiler may choose an internal embedded-fsm-flow visual profile.",
+      "chipmate_create_drawio_diagram always runs the Diagram Design Compiler before ELKJS layout. For complex diagrams, provide DiagramIR plus a model/skill-authored visualPlan with layoutProfile, mainBackbone.nodes/edges, edgePresentation edge-id map using mode line/rail/legend, optional rail side, and legend items; do not write raw draw.io coordinates unless the user explicitly asks for source.",
+      "For dense engineering diagrams, keep the mainBackbone and a small number of essential cross-module edges visible. Treat rail as a scarce visual channel for must-see non-main paths; put low-priority, repetitive, evidence-only, explanatory, retry, cleanup, telemetry, or secondary exception details into legend items so the final PNG is at least as clear as a Mermaid baseline.",
+      "The renderer does not infer main path, exception path, business meaning, or importance from labels, function names, state names, Chinese words, or domain terms. It validates and executes VisualPlan; if VisualPlan is missing for a dense diagram, expect validation gaps and provide the missing decisions.",
+      "For embedded process diagrams with modules plus FSM states/events, keep the requested diagramType such as business-flow or code-flow, and use visualPlan.layoutProfile when a specialized state-backbone/embedded-fsm presentation is desired.",
       "Treat containers, regions, lanes, swimlanes, and groups as ownership/background areas, not execution steps. Assign owned nodes with parent/container/lane/region/group. For business-flow/code-flow embedded FSM diagrams these ownership areas render as weak background bands so flow edges remain readable; for architecture/soc-block or explicit containerMode='strong' they render as strong compound containers. Empty ownership containers are not rendered unless explicitly marked allowEmpty or placeholder.",
-      "DiagramIR may include composition, nodes, edges, regions, containers, lanes, buses, ports, arrays, subdiagrams, evidenceRefs, layoutHints, styleHints, semanticHints, sourceArtifacts, and referenceDiagrams.",
+      "DiagramIR may include composition, nodes, edges, regions, containers, lanes, buses, ports, arrays, subdiagrams, evidenceRefs, layoutHints, styleHints, semanticHints, sourceArtifacts, referenceDiagrams, and visualPlan.",
       "Set DiagramIR composition.mode to single by default. Only set composition.mode to multi when the current user request or an active skill explicitly asks for or allows multiple diagrams; if one dense diagram would benefit from splitting, mention that as a warning instead of splitting automatically.",
       "Active skills may refine evidence collection, DiagramIR organization, VisualPlan hints, layout/style hints, and reference constraints; current user instructions override skill defaults, but skills must not bypass the Design Compiler, ELKJS layout, offline rendering, or XML/PNG safety checks.",
-      "Use Mermaid only when the user explicitly asks for Mermaid, mmd, or Mermaid source.",
       "Do not reference external image URLs, font URLs, CSS URLs, or remote diagrams.net/embed services.",
       "After the tool renders the diagram directly in chat, put only a short caption or explanation outside the diagram.",
     ].join("\n")
   }
   return [
-    "Draw.io Diagram Output Contract:",
-    "ChipMate tool calling is disabled. When the user asks for a draw.io or diagrams.net diagram, fall back to one fenced `drawio` code block containing valid <mxfile> or <mxGraphModel> XML, and note that hand-authored XML is less reliable with small local models.",
+    "Diagram Output Routing Contract:",
+    "ChipMate tool calling is disabled. Use Mermaid as the default format for unspecified flowchart, process flow, architecture, sequence, state, and simple explanatory diagram requests.",
+    "When the user explicitly asks for a draw.io or diagrams.net diagram, fall back to one fenced `drawio` code block containing valid <mxfile> or <mxGraphModel> XML, and note that hand-authored XML is less reliable with small local models.",
     "Do not reference external image URLs, font URLs, CSS URLs, or remote diagrams.net/embed services inside the XML.",
-    "Keep text labels concise, use built-in draw.io shapes/styles, and put only a short caption outside the fenced block.",
+    "Keep diagram labels concise and put only a short caption outside the fenced block.",
   ].join("\n")
 }
 

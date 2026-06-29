@@ -8,13 +8,15 @@ import type {
   RenderedUsage,
   UsageLevel,
 } from "./types"
+import { countTokens } from "./qwen-autocomplete/tokenPruning"
 
 const USAGE_SEPARATOR = " | "
 
-export function usageFromMessageInfo(info: ChipMateMessageInfo | undefined): RenderedUsage | undefined {
+export function usageFromMessageInfo(info: ChipMateMessageInfo | undefined, modelLimit?: ChipMateModelLimit): RenderedUsage | undefined {
   if (info?.role !== "assistant") return
   const tokens = normalizeTokenUsage(info.tokens)
   if (!tokens || !hasPositiveUsage(tokens)) return
+  if (isLikelyAccumulatedReportedUsage({ tokens, usageKind: info.usageKind, modelLimit })) return
   return renderUsage(tokens, nonNegativeNumber(info.cost))
 }
 
@@ -26,7 +28,11 @@ export function summarizeSessionUsage(input: {
 }): RenderedSessionUsage {
   const assistantMessages = input.messages.filter((message) => message.info.role === "assistant")
   const usages = assistantMessages.flatMap((message) => {
-    const usage = usageFromMessageInfo(message.info)
+    const usage = usageFromMessageInfo(message.info, resolveContextLimitForMessage({
+      info: message.info,
+      models: input.models,
+      selectedModel: input.selectedModel,
+    }))
     return usage ? [usage] : []
   })
 
@@ -43,8 +49,7 @@ export function summarizeSessionUsage(input: {
     }
   }
 
-  const latestMessage = [...input.messages].reverse().find((message) => usageFromMessageInfo(message.info))
-  const latest = usageFromMessageInfo(latestMessage?.info) ?? usages[usages.length - 1]
+  const latest = usages[usages.length - 1]
   const maybeCapped = input.loadedMessageLimit !== undefined && input.messages.length >= input.loadedMessageLimit
   const total = totalUsage(usages, maybeCapped)
   const modelLimit = resolveContextLimit({
@@ -80,8 +85,76 @@ export function normalizeTokenUsage(input: ChipMateTokenUsage | unknown): ChipMa
       write: nonNegativeNumber(cache.write),
     },
   }
-  if (!hasNumber(usage.total) && !hasNumber(usage.input) && !hasNumber(usage.output) && !hasNumber(usage.reasoning)) return
+  if (!hasNumber(usage.total) && !hasNumber(usage.input) && !hasNumber(usage.output) && !hasNumber(usage.reasoning) && !hasNumber(usage.cache?.read) && !hasNumber(usage.cache?.write)) return
   return usage
+}
+
+export function normalizeProviderTokenUsage(input: unknown): ChipMateTokenUsage | undefined {
+  const root = objectRecord(input)
+  const completionDetails = objectRecord(root.completion_tokens_details)
+  const promptDetails = objectRecord(root.prompt_tokens_details)
+  const cache = objectRecord(root.cache)
+  return normalizeTokenUsage({
+    total: root.total ?? root.total_tokens,
+    input: root.input ?? root.input_tokens ?? root.prompt_tokens,
+    output: root.output ?? root.output_tokens ?? root.completion_tokens,
+    reasoning: root.reasoning ?? root.reasoning_tokens ?? completionDetails.reasoning_tokens,
+    cache: {
+      read: cache.read ?? root.cache_read ?? root.cached_tokens ?? promptDetails.cached_tokens,
+      write: cache.write ?? root.cache_write,
+    },
+  })
+}
+
+export function estimateChatTokenUsage(input: {
+  messages: unknown[]
+  outputText: string
+  model?: string
+}): ChipMateTokenUsage {
+  const model = input.model?.trim() || "gpt-4"
+  const messageText = input.messages.map(chatMessageTokenText).filter(Boolean).join("\n")
+  const inputTokens = countTokens(messageText, model) + input.messages.length * 4
+  const outputTokens = countTokens(input.outputText || "", model)
+  return {
+    input: inputTokens,
+    output: outputTokens,
+    total: inputTokens + outputTokens,
+    cache: { read: 0, write: 0 },
+  }
+}
+
+export function effectiveTokenUsage(tokens: ChipMateTokenUsage) {
+  const rawInput = tokens.input ?? 0
+  const output = tokens.output ?? 0
+  const reasoning = tokens.reasoning ?? 0
+  const cacheRead = tokens.cache?.read ?? 0
+  const cacheWrite = tokens.cache?.write ?? 0
+  const input = effectiveInputTokens(rawInput, cacheRead)
+  const total = effectiveTotalTokens(tokens, input, output, reasoning, cacheRead, cacheWrite)
+  return {
+    input,
+    output,
+    reasoning,
+    cacheRead,
+    cacheWrite,
+    total,
+  }
+}
+
+export function isLikelyAccumulatedReportedUsage(input: {
+  tokens: ChipMateTokenUsage
+  usageKind?: string
+  modelLimit?: ChipMateModelLimit
+}) {
+  if (input.usageKind === "estimated") return false
+  const contextLimit = positiveNumber(input.modelLimit?.context)
+  if (!contextLimit) return false
+  const effective = effectiveTokenUsage(input.tokens)
+  const rawInput = input.tokens.input ?? 0
+  const rawTotal = input.tokens.total ?? 0
+  const promptCeiling = contextLimit * 1.25
+  const totalCeiling = (contextLimit + effective.output + effective.reasoning + effective.cacheWrite) * 1.25
+  return rawInput > promptCeiling || effective.input > promptCeiling || rawTotal > totalCeiling
 }
 
 export function normalizeModelLimit(input: unknown): ChipMateModelLimit {
@@ -108,12 +181,7 @@ export function formatCost(value: number | undefined): string {
 }
 
 function renderUsage(tokens: ChipMateTokenUsage, cost: number | undefined): RenderedUsage {
-  const input = tokens.input ?? 0
-  const output = tokens.output ?? 0
-  const reasoning = tokens.reasoning ?? 0
-  const cacheRead = tokens.cache?.read ?? 0
-  const cacheWrite = tokens.cache?.write ?? 0
-  const total = positiveNumber(tokens.total) ?? input + output + reasoning
+  const { input, output, reasoning, cacheRead, cacheWrite, total } = effectiveTokenUsage(tokens)
   const summary = usageSummary({ input, output, reasoning, cost })
   const detailParts = [
     input > 0 ? `${formatTokenCount(input)} input` : "",
@@ -135,6 +203,23 @@ function renderUsage(tokens: ChipMateTokenUsage, cost: number | undefined): Rend
     summary,
     detail: detailParts.join(USAGE_SEPARATOR),
   }
+}
+
+function effectiveInputTokens(input: number, cacheRead: number) {
+  return Math.max(0, input - cacheRead)
+}
+
+function effectiveTotalTokens(
+  tokens: ChipMateTokenUsage,
+  input: number,
+  output: number,
+  reasoning: number,
+  cacheRead: number,
+  cacheWrite: number,
+) {
+  const total = positiveNumber(tokens.total)
+  if (total !== undefined) return Math.max(0, total - cacheRead)
+  return input + output + reasoning + cacheWrite
 }
 
 function totalUsage(usages: RenderedUsage[], maybeCapped: boolean): RenderedUsage {
@@ -190,6 +275,23 @@ function resolveContextLimit(input: {
       : ""
   const selectedID = input.selectedModel.trim()
   const model = input.models.find((item) => item.id === latestID) ?? input.models.find((item) => item.id === selectedID)
+  return {
+    context: model?.contextLimit,
+    output: model?.outputLimit,
+  }
+}
+
+function resolveContextLimitForMessage(input: {
+  info: ChipMateMessageInfo
+  models: ChipMateModelInfo[]
+  selectedModel: string
+}): ChipMateModelLimit {
+  const modelKey =
+    input.info.providerID && input.info.modelID
+      ? `${input.info.providerID}/${input.info.modelID}`
+      : ""
+  const selectedID = input.selectedModel.trim()
+  const model = input.models.find((item) => item.id === modelKey) ?? input.models.find((item) => item.id === selectedID)
   return {
     context: model?.contextLimit,
     output: model?.outputLimit,
@@ -272,6 +374,27 @@ function hasNumber(input: unknown) {
 function objectRecord(input: unknown): Record<string, unknown> {
   if (!input || typeof input !== "object" || Array.isArray(input)) return {}
   return input as Record<string, unknown>
+}
+
+function chatMessageTokenText(input: unknown): string {
+  const message = objectRecord(input)
+  const role = typeof message.role === "string" ? message.role : ""
+  const content = chatContentTokenText(message.content)
+  const toolCalls = Array.isArray(message.tool_calls) ? message.tool_calls.map((item) => JSON.stringify(item)).join("\n") : ""
+  const toolCallID = typeof message.tool_call_id === "string" ? message.tool_call_id : ""
+  return [role, content, toolCalls, toolCallID].filter(Boolean).join("\n")
+}
+
+function chatContentTokenText(input: unknown): string {
+  if (typeof input === "string") return input
+  if (!Array.isArray(input)) return ""
+  return input.map((part) => {
+    const record = objectRecord(part)
+    if (typeof record.text === "string") return record.text
+    const image = objectRecord(record.image_url)
+    if (typeof image.url === "string") return `[image:${image.detail ?? "auto"}]`
+    return ""
+  }).filter(Boolean).join("\n")
 }
 
 function trimDecimal(value: number) {

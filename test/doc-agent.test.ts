@@ -1,12 +1,17 @@
 import { beforeEach, describe, expect, mock, test } from "bun:test"
+import { spawnSync } from "node:child_process"
+import { createHash } from "node:crypto"
 import { existsSync } from "node:fs"
+import { createServer } from "node:http"
 import { mkdir, readFile, rm, stat, writeFile } from "node:fs/promises"
+import type { AddressInfo } from "node:net"
+import type { IncomingMessage } from "node:http"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { cGuidelineDocxFixture } from "./document-fixtures"
 import type { GuidelineMergeProgress } from "../src/docAgent/GuidelineMerger"
 import type { SourceBlockPlacementCache, SourceBlockPlacementCacheEntry } from "../src/docAgent/SourceBlockPlacementCache"
-import type { CandidateRule, DocAgentModelProvider, DocAgentModelRequest, DocAgentTimelineEvent, EvidencePack, GeneratedExampleSpec, ReferenceChunk, RuleCardSpec, SourceBackedBlock, WordDocSpec } from "../src/docAgent/types"
+import type { CandidateRule, DocAgentModelProvider, DocAgentModelRequest, DocAgentTimelineEvent, EvidencePack, GeneratedExampleSpec, ReferenceChunk, RuleCardSpec, SourceBackedBlock, TableSpec, WordDocSpec } from "../src/docAgent/types"
 import type { RemoteSettings } from "../src/types"
 
 let workspaceFolders: Array<{ name: string; uri: UriShim }> = []
@@ -46,7 +51,6 @@ mock.module("vscode", () => ({
   },
 }))
 
-const { DocxIntentDetector } = await import("../src/docAgent/DocxIntentDetector")
 const { readDocx } = await import("../src/tools/readDocxTool")
 const { ReferenceDocExtractor } = await import("../src/docAgent/ReferenceDocExtractor")
 const { GuidelineRuleExtractor, batchExtractionPromptForTest, singleChunkExtractionPromptForTest } = await import("../src/docAgent/GuidelineRuleExtractor")
@@ -65,6 +69,8 @@ const { CandidateRuleQualityGate, collectCGuidelineRuleQualityIssues, validateCC
 const { GuidelineReferencePackFlow } = await import("../src/docAgent/DocumentAgentFlow")
 const { DocxRenderQualityGate } = await import("../src/docAgent/DocxRenderQualityGate")
 const { WordDocBuilder } = await import("../src/docAgent/WordDocBuilder")
+const { WordDocSpecValidator } = await import("../src/docAgent/WordDocSpecValidator")
+const { resolveWordDesignPreset, resolveWordHeaderPattern, resolveWordPresetTokenMap } = await import("../src/docAgent/themes/WordDesignPresets")
 const { ReportQualityGate } = await import("../src/docAgent/ReportQualityGate")
 const { ChipMateDocModelProvider, DOCUMENT_MODEL_COMPAT_MAX_TOKENS } = await import("../src/docAgent/ChipMateDocModelProvider")
 const { RuleChunkFilter } = await import("../src/docAgent/RuleChunkFilter")
@@ -72,6 +78,16 @@ const { WorkspaceRuleExtractionCache } = await import("../src/docAgent/RuleExtra
 const { SourceBlockPlacementPlanner } = await import("../src/docAgent/SourceBlockPlacementPlanner")
 const { SOURCE_BLOCK_PLACEMENT_VERSION } = await import("../src/docAgent/SourceBlockPlacementCache")
 const { createWordDocument } = await import("../src/tools/createWordDocumentTool")
+const { DocumentEditPlanner, validateDocumentEditPlan } = await import("../src/docAgent/DocumentEditPlan")
+const { WordDocumentEditor } = await import("../src/docAgent/WordDocumentEditor")
+const { auditWordDocumentFields, flattenRefFieldsInDocxBytes, materializeSeqFieldsInDocxBytes, prepareNativeFieldRefreshInDocxBytes, WordNativeFieldRefresher, WordRefFieldFlattener, WordSeqFieldMaterializer } = await import("../src/docAgent/WordDocumentFields")
+const { WordDocumentInspector } = await import("../src/docAgent/WordDocumentInspector")
+const { isWordEditIntent, WordEditAgentFlow } = await import("../src/docAgent/WordEditAgentFlow")
+const { renderWordDocument } = await import("../src/docAgent/WordRenderQualityGate")
+const { compareWordDocuments } = await import("../src/docAgent/WordDocumentDiff")
+const { WordDocumentMerger, mergeDocxBytes } = await import("../src/docAgent/WordDocumentMerger")
+const { auditWordDocumentStyles, normalizeWordDocumentStyleBytes, WordDocumentStyleNormalizer } = await import("../src/docAgent/WordDocumentStyleTools")
+const { applyTemplateStylesToDocxBytes, WordTemplateStyleApplier } = await import("../src/docAgent/WordTemplateStyleApplier")
 
 beforeEach(() => {
   workspaceFolders = []
@@ -86,16 +102,45 @@ function groupedTimelineEvents(events: DocAgentTimelineEvent[]) {
 }
 
 describe("doc agent intent and extraction", () => {
-  test("matches local Word guideline generation and blocks insufficient docx inputs", () => {
-    const detector = new DocxIntentDetector()
+  test("does not route document generation through the legacy guideline reference-pack flow", () => {
+    const generationRequests = [
+      { text: "请综合这些资料，生成一份适合我们团队的 C 语言编码规范 Word。", docxCount: 1 },
+      { text: "请综合这些资料，生成团队 C 语言编码规范 Word。", docxCount: 2 },
+      { text: "请生成团队研发流程规范文档，包含表格和目录。", docxCount: 3 },
+      { text: "请把这些材料整理成客户汇报版 docx。", docxCount: 3 },
+    ]
 
-    const result = detector.detect({
-      text: "请综合这些资料，生成一份适合我们团队的 C 语言编码规范 Word。",
+    for (const request of generationRequests) {
+      expect(isWordEditIntent(request)).toBe(false)
+    }
+  })
+
+  test("does not treat one-source generic Word generation as an edit of the source document", () => {
+    expect(isWordEditIntent({
+      text: "根据这份资料生成一份客户汇报 Word。",
       docxCount: 1,
-    })
+    })).toBe(false)
+    expect(isWordEditIntent({
+      text: "请整理成一份项目方案文档。",
+      docxCount: 1,
+    })).toBe(false)
+    expect(isWordEditIntent({
+      text: "请完善为一份正式设计文档。",
+      docxCount: 1,
+    })).toBe(false)
 
-    expect(result.matched).toBe(true)
-    expect(result.reason).toContain("至少 @ 两份 .docx")
+    expect(isWordEditIntent({
+      text: "请新增一个审稿说明章节，生成汇报版 Word。",
+      docxCount: 1,
+    })).toBe(true)
+    expect(isWordEditIntent({
+      text: "请更新目录页码并修复表格标题。",
+      docxCount: 1,
+    })).toBe(true)
+    expect(isWordEditIntent({
+      text: "请把这份材料润色成正式 Word 文档。",
+      docxCount: 1,
+    })).toBe(true)
   })
 
   test("read_docx returns semantic structure without style inheritance promises", async () => {
@@ -611,6 +656,3890 @@ describe("doc agent intent and extraction", () => {
     expect(docAgentFiles).not.toMatch(/GenericDocumentAgentFlow|DocumentTaskPlanner|SourceAcquisitionRunner|GenericEvidencePackBuilder/)
     expect(chatHtml).toContain("mentionIndex")
     expect(chatView).toContain("mentionIndex")
+  })
+})
+
+describe("word edit agent", () => {
+  test("inspect_word_document exposes real locators and rejects invented locators", async () => {
+    const bytes = cGuidelineDocxFixture({
+      title: "可编辑 Word",
+      sections: [{ heading: "第一章", paragraphs: ["这是第一段。"] }],
+      tableRows: [["状态", "旧值"]],
+    })
+    const inspection = await new WordDocumentInspector().inspect({ path: "docs/edit.docx", bytes })
+    expect(inspection.paragraphs.length).toBeGreaterThan(0)
+    expect(inspection.tables.length).toBe(1)
+
+    const valid = validateDocumentEditPlan({
+      planId: "valid",
+      targetPath: "docs/edit.docx",
+      operations: [{ type: "replaceParagraph", locator: inspection.paragraphs[0]!.locator, text: "新标题" }],
+      warnings: [],
+    }, inspection)
+    expect(valid.ok).toBe(true)
+
+    const invalid = validateDocumentEditPlan({
+      planId: "invalid",
+      targetPath: "docs/edit.docx",
+      operations: [{ type: "replaceParagraph", locator: { kind: "paragraph", blockId: "p-made-up" }, text: "不应执行" }],
+      warnings: [],
+    }, inspection)
+    expect(invalid.ok).toBe(false)
+    expect(invalid.errors.join("\n")).toContain("locator")
+  })
+
+  test("edit planner fallback uses table cell tracked change for inspected table replacements", async () => {
+    const bytes = cGuidelineDocxFixture({
+      title: "表格红线 Word",
+      sections: [{ heading: "状态章节", paragraphs: ["表格下面需要审阅。"] }],
+      tableRows: [["字段", "值"], ["状态", "Draft"]],
+    })
+    const inspection = await new WordDocumentInspector().inspect({ path: "docs/table-redline.docx", bytes })
+    const plan = await new DocumentEditPlanner().plan({
+      question: "请用红线把表格里的 Draft 替换为 Final",
+      targetPath: "docs/table-redline.docx",
+      inspection,
+    })
+
+    expect(plan.ok).toBe(true)
+    const operation = plan.plan!.operations[0]
+    const table = inspection.tables.find((item) => item.rows.some((row) => row.includes("Draft")))!
+    const expectedRowIndex = table.rows.findIndex((row) => row.includes("Draft"))
+    const expectedCellIndex = table.rows[expectedRowIndex]!.findIndex((cell) => cell === "Draft")
+    expect(operation?.type).toBe("updateTableWithTrackedChange")
+    expect(operation?.locator.kind).toBe("tableCell")
+    expect(operation?.locator.rowIndex).toBe(expectedRowIndex)
+    expect(operation?.locator.cellIndex).toBe(expectedCellIndex)
+    if (operation?.type === "updateTableWithTrackedChange") {
+      expect(operation.text).toBe("Final")
+    }
+  })
+
+  test("apply_word_document_edits can replace exact text inside a paragraph", async () => {
+    const root = await tempDir("chipmate-word-inline-edit-")
+    workspaceFolders = [{ name: "repo", uri: UriShim.file(root) }]
+    const bytes = cGuidelineDocxFixture({
+      title: "局部编辑 Word",
+      sections: [{ heading: "现有章节", paragraphs: ["这是第一段，需要局部调整，并保留其余文字。"] }],
+    })
+    const inspection = await new WordDocumentInspector().inspect({ path: "docs/inline-edit.docx", bytes })
+    const paragraph = inspection.paragraphs.find((item) => item.text.includes("需要局部调整"))!
+    const validation = validateDocumentEditPlan({
+      planId: "inline-edit",
+      targetPath: "docs/inline-edit.docx",
+      operations: [{ type: "replaceText", locator: paragraph.locator, oldText: "需要局部调整", newText: "需要精确调整" }],
+      warnings: [],
+    }, inspection)
+    expect(validation.ok).toBe(true)
+
+    const result = await new WordDocumentEditor(root).apply({
+      sourcePath: "docs/inline-edit.docx",
+      bytes,
+      inspection,
+      plan: validation.plan!,
+    })
+
+    const outputBytes = await readFile(join(root, result.path))
+    const documentXml = await readDocxPart(outputBytes, "word/document.xml")
+    expect(documentXml).toContain("这是第一段")
+    expect(documentXml).toContain("需要精确调整")
+    expect(documentXml).toContain("并保留其余文字")
+    expect(documentXml).not.toContain("需要局部调整")
+    expect(result.appliedOperations[0]?.type).toBe("replaceText")
+    expect(result.structureCheckResult.ok).toBe(true)
+  })
+
+  test("apply_word_document_edits can apply controlled OOXML part patches", async () => {
+    const root = await tempDir("chipmate-word-ooxml-patch-")
+    workspaceFolders = [{ name: "repo", uri: UriShim.file(root) }]
+    const bytes = cGuidelineDocxFixture({
+      title: "OOXML 补丁 Word",
+      sections: [{ heading: "现有章节", paragraphs: ["正文保留。"] }],
+    })
+    const inspection = await new WordDocumentInspector().inspect({ path: "docs/ooxml-patch.docx", bytes })
+    const validation = validateDocumentEditPlan({
+      planId: "ooxml-patch",
+      targetPath: "docs/ooxml-patch.docx",
+      outputFilenameBase: "ooxml-patch-output",
+      operations: [{
+        type: "patchOoxmlPart",
+        locator: inspection.documentEndLocator,
+        part: "word/document.xml",
+        reason: "native operations cannot express this small OOXML repair in the fixture",
+        patches: [{
+          action: "appendBeforeClose",
+          closeTag: "</w:body>",
+          text: "<w:p><w:r><w:t>OOXML patched paragraph</w:t></w:r></w:p>",
+          expectedOccurrences: 1,
+        }],
+      }],
+      warnings: [],
+    }, inspection)
+    expect(validation.ok).toBe(true)
+
+    const unsafeValidation = validateDocumentEditPlan({
+      planId: "ooxml-patch-unsafe",
+      targetPath: "docs/ooxml-patch.docx",
+      operations: [{
+        type: "patchOoxmlPart",
+        locator: inspection.documentEndLocator,
+        part: "word/_rels/document.xml.rels",
+        reason: "unsafe external relationship should be rejected",
+        patches: [{
+          action: "appendBeforeClose",
+          closeTag: "</Relationships>",
+          text: '<Relationship Id="rIdUnsafe" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="https://example.com/x.png" TargetMode="External"/>',
+        }],
+      }],
+      warnings: [],
+    }, inspection)
+    expect(unsafeValidation.ok).toBe(false)
+    expect(unsafeValidation.errors.join("\n")).toContain("external relationships")
+
+    const result = await new WordDocumentEditor(root).apply({
+      sourcePath: "docs/ooxml-patch.docx",
+      bytes,
+      inspection,
+      plan: validation.plan!,
+    })
+
+    const outputBytes = await readFile(join(root, result.path))
+    const documentXml = await readDocxPart(outputBytes, "word/document.xml")
+    expect(documentXml).toContain("OOXML patched paragraph")
+    expect(result.appliedOperations[0]?.type).toBe("patchOoxmlPart")
+    expect(result.appliedOperations[0]?.detail).toContain("patched word/document.xml")
+    expect(result.structureCheckResult.ok).toBe(true)
+  })
+
+	  test("apply_word_document_edits can replace a paragraph with a rich paragraph", async () => {
+    const root = await tempDir("chipmate-word-rich-replace-")
+    workspaceFolders = [{ name: "repo", uri: UriShim.file(root) }]
+    const bytes = cGuidelineDocxFixture({
+      title: "富文本替换 Word",
+      sections: [{ heading: "现有章节", paragraphs: ["正文保留。"] }],
+    })
+    const inspection = await new WordDocumentInspector().inspect({ path: "docs/rich-replace.docx", bytes })
+    const heading = inspection.paragraphs.find((item) => item.text === "现有章节")!
+    const validation = validateDocumentEditPlan({
+      planId: "rich-replace",
+      targetPath: "docs/rich-replace.docx",
+      outputFilenameBase: "rich-replace-output",
+      operations: [{
+        type: "replaceParagraphWithRichParagraph",
+        locator: heading.locator,
+        paragraph: {
+          runs: [
+            { text: "更新后的" },
+            { text: "标题", bold: true },
+            { text: "，参见 " },
+            { text: "外部规范", hyperlink: { url: "https://example.com/spec", tooltip: "规范链接" } },
+            { text: " / " },
+            { text: "返回顶部", italic: true, hyperlink: { anchor: "Top" } },
+            { text: " / " },
+            { text: "图 1", reference: { bookmark: "fig_sample", field: "REF", fallbackText: "图 1" } },
+            { text: " / 带脚注" },
+            { note: { kind: "footnote", text: "替换段落脚注。" } },
+          ],
+        },
+      }],
+      warnings: [],
+    }, inspection)
+    expect(validation.ok).toBe(true)
+
+    const result = await new WordDocumentEditor(root).apply({
+      sourcePath: "docs/rich-replace.docx",
+      bytes,
+      inspection,
+      plan: validation.plan!,
+    })
+
+    const outputBytes = await readFile(join(root, result.path))
+    const documentXml = await readDocxPart(outputBytes, "word/document.xml")
+    const documentRelsXml = await readDocxPart(outputBytes, "word/_rels/document.xml.rels")
+    const contentTypesXml = await readDocxPart(outputBytes, "[Content_Types].xml")
+    const footnotesXml = await readDocxPart(outputBytes, "word/footnotes.xml")
+    const replacedIndex = documentXml.indexOf("更新后的")
+    const paragraphXml = documentXml.slice(documentXml.lastIndexOf("<w:p>", replacedIndex), documentXml.indexOf("</w:p>", replacedIndex) + "</w:p>".length)
+    expect(documentXml).toContain("更新后的")
+    expect(documentXml).not.toContain("现有章节")
+    expect(paragraphXml).toContain(`<w:pStyle w:val="${heading.styleId}"/>`)
+    expect(paragraphXml).toContain("<w:b/>")
+    expect(paragraphXml).toContain("<w:i/>")
+    expect(paragraphXml).toContain('<w:hyperlink r:id="rIdChipMateHyperlink1" w:tooltip="规范链接">')
+    expect(paragraphXml).toContain('<w:hyperlink w:anchor="Top">')
+    expect(paragraphXml).toContain('<w:instrText xml:space="preserve"> REF fig_sample \\h </w:instrText>')
+    expect(paragraphXml).toContain('<w:footnoteReference w:id="1"/>')
+    expect(contentTypesXml).toContain('PartName="/word/footnotes.xml"')
+    expect(documentRelsXml).toContain('Target="https://example.com/spec" TargetMode="External"')
+    expect(documentRelsXml).toContain('Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/footnotes" Target="footnotes.xml"')
+    expect(footnotesXml).toContain('<w:footnote w:id="-1" w:type="separator">')
+    expect(footnotesXml).toContain("<w:footnoteRef/>")
+    expect(footnotesXml).toContain("替换段落脚注。")
+    expect(result.appliedOperations[0]?.type).toBe("replaceParagraphWithRichParagraph")
+	    expect(result.structureCheckResult.ok).toBe(true)
+	  })
+
+  test("apply_word_document_edits can replace a paragraph with ordered structural blocks", async () => {
+    const root = await tempDir("chipmate-word-block-replace-")
+    workspaceFolders = [{ name: "repo", uri: UriShim.file(root) }]
+    const bytes = cGuidelineDocxFixture({
+      title: "结构块替换 Word",
+      sections: [{ heading: "现有章节", paragraphs: ["待替换结构块。", "后续正文。"] }],
+    })
+    const inspection = await new WordDocumentInspector().inspect({ path: "docs/block-replace.docx", bytes })
+    const target = inspection.paragraphs.find((item) => item.text === "待替换结构块。")!
+    const validation = validateDocumentEditPlan({
+      planId: "block-replace",
+      targetPath: "docs/block-replace.docx",
+      outputFilenameBase: "block-replace-output",
+      operations: [{
+        type: "replaceParagraphWithBlocks",
+        locator: target.locator,
+        blocks: [
+          { type: "paragraph", text: "替换后的结构化正文。" },
+          {
+            type: "list",
+            list: {
+              kind: "checklist",
+              items: [
+                { text: "确认范围", checked: true },
+                { text: "确认证据", checked: false },
+              ],
+            },
+          },
+          {
+            type: "figure",
+            figure: {
+              title: "替换流程图",
+              caption: "段落替换插入的 PNG。",
+              label: "Figure",
+              bookmark: "fig_replace_blocks",
+              altText: "替换流程图 PNG",
+              image: {
+                contentType: "image/png",
+                base64: Buffer.from(tinyPngBytes()).toString("base64"),
+                width: 32,
+                height: 16,
+              },
+            },
+          },
+          { type: "table", table: { headers: ["项", "状态"], rows: [["结构行项", "已落地"]] } },
+          {
+            type: "evidenceCards",
+            evidenceCards: {
+              cards: [{
+                title: "替换证据",
+                summary: "段落被替换成结构块序列。",
+                source: "Edit Plan",
+                sourceRefs: ["EDIT-1"],
+                role: "primary",
+                confidence: "high",
+              }],
+            },
+          },
+          {
+            type: "quoteBlock",
+            quoteBlock: {
+              kind: "quote",
+              text: "Structured replacement keeps the document shape.",
+              attribution: "Documents Skill",
+            },
+          },
+        ],
+      }],
+      warnings: [],
+    }, inspection)
+    expect(validation.ok).toBe(true)
+
+    const result = await new WordDocumentEditor(root).apply({
+      sourcePath: "docs/block-replace.docx",
+      bytes,
+      inspection,
+      plan: validation.plan!,
+    })
+
+    const outputBytes = await readFile(join(root, result.path))
+    const documentXml = await readDocxPart(outputBytes, "word/document.xml")
+    const contentTypesXml = await readDocxPart(outputBytes, "[Content_Types].xml")
+    const documentRelsXml = await readDocxPart(outputBytes, "word/_rels/document.xml.rels")
+    const numberingXml = await readDocxPart(outputBytes, "word/numbering.xml")
+    const parts = await docxPartPaths(outputBytes)
+    expect(documentXml).not.toContain("待替换结构块。")
+    expect(appearsBefore(documentXml, "替换后的结构化正文。", "确认范围")).toBe(true)
+    expect(appearsBefore(documentXml, "确认证据", "替换流程图")).toBe(true)
+    expect(appearsBefore(documentXml, "替换流程图", "结构行项")).toBe(true)
+    expect(appearsBefore(documentXml, "结构行项", "替换证据")).toBe(true)
+    expect(appearsBefore(documentXml, "替换证据", "Structured replacement keeps the document shape.")).toBe(true)
+    expect(appearsBefore(documentXml, "Structured replacement keeps the document shape.", "后续正文。")).toBe(true)
+    expect(documentXml).toContain('<w:pStyle w:val="ListParagraph"/>')
+    expect(numberingXml).toContain('w:lvlText w:val="☐"')
+    expect(numberingXml).toContain('w:lvlText w:val="☑"')
+    expect(documentXml).toContain("<w:drawing>")
+    expect(documentXml).toContain('descr="替换流程图 PNG"')
+    expect(documentXml).toContain('<w:bookmarkStart w:id="1000" w:name="fig_replace_blocks"/>')
+    expect(documentXml).toContain('<w:instrText xml:space="preserve"> SEQ Figure \\* ARABIC </w:instrText>')
+    expect(documentXml).toContain('<w:t xml:space="preserve">: 段落替换插入的 PNG。</w:t>')
+    expect(documentXml).toContain('<w:tblLayout w:type="fixed"/>')
+    expect(documentXml).toContain('<w:t xml:space="preserve">来源：Edit Plan</w:t>')
+    expect(documentXml).toContain('<w:t xml:space="preserve">引用：EDIT-1</w:t>')
+    expect(documentXml).toContain('<w:pStyle w:val="Quote"/>')
+    expect(parts).toContain("word/media/image1.png")
+    expect(contentTypesXml).toContain('<Default Extension="png" ContentType="image/png"/>')
+    expect(contentTypesXml).toContain('PartName="/word/numbering.xml"')
+    expect(documentRelsXml).toContain('Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/image1.png"')
+    expect(documentRelsXml).toContain('Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/numbering" Target="numbering.xml"')
+    expect(result.appliedOperations[0]?.type).toBe("replaceParagraphWithBlocks")
+    expect(result.structureCheckResult.ok).toBe(true)
+    const updatedInspection = await new WordDocumentInspector().inspect({ path: result.path, bytes: outputBytes })
+    expect(updatedInspection.lists.some((list) => list.kind === "checklist" && list.items.some((item) => item.text === "确认范围"))).toBe(true)
+    expect(updatedInspection.images.some((image) => image.target === "media/image1.png" && image.altText === "替换流程图 PNG")).toBe(true)
+  })
+
+	  test("apply_word_document_edits can insert a section with lists figures callouts and code blocks", async () => {
+    const root = await tempDir("chipmate-word-rich-insert-")
+    workspaceFolders = [{ name: "repo", uri: UriShim.file(root) }]
+    const bytes = cGuidelineDocxFixture({
+      title: "富内容插入文档",
+      sections: [{ heading: "现有章节", paragraphs: ["现有正文。"] }],
+    })
+    const inspection = await new WordDocumentInspector().inspect({ path: "docs/rich-insert.docx", bytes })
+    const validation = validateDocumentEditPlan({
+      planId: "rich-insert",
+      targetPath: "docs/rich-insert.docx",
+      outputFilenameBase: "rich-insert-output",
+      operations: [{
+        type: "insertSection",
+        locator: inspection.documentEndLocator,
+	        title: "新增审阅说明",
+	        level: 2,
+	        paragraphs: ["新增段落正文。"],
+	        lists: [{
+	          kind: "numbered",
+	          title: "交付步骤",
+	          items: [
+	            { text: "确认证据来源" },
+	            { text: "复核渲染页面", level: 1 },
+	            { text: "发布最终版本", level: 2 },
+	          ],
+	        }],
+	        figures: [{
+	          title: "新增流程图",
+	          caption: "新增 section 中的 PNG 图表。",
+	          label: "Figure",
+	          bookmark: "fig_inserted_flow",
+	          altText: "新增流程图 PNG",
+	          image: {
+	            contentType: "image/png",
+	            base64: Buffer.from(tinyPngBytes()).toString("base64"),
+	            width: 32,
+	            height: 16,
+	          },
+	        }],
+	        callouts: [{ kind: "warning", title: "审阅风险", body: "这里需要人工确认边界条件。" }],
+	        codeBlocks: [{ language: "c", caption: "边界检查示例", code: "if (ptr == NULL) {\n    return -EINVAL;\n}" }],
+	      }],
+      warnings: [],
+    }, inspection)
+    expect(validation.ok).toBe(true)
+
+    const result = await new WordDocumentEditor(root).apply({
+      sourcePath: "docs/rich-insert.docx",
+      bytes,
+      inspection,
+      plan: validation.plan!,
+    })
+
+	    const outputBytes = await readFile(join(root, result.path))
+	    const documentXml = await readDocxPart(outputBytes, "word/document.xml")
+	    const contentTypesXml = await readDocxPart(outputBytes, "[Content_Types].xml")
+	    const documentRelsXml = await readDocxPart(outputBytes, "word/_rels/document.xml.rels")
+	    const numberingXml = await readDocxPart(outputBytes, "word/numbering.xml")
+	    const parts = await docxPartPaths(outputBytes)
+	    const richTableIndex = documentXml.indexOf("审阅风险")
+	    const richTableXml = documentXml.slice(documentXml.lastIndexOf("<w:tbl>", richTableIndex), documentXml.indexOf("</w:tbl>", richTableIndex) + "</w:tbl>".length)
+	    expect(documentXml).toContain("新增审阅说明")
+	    expect(documentXml).toContain("交付步骤")
+	    expect(documentXml).toContain("确认证据来源")
+	    expect(documentXml).toContain("复核渲染页面")
+	    expect(documentXml).toContain("发布最终版本")
+	    expect(documentXml).toContain('<w:pStyle w:val="ListParagraph"/>')
+	    expect(documentXml).toContain("<w:drawing>")
+	    expect(documentXml).toContain('descr="新增流程图 PNG"')
+	    expect(documentXml).toContain('<w:bookmarkStart w:id="1000" w:name="fig_inserted_flow"/>')
+	    expect(documentXml).toContain('<w:instrText xml:space="preserve"> SEQ Figure \\* ARABIC </w:instrText>')
+	    expect(documentXml).toContain('<w:t xml:space="preserve">: 新增 section 中的 PNG 图表。</w:t>')
+	    expect(documentXml).toContain("审阅风险")
+	    expect(documentXml).toContain("这里需要人工确认边界条件。")
+	    expect(documentXml).toContain("边界检查示例")
+	    expect(documentXml).toContain("return -EINVAL;")
+	    expect(documentXml).toContain('<w:pStyle w:val="CodeBlock"/>')
+	    expect(documentXml).toContain('<w:tblLayout w:type="fixed"/>')
+	    expect(appearsBefore(richTableXml, "<w:tblBorders>", '<w:tblLayout w:type="fixed"/>')).toBe(true)
+	    expect(parts).toContain("word/media/image1.png")
+	    expect(contentTypesXml).toContain('<Default Extension="png" ContentType="image/png"/>')
+	    expect(contentTypesXml).toContain('PartName="/word/numbering.xml"')
+	    expect(documentRelsXml).toContain('Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/image1.png"')
+	    expect(documentRelsXml).toContain('Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/numbering" Target="numbering.xml"')
+	    expect(numberingXml).toContain('w:multiLevelType w:val="hybridMultilevel"')
+	    expect(numberingXml).toContain('w:lvlText w:val="%1.%2.%3."')
+	    expect(result.appliedOperations[0]?.type).toBe("insertSection")
+	    expect(result.structureCheckResult.ok).toBe(true)
+	    const updatedInspection = await new WordDocumentInspector().inspect({ path: result.path, bytes: outputBytes })
+	    expect(updatedInspection.lists.some((list) => list.kind === "numbered" && list.items.some((item) => item.text === "发布最终版本" && item.level === 2))).toBe(true)
+	    expect(updatedInspection.images.some((image) => image.target === "media/image1.png" && image.altText === "新增流程图 PNG")).toBe(true)
+	  })
+
+  test("apply_word_document_edits preserves ordered insertSection blocks with rich paragraphs", async () => {
+    const root = await tempDir("chipmate-word-ordered-insert-")
+    workspaceFolders = [{ name: "repo", uri: UriShim.file(root) }]
+    const bytes = cGuidelineDocxFixture({
+      title: "有序内容块插入文档",
+      sections: [{ heading: "现有章节", paragraphs: ["现有正文。"] }],
+    })
+    const inspection = await new WordDocumentInspector().inspect({ path: "docs/ordered-insert.docx", bytes })
+    const validation = validateDocumentEditPlan({
+      planId: "ordered-insert",
+      targetPath: "docs/ordered-insert.docx",
+      outputFilenameBase: "ordered-insert-output",
+      operations: [{
+        type: "insertSection",
+        locator: inspection.documentEndLocator,
+        title: "新增有序内容块",
+        level: 2,
+        blocks: [
+          { type: "callout", callout: { kind: "info", title: "块级提示", body: "先给出编辑意图。" } },
+          {
+            type: "briefCards",
+            briefCards: {
+              columns: 2,
+              cards: [
+                { title: "状态", value: "Ready", body: "关键事实先进入摘要卡。", tone: "success" },
+                { title: "风险", value: "Low", footer: "来自审阅记录", tone: "info" },
+              ],
+            },
+          },
+          {
+            type: "evidenceCards",
+            evidenceCards: {
+              columns: 2,
+              cards: [
+                {
+                  title: "需求证据",
+                  summary: "用户要求引用块和证据摘要保持可追溯。",
+                  source: "Architecture Review",
+                  path: "docs/review.docx",
+                  locator: "section-2",
+                  quote: "Evidence must stay anchored.",
+                  role: "primary",
+                  confidence: "high",
+                  sourceRefs: ["REQ-9"],
+                },
+              ],
+            },
+          },
+          { type: "quoteBlock", quoteBlock: { kind: "quote", text: "Evidence must stay anchored.", attribution: "Architecture Review", source: "REQ-9" } },
+          {
+            type: "richParagraph",
+            paragraph: {
+              runs: [
+                { text: "请参考 " },
+                { text: "外部资料", bold: true, hyperlink: { url: "https://example.com/spec", tooltip: "外部规范" } },
+                { text: " 和 " },
+                { text: "内部章节", italic: true, hyperlink: { anchor: "sec_internal_notes" } },
+                { text: "，并查看 " },
+                { text: "图 1", reference: { bookmark: "fig_ordered_flow", field: "REF", fallbackText: "图 1" } },
+                { text: "，并保留审阅尾注" },
+                { note: { kind: "endnote", text: "块级尾注。" } },
+                { text: "。" },
+              ],
+            },
+          },
+          { type: "list", list: { kind: "numbered", title: "块级步骤", items: [{ text: "先审阅证据" }, { text: "再更新正文", level: 1 }] } },
+          {
+            type: "figure",
+            figure: {
+              title: "块级图",
+              caption: "按 blocks 顺序插入的 PNG。",
+              label: "Figure",
+              bookmark: "fig_ordered_flow",
+              altText: "块级图 PNG",
+              image: {
+                contentType: "image/png",
+                base64: Buffer.from(tinyPngBytes()).toString("base64"),
+                width: 32,
+                height: 16,
+              },
+            },
+          },
+          { type: "table", table: { headers: ["项", "说明"], rows: [["块级表格", "位于图片之后"]] } },
+          { type: "codeBlock", codeBlock: { language: "text", caption: "块级代码", code: "ordered=true" } },
+        ],
+      }],
+      warnings: [],
+    }, inspection)
+    expect(validation.ok).toBe(true)
+
+    const result = await new WordDocumentEditor(root).apply({
+      sourcePath: "docs/ordered-insert.docx",
+      bytes,
+      inspection,
+      plan: validation.plan!,
+    })
+
+    const outputBytes = await readFile(join(root, result.path))
+    const documentXml = await readDocxPart(outputBytes, "word/document.xml")
+    const contentTypesXml = await readDocxPart(outputBytes, "[Content_Types].xml")
+    const documentRelsXml = await readDocxPart(outputBytes, "word/_rels/document.xml.rels")
+    const endnotesXml = await readDocxPart(outputBytes, "word/endnotes.xml")
+    const parts = await docxPartPaths(outputBytes)
+    expect(appearsBefore(documentXml, "块级提示", "状态")).toBe(true)
+    expect(appearsBefore(documentXml, "Ready", "需求证据")).toBe(true)
+    expect(appearsBefore(documentXml, "需求证据", "Evidence must stay anchored.")).toBe(true)
+    expect(appearsBefore(documentXml, "Evidence must stay anchored.", "外部资料")).toBe(true)
+    expect(appearsBefore(documentXml, "外部资料", "块级步骤")).toBe(true)
+    expect(appearsBefore(documentXml, "块级步骤", "块级图")).toBe(true)
+    expect(appearsBefore(documentXml, "块级图", "块级表格")).toBe(true)
+    expect(appearsBefore(documentXml, "块级表格", "块级代码")).toBe(true)
+    expect(documentXml).toContain('<w:pStyle w:val="Quote"/>')
+    expect(documentXml).toContain('<w:t xml:space="preserve">- Architecture Review - REQ-9</w:t>')
+    expect(documentXml).toContain('<w:t xml:space="preserve">关键事实先进入摘要卡。</w:t>')
+    expect(documentXml).toContain('<w:t xml:space="preserve">来自审阅记录</w:t>')
+    expect(documentXml).toContain('<w:t xml:space="preserve">用户要求引用块和证据摘要保持可追溯。</w:t>')
+    expect(documentXml).toContain('<w:t xml:space="preserve">来源：Architecture Review</w:t>')
+    expect(documentXml).toContain('<w:t xml:space="preserve">路径：docs/review.docx</w:t>')
+    expect(documentXml).toContain('<w:t xml:space="preserve">引用：REQ-9</w:t>')
+    expect(documentXml).toContain('<w:hyperlink r:id="rIdChipMateHyperlink1" w:tooltip="外部规范">')
+    expect(documentXml).toContain('<w:hyperlink w:anchor="sec_internal_notes">')
+    expect(documentXml).toContain('<w:instrText xml:space="preserve"> REF fig_ordered_flow \\h </w:instrText>')
+    expect(documentXml).toContain('<w:endnoteReference w:id="1"/>')
+    expect(contentTypesXml).toContain('PartName="/word/endnotes.xml"')
+    expect(documentRelsXml).toContain('Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink" Target="https://example.com/spec" TargetMode="External"')
+    expect(documentRelsXml).toContain('Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/endnotes" Target="endnotes.xml"')
+    expect(endnotesXml).toContain('<w:endnote w:id="-1" w:type="separator">')
+    expect(endnotesXml).toContain("<w:endnoteRef/>")
+    expect(endnotesXml).toContain("块级尾注。")
+    expect(parts).toContain("word/media/image1.png")
+    expect(parts).toContain("word/endnotes.xml")
+    expect(result.appliedOperations[0]?.type).toBe("insertSection")
+    expect(result.structureCheckResult.ok).toBe(true)
+  })
+
+  test("apply_word_document_edits can update Word list items while preserving numbering", async () => {
+    const root = await tempDir("chipmate-word-list-edit-")
+    workspaceFolders = [{ name: "repo", uri: UriShim.file(root) }]
+    const spec = minimalRenderableWordDocSpec()
+    spec.metadata.documentType = "list-edit"
+    spec.sources = []
+    spec.references = []
+    spec.sections = [{
+      id: "delivery",
+      level: 1,
+      title: "Delivery Checklist",
+      paragraphs: ["List edit sample."],
+      lists: [{
+        kind: "numbered",
+        items: [
+          { text: "Draft scope" },
+          { text: "Review evidence", level: 1 },
+          { text: "Publish pack", level: 2 },
+        ],
+      }],
+    }]
+    const bytes = await new WordDocBuilder().build(spec)
+    const inspection = await new WordDocumentInspector().inspect({ path: "docs/list-edit.docx", bytes })
+    const list = inspection.lists.find((item) => item.kind === "numbered")!
+    const validation = validateDocumentEditPlan({
+      planId: "update-list",
+      targetPath: "docs/list-edit.docx",
+      outputFilenameBase: "updated-list-doc",
+      operations: [{
+        type: "updateList",
+        locator: list.locator,
+        items: [
+          { text: "Confirm scope", level: 0 },
+          { text: "Review rendered pages", level: 1 },
+          { text: "Publish final package", level: 2 },
+          { text: "Archive evidence", level: 1 },
+        ],
+      }],
+      warnings: [],
+    }, inspection)
+    expect(validation.ok).toBe(true)
+
+    const result = await new WordDocumentEditor(root).apply({
+      sourcePath: "docs/list-edit.docx",
+      bytes,
+      inspection,
+      plan: validation.plan!,
+    })
+
+    const outputBytes = await readFile(join(root, result.path))
+    const documentXml = await readDocxPart(outputBytes, "word/document.xml")
+    expect(documentXml).toContain("Confirm scope")
+    expect(documentXml).toContain("Review rendered pages")
+    expect(documentXml).toContain("Publish final package")
+    expect(documentXml).toContain("Archive evidence")
+    expect(documentXml).not.toContain("Draft scope")
+    expect(documentXml).not.toContain("<w:t xml:space=\"preserve\">1. Confirm scope</w:t>")
+    expect(documentXml).toContain("<w:numPr>")
+    expect(documentXml).toContain('<w:ilvl w:val="2"/>')
+    expect(result.appliedOperations[0]?.type).toBe("updateList")
+    expect(result.structureCheckResult.ok).toBe(true)
+    const updatedInspection = await new WordDocumentInspector().inspect({ path: result.path, bytes: outputBytes })
+    const updatedList = updatedInspection.lists.find((item) => item.kind === "numbered")!
+    expect(updatedList.itemCount).toBe(4)
+    expect(updatedList.items.map((item) => item.text)).toEqual(["Confirm scope", "Review rendered pages", "Publish final package", "Archive evidence"])
+    expect(updatedList.items.map((item) => item.level)).toEqual([0, 1, 2, 1])
+  })
+
+	  test("apply_word_document_edits can mark inspected table header rows for accessibility", async () => {
+	    const root = await tempDir("chipmate-word-table-header-")
+    workspaceFolders = [{ name: "repo", uri: UriShim.file(root) }]
+    const spec = minimalRenderableWordDocSpec()
+    spec.metadata.documentType = "table-header-edit"
+    spec.sections = [{
+      id: "table",
+      level: 1,
+      title: "Table Header",
+      tables: [{
+        headers: ["Field", "Value"],
+        rows: [["Owner", "Team"], ["Status", "Ready"]],
+      }],
+    }]
+    let bytes = await new WordDocBuilder().build(spec)
+    bytes = await replaceDocxPart(bytes, "word/document.xml", (xml) => xml.replace("<w:tblHeader/>", ""))
+    const initialIssues = await new DocxRenderQualityGate().check(bytes)
+    expect(initialIssues.map((issue) => issue.code)).toContain("a11y-missing-table-header")
+    const inspection = await new WordDocumentInspector().inspect({ path: "docs/table-header.docx", bytes })
+    const table = inspection.tables[0]!
+    const validation = validateDocumentEditPlan({
+      planId: "update-table-header",
+      targetPath: "docs/table-header.docx",
+      outputFilenameBase: "table-header-updated",
+      operations: [{ type: "updateTableHeaderRows", locator: table.locator, headerRowCount: 1 }],
+      warnings: [],
+    }, inspection)
+    expect(validation.ok).toBe(true)
+
+    const result = await new WordDocumentEditor(root).apply({
+      sourcePath: "docs/table-header.docx",
+      bytes,
+      inspection,
+      plan: validation.plan!,
+    })
+
+    const outputBytes = await readFile(join(root, result.path))
+    const documentXml = await readDocxPart(outputBytes, "word/document.xml")
+    const issueCodes = (await new DocxRenderQualityGate().check(outputBytes)).map((issue) => issue.code)
+    const ownerIndex = documentXml.indexOf("Owner")
+    const targetTableXml = documentXml.slice(documentXml.lastIndexOf("<w:tbl", ownerIndex), documentXml.indexOf("</w:tbl>", ownerIndex) + "</w:tbl>".length)
+    expect(targetTableXml.match(/<w:tblHeader\/>/g)?.length).toBe(1)
+    expect(targetTableXml.indexOf("<w:tblHeader/>")).toBeLessThan(targetTableXml.indexOf("Owner"))
+    expect(issueCodes).not.toContain("a11y-missing-table-header")
+    expect(result.appliedOperations[0]?.type).toBe("updateTableHeaderRows")
+	    expect(result.structureCheckResult.ok).toBe(true)
+	  })
+
+	  test("apply_word_document_edits can replace an inspected table with a fixed-layout table", async () => {
+	    const root = await tempDir("chipmate-word-table-replace-")
+	    workspaceFolders = [{ name: "repo", uri: UriShim.file(root) }]
+	    const spec = minimalRenderableWordDocSpec()
+	    spec.metadata.documentType = "table-replace"
+	    spec.sections = [{
+	      id: "table",
+	      level: 1,
+	      title: "Table Replace",
+	      tables: [{
+	        headers: ["Old Field", "Old Value"],
+	        rows: [["Owner", "Team"], ["Status", "Ready"]],
+	      }],
+	    }]
+	    const bytes = await new WordDocBuilder().build(spec)
+	    const inspection = await new WordDocumentInspector().inspect({ path: "docs/table-replace.docx", bytes })
+	    const table = inspection.tables.find((item) => item.rows.some((row) => row.includes("Old Field")))!
+	    const validation = validateDocumentEditPlan({
+	      planId: "replace-table",
+	      targetPath: "docs/table-replace.docx",
+	      outputFilenameBase: "table-replaced",
+	      operations: [{
+	        type: "replaceTable",
+	        locator: table.locator,
+	        table: {
+	          headers: ["Metric", "Before", "After"],
+	          rows: [
+	            ["Coverage", "Partial", "Complete"],
+	            ["Risk", "Open", "Closed"],
+	          ],
+	        },
+	      }],
+	      warnings: [],
+	    }, inspection)
+	    expect(validation.ok).toBe(true)
+
+	    const result = await new WordDocumentEditor(root).apply({
+	      sourcePath: "docs/table-replace.docx",
+	      bytes,
+	      inspection,
+	      plan: validation.plan!,
+	    })
+
+	    const outputBytes = await readFile(join(root, result.path))
+	    const documentXml = await readDocxPart(outputBytes, "word/document.xml")
+	    const updatedInspection = await new WordDocumentInspector().inspect({ path: result.path, bytes: outputBytes })
+	    const updatedTable = updatedInspection.tables.find((item) => item.rows.some((row) => row.includes("Metric")))!
+	    expect(documentXml).toContain("Metric")
+	    expect(documentXml).toContain("Complete")
+	    expect(documentXml).toContain('<w:tblLayout w:type="fixed"/>')
+	    expect(documentXml).not.toContain("Old Field")
+	    expect(documentXml).not.toContain("Ready")
+	    expect(updatedTable.rows).toEqual([
+	      ["Metric", "Before", "After"],
+	      ["Coverage", "Partial", "Complete"],
+	      ["Risk", "Open", "Closed"],
+	    ])
+	    expect(result.appliedOperations[0]?.type).toBe("replaceTable")
+	    expect(result.structureCheckResult.ok).toBe(true)
+	  })
+
+	  test("apply_word_document_edits can replace a table with merged cells", async () => {
+	    const root = await tempDir("chipmate-word-table-merge-replace-")
+	    workspaceFolders = [{ name: "repo", uri: UriShim.file(root) }]
+	    const spec = minimalRenderableWordDocSpec()
+	    spec.sections = [{
+	      id: "table",
+	      level: 1,
+	      title: "Merged Table Replace",
+	      tables: [{
+	        headers: ["Old A", "Old B", "Old C"],
+	        rows: [["A", "B", "C"]],
+	      }],
+	    }]
+	    const bytes = await new WordDocBuilder().build(spec)
+	    const inspection = await new WordDocumentInspector().inspect({ path: "docs/merged-table-replace.docx", bytes })
+	    const table = inspection.tables.find((item) => item.rows.some((row) => row.includes("Old A")))!
+	    const validation = validateDocumentEditPlan({
+	      planId: "replace-table-with-merge",
+	      targetPath: "docs/merged-table-replace.docx",
+	      outputFilenameBase: "table-merged-replaced",
+	      operations: [{
+	        type: "replaceTable",
+	        locator: table.locator,
+	        table: {
+	          headers: ["Stage", "Owner", "Status"],
+	          rows: [
+	            [{ text: "Plan", colSpan: 2, alignment: "center" }, "Open"],
+	            [{ text: "Shared", rowSpan: 2 }, "Alice", "Ready"],
+	            ["Bob", "Done"],
+	          ],
+	        },
+	      }],
+	      warnings: [],
+	    }, inspection)
+	    expect(validation.ok).toBe(true)
+
+	    const result = await new WordDocumentEditor(root).apply({
+	      sourcePath: "docs/merged-table-replace.docx",
+	      bytes,
+	      inspection,
+	      plan: validation.plan!,
+	    })
+
+	    const outputBytes = await readFile(join(root, result.path))
+	    const documentXml = await readDocxPart(outputBytes, "word/document.xml")
+	    expect(documentXml).toContain('<w:gridSpan w:val="2"/>')
+	    expect(documentXml).toContain('<w:vMerge w:val="restart"/>')
+	    expect(documentXml).toContain("<w:vMerge/>")
+	    expect(documentXml).toContain("Plan")
+	    expect(documentXml).toContain("Shared")
+	    expect(result.structureCheckResult.ok).toBe(true)
+	  })
+
+	  test("apply_word_document_edits can fix skipped heading levels from an inspect locator", async () => {
+	    const root = await tempDir("chipmate-word-heading-level-")
+    workspaceFolders = [{ name: "repo", uri: UriShim.file(root) }]
+    const spec = minimalRenderableWordDocSpec()
+    spec.metadata.documentType = "heading-level-edit"
+    spec.sections = [
+      { id: "top", level: 1, title: "Top Section", paragraphs: ["Heading level sample."] },
+      { id: "skipped", level: 3, title: "Skipped Level", paragraphs: ["This heading initially skips level 2."] },
+    ]
+    const bytes = await new WordDocBuilder().build(spec)
+    const initialIssueCodes = (await new DocxRenderQualityGate().check(bytes)).map((issue) => issue.code)
+    expect(initialIssueCodes).toContain("a11y-heading-level-skip")
+    const inspection = await new WordDocumentInspector().inspect({ path: "docs/heading-level.docx", bytes })
+    const skippedHeading = inspection.paragraphs.find((paragraph) => paragraph.text === "Skipped Level")!
+    expect(skippedHeading.headingLevel).toBe(3)
+    const validation = validateDocumentEditPlan({
+      planId: "update-heading-level",
+      targetPath: "docs/heading-level.docx",
+      outputFilenameBase: "heading-level-updated",
+      operations: [{ type: "updateHeadingLevel", locator: skippedHeading.locator, level: 2 }],
+      warnings: [],
+    }, inspection)
+    expect(validation.ok).toBe(true)
+
+    const result = await new WordDocumentEditor(root).apply({
+      sourcePath: "docs/heading-level.docx",
+      bytes,
+      inspection,
+      plan: validation.plan!,
+    })
+
+    const outputBytes = await readFile(join(root, result.path))
+    const documentXml = await readDocxPart(outputBytes, "word/document.xml")
+    const issueCodes = (await new DocxRenderQualityGate().check(outputBytes)).map((issue) => issue.code)
+    const updatedInspection = await new WordDocumentInspector().inspect({ path: result.path, bytes: outputBytes })
+    const updatedHeading = updatedInspection.paragraphs.find((paragraph) => paragraph.text === "Skipped Level")!
+    expect(documentXml).toContain('<w:pStyle w:val="Heading2"/>')
+    expect(issueCodes).not.toContain("a11y-heading-level-skip")
+    expect(updatedHeading.headingLevel).toBe(2)
+    expect(updatedHeading.styleId).toBe("Heading2")
+    expect(result.appliedOperations[0]?.type).toBe("updateHeadingLevel")
+    expect(result.structureCheckResult.ok).toBe(true)
+  })
+
+  test("apply_word_document_edits can update section page setup from an inspect locator", async () => {
+    const root = await tempDir("chipmate-word-section-edit-")
+    workspaceFolders = [{ name: "repo", uri: UriShim.file(root) }]
+    const spec = minimalRenderableWordDocSpec()
+    spec.metadata.documentType = "section-edit"
+    spec.layout = { page: { size: "a4" } }
+    spec.sections = [{
+      id: "page-setup",
+      level: 1,
+      title: "Page Setup",
+      paragraphs: ["Section page setup sample."],
+    }]
+    const bytes = await new WordDocBuilder().build(spec)
+    const inspection = await new WordDocumentInspector().inspect({ path: "docs/section-edit.docx", bytes })
+    const section = inspection.sections[0]!
+    const validation = validateDocumentEditPlan({
+      planId: "update-section-page",
+      targetPath: "docs/section-edit.docx",
+      outputFilenameBase: "section-page-setup",
+      operations: [{
+        type: "updateSectionPageSetup",
+        locator: section.locator,
+        page: {
+          size: "letter",
+          orientation: "landscape",
+          margins: { top: 720, right: 900, bottom: 720, left: 900, header: 360, footer: 360, gutter: 0 },
+        },
+      }],
+      warnings: [],
+    }, inspection)
+    expect(validation.ok).toBe(true)
+
+    const result = await new WordDocumentEditor(root).apply({
+      sourcePath: "docs/section-edit.docx",
+      bytes,
+      inspection,
+      plan: validation.plan!,
+    })
+
+    const outputBytes = await readFile(join(root, result.path))
+    const documentXml = await readDocxPart(outputBytes, "word/document.xml")
+    expect(result.appliedOperations[0]?.type).toBe("updateSectionPageSetup")
+    expect(result.structureCheckResult.ok).toBe(true)
+    expect(documentXml).toContain('<w:pgSz w:w="15840" w:h="12240" w:orient="landscape"/>')
+    expect(documentXml).toContain('<w:pgMar w:top="720" w:right="900" w:bottom="720" w:left="900" w:header="360" w:footer="360" w:gutter="0"/>')
+    expect(documentXml.indexOf("<w:pgSz")).toBeLessThan(documentXml.indexOf("<w:pgMar"))
+    const updatedInspection = await new WordDocumentInspector().inspect({ path: result.path, bytes: outputBytes })
+    const updatedSection = updatedInspection.sections[0]!
+    expect(updatedSection.page.orientation).toBe("landscape")
+    expect(updatedSection.page.widthTwips).toBe(15840)
+    expect(updatedSection.page.heightTwips).toBe(12240)
+    expect(updatedSection.page.margins?.left).toBe(900)
+    expect(updatedSection.page.margins?.header).toBe(360)
+  })
+
+  test("inspect_word_document reports section first-page odd-even header footer linkage", async () => {
+    const spec = minimalRenderableWordDocSpec()
+    spec.metadata.documentType = "section-audit"
+    spec.layout = { page: { size: "letter" } }
+    spec.sections = [
+      { id: "portrait", level: 1, title: "Portrait Section", paragraphs: ["First section content."] },
+      { id: "landscape", level: 1, title: "Landscape Section", paragraphs: ["Second section content."] },
+    ]
+    let bytes = await new WordDocBuilder().build(spec)
+    bytes = await writeDocxPart(
+      bytes,
+      "word/settings.xml",
+      '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:settings xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:evenAndOddHeaders/></w:settings>',
+    )
+    bytes = await replaceDocxPart(bytes, "word/document.xml", (xml) => xml.replace(
+      /<w:sectPr\b[\s\S]*?<\/w:sectPr>/,
+      [
+        '<w:p><w:pPr><w:sectPr>',
+        '<w:headerReference w:type="default" r:id="rIdHeader1"/>',
+        '<w:headerReference w:type="first" r:id="rIdFirstHeader"/>',
+        '<w:footerReference w:type="default" r:id="rIdFooter1"/>',
+        '<w:footerReference w:type="even" r:id="rIdEvenFooter"/>',
+        '<w:type w:val="nextPage"/>',
+        '<w:pgSz w:w="12240" w:h="15840"/>',
+        '<w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440" w:header="720" w:footer="720" w:gutter="0"/>',
+        '<w:titlePg/>',
+        '</w:sectPr></w:pPr></w:p>',
+        '<w:sectPr>',
+        '<w:headerReference w:type="even" r:id="rIdEvenHeader2"/>',
+        '<w:type w:val="continuous"/>',
+        '<w:pgSz w:w="15840" w:h="12240" w:orient="landscape"/>',
+        '<w:pgMar w:top="720" w:right="900" w:bottom="720" w:left="900" w:header="360" w:footer="360" w:gutter="0"/>',
+        '</w:sectPr>',
+      ].join(""),
+    ))
+
+    const inspection = await new WordDocumentInspector().inspect({ path: "docs/section-audit.docx", bytes })
+
+    expect(inspection.summary.sectionCount).toBe(2)
+    const first = inspection.sections[0]!
+    const second = inspection.sections[1]!
+    expect(first.type).toBe("nextPage")
+    expect(first.differentFirstPage).toBe(true)
+    expect(first.oddEvenHeaders).toBe(true)
+    expect(first.headerFooterLinks).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: "header", type: "default", relId: "rIdHeader1", hasReference: true, linkedToPrevious: false }),
+      expect.objectContaining({ kind: "header", type: "first", relId: "rIdFirstHeader", hasReference: true, linkedToPrevious: false }),
+      expect.objectContaining({ kind: "header", type: "even", relId: undefined, hasReference: false, linkedToPrevious: false }),
+      expect.objectContaining({ kind: "footer", type: "even", relId: "rIdEvenFooter", hasReference: true, linkedToPrevious: false }),
+    ]))
+    expect(second.type).toBe("continuous")
+    expect(second.page.orientation).toBe("landscape")
+    expect(second.differentFirstPage).toBe(false)
+    expect(second.oddEvenHeaders).toBe(true)
+    expect(second.headerFooterLinks).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: "header", type: "default", relId: undefined, hasReference: false, linkedToPrevious: true }),
+      expect.objectContaining({ kind: "header", type: "even", relId: "rIdEvenHeader2", hasReference: true, linkedToPrevious: false }),
+      expect.objectContaining({ kind: "footer", type: "default", relId: undefined, hasReference: false, linkedToPrevious: true }),
+      expect.objectContaining({ kind: "footer", type: "even", relId: undefined, hasReference: false, linkedToPrevious: true }),
+    ]))
+  })
+
+  test("apply_word_document_edits can set and clear document protection modes", async () => {
+    const root = await tempDir("chipmate-word-protection-edit-")
+    workspaceFolders = [{ name: "repo", uri: UriShim.file(root) }]
+    const bytes = await new WordDocBuilder().build(minimalRenderableWordDocSpec())
+    const inspection = await new WordDocumentInspector().inspect({ path: "docs/protection.docx", bytes })
+    expect(inspection.summary.hasProtection).toBe(false)
+    expect(inspection.summary.protectionMode).toBe("off")
+
+    const protectedResult = await new WordDocumentEditor(root).apply({
+      sourcePath: "docs/protection.docx",
+      bytes,
+      inspection,
+      plan: {
+        planId: "set-protection",
+        targetPath: "docs/protection.docx",
+        outputFilenameBase: "comments-protected-doc",
+        operations: [
+          { type: "setDocumentProtection", locator: inspection.documentEndLocator, mode: "comments" },
+        ],
+        warnings: [],
+      },
+    })
+
+    const protectedBytes = await readFile(join(root, protectedResult.path))
+    const parts = await docxPartPaths(protectedBytes)
+    const contentTypesXml = await readDocxPart(protectedBytes, "[Content_Types].xml")
+    const documentRelsXml = await readDocxPart(protectedBytes, "word/_rels/document.xml.rels")
+    const settingsXml = await readDocxPart(protectedBytes, "word/settings.xml")
+    const protectedInspection = await new WordDocumentInspector().inspect({ path: protectedResult.path, bytes: protectedBytes })
+    expect(parts).toContain("word/settings.xml")
+    expect(contentTypesXml).toContain('PartName="/word/settings.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.settings+xml"')
+    expect(documentRelsXml).toContain('Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/settings" Target="settings.xml"')
+    expect(settingsXml).toContain('<w:documentProtection w:edit="comments" w:enforcement="1" w:formatting="0"/>')
+    expect(protectedInspection.summary.hasProtection).toBe(true)
+    expect(protectedInspection.summary.protectionMode).toBe("comments")
+    expect(protectedInspection.protection).toEqual(expect.objectContaining({
+      mode: "comments",
+      enforced: true,
+      formatting: false,
+      part: "word/settings.xml",
+    }))
+    expect(protectedInspection.protection?.locator.kind).toBe("documentProtection")
+    expect(protectedResult.appliedOperations[0]?.type).toBe("setDocumentProtection")
+
+    const cleared = await new WordDocumentEditor(root).apply({
+      sourcePath: protectedResult.path,
+      bytes: protectedBytes,
+      inspection: protectedInspection,
+      plan: {
+        planId: "clear-protection",
+        targetPath: protectedResult.path,
+        outputFilenameBase: "unprotected-doc",
+        operations: [
+          { type: "setDocumentProtection", locator: protectedInspection.protection!.locator, mode: "off" },
+        ],
+        warnings: [],
+      },
+    })
+    const clearedBytes = await readFile(join(root, cleared.path))
+    const clearedSettingsXml = await readDocxPart(clearedBytes, "word/settings.xml")
+    const clearedInspection = await new WordDocumentInspector().inspect({ path: cleared.path, bytes: clearedBytes })
+    expect(clearedSettingsXml).not.toContain("documentProtection")
+    expect(clearedInspection.summary.hasProtection).toBe(false)
+    expect(clearedInspection.summary.protectionMode).toBe("off")
+    expect(clearedInspection.protection).toBeUndefined()
+  }, 15_000)
+
+  test("apply_word_document_edits can update image alt text from an inspect locator", async () => {
+    const root = await tempDir("chipmate-word-image-alt-edit-")
+    workspaceFolders = [{ name: "repo", uri: UriShim.file(root) }]
+    const spec = minimalRenderableWordDocSpec()
+    spec.metadata.documentType = "image-alt-edit"
+    spec.sections = [{
+      id: "figures",
+      level: 1,
+      title: "Figures",
+      paragraphs: ["Image alt text sample."],
+      figures: [{
+        id: "fig-alt",
+        title: "Old Figure Name",
+        caption: "Figure caption.",
+        altText: "Old alt text",
+        image: {
+          contentType: "image/png",
+          bytes: tinyPngBytes(),
+          width: 160,
+          height: 90,
+        },
+      }],
+    }]
+    const bytes = await new WordDocBuilder().build(spec)
+    const inspection = await new WordDocumentInspector().inspect({ path: "docs/image-alt.docx", bytes })
+    const image = inspection.images[0]!
+    const validation = validateDocumentEditPlan({
+      planId: "update-image-alt",
+      targetPath: "docs/image-alt.docx",
+      outputFilenameBase: "image-alt-updated",
+      operations: [{
+        type: "updateImageAltText",
+        locator: image.locator,
+        altText: "Review flow <architecture> & states",
+        title: "Architecture review image",
+      }],
+      warnings: [],
+    }, inspection)
+    expect(validation.ok).toBe(true)
+
+    const result = await new WordDocumentEditor(root).apply({
+      sourcePath: "docs/image-alt.docx",
+      bytes,
+      inspection,
+      plan: validation.plan!,
+    })
+
+    const outputBytes = await readFile(join(root, result.path))
+    const documentXml = await readDocxPart(outputBytes, "word/document.xml")
+    expect(result.appliedOperations[0]?.type).toBe("updateImageAltText")
+    expect(result.structureCheckResult.ok).toBe(true)
+    expect(documentXml).toContain('descr="Review flow &lt;architecture&gt; &amp; states"')
+    expect(documentXml).toContain('title="Architecture review image"')
+    expect(documentXml).not.toContain('descr="Old alt text"')
+    const updatedInspection = await new WordDocumentInspector().inspect({ path: result.path, bytes: outputBytes })
+    expect(updatedInspection.images[0]?.altText).toBe("Review flow <architecture> & states")
+  })
+
+  test("apply_word_document_edits can replace an inspected PNG image binary", async () => {
+    const root = await tempDir("chipmate-word-image-replace-")
+    workspaceFolders = [{ name: "repo", uri: UriShim.file(root) }]
+    const spec = minimalRenderableWordDocSpec()
+    spec.metadata.documentType = "image-replace-edit"
+    spec.sections = [{
+      id: "figures",
+      level: 1,
+      title: "Figures",
+      paragraphs: ["Image replacement sample."],
+      figures: [{
+        id: "fig-replace",
+        title: "Old Figure",
+        caption: "Old figure caption.",
+        altText: "Old image alt",
+        image: {
+          contentType: "image/png",
+          bytes: tinyPngBytes(),
+          width: 160,
+          height: 90,
+        },
+      }],
+    }]
+    const bytes = await new WordDocBuilder().build(spec)
+    const inspection = await new WordDocumentInspector().inspect({ path: "docs/image-replace.docx", bytes })
+    const image = inspection.images[0]!
+    expect(image.mediaPath).toBe("word/media/image1.png")
+    const oldMediaBytes = await readDocxBinaryPart(bytes, image.mediaPath!)
+    const nextPngBytes = alternateTinyPngBytes()
+    expect(Buffer.from(oldMediaBytes).equals(Buffer.from(nextPngBytes))).toBe(false)
+
+    const validation = validateDocumentEditPlan({
+      planId: "replace-image",
+      targetPath: "docs/image-replace.docx",
+      outputFilenameBase: "image-replaced",
+      operations: [{
+        type: "replaceImage",
+        locator: image.locator,
+        figure: {
+          title: "Updated Flow Image",
+          altText: "Updated rendered flow image",
+          image: {
+            contentType: "image/png",
+            base64: Buffer.from(nextPngBytes).toString("base64"),
+            width: 320,
+            height: 180,
+          },
+        },
+      }],
+      warnings: [],
+    }, inspection)
+    expect(validation.ok).toBe(true)
+
+    const result = await new WordDocumentEditor(root).apply({
+      sourcePath: "docs/image-replace.docx",
+      bytes,
+      inspection,
+      plan: validation.plan!,
+    })
+
+    const outputBytes = await readFile(join(root, result.path))
+    const documentXml = await readDocxPart(outputBytes, "word/document.xml")
+    const updatedMediaBytes = await readDocxBinaryPart(outputBytes, image.mediaPath!)
+    const updatedInspection = await new WordDocumentInspector().inspect({ path: result.path, bytes: outputBytes })
+    expect(result.appliedOperations[0]?.type).toBe("replaceImage")
+    expect(result.structureCheckResult.ok).toBe(true)
+    expect(Buffer.from(updatedMediaBytes).equals(Buffer.from(nextPngBytes))).toBe(true)
+    expect(documentXml).toContain('name="Updated Flow Image"')
+    expect(documentXml).toContain('descr="Updated rendered flow image"')
+    expect(documentXml).toContain('title="Updated Flow Image"')
+    expect(documentXml).toContain('cx="3048000"')
+    expect(documentXml).toContain('cy="1714500"')
+    expect(updatedInspection.images[0]?.altText).toBe("Updated rendered flow image")
+    expect(updatedInspection.images[0]?.widthEmu).toBe(3048000)
+    expect(updatedInspection.images[0]?.heightEmu).toBe(1714500)
+  })
+
+  test("apply_word_document_edits can inspect and update figure and table captions", async () => {
+    const root = await tempDir("chipmate-word-caption-edit-")
+    workspaceFolders = [{ name: "repo", uri: UriShim.file(root) }]
+    const spec = minimalRenderableWordDocSpec()
+    spec.metadata.documentType = "caption-edit"
+    spec.sections = [{
+      id: "captions",
+      level: 1,
+      title: "Captions",
+      paragraphs: ["Caption update sample."],
+      figures: [{
+        id: "fig-caption",
+        title: "Architecture",
+        caption: "Old figure caption.",
+        label: "Figure",
+        number: "7",
+        bookmark: "fig_caption_target",
+        altText: "Architecture figure",
+        image: {
+          contentType: "image/png",
+          bytes: tinyPngBytes(),
+          width: 160,
+          height: 90,
+        },
+      }],
+      tables: [{
+        id: "tbl-caption",
+        caption: "Old table caption.",
+        label: "Table",
+        number: "3",
+        bookmark: "tbl_caption_target",
+        headers: ["Item", "Status"],
+        rows: [["Caption support", "Implemented"]],
+      }],
+    }]
+    const bytes = await new WordDocBuilder().build(spec)
+    const inspection = await new WordDocumentInspector().inspect({ path: "docs/captions.docx", bytes })
+    expect(inspection.summary.captionCount).toBe(2)
+    expect(inspection.summary.fieldTypeCounts.SEQ).toBe(2)
+    const figureCaption = inspection.captions.find((caption) => caption.captionKind === "figure")!
+    const tableCaption = inspection.captions.find((caption) => caption.captionKind === "table")!
+    expect(figureCaption.locator.kind).toBe("caption")
+    expect(figureCaption.text).toBe("Old figure caption.")
+    expect(figureCaption.fieldInstruction).toBe("SEQ Figure \\* ARABIC")
+    expect(figureCaption.bookmark).toBe("fig_caption_target")
+    expect(tableCaption.text).toBe("Old table caption.")
+    expect(tableCaption.fieldInstruction).toBe("SEQ Table \\* ARABIC")
+    expect(tableCaption.bookmark).toBe("tbl_caption_target")
+
+    const validation = validateDocumentEditPlan({
+      planId: "update-captions",
+      targetPath: "docs/captions.docx",
+      outputFilenameBase: "captions-updated",
+      operations: [
+        {
+          type: "updateCaptionText",
+          locator: figureCaption.locator,
+          caption: "Review flow <architecture> & state transitions.",
+        },
+        {
+          type: "updateCaptionText",
+          locator: tableCaption.locator,
+          caption: "Updated coverage matrix.",
+        },
+      ],
+      warnings: [],
+    }, inspection)
+    expect(validation.ok).toBe(true)
+
+    const result = await new WordDocumentEditor(root).apply({
+      sourcePath: "docs/captions.docx",
+      bytes,
+      inspection,
+      plan: validation.plan!,
+    })
+
+    const outputBytes = await readFile(join(root, result.path))
+    const documentXml = await readDocxPart(outputBytes, "word/document.xml")
+    expect(result.appliedOperations.map((operation) => operation.type)).toEqual(["updateCaptionText", "updateCaptionText"])
+    expect(result.structureCheckResult.ok).toBe(true)
+    expect(documentXml).toContain('<w:instrText xml:space="preserve"> SEQ Figure \\* ARABIC </w:instrText>')
+    expect(documentXml).toContain('<w:instrText xml:space="preserve"> SEQ Table \\* ARABIC </w:instrText>')
+    expect(documentXml).toContain('<w:bookmarkStart w:id="1001" w:name="fig_caption_target"/>')
+    expect(documentXml).toContain('<w:bookmarkStart w:id="2001" w:name="tbl_caption_target"/>')
+    expect(documentXml).toContain('<w:t xml:space="preserve">: Review flow &lt;architecture&gt; &amp; state transitions.</w:t>')
+    expect(documentXml).toContain('<w:t xml:space="preserve">: Updated coverage matrix.</w:t>')
+    expect(documentXml).not.toContain("Old figure caption.")
+    expect(documentXml).not.toContain("Old table caption.")
+    const updatedInspection = await new WordDocumentInspector().inspect({ path: result.path, bytes: outputBytes })
+    expect(updatedInspection.summary.captionCount).toBe(2)
+    expect(updatedInspection.captions.find((caption) => caption.captionKind === "figure")?.text).toBe("Review flow <architecture> & state transitions.")
+    expect(updatedInspection.captions.find((caption) => caption.captionKind === "table")?.text).toBe("Updated coverage matrix.")
+    expect(updatedInspection.fields.filter((field) => field.type === "SEQ")).toHaveLength(2)
+  })
+
+  test("apply_word_document_edits can update hyperlink text from an inspect locator", async () => {
+    const root = await tempDir("chipmate-word-link-text-edit-")
+    workspaceFolders = [{ name: "repo", uri: UriShim.file(root) }]
+    const spec = minimalRenderableWordDocSpec()
+    spec.metadata.documentType = "link-text-edit"
+    spec.sources = []
+    spec.references = []
+    spec.sections = [{
+      id: "links",
+      level: 1,
+      title: "Links",
+      richParagraphs: [{
+        runs: [
+          { text: "Review " },
+          { text: "click here", hyperlink: { url: "https://openai.com/docs", tooltip: "Official docs" } },
+          { text: " before release." },
+        ],
+      }],
+    }]
+    const bytes = await new WordDocBuilder().build(spec)
+    const initialIssueCodes = (await new DocxRenderQualityGate().check(bytes)).map((issue) => issue.code)
+    expect(initialIssueCodes).toContain("a11y-nondescriptive-link-text")
+    const inspection = await new WordDocumentInspector().inspect({ path: "docs/link-text.docx", bytes })
+    expect(inspection.summary.hyperlinkCount).toBe(1)
+    const hyperlink = inspection.hyperlinks[0]!
+    expect(hyperlink.text).toBe("click here")
+    expect(hyperlink.target).toBe("https://openai.com/docs")
+    const validation = validateDocumentEditPlan({
+      planId: "update-link-text",
+      targetPath: "docs/link-text.docx",
+      outputFilenameBase: "link-text-updated",
+      operations: [{ type: "updateHyperlinkText", locator: hyperlink.locator, text: "OpenAI documentation" }],
+      warnings: [],
+    }, inspection)
+    expect(validation.ok).toBe(true)
+
+    const result = await new WordDocumentEditor(root).apply({
+      sourcePath: "docs/link-text.docx",
+      bytes,
+      inspection,
+      plan: validation.plan!,
+    })
+
+    const outputBytes = await readFile(join(root, result.path))
+    const documentXml = await readDocxPart(outputBytes, "word/document.xml")
+    const documentRelsXml = await readDocxPart(outputBytes, "word/_rels/document.xml.rels")
+    const issueCodes = (await new DocxRenderQualityGate().check(outputBytes)).map((issue) => issue.code)
+    const updatedInspection = await new WordDocumentInspector().inspect({ path: result.path, bytes: outputBytes })
+    expect(documentXml).toContain("OpenAI documentation")
+    expect(documentXml).not.toContain("click here")
+    expect(documentRelsXml).toContain('Target="https://openai.com/docs"')
+    expect(issueCodes).not.toContain("a11y-nondescriptive-link-text")
+    expect(updatedInspection.hyperlinks[0]?.text).toBe("OpenAI documentation")
+    expect(updatedInspection.hyperlinks[0]?.target).toBe("https://openai.com/docs")
+    expect(result.appliedOperations[0]?.type).toBe("updateHyperlinkText")
+    expect(result.structureCheckResult.ok).toBe(true)
+  })
+
+  test("apply_word_document_edits can update hyperlink targets from inspect locators", async () => {
+    const root = await tempDir("chipmate-word-link-target-edit-")
+    workspaceFolders = [{ name: "repo", uri: UriShim.file(root) }]
+    const spec = minimalRenderableWordDocSpec()
+    spec.metadata.documentType = "link-target-edit"
+    spec.sources = []
+    spec.references = []
+    spec.sections = [
+      {
+        id: "links",
+        level: 1,
+        title: "Links",
+        richParagraphs: [{
+          runs: [
+            { text: "Review " },
+            { text: "OpenAI docs", hyperlink: { url: "https://openai.com/docs", tooltip: "Official docs" } },
+            { text: " and jump to " },
+            { text: "implementation", hyperlink: { anchor: "sec_impl", tooltip: "Implementation section" } },
+            { text: "." },
+          ],
+        }],
+      },
+      {
+        id: "impl",
+        level: 1,
+        title: "Implementation",
+        bookmark: "sec_impl",
+        paragraphs: ["Implementation details."],
+      },
+    ]
+    const bytes = await new WordDocBuilder().build(spec)
+    const inspection = await new WordDocumentInspector().inspect({ path: "docs/link-target.docx", bytes })
+    const externalLink = inspection.hyperlinks.find((link) => link.target === "https://openai.com/docs")!
+    const internalLink = inspection.hyperlinks.find((link) => link.anchor === "sec_impl")!
+    const validation = validateDocumentEditPlan({
+      planId: "update-link-targets",
+      targetPath: "docs/link-target.docx",
+      outputFilenameBase: "link-target-updated",
+      operations: [
+        { type: "updateHyperlinkTarget", locator: externalLink.locator, url: "https://example.com/new?x=1&scope=dev", tooltip: "Updated docs" },
+        { type: "updateHyperlinkTarget", locator: internalLink.locator, anchor: "sec_impl_v2", tooltip: "Updated jump" },
+      ],
+      warnings: [],
+    }, inspection)
+    expect(validation.ok).toBe(true)
+
+    const result = await new WordDocumentEditor(root).apply({
+      sourcePath: "docs/link-target.docx",
+      bytes,
+      inspection,
+      plan: validation.plan!,
+    })
+
+    const outputBytes = await readFile(join(root, result.path))
+    const documentXml = await readDocxPart(outputBytes, "word/document.xml")
+    const documentRelsXml = await readDocxPart(outputBytes, "word/_rels/document.xml.rels")
+    const updatedInspection = await new WordDocumentInspector().inspect({ path: result.path, bytes: outputBytes })
+    expect(documentXml).toContain("OpenAI docs")
+    expect(documentXml).toContain("implementation")
+    expect(documentXml).toContain('<w:hyperlink r:id="rIdHyperlink1" w:tooltip="Updated docs">')
+    expect(documentXml).toContain('<w:hyperlink w:anchor="sec_impl_v2" w:tooltip="Updated jump">')
+    expect(documentRelsXml).toContain('Target="https://example.com/new?x=1&amp;scope=dev" TargetMode="External"')
+    expect(documentRelsXml).not.toContain('Target="https://openai.com/docs"')
+    expect(updatedInspection.hyperlinks.find((link) => link.text === "OpenAI docs")?.target).toBe("https://example.com/new?x=1&scope=dev")
+    expect(updatedInspection.hyperlinks.find((link) => link.text === "OpenAI docs")?.tooltip).toBe("Updated docs")
+    expect(updatedInspection.hyperlinks.find((link) => link.text === "implementation")?.anchor).toBe("sec_impl_v2")
+    expect(updatedInspection.hyperlinks.find((link) => link.text === "implementation")?.tooltip).toBe("Updated jump")
+    expect(result.appliedOperations.map((item) => item.type)).toEqual(["updateHyperlinkTarget", "updateHyperlinkTarget"])
+    expect(result.structureCheckResult.ok).toBe(true)
+  })
+
+  test("apply_word_document_edits can update footnote and endnote text from inspect locators", async () => {
+    const root = await tempDir("chipmate-word-note-edit-")
+    workspaceFolders = [{ name: "repo", uri: UriShim.file(root) }]
+    const spec = minimalRenderableWordDocSpec()
+    spec.metadata.documentType = "note-edit"
+    spec.sections = [{
+      id: "notes",
+      level: 1,
+      title: "Notes",
+      richParagraphs: [{
+        runs: [
+          { text: "Footnote target" },
+          { note: { kind: "footnote", text: "Original footnote text." } },
+          { text: " and endnote target" },
+          { note: { kind: "endnote", text: "Original endnote text." } },
+          { text: "." },
+        ],
+      }],
+    }]
+    const bytes = await new WordDocBuilder().build(spec)
+    const inspection = await new WordDocumentInspector().inspect({ path: "docs/notes-edit.docx", bytes })
+    const footnote = inspection.notes.find((note) => note.noteKind === "footnote")!
+    const endnote = inspection.notes.find((note) => note.noteKind === "endnote")!
+    const validation = validateDocumentEditPlan({
+      planId: "update-notes",
+      targetPath: "docs/notes-edit.docx",
+      outputFilenameBase: "notes-updated",
+      operations: [
+        { type: "updateNoteText", locator: footnote.locator, text: "Updated footnote <scope> & evidence.\nSecond footnote paragraph." },
+        { type: "updateNoteText", locator: endnote.locator, text: "Updated endnote review note.\nSecond endnote paragraph." },
+      ],
+      warnings: [],
+    }, inspection)
+    expect(validation.ok).toBe(true)
+
+    const result = await new WordDocumentEditor(root).apply({
+      sourcePath: "docs/notes-edit.docx",
+      bytes,
+      inspection,
+      plan: validation.plan!,
+    })
+
+    const outputBytes = await readFile(join(root, result.path))
+    const documentXml = await readDocxPart(outputBytes, "word/document.xml")
+    const footnotesXml = await readDocxPart(outputBytes, "word/footnotes.xml")
+    const endnotesXml = await readDocxPart(outputBytes, "word/endnotes.xml")
+    expect(result.appliedOperations.map((item) => item.type)).toEqual(["updateNoteText", "updateNoteText"])
+    expect(result.structureCheckResult.ok).toBe(true)
+    expect(documentXml).toContain('<w:footnoteReference w:id="1"/>')
+    expect(documentXml).toContain('<w:endnoteReference w:id="1"/>')
+    expect(footnotesXml).toContain("<w:footnoteRef/>")
+    expect(footnotesXml).toContain("Updated footnote &lt;scope&gt; &amp; evidence.")
+    expect(footnotesXml).toContain("Second footnote paragraph.")
+    expect((readNoteItemXml(footnotesXml, "footnote", "1").match(/<w:p\b/g) ?? []).length).toBe(2)
+    expect(footnotesXml).not.toContain("Original footnote text.")
+    expect(endnotesXml).toContain("<w:endnoteRef/>")
+    expect(endnotesXml).toContain("Updated endnote review note.")
+    expect(endnotesXml).toContain("Second endnote paragraph.")
+    expect((readNoteItemXml(endnotesXml, "endnote", "1").match(/<w:p\b/g) ?? []).length).toBe(2)
+    expect(endnotesXml).not.toContain("Original endnote text.")
+    const updatedInspection = await new WordDocumentInspector().inspect({ path: result.path, bytes: outputBytes })
+    expect(updatedInspection.notes.map((note) => note.text)).toEqual([
+      "Updated footnote <scope> & evidence.\nSecond footnote paragraph.",
+      "Updated endnote review note.\nSecond endnote paragraph.",
+    ])
+  })
+
+  test("inspect_word_document exposes content controls and apply_word_document_edits fills them", async () => {
+    const root = await tempDir("chipmate-word-content-control-")
+    workspaceFolders = [{ name: "repo", uri: UriShim.file(root) }]
+    const spec = minimalRenderableWordDocSpec()
+    spec.metadata.documentType = "fillable-form"
+    spec.sections = [{
+      id: "intake",
+      level: 1,
+      title: "Intake Form",
+      paragraphs: ["Please complete the fields below."],
+      formFields: [
+        { label: "Reviewer", tag: "REVIEWER", placeholder: "{{REVIEWER}}", helpText: "Person responsible for review." },
+        { label: "Review date", tag: "REVIEW_DATE", value: "2026-06-27" },
+        { label: "Approved", tag: "APPROVED", kind: "checkbox", checked: true },
+      ],
+    }]
+    const bytes = await new WordDocBuilder().build(spec)
+    const inspection = await new WordDocumentInspector().inspect({ path: "docs/form.docx", bytes })
+    expect(inspection.summary.contentControlCount).toBe(3)
+    expect(inspection.contentControls.map((item) => item.tag)).toEqual(["REVIEWER", "REVIEW_DATE", "APPROVED"])
+    const reviewer = inspection.contentControls.find((item) => item.tag === "REVIEWER")!
+    const approved = inspection.contentControls.find((item) => item.tag === "APPROVED")!
+    expect(approved.kind).toBe("checkbox")
+    expect(approved.checked).toBe(true)
+    const validation = validateDocumentEditPlan({
+      planId: "fill-form",
+      targetPath: "docs/form.docx",
+      outputFilenameBase: "filled-form",
+      operations: [
+        { type: "fillContentControl", locator: reviewer.locator, text: "Alice Reviewer" },
+        { type: "fillContentControl", locator: approved.locator, text: "false" },
+      ],
+      warnings: [],
+    }, inspection)
+    expect(validation.ok).toBe(true)
+
+    const result = await new WordDocumentEditor(root).apply({
+      sourcePath: "docs/form.docx",
+      bytes,
+      inspection,
+      plan: validation.plan!,
+    })
+
+    const outputBytes = await readFile(join(root, result.path))
+    const documentXml = await readDocxPart(outputBytes, "word/document.xml")
+    const afterInspection = await new WordDocumentInspector().inspect({ path: result.path, bytes: outputBytes })
+    expect(documentXml).toContain('<w:tag w:val="REVIEWER"/>')
+    expect(documentXml).toContain("Alice Reviewer")
+    expect(documentXml).toContain('<w14:checked w14:val="0"/>')
+    expect(documentXml).toContain('<w:t xml:space="preserve">☐</w:t>')
+    expect(documentXml).not.toContain("{{REVIEWER}}")
+    expect(afterInspection.contentControls.find((item) => item.tag === "REVIEWER")?.text).toBe("Alice Reviewer")
+    expect(afterInspection.contentControls.find((item) => item.tag === "APPROVED")?.checked).toBe(false)
+    expect(result.appliedOperations.map((operation) => operation.type)).toEqual(["fillContentControl", "fillContentControl"])
+    expect(result.structureCheckResult.ok).toBe(true)
+  })
+
+  test("inspect_word_document reports split-run rich and nested content control fill boundaries", async () => {
+    const root = await tempDir("chipmate-word-rich-content-control-")
+    workspaceFolders = [{ name: "repo", uri: UriShim.file(root) }]
+    const spec = minimalRenderableWordDocSpec()
+    spec.metadata.documentType = "complex-form"
+    spec.sections = [{
+      id: "complex-form",
+      level: 1,
+      title: "Complex Form",
+      formFields: [
+        { label: "Split marker", tag: "SPLIT", placeholder: "{{SPLIT}}" },
+        { label: "Rich field", tag: "RICH", placeholder: "{{RICH}}" },
+        { label: "Outer field", tag: "OUTER", placeholder: "{{OUTER}}" },
+      ],
+    }]
+    let bytes = await new WordDocBuilder().build(spec)
+    bytes = await replaceDocxPart(bytes, "word/document.xml", (xml) => {
+      let nextXml = replaceFirstSdtByTag(xml, "SPLIT", (sdtXml) => splitSdtTextRuns(sdtXml, "{{SPLIT}}", ["{{SPL", "IT}}"]))
+      nextXml = replaceFirstSdtByTag(nextXml, "RICH", () => richContentControlFixtureXml())
+      nextXml = replaceFirstSdtByTag(nextXml, "OUTER", () => nestedContentControlFixtureXml())
+      return nextXml
+    })
+
+    const inspection = await new WordDocumentInspector().inspect({ path: "docs/complex-form.docx", bytes })
+    expect(inspection.summary.contentControlCount).toBe(3)
+    const split = inspection.contentControls.find((item) => item.tag === "SPLIT")!
+    const rich = inspection.contentControls.find((item) => item.tag === "RICH")!
+    const nested = inspection.contentControls.find((item) => item.tag === "OUTER")!
+    expect(split.text).toBe("{{SPLIT}}")
+    expect(split.fillSupported).toBe(true)
+    expect(split.nestedControlCount).toBe(0)
+    expect(rich.fillSupported).toBe(false)
+    expect(rich.fillUnsupportedReason).toBe("rich-content-control")
+    expect(rich.hasRichContent).toBe(true)
+    expect(nested.fillSupported).toBe(false)
+    expect(nested.fillUnsupportedReason).toBe("nested-content-control")
+    expect(nested.nestedControlCount).toBe(1)
+
+    const splitValidation = validateDocumentEditPlan({
+      planId: "fill-split",
+      targetPath: "docs/complex-form.docx",
+      outputFilenameBase: "complex-form-filled",
+      operations: [{ type: "fillContentControl", locator: split.locator, text: "Filled split value" }],
+      warnings: [],
+    }, inspection)
+    expect(splitValidation.ok).toBe(true)
+    const result = await new WordDocumentEditor(root).apply({
+      sourcePath: "docs/complex-form.docx",
+      bytes,
+      inspection,
+      plan: splitValidation.plan!,
+    })
+    const outputBytes = await readFile(join(root, result.path))
+    const outputXml = await readDocxPart(outputBytes, "word/document.xml")
+    expect(outputXml).toContain("Filled split value")
+    expect(outputXml).not.toContain("{{SPL")
+
+    const nestedValidation = validateDocumentEditPlan({
+      planId: "fill-nested",
+      targetPath: "docs/complex-form.docx",
+      outputFilenameBase: "nested-filled",
+      operations: [{ type: "fillContentControl", locator: nested.locator, text: "Should not fill" }],
+      warnings: [],
+    }, inspection)
+    expect(nestedValidation.ok).toBe(false)
+    expect(nestedValidation.errors.join("\n")).toContain("nested-content-control")
+  })
+
+  test("apply_word_document_edits can add inspect and remove VML text watermarks", async () => {
+    const root = await tempDir("chipmate-word-watermark-")
+    workspaceFolders = [{ name: "repo", uri: UriShim.file(root) }]
+    const bytes = await new WordDocBuilder().build(minimalRenderableWordDocSpec())
+    const inspection = await new WordDocumentInspector().inspect({ path: "docs/watermark.docx", bytes })
+    expect(inspection.summary.watermarkCount).toBe(0)
+
+    const watermarked = await new WordDocumentEditor(root).apply({
+      sourcePath: "docs/watermark.docx",
+      bytes,
+      inspection,
+      plan: {
+        planId: "add-watermark",
+        targetPath: "docs/watermark.docx",
+        outputFilenameBase: "watermarked-doc",
+        operations: [{ type: "addTextWatermark", locator: inspection.documentEndLocator, text: "CONFIDENTIAL" }],
+        warnings: [],
+      },
+    })
+    const watermarkedBytes = await readFile(join(root, watermarked.path))
+    const watermarkedHeaderXml = await readDocxPart(watermarkedBytes, "word/header1.xml")
+    const watermarkedInspection = await new WordDocumentInspector().inspect({ path: watermarked.path, bytes: watermarkedBytes })
+    expect(watermarkedHeaderXml).toContain("<v:textpath")
+    expect(watermarkedHeaderXml).toContain('string="CONFIDENTIAL"')
+    expect(watermarkedInspection.summary.watermarkCount).toBe(1)
+    expect(watermarkedInspection.watermarks[0]!.text).toBe("CONFIDENTIAL")
+    expect(watermarked.appliedOperations[0]?.type).toBe("addTextWatermark")
+    expect(watermarked.appliedOperations[0]?.detail).toContain("1 header part(s)")
+    expect(watermarked.appliedOperations[0]?.detail).toContain("word/header1.xml")
+
+    const cleaned = await new WordDocumentEditor(root).apply({
+      sourcePath: watermarked.path,
+      bytes: watermarkedBytes,
+      inspection: watermarkedInspection,
+      plan: {
+        planId: "remove-watermark",
+        targetPath: watermarked.path,
+        outputFilenameBase: "watermark-removed-doc",
+        operations: [{ type: "removeWatermark", locator: watermarkedInspection.watermarks[0]!.locator }],
+        warnings: [],
+      },
+    })
+
+    const cleanedBytes = await readFile(join(root, cleaned.path))
+    const cleanedHeaderXml = await readDocxPart(cleanedBytes, "word/header1.xml")
+    const cleanedInspection = await new WordDocumentInspector().inspect({ path: cleaned.path, bytes: cleanedBytes })
+    expect(cleanedHeaderXml).not.toContain("<v:textpath")
+    expect(cleanedHeaderXml).not.toContain("CONFIDENTIAL")
+    expect(cleanedInspection.summary.watermarkCount).toBe(0)
+    expect(cleaned.appliedOperations[0]?.type).toBe("removeWatermark")
+    expect(cleaned.appliedOperations[0]?.detail).toContain("removed 1 watermark(s)")
+    expect(cleaned.appliedOperations[0]?.detail).toContain("word/header1.xml")
+    expect(cleaned.structureCheckResult.ok).toBe(true)
+    expect(cleaned.renderCheckResult).toBeDefined()
+    expect(Array.isArray(cleaned.renderCheckResult.issues)).toBe(true)
+  }, 15_000)
+
+  test("apply_word_document_edits audits multi-part VML watermarks across headers and footers", async () => {
+    const root = await tempDir("chipmate-word-watermark-multipart-")
+    workspaceFolders = [{ name: "repo", uri: UriShim.file(root) }]
+    let bytes = await new WordDocBuilder().build(minimalRenderableWordDocSpec())
+    bytes = await writeDocxPart(bytes, "word/header2.xml", watermarkHeaderFixtureXml())
+    bytes = await writeDocxPart(bytes, "word/footer1.xml", watermarkFooterFixtureXml("FOOTER ONLY"))
+    const inspection = await new WordDocumentInspector().inspect({ path: "docs/watermark-multipart.docx", bytes })
+    expect(inspection.summary.watermarkCount).toBe(1)
+    expect(inspection.watermarks[0]!.part).toBe("word/footer1.xml")
+
+    const watermarked = await new WordDocumentEditor(root).apply({
+      sourcePath: "docs/watermark-multipart.docx",
+      bytes,
+      inspection,
+      plan: {
+        planId: "add-multipart-watermark",
+        targetPath: "docs/watermark-multipart.docx",
+        outputFilenameBase: "watermark-multipart-added",
+        operations: [{ type: "addTextWatermark", locator: inspection.documentEndLocator, text: "MULTI HEADER" }],
+        warnings: [],
+      },
+    })
+    const watermarkedBytes = await readFile(join(root, watermarked.path))
+    const header1Xml = await readDocxPart(watermarkedBytes, "word/header1.xml")
+    const header2Xml = await readDocxPart(watermarkedBytes, "word/header2.xml")
+    const footer1Xml = await readDocxPart(watermarkedBytes, "word/footer1.xml")
+    const addedInspection = await new WordDocumentInspector().inspect({ path: watermarked.path, bytes: watermarkedBytes })
+    expect(header1Xml).toContain('string="MULTI HEADER"')
+    expect(header2Xml).toContain('string="MULTI HEADER"')
+    expect(footer1Xml).toContain('string="FOOTER ONLY"')
+    expect(addedInspection.watermarks.map((item) => `${item.part}:${item.text}`)).toContain("word/header1.xml:MULTI HEADER")
+    expect(addedInspection.watermarks.map((item) => `${item.part}:${item.text}`)).toContain("word/header2.xml:MULTI HEADER")
+    expect(addedInspection.watermarks.map((item) => `${item.part}:${item.text}`)).toContain("word/footer1.xml:FOOTER ONLY")
+    expect(watermarked.appliedOperations[0]?.detail).toContain("2 header part(s)")
+    expect(watermarked.appliedOperations[0]?.detail).toContain("word/header1.xml")
+    expect(watermarked.appliedOperations[0]?.detail).toContain("word/header2.xml")
+
+    const footerWatermark = addedInspection.watermarks.find((item) => item.part === "word/footer1.xml")!
+    const cleaned = await new WordDocumentEditor(root).apply({
+      sourcePath: watermarked.path,
+      bytes: watermarkedBytes,
+      inspection: addedInspection,
+      plan: {
+        planId: "remove-footer-watermark",
+        targetPath: watermarked.path,
+        outputFilenameBase: "watermark-footer-removed",
+        operations: [{ type: "removeWatermark", locator: footerWatermark.locator }],
+        warnings: [],
+      },
+    })
+    const cleanedBytes = await readFile(join(root, cleaned.path))
+    const cleanedFooterXml = await readDocxPart(cleanedBytes, "word/footer1.xml")
+    const cleanedHeader1Xml = await readDocxPart(cleanedBytes, "word/header1.xml")
+    const cleanedInspection = await new WordDocumentInspector().inspect({ path: cleaned.path, bytes: cleanedBytes })
+    expect(cleanedFooterXml).not.toContain("FOOTER ONLY")
+    expect(cleanedHeader1Xml).toContain("MULTI HEADER")
+    expect(cleanedInspection.watermarks.some((item) => item.part === "word/footer1.xml")).toBe(false)
+    expect(cleanedInspection.watermarks.filter((item) => item.text === "MULTI HEADER")).toHaveLength(2)
+    expect(cleaned.appliedOperations[0]?.detail).toContain("removed 1 watermark(s)")
+    expect(cleaned.appliedOperations[0]?.detail).toContain("word/footer1.xml")
+    expect(cleaned.structureCheckResult.ok).toBe(true)
+    expect(cleaned.renderCheckResult).toBeDefined()
+    expect(Array.isArray(cleaned.renderCheckResult.issues)).toBe(true)
+  }, 15_000)
+
+  test("inspect_word_document reports and removes DrawingML and image-like background watermarks", async () => {
+    const root = await tempDir("chipmate-word-advanced-background-")
+    workspaceFolders = [{ name: "repo", uri: UriShim.file(root) }]
+    let bytes = await new WordDocBuilder().build(minimalRenderableWordDocSpec())
+    bytes = await ensurePngDefaultContentTypeFixture(bytes)
+    bytes = await writeDocxPart(bytes, "word/header3.xml", drawingBackgroundHeaderFixtureXml())
+    bytes = await writeDocxPart(bytes, "word/_rels/header3.xml.rels", backgroundImageRelsFixtureXml("rIdDrawingBg", "media/image99.png"))
+    bytes = await writeDocxPart(bytes, "word/footer2.xml", vmlImageBackgroundFooterFixtureXml())
+    bytes = await writeDocxPart(bytes, "word/_rels/footer2.xml.rels", backgroundImageRelsFixtureXml("rIdVmlBg", "media/image98.png"))
+    bytes = await writeDocxPart(bytes, "word/media/image99.png", tinyPngBytes())
+    bytes = await writeDocxPart(bytes, "word/media/image98.png", tinyPngBytes())
+
+    const inspection = await new WordDocumentInspector().inspect({ path: "docs/backgrounds.docx", bytes })
+    const drawingBackground = inspection.watermarks.find((item) => item.kind === "drawingImageBackground")
+    const vmlImageBackground = inspection.watermarks.find((item) => item.kind === "vmlImageShape")
+    expect(drawingBackground).toMatchObject({
+      part: "word/header3.xml",
+      relId: "rIdDrawingBg",
+      relationshipMode: "embedded",
+      mediaPath: "word/media/image99.png",
+      mediaExists: true,
+    })
+    expect(vmlImageBackground).toMatchObject({
+      part: "word/footer2.xml",
+      relId: "rIdVmlBg",
+      relationshipMode: "embedded",
+      mediaPath: "word/media/image98.png",
+      mediaExists: true,
+    })
+    expect(inspection.summary.watermarkCount).toBe(2)
+
+    const cleaned = await new WordDocumentEditor(root).apply({
+      sourcePath: "docs/backgrounds.docx",
+      bytes,
+      inspection,
+      plan: {
+        planId: "remove-drawing-background",
+        targetPath: "docs/backgrounds.docx",
+        outputFilenameBase: "drawing-background-removed",
+        operations: [{ type: "removeWatermark", locator: drawingBackground!.locator }],
+        warnings: [],
+      },
+    })
+
+    const cleanedBytes = await readFile(join(root, cleaned.path))
+    const cleanedHeaderXml = await readDocxPart(cleanedBytes, "word/header3.xml")
+    const cleanedFooterXml = await readDocxPart(cleanedBytes, "word/footer2.xml")
+    const cleanedInspection = await new WordDocumentInspector().inspect({ path: cleaned.path, bytes: cleanedBytes })
+    expect(cleanedHeaderXml).not.toContain("<w:drawing")
+    expect(cleanedHeaderXml).not.toContain("rIdDrawingBg")
+    expect(cleanedFooterXml).toContain("<v:imagedata")
+    expect(cleanedFooterXml).toContain("rIdVmlBg")
+    expect(cleanedInspection.watermarks.some((item) => item.kind === "drawingImageBackground")).toBe(false)
+    expect(cleanedInspection.watermarks.some((item) => item.kind === "vmlImageShape")).toBe(true)
+    expect(cleaned.appliedOperations[0]?.detail).toContain("removed 1 watermark(s)")
+    expect(cleaned.appliedOperations[0]?.detail).toContain("word/header3.xml")
+    expect(cleaned.structureCheckResult.ok).toBe(true)
+  })
+
+  test("make-docx-fixtures generates public DOCX regression fixtures", async () => {
+    const root = await tempDir("chipmate-docx-fixtures-")
+    const outDir = join(root, "fixtures")
+    const result = spawnSync("bun", ["scripts/make-docx-fixtures.ts", "--out", outDir], {
+      cwd: process.cwd(),
+      encoding: "utf8",
+    })
+    expect(result.status).toBe(0)
+    expect(result.stderr).toBe("")
+    expect(result.stdout).toContain("Generated 3 DOCX fixture(s)")
+
+    const manifest = JSON.parse(await readFile(join(outDir, "manifest.json"), "utf8")) as {
+      fixtureVersion: number
+      fixtures: Array<{ name: string; path: string; features: string[] }>
+    }
+    expect(manifest.fixtureVersion).toBe(1)
+    expect(manifest.fixtures.map((item) => item.name)).toEqual([
+      "watermark-multipart",
+      "tracked-change-basic",
+      "fields-captions-crossrefs",
+    ])
+
+    const watermarkBytes = await readFile(join(outDir, "watermark-multipart.docx"))
+    const watermarkInspection = await new WordDocumentInspector().inspect({ path: "fixtures/watermark-multipart.docx", bytes: watermarkBytes })
+    expect(watermarkInspection.summary.watermarkCount).toBe(3)
+    expect(watermarkInspection.watermarks.map((item) => item.part).sort()).toEqual(["word/footer1.xml", "word/header1.xml", "word/header2.xml"])
+
+    const trackedBytes = await readFile(join(outDir, "tracked-change-basic.docx"))
+    const trackedXml = await readDocxPart(trackedBytes, "word/document.xml")
+    expect(trackedXml).toContain("<w:del ")
+    expect(trackedXml).toContain("<w:ins ")
+    expect(trackedXml).toContain("Original tracked text.")
+    expect(trackedXml).toContain("Revised tracked text.")
+
+    const fieldBytes = await readFile(join(outDir, "fields-captions-crossrefs.docx"))
+    const report = await auditWordDocumentFields({ path: "fixtures/fields-captions-crossrefs.docx", bytes: fieldBytes })
+    expect(report.fieldTypeCounts.REF).toBe(1)
+    expect(report.fieldTypeCounts.PAGEREF).toBe(1)
+    expect(report.fieldTypeCounts.SEQ).toBe(2)
+  })
+
+  test("apply_word_document_edits writes a new docx and preserves paragraph/table properties", async () => {
+    const root = await tempDir("chipmate-word-edit-")
+    workspaceFolders = [{ name: "repo", uri: UriShim.file(root) }]
+    const bytes = cGuidelineDocxFixture({
+      title: "可编辑 Word",
+      sections: [{ heading: "旧章节标题", paragraphs: ["需要保留的正文。"] }],
+      tableRows: [["状态", "旧值"], ["保持", "不变"]],
+    })
+    const inspection = await new WordDocumentInspector().inspect({ path: "docs/edit.docx", bytes })
+    const heading = inspection.paragraphs.find((item) => item.text === "旧章节标题")!
+    const cell = inspection.locators.find((item) => item.kind === "tableCell" && item.tableIndex === 1 && item.rowIndex === 1 && item.cellIndex === 1)!
+    const result = await new WordDocumentEditor(root).apply({
+      sourcePath: "docs/edit.docx",
+      bytes,
+      inspection,
+      plan: {
+        planId: "apply",
+        targetPath: "docs/edit.docx",
+        outputFilenameBase: "edited-doc",
+        operations: [
+          { type: "replaceParagraph", locator: heading.locator, text: "新章节标题" },
+          { type: "updateTable", locator: cell, text: "新值" },
+        ],
+        warnings: [],
+      },
+    })
+
+    expect(result.path).toMatch(/^\.chipmate\/docs\/edited-doc-.+\.docx$/)
+    const outputBytes = await readFile(join(root, result.path))
+    const documentXml = await readDocxPart(outputBytes, "word/document.xml")
+    const stylesXml = await readDocxPart(outputBytes, "word/styles.xml")
+    expect(documentXml).toContain("新章节标题")
+    expect(documentXml).not.toContain("旧章节标题")
+    expect(documentXml).toContain('<w:pStyle w:val="Heading2"/>')
+    expect(documentXml).toContain("新值")
+    expect(documentXml).toContain("不变")
+    expect(stylesXml).toContain('w:styleId="TOCStatic"')
+    expect(stylesXml).toContain('w:styleId="TableGrid"')
+    expect(result.structureCheckResult.ok).toBe(true)
+  })
+
+  test("apply_word_document_edits can add paragraph comments with OOXML anchors", async () => {
+    const root = await tempDir("chipmate-word-comment-")
+    workspaceFolders = [{ name: "repo", uri: UriShim.file(root) }]
+    const bytes = cGuidelineDocxFixture({
+      title: "批注文档",
+      sections: [{ heading: "现有章节", paragraphs: ["这段需要批注。"] }],
+    })
+    const inspection = await new WordDocumentInspector().inspect({ path: "docs/comment.docx", bytes })
+    const paragraph = inspection.paragraphs.find((item) => item.text === "这段需要批注。")!
+    const result = await new WordDocumentEditor(root).apply({
+      sourcePath: "docs/comment.docx",
+      bytes,
+      inspection,
+      plan: {
+        planId: "comment",
+        targetPath: "docs/comment.docx",
+        outputFilenameBase: "commented-doc",
+        operations: [
+          { type: "addComment", locator: paragraph.locator, text: "请确认这里的表述是否准确。\n第二段说明 <risk> & owner。", author: "Reviewer", initials: "RV" },
+        ],
+        warnings: [],
+      },
+    })
+
+    const outputBytes = await readFile(join(root, result.path))
+    const parts = await docxPartPaths(outputBytes)
+    const contentTypesXml = await readDocxPart(outputBytes, "[Content_Types].xml")
+    const documentXml = await readDocxPart(outputBytes, "word/document.xml")
+    const documentRelsXml = await readDocxPart(outputBytes, "word/_rels/document.xml.rels")
+    const commentsXml = await readDocxPart(outputBytes, "word/comments.xml")
+
+    expect(parts).toContain("word/comments.xml")
+    expect(contentTypesXml).toContain('PartName="/word/comments.xml"')
+    expect(documentRelsXml).toContain('Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/comments" Target="comments.xml"')
+    expect(documentXml).toContain('<w:commentRangeStart w:id="0"/>')
+    expect(documentXml).toContain('<w:commentRangeEnd w:id="0"/>')
+    expect(documentXml).toContain('<w:commentReference w:id="0"/>')
+    expect(commentsXml).toContain('w:author="Reviewer"')
+    expect(commentsXml).toContain("请确认这里的表述是否准确。")
+    expect(commentsXml).toContain("第二段说明 &lt;risk&gt; &amp; owner。")
+    expect(commentsXml.match(/<w:p>/g)?.length).toBe(2)
+    expect(result.appliedOperations[0]?.type).toBe("addComment")
+
+    const commentedInspection = await new WordDocumentInspector().inspect({ path: result.path, bytes: outputBytes })
+    expect(commentedInspection.summary.commentCount).toBe(1)
+    expect(commentedInspection.comments[0]).toMatchObject({
+      commentId: "0",
+      text: "请确认这里的表述是否准确。\n第二段说明 <risk> & owner。",
+      author: "Reviewer",
+      resolved: false,
+    })
+    expect(commentedInspection.comments[0]?.anchorText).toContain("这段需要批注。")
+  })
+
+  test("apply_word_document_edits can update existing comment text from an inspect locator", async () => {
+    const root = await tempDir("chipmate-word-comment-update-")
+    workspaceFolders = [{ name: "repo", uri: UriShim.file(root) }]
+    const bytes = cGuidelineDocxFixture({
+      title: "批注更新文档",
+      sections: [{ heading: "现有章节", paragraphs: ["这段批注正文会被更新。"] }],
+    })
+    const initialInspection = await new WordDocumentInspector().inspect({ path: "docs/comment-update.docx", bytes })
+    const paragraph = initialInspection.paragraphs.find((item) => item.text === "这段批注正文会被更新。")!
+    const commented = await new WordDocumentEditor(root).apply({
+      sourcePath: "docs/comment-update.docx",
+      bytes,
+      inspection: initialInspection,
+      plan: {
+        planId: "comment-add-before-update",
+        targetPath: "docs/comment-update.docx",
+        outputFilenameBase: "comment-update-source",
+        operations: [
+          { type: "addComment", locator: paragraph.locator, text: "原始批注意见。", author: "Reviewer", initials: "RV" },
+        ],
+        warnings: [],
+      },
+    })
+    const commentedBytes = await readFile(join(root, commented.path))
+    const commentedInspection = await new WordDocumentInspector().inspect({ path: commented.path, bytes: commentedBytes })
+    const comment = commentedInspection.comments[0]!
+    const validation = validateDocumentEditPlan({
+      planId: "comment-update",
+      targetPath: commented.path,
+      outputFilenameBase: "comment-updated-doc",
+      operations: [
+        { type: "updateCommentText", locator: comment.locator, text: "Updated comment <risk> & owner.\nSecond paragraph requires sign-off." },
+      ],
+      warnings: [],
+    }, commentedInspection)
+    expect(validation.ok).toBe(true)
+
+    const updated = await new WordDocumentEditor(root).apply({
+      sourcePath: commented.path,
+      bytes: commentedBytes,
+      inspection: commentedInspection,
+      plan: validation.plan!,
+    })
+
+    const updatedBytes = await readFile(join(root, updated.path))
+    const documentXml = await readDocxPart(updatedBytes, "word/document.xml")
+    const commentsXml = await readDocxPart(updatedBytes, "word/comments.xml")
+    const updatedInspection = await new WordDocumentInspector().inspect({ path: updated.path, bytes: updatedBytes })
+    expect(documentXml).toContain(`<w:commentRangeStart w:id="${comment.commentId}"/>`)
+    expect(documentXml).toContain(`<w:commentRangeEnd w:id="${comment.commentId}"/>`)
+    expect(documentXml).toContain(`<w:commentReference w:id="${comment.commentId}"/>`)
+    expect(commentsXml).toContain(`w:id="${comment.commentId}"`)
+    expect(commentsXml).toContain("Updated comment &lt;risk&gt; &amp; owner.")
+    expect(commentsXml).toContain("Second paragraph requires sign-off.")
+    expect(commentsXml.match(/<w:p>/g)?.length).toBe(2)
+    expect(commentsXml).not.toContain("原始批注意见。")
+    expect(updatedInspection.comments[0]?.text).toBe("Updated comment <risk> & owner.\nSecond paragraph requires sign-off.")
+    expect(updatedInspection.comments[0]?.author).toBe("Reviewer")
+    expect(updatedInspection.comments[0]?.anchorText).toContain("这段批注正文会被更新。")
+    expect(updated.appliedOperations[0]?.type).toBe("updateCommentText")
+    expect(updated.structureCheckResult.ok).toBe(true)
+  })
+
+  test("apply_word_document_edits can resolve existing comments", async () => {
+    const root = await tempDir("chipmate-word-comment-resolve-")
+    workspaceFolders = [{ name: "repo", uri: UriShim.file(root) }]
+    const bytes = cGuidelineDocxFixture({
+      title: "批注处理文档",
+      sections: [{ heading: "现有章节", paragraphs: ["这段有待处理批注。"] }],
+    })
+    const initialInspection = await new WordDocumentInspector().inspect({ path: "docs/comment-resolve.docx", bytes })
+    const paragraph = initialInspection.paragraphs.find((item) => item.text === "这段有待处理批注。")!
+    const commented = await new WordDocumentEditor(root).apply({
+      sourcePath: "docs/comment-resolve.docx",
+      bytes,
+      inspection: initialInspection,
+      plan: {
+        planId: "comment-add",
+        targetPath: "docs/comment-resolve.docx",
+        outputFilenameBase: "comment-resolve-doc",
+        operations: [
+          { type: "addComment", locator: paragraph.locator, text: "这条意见已经处理。", author: "Reviewer", initials: "RV" },
+        ],
+        warnings: [],
+      },
+    })
+    const commentedBytes = await addCommentMetadataParts(await readFile(join(root, commented.path)), [
+      { commentId: "0", paraId: "10000000", durableId: "durable-root" },
+    ])
+    const commentedInspection = await new WordDocumentInspector().inspect({ path: commented.path, bytes: commentedBytes })
+    const comment = commentedInspection.comments[0]!
+    expect(comment.paraId).toBe("10000000")
+    expect(comment.durableId).toBe("durable-root")
+    expect(comment.resolvedSource).toBe("none")
+
+    const resolved = await new WordDocumentEditor(root).apply({
+      sourcePath: commented.path,
+      bytes: commentedBytes,
+      inspection: commentedInspection,
+      plan: {
+        planId: "comment-resolve",
+        targetPath: commented.path,
+        outputFilenameBase: "comment-resolved-doc",
+        operations: [
+          { type: "setCommentResolved", locator: comment.locator, resolved: true },
+        ],
+        warnings: [],
+      },
+    })
+
+    const resolvedBytes = await readFile(join(root, resolved.path))
+    const commentsXml = await readDocxPart(resolvedBytes, "word/comments.xml")
+    const commentsExtendedXml = await readDocxPart(resolvedBytes, "word/commentsExtended.xml")
+    const resolvedInspection = await new WordDocumentInspector().inspect({ path: resolved.path, bytes: resolvedBytes })
+    expect(commentsXml).toContain('w:done="1"')
+    expect(commentsExtendedXml).toContain('w15:done="1"')
+    expect(resolvedInspection.comments[0]?.resolved).toBe(true)
+    expect(resolvedInspection.comments[0]?.resolvedSource).toBe("both")
+    expect(resolvedInspection.comments[0]?.commentsExtendedDone).toBe(true)
+    expect(resolved.appliedOperations[0]?.type).toBe("setCommentResolved")
+  })
+
+  test("inspect_word_document reports commentsExtended thread metadata", async () => {
+    const root = await tempDir("chipmate-word-comment-thread-")
+    workspaceFolders = [{ name: "repo", uri: UriShim.file(root) }]
+    const bytes = cGuidelineDocxFixture({
+      title: "批注线程文档",
+      sections: [{ heading: "现有章节", paragraphs: ["根批注段落。", "回复批注段落。"] }],
+    })
+    const initialInspection = await new WordDocumentInspector().inspect({ path: "docs/comment-thread.docx", bytes })
+    const rootParagraph = initialInspection.paragraphs.find((item) => item.text === "根批注段落。")!
+    const replyParagraph = initialInspection.paragraphs.find((item) => item.text === "回复批注段落。")!
+    const commented = await new WordDocumentEditor(root).apply({
+      sourcePath: "docs/comment-thread.docx",
+      bytes,
+      inspection: initialInspection,
+      plan: {
+        planId: "comment-thread-add",
+        targetPath: "docs/comment-thread.docx",
+        outputFilenameBase: "comment-thread-source",
+        operations: [
+          { type: "addComment", locator: rootParagraph.locator, text: "Root review thread.", author: "Reviewer", initials: "RV" },
+          { type: "addComment", locator: replyParagraph.locator, text: "Reply review item.", author: "Reviewer", initials: "RV" },
+        ],
+        warnings: [],
+      },
+    })
+    const threadedBytes = await addCommentMetadataParts(await readFile(join(root, commented.path)), [
+      { commentId: "0", paraId: "11111111", durableId: "durable-root" },
+      { commentId: "1", paraId: "22222222", parentParaId: "11111111", durableId: "durable-reply", done: true },
+    ])
+
+    const inspection = await new WordDocumentInspector().inspect({ path: commented.path, bytes: threadedBytes })
+    const rootComment = inspection.comments.find((comment) => comment.commentId === "0")!
+    const replyComment = inspection.comments.find((comment) => comment.commentId === "1")!
+    expect(rootComment.paraId).toBe("11111111")
+    expect(rootComment.durableId).toBe("durable-root")
+    expect(rootComment.resolved).toBe(false)
+    expect(rootComment.resolvedSource).toBe("none")
+    expect(replyComment.paraId).toBe("22222222")
+    expect(replyComment.parentParaId).toBe("11111111")
+    expect(replyComment.parentCommentId).toBe("0")
+    expect(replyComment.durableId).toBe("durable-reply")
+    expect(replyComment.commentsExtendedDone).toBe(true)
+    expect(replyComment.resolved).toBe(true)
+    expect(replyComment.resolvedSource).toBe("commentsExtended")
+  })
+
+  test("apply_word_document_edits can strip all comments for a clean copy", async () => {
+    const root = await tempDir("chipmate-word-comment-strip-")
+    workspaceFolders = [{ name: "repo", uri: UriShim.file(root) }]
+    const bytes = cGuidelineDocxFixture({
+      title: "批注清理文档",
+      sections: [{ heading: "现有章节", paragraphs: ["这段批注将被清理。"] }],
+    })
+    const initialInspection = await new WordDocumentInspector().inspect({ path: "docs/comment-strip.docx", bytes })
+    const paragraph = initialInspection.paragraphs.find((item) => item.text === "这段批注将被清理。")!
+    const commented = await new WordDocumentEditor(root).apply({
+      sourcePath: "docs/comment-strip.docx",
+      bytes,
+      inspection: initialInspection,
+      plan: {
+        planId: "comment-strip-add",
+        targetPath: "docs/comment-strip.docx",
+        outputFilenameBase: "comment-strip-source",
+        operations: [
+          { type: "addComment", locator: paragraph.locator, text: "最终版需要删除此批注。", author: "Reviewer", initials: "RV" },
+        ],
+        warnings: [],
+      },
+    })
+    const commentedBytes = await addCommentMetadataParts(await readFile(join(root, commented.path)), [
+      { commentId: "0", paraId: "30000000", durableId: "durable-strip", done: true },
+    ])
+    const commentedInspection = await new WordDocumentInspector().inspect({ path: commented.path, bytes: commentedBytes })
+    expect(commentedInspection.summary.commentCount).toBe(1)
+
+    const stripped = await new WordDocumentEditor(root).apply({
+      sourcePath: commented.path,
+      bytes: commentedBytes,
+      inspection: commentedInspection,
+      plan: {
+        planId: "comment-strip",
+        targetPath: commented.path,
+        outputFilenameBase: "comment-stripped-doc",
+        operations: [
+          { type: "removeAllComments", locator: commentedInspection.documentEndLocator },
+        ],
+        warnings: [],
+      },
+    })
+
+    const strippedBytes = await readFile(join(root, stripped.path))
+    const parts = await docxPartPaths(strippedBytes)
+    const contentTypesXml = await readDocxPart(strippedBytes, "[Content_Types].xml")
+    const documentXml = await readDocxPart(strippedBytes, "word/document.xml")
+    const documentRelsXml = await readDocxPart(strippedBytes, "word/_rels/document.xml.rels")
+    const strippedInspection = await new WordDocumentInspector().inspect({ path: stripped.path, bytes: strippedBytes })
+
+    expect(parts).not.toContain("word/comments.xml")
+    expect(parts).not.toContain("word/commentsExtended.xml")
+    expect(parts).not.toContain("word/commentsIds.xml")
+    expect(contentTypesXml).not.toContain("comments+xml")
+    expect(contentTypesXml).not.toContain("commentsIds")
+    expect(documentRelsXml).not.toContain("/relationships/comments")
+    expect(documentRelsXml).not.toContain("commentsIds")
+    expect(documentXml).not.toContain("commentRangeStart")
+    expect(documentXml).not.toContain("commentRangeEnd")
+    expect(documentXml).not.toContain("commentReference")
+    expect(strippedInspection.summary.commentCount).toBe(0)
+    expect(stripped.appliedOperations[0]?.type).toBe("removeAllComments")
+  })
+
+  test("apply_word_document_edits can replace a paragraph with tracked changes", async () => {
+    const root = await tempDir("chipmate-word-redline-")
+    workspaceFolders = [{ name: "repo", uri: UriShim.file(root) }]
+    const bytes = cGuidelineDocxFixture({
+      title: "红线文档",
+      sections: [{ heading: "现有章节", paragraphs: ["旧版描述需要修订。"] }],
+    })
+    const inspection = await new WordDocumentInspector().inspect({ path: "docs/redline.docx", bytes })
+    const paragraph = inspection.paragraphs.find((item) => item.text === "旧版描述需要修订。")!
+    const validation = validateDocumentEditPlan({
+      planId: "redline",
+      targetPath: "docs/redline.docx",
+      operations: [
+        { type: "replaceParagraphWithTrackedChange", locator: paragraph.locator, text: "新版描述保留为可审阅修订。", author: "Reviewer" },
+      ],
+      warnings: [],
+    }, inspection)
+    expect(validation.ok).toBe(true)
+
+    const result = await new WordDocumentEditor(root).apply({
+      sourcePath: "docs/redline.docx",
+      bytes,
+      inspection,
+      plan: validation.plan!,
+    })
+
+    const outputBytes = await readFile(join(root, result.path))
+    const contentTypesXml = await readDocxPart(outputBytes, "[Content_Types].xml")
+    const documentXml = await readDocxPart(outputBytes, "word/document.xml")
+    const documentRelsXml = await readDocxPart(outputBytes, "word/_rels/document.xml.rels")
+    const settingsXml = await readDocxPart(outputBytes, "word/settings.xml")
+
+    expect(contentTypesXml).toContain('PartName="/word/settings.xml"')
+    expect(documentRelsXml).toContain('Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/settings" Target="settings.xml"')
+    expect(settingsXml).toContain("<w:trackRevisions/>")
+    expect(documentXml).toContain('<w:del w:id="0"')
+    expect(documentXml).toContain('<w:delText xml:space="preserve">旧版描述需要修订。</w:delText>')
+    expect(documentXml).toContain('<w:ins w:id="1"')
+    expect(documentXml).toContain('<w:t xml:space="preserve">新版描述保留为可审阅修订。</w:t>')
+    expect(documentXml).toContain('w:author="Reviewer"')
+    expect(result.appliedOperations[0]?.type).toBe("replaceParagraphWithTrackedChange")
+  })
+
+  test("apply_word_document_edits can replace a paragraph with rich tracked changes", async () => {
+    const root = await tempDir("chipmate-word-rich-redline-")
+    workspaceFolders = [{ name: "repo", uri: UriShim.file(root) }]
+    const bytes = cGuidelineDocxFixture({
+      title: "富文本红线文档",
+      sections: [{ heading: "现有章节", paragraphs: ["旧版富文本段落需要修订。"] }],
+    })
+    const inspection = await new WordDocumentInspector().inspect({ path: "docs/rich-redline.docx", bytes })
+    const paragraph = inspection.paragraphs.find((item) => item.text === "旧版富文本段落需要修订。")!
+    const validation = validateDocumentEditPlan({
+      planId: "rich-redline",
+      targetPath: "docs/rich-redline.docx",
+      outputFilenameBase: "rich-redline-source",
+      operations: [
+        {
+          type: "replaceParagraphWithRichTrackedChange",
+          locator: paragraph.locator,
+          author: "Reviewer",
+          paragraph: {
+            runs: [
+              { text: "新版 " },
+              { text: "重点", bold: true },
+              { text: " 内容参见 " },
+              { text: "规范链接", hyperlink: { url: "https://example.com/rich-redline", tooltip: "富文本红线链接" } },
+              { note: { kind: "footnote", text: "富文本红线脚注。" } },
+            ],
+          },
+        },
+      ],
+      warnings: [],
+    }, inspection)
+    expect(validation.ok).toBe(true)
+
+    const redlined = await new WordDocumentEditor(root).apply({
+      sourcePath: "docs/rich-redline.docx",
+      bytes,
+      inspection,
+      plan: validation.plan!,
+    })
+
+    const redlinedBytes = await readFile(join(root, redlined.path))
+    const documentXml = await readDocxPart(redlinedBytes, "word/document.xml")
+    const documentRelsXml = await readDocxPart(redlinedBytes, "word/_rels/document.xml.rels")
+    const contentTypesXml = await readDocxPart(redlinedBytes, "[Content_Types].xml")
+    const footnotesXml = await readDocxPart(redlinedBytes, "word/footnotes.xml")
+    const redlinedInspection = await new WordDocumentInspector().inspect({ path: redlined.path, bytes: redlinedBytes })
+    expect(redlined.appliedOperations[0]?.type).toBe("replaceParagraphWithRichTrackedChange")
+    expect(redlined.structureCheckResult.ok).toBe(true)
+    expect(redlinedInspection.summary.trackedChangeCount).toBeGreaterThan(0)
+    expect(documentXml).toContain('<w:del w:id="0"')
+    expect(documentXml).toContain('<w:delText xml:space="preserve">旧版富文本段落需要修订。</w:delText>')
+    expect(documentXml).toContain('<w:ins w:id="1"')
+    expect(documentXml).toContain("<w:b/>")
+    expect(documentXml).toContain('<w:hyperlink r:id="rIdChipMateHyperlink1" w:tooltip="富文本红线链接">')
+    expect(documentXml).toContain('<w:footnoteReference w:id="1"/>')
+    expect(documentRelsXml).toContain('Target="https://example.com/rich-redline" TargetMode="External"')
+    expect(documentRelsXml).toContain('Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/footnotes" Target="footnotes.xml"')
+    expect(contentTypesXml).toContain('PartName="/word/footnotes.xml"')
+    expect(footnotesXml).toContain("富文本红线脚注。")
+
+    const accepted = await new WordDocumentEditor(root).apply({
+      sourcePath: redlined.path,
+      bytes: redlinedBytes,
+      inspection: redlinedInspection,
+      plan: {
+        planId: "rich-redline-accept",
+        targetPath: redlined.path,
+        outputFilenameBase: "rich-redline-accepted",
+        operations: [{ type: "acceptAllTrackedChanges", locator: redlinedInspection.documentEndLocator }],
+        warnings: [],
+      },
+    })
+    const acceptedBytes = await readFile(join(root, accepted.path))
+    const acceptedXml = await readDocxPart(acceptedBytes, "word/document.xml")
+    const acceptedInspection = await new WordDocumentInspector().inspect({ path: accepted.path, bytes: acceptedBytes })
+    expect(acceptedInspection.summary.trackedChangeCount).toBe(0)
+    expect(acceptedXml).not.toContain("<w:ins ")
+    expect(acceptedXml).not.toContain("<w:del ")
+    expect(acceptedXml).toContain("<w:b/>")
+    expect(acceptedXml).toContain('<w:hyperlink r:id="rIdChipMateHyperlink1" w:tooltip="富文本红线链接">')
+    expect(acceptedXml).toContain('<w:footnoteReference w:id="1"/>')
+    expect(acceptedXml).not.toContain("旧版富文本段落需要修订。")
+  })
+
+  test("apply_word_document_edits can replace paragraph-local text with tracked changes", async () => {
+    const root = await tempDir("chipmate-word-inline-redline-")
+    workspaceFolders = [{ name: "repo", uri: UriShim.file(root) }]
+    const bytes = cGuidelineDocxFixture({
+      title: "段内红线文档",
+      sections: [{ heading: "现有章节", paragraphs: ["旧版描述需要局部修订。"] }],
+    })
+    const inspection = await new WordDocumentInspector().inspect({ path: "docs/inline-redline.docx", bytes })
+    const paragraph = inspection.paragraphs.find((item) => item.text === "旧版描述需要局部修订。")!
+    const validation = validateDocumentEditPlan({
+      planId: "inline-redline",
+      targetPath: "docs/inline-redline.docx",
+      outputFilenameBase: "inline-redline-source",
+      operations: [
+        { type: "replaceTextWithTrackedChange", locator: paragraph.locator, oldText: "局部", newText: "精准", author: "Reviewer" },
+      ],
+      warnings: [],
+    }, inspection)
+    expect(validation.ok).toBe(true)
+
+    const redlined = await new WordDocumentEditor(root).apply({
+      sourcePath: "docs/inline-redline.docx",
+      bytes,
+      inspection,
+      plan: validation.plan!,
+    })
+
+    const redlinedBytes = await readFile(join(root, redlined.path))
+    const redlinedXml = await readDocxPart(redlinedBytes, "word/document.xml")
+    const redlinedInspection = await new WordDocumentInspector().inspect({ path: redlined.path, bytes: redlinedBytes })
+    expect(redlinedXml).toContain("旧版描述需要")
+    expect(redlinedXml).toContain('<w:del w:id="0"')
+    expect(redlinedXml).toContain('<w:delText xml:space="preserve">局部</w:delText>')
+    expect(redlinedXml).toContain('<w:ins w:id="1"')
+    expect(redlinedXml).toContain('<w:t xml:space="preserve">精准</w:t>')
+    expect(redlinedXml).toContain("修订。")
+    expect(redlinedXml).toContain('w:author="Reviewer"')
+    expect(redlined.appliedOperations[0]?.type).toBe("replaceTextWithTrackedChange")
+    expect(redlinedInspection.summary.trackedChangeCount).toBeGreaterThan(0)
+
+    const accepted = await new WordDocumentEditor(root).apply({
+      sourcePath: redlined.path,
+      bytes: redlinedBytes,
+      inspection: redlinedInspection,
+      plan: {
+        planId: "inline-redline-accept",
+        targetPath: redlined.path,
+        outputFilenameBase: "inline-redline-accepted",
+        operations: [{ type: "acceptAllTrackedChanges", locator: redlinedInspection.documentEndLocator }],
+        warnings: [],
+      },
+    })
+    const acceptedBytes = await readFile(join(root, accepted.path))
+    const acceptedXml = await readDocxPart(acceptedBytes, "word/document.xml")
+    const acceptedInspection = await new WordDocumentInspector().inspect({ path: accepted.path, bytes: acceptedBytes })
+    expect(acceptedInspection.paragraphs.some((item) => item.text === "旧版描述需要精准修订。")).toBe(true)
+    expect(acceptedXml).not.toContain("<w:del")
+    expect(acceptedXml).not.toContain("<w:ins")
+
+    const rejected = await new WordDocumentEditor(root).apply({
+      sourcePath: redlined.path,
+      bytes: redlinedBytes,
+      inspection: redlinedInspection,
+      plan: {
+        planId: "inline-redline-reject",
+        targetPath: redlined.path,
+        outputFilenameBase: "inline-redline-rejected",
+        operations: [{ type: "rejectAllTrackedChanges", locator: redlinedInspection.documentEndLocator }],
+        warnings: [],
+      },
+    })
+    const rejectedBytes = await readFile(join(root, rejected.path))
+    const rejectedXml = await readDocxPart(rejectedBytes, "word/document.xml")
+    const rejectedInspection = await new WordDocumentInspector().inspect({ path: rejected.path, bytes: rejectedBytes })
+    expect(rejectedInspection.paragraphs.some((item) => item.text === "旧版描述需要局部修订。")).toBe(true)
+    expect(rejectedInspection.paragraphs.some((item) => item.text.includes("精准"))).toBe(false)
+    expect(rejectedXml).not.toContain("<w:del")
+    expect(rejectedXml).not.toContain("<w:ins")
+  })
+
+  test("apply_word_document_edits can replace text spanning split runs with tracked changes", async () => {
+    const root = await tempDir("chipmate-word-split-run-redline-")
+    workspaceFolders = [{ name: "repo", uri: UriShim.file(root) }]
+    let bytes = cGuidelineDocxFixture({
+      title: "跨 run 红线文档",
+      sections: [{ heading: "现有章节", paragraphs: ["旧版描述需要局部修订。"] }],
+    })
+    bytes = await replaceDocxPart(bytes, "word/document.xml", (xml) => xml.replace(
+      "<w:t>旧版描述需要局部修订。</w:t>",
+      "<w:t>旧版描述需要局</w:t></w:r><w:r><w:t>部修订。</w:t>",
+    ))
+    const inspection = await new WordDocumentInspector().inspect({ path: "docs/split-run-redline.docx", bytes })
+    const paragraph = inspection.paragraphs.find((item) => item.text === "旧版描述需要局部修订。")!
+    const validation = validateDocumentEditPlan({
+      planId: "split-run-redline",
+      targetPath: "docs/split-run-redline.docx",
+      outputFilenameBase: "split-run-redline-source",
+      operations: [
+        { type: "replaceTextWithTrackedChange", locator: paragraph.locator, oldText: "局部", newText: "精准", author: "Reviewer" },
+      ],
+      warnings: [],
+    }, inspection)
+    expect(validation.ok).toBe(true)
+
+    const redlined = await new WordDocumentEditor(root).apply({
+      sourcePath: "docs/split-run-redline.docx",
+      bytes,
+      inspection,
+      plan: validation.plan!,
+    })
+
+    const redlinedBytes = await readFile(join(root, redlined.path))
+    const redlinedXml = await readDocxPart(redlinedBytes, "word/document.xml")
+    const redlinedInspection = await new WordDocumentInspector().inspect({ path: redlined.path, bytes: redlinedBytes })
+    expect(redlinedInspection.summary.trackedChangeTypeCounts.del).toBe(1)
+    expect(redlinedInspection.summary.trackedChangeTypeCounts.ins).toBe(1)
+    expect(redlinedXml).toContain('<w:delText xml:space="preserve">局部</w:delText>')
+    expect(redlinedXml).toContain('<w:t xml:space="preserve">精准</w:t>')
+
+    const accepted = await new WordDocumentEditor(root).apply({
+      sourcePath: redlined.path,
+      bytes: redlinedBytes,
+      inspection: redlinedInspection,
+      plan: {
+        planId: "split-run-redline-accept",
+        targetPath: redlined.path,
+        outputFilenameBase: "split-run-redline-accepted",
+        operations: [{ type: "acceptAllTrackedChanges", locator: redlinedInspection.documentEndLocator }],
+        warnings: [],
+      },
+    })
+    const acceptedBytes = await readFile(join(root, accepted.path))
+    const acceptedInspection = await new WordDocumentInspector().inspect({ path: accepted.path, bytes: acceptedBytes })
+    expect(acceptedInspection.summary.trackedChangeCount).toBe(0)
+    expect(acceptedInspection.paragraphs.some((item) => item.text === "旧版描述需要精准修订。")).toBe(true)
+  })
+
+  test("inspect_word_document reports move revisions and accept reject handles them", async () => {
+    const root = await tempDir("chipmate-word-move-revisions-")
+    workspaceFolders = [{ name: "repo", uri: UriShim.file(root) }]
+    let bytes = await new WordDocBuilder().build(minimalRenderableWordDocSpec())
+    bytes = await replaceDocxPart(bytes, "word/document.xml", (xml) => xml.replace(
+      "</w:body>",
+      '<w:p><w:moveFrom w:id="10" w:author="Reviewer" w:date="2026-06-28T00:00:00Z"><w:r><w:delText xml:space="preserve">Moved from here.</w:delText></w:r></w:moveFrom><w:moveTo w:id="11" w:author="Reviewer" w:date="2026-06-28T00:00:00Z"><w:r><w:t xml:space="preserve">Moved to here.</w:t></w:r></w:moveTo></w:p></w:body>',
+    ))
+    const inspection = await new WordDocumentInspector().inspect({ path: "docs/move-revisions.docx", bytes })
+    expect(inspection.summary.trackedChangeTypeCounts.moveFrom).toBe(1)
+    expect(inspection.summary.trackedChangeTypeCounts.moveTo).toBe(1)
+    expect(inspection.summary.advancedTrackedChangeWarnings.some((warning) => warning.includes("Tracked move revisions"))).toBe(true)
+
+    const accepted = await new WordDocumentEditor(root).apply({
+      sourcePath: "docs/move-revisions.docx",
+      bytes,
+      inspection,
+      plan: {
+        planId: "accept-move",
+        targetPath: "docs/move-revisions.docx",
+        outputFilenameBase: "move-accepted",
+        operations: [{ type: "acceptAllTrackedChanges", locator: inspection.documentEndLocator }],
+        warnings: [],
+      },
+    })
+    const acceptedBytes = await readFile(join(root, accepted.path))
+    const acceptedXml = await readDocxPart(acceptedBytes, "word/document.xml")
+    const acceptedInspection = await new WordDocumentInspector().inspect({ path: accepted.path, bytes: acceptedBytes })
+    expect(acceptedInspection.summary.trackedChangeCount).toBe(0)
+    expect(acceptedXml).toContain("Moved to here.")
+    expect(acceptedXml).not.toContain("Moved from here.")
+    expect(acceptedXml).not.toContain("<w:move")
+
+    const rejected = await new WordDocumentEditor(root).apply({
+      sourcePath: "docs/move-revisions.docx",
+      bytes,
+      inspection,
+      plan: {
+        planId: "reject-move",
+        targetPath: "docs/move-revisions.docx",
+        outputFilenameBase: "move-rejected",
+        operations: [{ type: "rejectAllTrackedChanges", locator: inspection.documentEndLocator }],
+        warnings: [],
+      },
+    })
+    const rejectedBytes = await readFile(join(root, rejected.path))
+    const rejectedXml = await readDocxPart(rejectedBytes, "word/document.xml")
+    const rejectedInspection = await new WordDocumentInspector().inspect({ path: rejected.path, bytes: rejectedBytes })
+    expect(rejectedInspection.summary.trackedChangeCount).toBe(0)
+    expect(rejectedXml).toContain("Moved from here.")
+    expect(rejectedXml).not.toContain("Moved to here.")
+    expect(rejectedXml).not.toContain("<w:move")
+  }, 15_000)
+
+  test("inspect_word_document reports formatting revisions and clean copy validation fails closed", async () => {
+    let bytes = await new WordDocBuilder().build(minimalRenderableWordDocSpec())
+    bytes = await replaceDocxPart(bytes, "word/document.xml", (xml) => xml.replace(
+      "</w:body>",
+      '<w:p><w:r><w:rPr><w:rPrChange w:id="21" w:author="Reviewer" w:date="2026-06-28T00:00:00Z"><w:rPr><w:b/></w:rPr></w:rPrChange></w:rPr><w:t>Formatting revision text.</w:t></w:r></w:p></w:body>',
+    ))
+    const inspection = await new WordDocumentInspector().inspect({ path: "docs/format-revision.docx", bytes })
+    expect(inspection.summary.trackedChangeTypeCounts.rPrChange).toBe(1)
+    expect(inspection.summary.trackedChangeCount).toBeGreaterThan(0)
+    expect(inspection.warnings.some((warning) => warning.includes("Tracked formatting revisions"))).toBe(true)
+    const validation = validateDocumentEditPlan({
+      planId: "accept-format-revision",
+      targetPath: "docs/format-revision.docx",
+      outputFilenameBase: "format-revision-accepted",
+      operations: [{ type: "acceptAllTrackedChanges", locator: inspection.documentEndLocator }],
+      warnings: [],
+    }, inspection)
+    expect(validation.ok).toBe(false)
+    expect(validation.errors.join("\n")).toContain("rPrChange")
+  })
+
+  test("apply_word_document_edits can update a table cell with tracked changes", async () => {
+    const root = await tempDir("chipmate-word-table-redline-")
+    workspaceFolders = [{ name: "repo", uri: UriShim.file(root) }]
+    const spec = minimalRenderableWordDocSpec()
+    spec.metadata.documentType = "table-redline"
+    spec.sections = [{
+      id: "table",
+      level: 1,
+      title: "Table Redline",
+      tables: [{
+        headers: ["Field", "Value"],
+        rows: [["Status", "Draft"]],
+      }],
+    }]
+    const bytes = await new WordDocBuilder().build(spec)
+    const inspection = await new WordDocumentInspector().inspect({ path: "docs/table-redline.docx", bytes })
+    const targetTable = inspection.tables.find((table) => table.rows.some((row) => row.includes("Draft")))!
+    const statusCell = inspection.locators.find((locator) => locator.kind === "tableCell" && locator.tableIndex === targetTable.tableIndex && locator.rowIndex === 1 && locator.cellIndex === 1)!
+    const validation = validateDocumentEditPlan({
+      planId: "table-cell-redline",
+      targetPath: "docs/table-redline.docx",
+      outputFilenameBase: "table-cell-redlined",
+      operations: [
+        { type: "updateTableWithTrackedChange", locator: statusCell, text: "Final", author: "Reviewer" },
+      ],
+      warnings: [],
+    }, inspection)
+    expect(validation.ok).toBe(true)
+
+    const redlined = await new WordDocumentEditor(root).apply({
+      sourcePath: "docs/table-redline.docx",
+      bytes,
+      inspection,
+      plan: validation.plan!,
+    })
+
+    const redlinedBytes = await readFile(join(root, redlined.path))
+    const redlinedXml = await readDocxPart(redlinedBytes, "word/document.xml")
+    const settingsXml = await readDocxPart(redlinedBytes, "word/settings.xml")
+    const redlinedInspection = await new WordDocumentInspector().inspect({ path: redlined.path, bytes: redlinedBytes })
+    expect(settingsXml).toContain("<w:trackRevisions/>")
+    expect(redlinedXml).toContain('<w:del w:id="0"')
+    expect(redlinedXml).toContain('<w:delText xml:space="preserve">Draft</w:delText>')
+    expect(redlinedXml).toContain('<w:ins w:id="1"')
+    expect(redlinedXml).toContain('<w:t xml:space="preserve">Final</w:t>')
+    expect(redlinedXml).toContain('w:author="Reviewer"')
+    expect(redlinedInspection.summary.trackedChangeCount).toBeGreaterThan(0)
+    expect(redlined.appliedOperations[0]?.type).toBe("updateTableWithTrackedChange")
+
+    const acceptValidation = validateDocumentEditPlan({
+      planId: "accept-table-cell-redline",
+      targetPath: redlined.path,
+      outputFilenameBase: "table-cell-redline-accepted",
+      operations: [{ type: "acceptAllTrackedChanges", locator: redlinedInspection.documentEndLocator }],
+      warnings: [],
+    }, redlinedInspection)
+    expect(acceptValidation.ok).toBe(true)
+    const accepted = await new WordDocumentEditor(root).apply({
+      sourcePath: redlined.path,
+      bytes: redlinedBytes,
+      inspection: redlinedInspection,
+      plan: acceptValidation.plan!,
+    })
+    const acceptedBytes = await readFile(join(root, accepted.path))
+    const acceptedXml = await readDocxPart(acceptedBytes, "word/document.xml")
+    const acceptedInspection = await new WordDocumentInspector().inspect({ path: accepted.path, bytes: acceptedBytes })
+    const acceptedTable = acceptedInspection.tables.find((table) => table.rows.some((row) => row.includes("Status")))!
+    expect(acceptedXml).not.toContain("<w:del")
+    expect(acceptedXml).not.toContain("<w:ins ")
+    expect(acceptedTable.rows.flat()).toContain("Final")
+    expect(acceptedTable.rows.flat()).not.toContain("Draft")
+
+    const rejectValidation = validateDocumentEditPlan({
+      planId: "reject-table-cell-redline",
+      targetPath: redlined.path,
+      outputFilenameBase: "table-cell-redline-rejected",
+      operations: [{ type: "rejectAllTrackedChanges", locator: redlinedInspection.documentEndLocator }],
+      warnings: [],
+    }, redlinedInspection)
+    expect(rejectValidation.ok).toBe(true)
+    const rejected = await new WordDocumentEditor(root).apply({
+      sourcePath: redlined.path,
+      bytes: redlinedBytes,
+      inspection: redlinedInspection,
+      plan: rejectValidation.plan!,
+    })
+    const rejectedBytes = await readFile(join(root, rejected.path))
+    const rejectedXml = await readDocxPart(rejectedBytes, "word/document.xml")
+    const rejectedInspection = await new WordDocumentInspector().inspect({ path: rejected.path, bytes: rejectedBytes })
+    const rejectedTable = rejectedInspection.tables.find((table) => table.rows.some((row) => row.includes("Status")))!
+    expect(rejectedXml).not.toContain("<w:del")
+    expect(rejectedXml).not.toContain("<w:ins ")
+    expect(rejectedTable.rows.flat()).toContain("Draft")
+    expect(rejectedTable.rows.flat()).not.toContain("Final")
+  }, 15_000)
+
+  test("apply_word_document_edits can accept all tracked changes into a clean copy", async () => {
+    const root = await tempDir("chipmate-word-redline-accept-")
+    workspaceFolders = [{ name: "repo", uri: UriShim.file(root) }]
+    const bytes = cGuidelineDocxFixture({
+      title: "接受修订文档",
+      sections: [{ heading: "现有章节", paragraphs: ["旧内容等待接受修订。"] }],
+    })
+    const inspection = await new WordDocumentInspector().inspect({ path: "docs/redline-accept.docx", bytes })
+    const paragraph = inspection.paragraphs.find((item) => item.text === "旧内容等待接受修订。")!
+    const redlined = await new WordDocumentEditor(root).apply({
+      sourcePath: "docs/redline-accept.docx",
+      bytes,
+      inspection,
+      plan: {
+        planId: "redline-accept-source",
+        targetPath: "docs/redline-accept.docx",
+        outputFilenameBase: "redline-accept-source",
+        operations: [
+          { type: "replaceParagraphWithTrackedChange", locator: paragraph.locator, text: "新内容作为接受后的正文。", author: "Reviewer" },
+        ],
+        warnings: [],
+      },
+    })
+    const redlinedBytes = await readFile(join(root, redlined.path))
+    const redlinedInspection = await new WordDocumentInspector().inspect({ path: redlined.path, bytes: redlinedBytes })
+    expect(redlinedInspection.summary.trackedChangeCount).toBeGreaterThan(0)
+
+    const accepted = await new WordDocumentEditor(root).apply({
+      sourcePath: redlined.path,
+      bytes: redlinedBytes,
+      inspection: redlinedInspection,
+      plan: {
+        planId: "redline-accept",
+        targetPath: redlined.path,
+        outputFilenameBase: "redline-accepted-doc",
+        operations: [
+          { type: "acceptAllTrackedChanges", locator: redlinedInspection.documentEndLocator },
+        ],
+        warnings: [],
+      },
+    })
+
+    const acceptedBytes = await readFile(join(root, accepted.path))
+    const documentXml = await readDocxPart(acceptedBytes, "word/document.xml")
+    const settingsXml = await readDocxPart(acceptedBytes, "word/settings.xml")
+    const acceptedInspection = await new WordDocumentInspector().inspect({ path: accepted.path, bytes: acceptedBytes })
+    expect(documentXml).not.toContain("<w:del")
+    expect(documentXml).not.toContain("<w:ins")
+    expect(documentXml).not.toContain("旧内容等待接受修订。")
+    expect(documentXml).toContain("新内容作为接受后的正文。")
+    expect(settingsXml).not.toContain("trackRevisions")
+    expect(acceptedInspection.summary.trackedChangeCount).toBe(0)
+    expect(accepted.appliedOperations[0]?.type).toBe("acceptAllTrackedChanges")
+  })
+
+  test("apply_word_document_edits can reject all tracked changes into a clean copy", async () => {
+    const root = await tempDir("chipmate-word-redline-reject-")
+    workspaceFolders = [{ name: "repo", uri: UriShim.file(root) }]
+    const bytes = cGuidelineDocxFixture({
+      title: "拒绝修订文档",
+      sections: [{ heading: "现有章节", paragraphs: ["旧内容等待拒绝修订。"] }],
+    })
+    const inspection = await new WordDocumentInspector().inspect({ path: "docs/redline-reject.docx", bytes })
+    const paragraph = inspection.paragraphs.find((item) => item.text === "旧内容等待拒绝修订。")!
+    const redlined = await new WordDocumentEditor(root).apply({
+      sourcePath: "docs/redline-reject.docx",
+      bytes,
+      inspection,
+      plan: {
+        planId: "redline-reject-source",
+        targetPath: "docs/redline-reject.docx",
+        outputFilenameBase: "redline-reject-source",
+        operations: [
+          { type: "replaceParagraphWithTrackedChange", locator: paragraph.locator, text: "新内容应在拒绝后消失。", author: "Reviewer" },
+        ],
+        warnings: [],
+      },
+    })
+    const redlinedBytes = await readFile(join(root, redlined.path))
+    const redlinedInspection = await new WordDocumentInspector().inspect({ path: redlined.path, bytes: redlinedBytes })
+
+    const rejected = await new WordDocumentEditor(root).apply({
+      sourcePath: redlined.path,
+      bytes: redlinedBytes,
+      inspection: redlinedInspection,
+      plan: {
+        planId: "redline-reject",
+        targetPath: redlined.path,
+        outputFilenameBase: "redline-rejected-doc",
+        operations: [
+          { type: "rejectAllTrackedChanges", locator: redlinedInspection.documentEndLocator },
+        ],
+        warnings: [],
+      },
+    })
+
+    const rejectedBytes = await readFile(join(root, rejected.path))
+    const documentXml = await readDocxPart(rejectedBytes, "word/document.xml")
+    const settingsXml = await readDocxPart(rejectedBytes, "word/settings.xml")
+    const rejectedInspection = await new WordDocumentInspector().inspect({ path: rejected.path, bytes: rejectedBytes })
+    expect(documentXml).not.toContain("<w:del")
+    expect(documentXml).not.toContain("<w:ins")
+    expect(documentXml).toContain("旧内容等待拒绝修订。")
+    expect(documentXml).not.toContain("新内容应在拒绝后消失。")
+    expect(settingsXml).not.toContain("trackRevisions")
+    expect(rejectedInspection.summary.trackedChangeCount).toBe(0)
+    expect(rejected.appliedOperations[0]?.type).toBe("rejectAllTrackedChanges")
+  })
+
+  test("apply_word_document_edits can scrub personal metadata and rsid attributes", async () => {
+    const root = await tempDir("chipmate-word-privacy-")
+    workspaceFolders = [{ name: "repo", uri: UriShim.file(root) }]
+    let bytes = cGuidelineDocxFixture({
+      title: "隐私清理文档",
+      sections: [{ heading: "现有章节", paragraphs: ["正文内容必须保留。"] }],
+    })
+    bytes = await writeDocxPart(bytes, "docProps/core.xml", [
+      '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>',
+      '<cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties" xmlns:dc="http://purl.org/dc/elements/1.1/">',
+      "<dc:title>隐私清理文档</dc:title>",
+      "<dc:creator>Alice Reviewer</dc:creator>",
+      "<cp:lastModifiedBy>Bob Editor</cp:lastModifiedBy>",
+      "</cp:coreProperties>",
+    ].join(""))
+    bytes = await replaceDocxPart(bytes, "word/document.xml", (xml) => xml.replace("<w:p>", '<w:p w:rsidR="00ABCDEF" w:rsidRDefault="00ABCDEF" w:rsidP="00ABCDEF">'))
+    bytes = await replaceDocxPart(bytes, "[Content_Types].xml", (xml) => xml.replace("</Types>", '<Override PartName="/docProps/custom.xml" ContentType="application/vnd.openxmlformats-officedocument.custom-properties+xml"/></Types>'))
+    bytes = await replaceDocxPart(bytes, "_rels/.rels", (xml) => xml.replace("</Relationships>", '<Relationship Id="rIdCustomProps" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/custom-properties" Target="docProps/custom.xml"/></Relationships>'))
+    bytes = await writeDocxPart(bytes, "docProps/custom.xml", [
+      '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>',
+      '<Properties xmlns="http://schemas.openxmlformats.org/officeDocument/2006/custom-properties">',
+      '<property name="InternalReviewer"><vt:lpwstr xmlns:vt="http://schemas.openxmlformats.org/officeDocument/2006/docPropsVTypes">Alice</vt:lpwstr></property>',
+      "</Properties>",
+    ].join(""))
+    const inspection = await new WordDocumentInspector().inspect({ path: "docs/privacy.docx", bytes })
+
+    const result = await new WordDocumentEditor(root).apply({
+      sourcePath: "docs/privacy.docx",
+      bytes,
+      inspection,
+      plan: {
+        planId: "privacy-scrub",
+        targetPath: "docs/privacy.docx",
+        outputFilenameBase: "privacy-scrubbed-doc",
+        operations: [
+          { type: "scrubDocumentMetadata", locator: inspection.documentEndLocator },
+        ],
+        warnings: [],
+      },
+    })
+
+    const outputBytes = await readFile(join(root, result.path))
+    const parts = await docxPartPaths(outputBytes)
+    const coreXml = await readDocxPart(outputBytes, "docProps/core.xml")
+    const contentTypesXml = await readDocxPart(outputBytes, "[Content_Types].xml")
+    const packageRelsXml = await readDocxPart(outputBytes, "_rels/.rels")
+    const documentXml = await readDocxPart(outputBytes, "word/document.xml")
+
+    expect(coreXml).toContain("<dc:creator></dc:creator>")
+    expect(coreXml).toContain("<cp:lastModifiedBy></cp:lastModifiedBy>")
+    expect(coreXml).not.toContain("Alice Reviewer")
+    expect(coreXml).not.toContain("Bob Editor")
+    expect(parts).not.toContain("docProps/custom.xml")
+    expect(contentTypesXml).not.toContain("/docProps/custom.xml")
+    expect(packageRelsXml).not.toContain("docProps/custom.xml")
+    expect(documentXml).not.toContain("w:rsid")
+    expect(documentXml).toContain("正文内容必须保留。")
+    expect(result.appliedOperations[0]?.type).toBe("scrubDocumentMetadata")
+  })
+
+  test("apply_word_document_edits can redact exact visible text while preserving layout length", async () => {
+    const root = await tempDir("chipmate-word-redact-")
+    workspaceFolders = [{ name: "repo", uri: UriShim.file(root) }]
+    const sensitiveEmail = "ada@example.com"
+    const bytes = cGuidelineDocxFixture({
+      title: "脱敏文档",
+      sections: [{ heading: "联系人", paragraphs: [`Reviewer email: ${sensitiveEmail}`, "公开版本不能包含邮箱。"] }],
+      tableRows: [["字段", "值"], ["Owner", sensitiveEmail]],
+    })
+    const inspection = await new WordDocumentInspector().inspect({ path: "docs/redact.docx", bytes })
+    const validation = validateDocumentEditPlan({
+      planId: "redact",
+      targetPath: "docs/redact.docx",
+      operations: [
+        { type: "redactText", locator: inspection.documentEndLocator, items: [{ text: sensitiveEmail }], includeComments: false },
+      ],
+      warnings: [],
+    }, inspection)
+    expect(validation.ok).toBe(true)
+
+    const result = await new WordDocumentEditor(root).apply({
+      sourcePath: "docs/redact.docx",
+      bytes,
+      inspection,
+      plan: validation.plan!,
+    })
+
+    const outputBytes = await readFile(join(root, result.path))
+    const documentXml = await readDocxPart(outputBytes, "word/document.xml")
+    const expectedMask = "█".repeat(sensitiveEmail.length)
+    expect(documentXml).not.toContain(sensitiveEmail)
+    expect(documentXml).toContain(expectedMask)
+    expect(documentXml).toContain("Reviewer email:")
+    expect(result.appliedOperations[0]?.type).toBe("redactText")
+    expect(result.structureCheckResult.ok).toBe(true)
+  })
+
+  test("apply_word_document_edits can redact email and phone patterns with comments included", async () => {
+    const root = await tempDir("chipmate-word-redact-patterns-")
+    workspaceFolders = [{ name: "repo", uri: UriShim.file(root) }]
+    const email = "ada@example.com"
+    const commentEmail = "reviewer@example.com"
+    const phone = "+1 415-555-0101"
+    const bytes = cGuidelineDocxFixture({
+      title: "模式脱敏文档",
+      sections: [{ heading: "联系人", paragraphs: [`Primary contact: ${email} / ${phone}`, "公开版本需要脱敏邮箱和电话。"] }],
+      tableRows: [["字段", "值"], ["Owner email", email], ["Owner phone", phone]],
+    })
+    const initialInspection = await new WordDocumentInspector().inspect({ path: "docs/redact-patterns.docx", bytes })
+    const commented = await new WordDocumentEditor(root).apply({
+      sourcePath: "docs/redact-patterns.docx",
+      bytes,
+      inspection: initialInspection,
+      plan: {
+        planId: "add-redaction-comment",
+        targetPath: "docs/redact-patterns.docx",
+        outputFilenameBase: "redact-patterns-commented",
+        operations: [{ type: "addComment", locator: initialInspection.paragraphs[0]!.locator, text: `Reviewer backup: ${commentEmail}`, author: "ChipMate" }],
+        warnings: [],
+      },
+    })
+    const commentedBytes = await readFile(join(root, commented.path))
+    const inspection = await new WordDocumentInspector().inspect({ path: commented.path, bytes: commentedBytes })
+    const validation = validateDocumentEditPlan({
+      planId: "redact-patterns",
+      targetPath: commented.path,
+      outputFilenameBase: "redacted-patterns",
+      operations: [
+        {
+          type: "redactText",
+          locator: inspection.documentEndLocator,
+          patterns: [{ kind: "email" }, { kind: "phone", replacement: "X" }],
+          includeComments: true,
+        },
+      ],
+      warnings: [],
+    }, inspection)
+    expect(validation.ok).toBe(true)
+
+    const result = await new WordDocumentEditor(root).apply({
+      sourcePath: commented.path,
+      bytes: commentedBytes,
+      inspection,
+      plan: validation.plan!,
+    })
+
+    const outputBytes = await readFile(join(root, result.path))
+    const documentXml = await readDocxPart(outputBytes, "word/document.xml")
+    const commentsXml = await readDocxPart(outputBytes, "word/comments.xml")
+    expect(documentXml).not.toContain(email)
+    expect(documentXml).not.toContain(phone)
+    expect(commentsXml).not.toContain(commentEmail)
+    expect(documentXml).toContain("Primary contact:")
+    expect(documentXml).toMatch(/X{8,}/)
+    expect(result.appliedOperations[0]?.detail).toContain("package audit redacted")
+    expect(result.appliedOperations[0]?.detail).toContain("email:")
+    expect(result.appliedOperations[0]?.detail).toContain("phone:")
+    expect(result.structureCheckResult.ok).toBe(true)
+  })
+
+  test("WordEditAgentFlow persists DocumentSkillRunSummary", async () => {
+    const root = await tempDir("chipmate-word-edit-flow-")
+    workspaceFolders = [{ name: "repo", uri: UriShim.file(root) }]
+    const bytes = cGuidelineDocxFixture({
+      title: "审稿版文档",
+      sections: [{ heading: "现有章节", paragraphs: ["原始内容。"] }],
+    })
+    const result = await new WordEditAgentFlow(root).run({
+      question: "请新增一个审稿说明章节，生成汇报版 Word。",
+      file: { path: "docs/review.docx", bytes },
+    })
+
+    expect(result.path).toMatch(/^\.chipmate\/docs\/.+\.docx$/)
+    expect(result.runSummaryPath).toMatch(/^\.chipmate\/docs\/document-skill-run-.+\.json$/)
+    const summary = JSON.parse(await readFile(join(root, result.runSummaryPath!), "utf8"))
+    expect(summary.sourceDoc).toBe("docs/review.docx")
+    expect(summary.outputDoc).toBe(result.path)
+    expect(summary.inspectSummary.paragraphCount).toBeGreaterThan(0)
+    expect(summary.editPlan.operations.length).toBeGreaterThan(0)
+    expect(summary.appliedOperations.length).toBeGreaterThan(0)
+    expect(summary.structureCheckResult.ok).toBe(true)
+    expect(typeof summary.repairAttempted).toBe("boolean")
+  })
+
+  test("render_word_document persists page PNG visual QA artifacts", async () => {
+    const root = await tempDir("chipmate-word-render-")
+    const docxPath = join(root, "sample.docx")
+    await writeFile(docxPath, await new WordDocBuilder().build(minimalRenderableWordDocSpec()))
+    const restoreRenderTools = await installFakeWordRenderTools(root)
+    try {
+      const bytes = await readFile(docxPath)
+      const result = await renderWordDocument({
+        docxPath,
+        bytes,
+        workspaceRoot: root,
+        artifactNameBase: "visual-qa",
+        structureIssues: [],
+        timeoutMs: 10_000,
+      })
+
+      expect(result.attempted).toBe(true)
+      expect(result.ok).toBe(true)
+      expect(result.visualQaStatus).toBe("completed")
+      expect(result.pageCount).toBe(1)
+      expect(result.renderArtifactDir).toMatch(/^\.chipmate\/docs\/rendered\/visual-qa-/)
+      expect(result.pdfArtifactPath).toMatch(/document\.pdf$/)
+      expect(result.renderProvider).toBe("remote-opencode")
+      expect(result.pdfToPngRenderer).toBe("pdftoppm")
+      expect(result.pagePngPaths).toHaveLength(1)
+      expect(existsSync(join(root, result.pagePngPaths![0]!))).toBe(true)
+      expect(result.pageVisualSummaries).toHaveLength(1)
+      expect(result.pageVisualSummaries![0]!.path).toBe(result.pagePngPaths![0])
+      expect(result.pageVisualSummaries![0]!.width).toBe(32)
+      expect(result.pageVisualSummaries![0]!.height).toBe(32)
+      expect(result.pageVisualSummaries![0]!.inkPixels).toBeGreaterThan(0)
+      expect(result.pageVisualSummaries![0]!.inkRatio).toBeGreaterThan(0)
+      expect(result.pageVisualSummaries![0]!.contentBounds?.width).toBeGreaterThan(0)
+      expect(result.pageVisualSummaries![0]!.visualRegions).toHaveLength(9)
+      expect(result.pageVisualSummaries![0]!.visualRegions?.some((region) => region.id === "top-left" && region.inkPixels > 0)).toBe(true)
+      expect(result.pageVisualSummaries![0]!.inkComponents?.[0]?.bounds.width).toBeGreaterThan(0)
+      expect(result.pageVisualSummaries![0]!.inkComponents?.[0]?.pageArea).toBeTruthy()
+      expect(result.pageVisualSummaries![0]!.inkComponents?.[0]?.riskFlags).toContain("near-page-edge")
+    } finally {
+      restoreRenderTools()
+    }
+  }, 15_000)
+
+  test("render_word_document skips visual QA when remote render server is unconfigured", async () => {
+    const root = await tempDir("chipmate-word-render-unconfigured-")
+    const docxPath = join(root, "sample.docx")
+    await writeFile(docxPath, await new WordDocBuilder().build(minimalRenderableWordDocSpec()))
+    const previousEndpoint = process.env.CHIPMATE_WORD_RENDER_REMOTE_ENDPOINT
+    delete process.env.CHIPMATE_WORD_RENDER_REMOTE_ENDPOINT
+    let result: Awaited<ReturnType<typeof renderWordDocument>>
+    try {
+      result = await renderWordDocument({
+        docxPath,
+        bytes: await readFile(docxPath),
+        workspaceRoot: root,
+        artifactNameBase: "visual-qa-unconfigured",
+        structureIssues: [],
+        timeoutMs: 10_000,
+      })
+    } finally {
+      if (previousEndpoint === undefined) delete process.env.CHIPMATE_WORD_RENDER_REMOTE_ENDPOINT
+      else process.env.CHIPMATE_WORD_RENDER_REMOTE_ENDPOINT = previousEndpoint
+    }
+
+    expect(result.attempted).toBe(false)
+    expect(result.ok).toBe(true)
+    expect(result.visualQaStatus).toBe("skipped")
+    expect(result.skipReason).toBe("remote-unconfigured")
+    expect(result.pagePngPaths).toBeUndefined()
+    expect(result.renderProvider).toBe("remote-opencode")
+    expect(result.issues.some((item) => item.code === "remote-word-render-unconfigured")).toBe(true)
+  }, 15_000)
+
+  test("render_word_document skips visual QA when remote render server is unavailable", async () => {
+    const root = await tempDir("chipmate-word-render-remote-fail-")
+    const docxPath = join(root, "sample.docx")
+    await writeFile(docxPath, await new WordDocBuilder().build(minimalRenderableWordDocSpec()))
+    const restoreRenderTools = await installFakeWordRenderTools(root, { remote: "fail" })
+    try {
+      const result = await renderWordDocument({
+        docxPath,
+        bytes: await readFile(docxPath),
+        workspaceRoot: root,
+        artifactNameBase: "visual-qa-remote-fail",
+        structureIssues: [],
+        timeoutMs: 10_000,
+      })
+
+      expect(result.attempted).toBe(false)
+      expect(result.ok).toBe(true)
+      expect(result.visualQaStatus).toBe("skipped")
+      expect(result.skipReason).toBe("remote-unavailable")
+      expect(result.pagePngPaths).toBeUndefined()
+      expect(result.renderProvider).toBe("remote-opencode")
+      expect(result.issues.some((item) => item.code === "remote-word-render-unavailable")).toBe(true)
+    } finally {
+      restoreRenderTools()
+    }
+  }, 15_000)
+
+  test("render_word_document skips visual QA when remote render server returns invalid JSON", async () => {
+    const root = await tempDir("chipmate-word-render-remote-invalid-")
+    const docxPath = join(root, "sample.docx")
+    await writeFile(docxPath, await new WordDocBuilder().build(minimalRenderableWordDocSpec()))
+    const restoreRenderTools = await installFakeWordRenderTools(root, { remote: "invalid-json" })
+    try {
+      const result = await renderWordDocument({
+        docxPath,
+        bytes: await readFile(docxPath),
+        workspaceRoot: root,
+        artifactNameBase: "visual-qa-remote-invalid",
+        structureIssues: [],
+        timeoutMs: 10_000,
+      })
+
+      expect(result.attempted).toBe(false)
+      expect(result.ok).toBe(true)
+      expect(result.visualQaStatus).toBe("skipped")
+      expect(result.skipReason).toBe("remote-invalid-response")
+      expect(result.pagePngPaths).toBeUndefined()
+      expect(result.issues.some((item) => item.code === "remote-word-render-invalid-response")).toBe(true)
+    } finally {
+      restoreRenderTools()
+    }
+  }, 15_000)
+
+  test("render_word_document skips visual QA when returned artifacts cannot be saved", async () => {
+    const root = await tempDir("chipmate-word-render-persist-fail-")
+    const docxPath = join(root, "sample.docx")
+    await writeFile(docxPath, await new WordDocBuilder().build(minimalRenderableWordDocSpec()))
+    await writeFile(join(root, ".chipmate"), "not a directory")
+    const restoreRenderTools = await installFakeWordRenderTools(root)
+    try {
+      const result = await renderWordDocument({
+        docxPath,
+        bytes: await readFile(docxPath),
+        workspaceRoot: root,
+        artifactNameBase: "visual-qa-persist-fail",
+        structureIssues: [],
+        timeoutMs: 10_000,
+      })
+
+      expect(result.attempted).toBe(false)
+      expect(result.ok).toBe(true)
+      expect(result.visualQaStatus).toBe("skipped")
+      expect(result.skipReason).toBe("artifact-persist-failed")
+      expect(result.pagePngPaths).toBeUndefined()
+      expect(result.issues.some((item) => item.code === "remote-word-render-artifact-persist-failed")).toBe(true)
+    } finally {
+      restoreRenderTools()
+    }
+  }, 15_000)
+
+  test("compare_word_documents reports no text or rendered-page changes for identical DOCX bytes", async () => {
+    const root = await tempDir("chipmate-word-diff-same-")
+    const bytes = await new WordDocBuilder().build(minimalRenderableWordDocSpec())
+    const restoreRenderTools = await installFakeWordRenderTools(root)
+    try {
+      const result = await compareWordDocuments({
+        before: { path: "docs/before.docx", bytes },
+        after: { path: "docs/after.docx", bytes },
+        workspaceRoot: root,
+        artifactNameBase: "same-doc",
+        timeoutMs: 10_000,
+      })
+
+      expect(result.ok).toBe(true)
+      expect(result.textChanged).toBe(false)
+      expect(result.visualDiffComplete).toBe(true)
+      expect(result.pixelDiffComplete).toBe(true)
+      expect(result.changedPages).toEqual([])
+      expect(result.diffArtifactDir).toMatch(/^\.chipmate\/docs\/diff\/same-doc-/)
+      expect(result.textDiffPath).toMatch(/text-diff\.txt$/)
+      expect(existsSync(join(root, result.textDiffPath!))).toBe(true)
+    } finally {
+      restoreRenderTools()
+    }
+  }, 15_000)
+
+  test("compare_word_documents persists text diff and changed rendered page PNG artifacts", async () => {
+    const root = await tempDir("chipmate-word-diff-changed-")
+    const beforeBytes = await new WordDocBuilder().build(minimalRenderableWordDocSpec())
+    const afterSpec = minimalRenderableWordDocSpec()
+    afterSpec.sections[0]!.paragraphs = ["更新后的团队规则应明确评审责任、状态切换条件和例外处理路径。"]
+    const afterBytes = await new WordDocBuilder().build(afterSpec)
+    const restoreRenderTools = await installFakeWordRenderTools(root)
+    try {
+      const result = await compareWordDocuments({
+        before: { path: "docs/before.docx", bytes: beforeBytes },
+        after: { path: "docs/after.docx", bytes: afterBytes },
+        workspaceRoot: root,
+        artifactNameBase: "changed-doc",
+        timeoutMs: 10_000,
+      })
+
+      expect(result.ok).toBe(true)
+      expect(result.textChanged).toBe(true)
+      expect(result.textDiff).toContain("-所有团队规则都应包含清晰的适用范围、来源依据和落地建议。")
+      expect(result.textDiff).toContain("+更新后的团队规则应明确评审责任、状态切换条件和例外处理路径。")
+      expect(result.visualDiffComplete).toBe(true)
+      expect(result.pixelDiffComplete).toBe(true)
+      expect(result.beforeRender?.pageVisualSummaries?.[0]?.inkPixels).toBeGreaterThan(0)
+      expect(result.afterRender?.pageVisualSummaries?.[0]?.contentBounds?.height).toBeGreaterThan(0)
+      expect(result.afterRender?.pageVisualSummaries?.[0]?.visualRegions).toHaveLength(9)
+      expect(result.afterRender?.pageVisualSummaries?.[0]?.inkComponents?.[0]?.inkPixels).toBeGreaterThan(0)
+      expect(result.changedPages).toHaveLength(1)
+      expect(result.changedPages[0]!.beforePngPath).toMatch(/before-page-1\.png$/)
+      expect(result.changedPages[0]!.afterPngPath).toMatch(/after-page-1\.png$/)
+      expect(result.changedPages[0]!.diffPngPath).toMatch(/diff-page-1\.png$/)
+      expect(result.changedPages[0]!.changedPixels).toBeGreaterThan(0)
+      expect(result.changedPages[0]!.totalPixels).toBeGreaterThan(0)
+      expect(result.changedPages[0]!.changedRatio).toBeGreaterThan(0)
+      expect(result.changedPages[0]!.changeBounds).toEqual({ left: 0, top: 0, right: 31, bottom: 31, width: 32, height: 32 })
+      expect(result.changedPages[0]!.changedRegions).toHaveLength(9)
+      expect(result.changedPages[0]!.dominantChangedRegions?.length).toBeGreaterThan(0)
+      expect(result.changedPages[0]!.visualSeverity).toBe("major")
+      expect(result.changedPages[0]!.visualSummary).toContain("pixels changed")
+      expect(result.changedPages[0]!.riskFlags).toContain("broad-page-change")
+      expect(existsSync(join(root, result.changedPages[0]!.beforePngPath!))).toBe(true)
+      expect(existsSync(join(root, result.changedPages[0]!.afterPngPath!))).toBe(true)
+      const diffPng = await readFile(join(root, result.changedPages[0]!.diffPngPath!))
+      expect([...diffPng.slice(0, 8)]).toEqual([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
+      expect(await readFile(join(root, result.textDiffPath!), "utf8")).toContain("@@")
+    } finally {
+      restoreRenderTools()
+    }
+  })
+
+  test("compare_word_documents honors custom pixel threshold for render-noise review", async () => {
+    const root = await tempDir("chipmate-word-diff-threshold-")
+    const beforeBytes = await new WordDocBuilder().build(minimalRenderableWordDocSpec())
+    const afterSpec = minimalRenderableWordDocSpec()
+    afterSpec.sections[0]!.paragraphs = ["更新后的团队规则应明确评审责任、状态切换条件和例外处理路径。"]
+    const afterBytes = await new WordDocBuilder().build(afterSpec)
+    const restoreRenderTools = await installFakeWordRenderTools(root)
+    try {
+      const result = await compareWordDocuments({
+        before: { path: "docs/before.docx", bytes: beforeBytes },
+        after: { path: "docs/after.docx", bytes: afterBytes },
+        workspaceRoot: root,
+        artifactNameBase: "threshold-doc",
+        pixelThreshold: 255,
+        timeoutMs: 10_000,
+      })
+
+      expect(result.ok).toBe(true)
+      expect(result.textChanged).toBe(true)
+      expect(result.visualDiffComplete).toBe(true)
+      expect(result.pixelDiffComplete).toBe(true)
+      expect(result.changedPages).toHaveLength(1)
+      expect(result.changedPages[0]!.byteChanged).toBe(true)
+      expect(result.changedPages[0]!.pixelThreshold).toBe(255)
+      expect(result.changedPages[0]!.changedPixels).toBe(0)
+      expect(result.changedPages[0]!.changedRatio).toBe(0)
+      expect(result.changedPages[0]!.changeBounds).toBeUndefined()
+      expect(result.changedPages[0]!.changedRegions).toHaveLength(9)
+      expect(result.changedPages[0]!.dominantChangedRegions).toEqual([])
+      expect(result.changedPages[0]!.visualSeverity).toBe("none")
+      expect(result.changedPages[0]!.visualSummary).toBe("No changed pixels above threshold.")
+      expect(result.changedPages[0]!.riskFlags).toEqual([])
+    } finally {
+      restoreRenderTools()
+    }
+  })
+
+  test("merge_word_documents appends body OOXML while preserving base section properties", async () => {
+    const root = await tempDir("chipmate-word-merge-")
+    workspaceFolders = [{ name: "repo", uri: UriShim.file(root) }]
+    const baseSpec = minimalRenderableWordDocSpec()
+    baseSpec.metadata.title = "Base Document"
+    baseSpec.cover = { title: "Base Document" }
+    baseSpec.sections = [{
+      id: "base-section",
+      level: 1,
+      title: "Base Section",
+      paragraphs: ["Base-only paragraph."],
+      tables: [{
+        headers: ["Base", "Status"],
+        rows: [["A", "kept"]],
+      }],
+    }]
+    const appendSpec = minimalRenderableWordDocSpec()
+    appendSpec.metadata.title = "Append Document"
+    appendSpec.cover = { title: "Append Document" }
+    appendSpec.sections = [{
+      id: "append-section",
+      level: 1,
+      title: "Append Section",
+      paragraphs: ["Append-only paragraph."],
+      tables: [{
+        headers: ["Append", "Status"],
+        rows: [["B", "added"]],
+      }],
+    }]
+    const result = await new WordDocumentMerger(root).merge({
+      base: { path: "docs/base.docx", bytes: await new WordDocBuilder().build(baseSpec) },
+      append: { path: "docs/append.docx", bytes: await new WordDocBuilder().build(appendSpec) },
+      outputFilenameBase: "merged-doc",
+      workspaceRoot: root,
+      timeoutMs: 10_000,
+    })
+
+    expect(result.path).toMatch(/^\.chipmate\/docs\/merged-doc-.+\.docx$/)
+    expect(result.bodyChildrenAppended).toBeGreaterThan(0)
+    expect(result.structureCheckResult.ok).toBe(true)
+    const outputBytes = await readFile(join(root, result.path))
+    const documentXml = await readDocxPart(outputBytes, "word/document.xml")
+    expect(documentXml).toContain("Base-only paragraph.")
+    expect(documentXml).toContain("Append-only paragraph.")
+    expect(appearsBefore(documentXml, "Base-only paragraph.", "Append-only paragraph.")).toBe(true)
+    expect(documentXml.match(/<w:sectPr\b/g)).toHaveLength(1)
+  })
+
+  test("merge_word_documents refuses append drawings by default", async () => {
+    const baseBytes = await new WordDocBuilder().build(minimalRenderableWordDocSpec())
+    const appendSpec = minimalRenderableWordDocSpec()
+    appendSpec.sections[0]!.figures = [{
+      title: "Unsafe Figure",
+      altText: "Figure that requires image relationship merge",
+      image: {
+        contentType: "image/png",
+        bytes: tinyPngBytes(),
+        width: 10,
+        height: 10,
+      },
+    }]
+    const appendBytes = await new WordDocBuilder().build(appendSpec)
+
+    await expect(mergeDocxBytes({
+      base: { path: "docs/base.docx", bytes: baseBytes },
+      append: { path: "docs/append-with-image.docx", bytes: appendBytes },
+    })).rejects.toThrow("drawings/images")
+  })
+
+  test("merge_word_documents merges append PNG figure media when drawings are allowed", async () => {
+    const root = await tempDir("chipmate-word-merge-images-")
+    workspaceFolders = [{ name: "repo", uri: UriShim.file(root) }]
+    const baseSpec = minimalRenderableWordDocSpec()
+    baseSpec.metadata.title = "Base Image Merge Document"
+    baseSpec.cover = { title: "Base Image Merge Document" }
+    baseSpec.sections = [{
+      id: "base",
+      level: 1,
+      title: "Base",
+      paragraphs: ["Base paragraph before appended figure."],
+    }]
+    const appendSpec = minimalRenderableWordDocSpec()
+    appendSpec.metadata.title = "Append Image Document"
+    appendSpec.cover = { title: "Append Image Document" }
+    appendSpec.sections = [{
+      id: "append",
+      level: 1,
+      title: "Append",
+      paragraphs: ["Append paragraph before figure."],
+      figures: [{
+        title: "Merged Figure",
+        caption: "A PNG figure copied from the append document.",
+        label: "Figure",
+        bookmark: "fig_merged_image",
+        altText: "Merged figure PNG",
+        image: {
+          contentType: "image/png",
+          bytes: tinyPngBytes(),
+          width: 32,
+          height: 16,
+        },
+      }],
+    }]
+
+    const result = await new WordDocumentMerger(root).merge({
+      base: { path: "docs/base.docx", bytes: await new WordDocBuilder().build(baseSpec) },
+      append: { path: "docs/append-image.docx", bytes: await new WordDocBuilder().build(appendSpec) },
+      outputFilenameBase: "merged-image-doc",
+      allowDrawings: true,
+      workspaceRoot: root,
+      timeoutMs: 10_000,
+    })
+
+    expect(result.drawingsAllowed).toBe(true)
+    expect(result.mergedImageCount).toBe(1)
+    const outputBytes = await readFile(join(root, result.path))
+    const documentXml = await readDocxPart(outputBytes, "word/document.xml")
+    const documentRelsXml = await readDocxPart(outputBytes, "word/_rels/document.xml.rels")
+    const contentTypesXml = await readDocxPart(outputBytes, "[Content_Types].xml")
+    const parts = await docxPartPaths(outputBytes)
+    const embedRelId = documentXml.match(/\br:embed="([^"]+)"/)?.[1]
+    expect(embedRelId).toMatch(/^rIdChipMateMergeImage/)
+    const mergedTarget = documentRelsXml.match(new RegExp(`Id="${embedRelId}"[^>]*Target="([^"]+)"`))?.[1]
+    expect(mergedTarget).toBe("media/chipmate-merge-image1.png")
+    expect(parts).toContain(`word/${mergedTarget}`)
+    expect(contentTypesXml).toContain('<Default Extension="png" ContentType="image/png"/>')
+    expect(documentXml).toContain("Base paragraph before appended figure.")
+    expect(documentXml).toContain("Append paragraph before figure.")
+    expect(documentXml).toContain('descr="Merged figure PNG"')
+    expect(documentXml).toMatch(/<w:bookmarkStart\b[^>]*w:name="fig_merged_image"\/>/)
+    expect(documentXml).toMatch(/<w:document\b[^>]*xmlns:wp=/)
+    expect(appearsBefore(documentXml, "Base paragraph before appended figure.", "Append paragraph before figure.")).toBe(true)
+    const inspection = await new WordDocumentInspector().inspect({ path: result.path, bytes: outputBytes })
+    expect(inspection.images.some((image) => image.target === mergedTarget && image.altText === "Merged figure PNG")).toBe(true)
+    expect(result.structureCheckResult.ok).toBe(true)
+  })
+
+  test("merge_word_documents reports style and numbering conflict strategy", async () => {
+    const root = await tempDir("chipmate-word-merge-conflicts-")
+    workspaceFolders = [{ name: "repo", uri: UriShim.file(root) }]
+    const baseSpec = minimalRenderableWordDocSpec()
+    baseSpec.metadata.title = "Base Conflict Document"
+    baseSpec.cover = { title: "Base Conflict Document" }
+    baseSpec.sections = [{
+      id: "base",
+      level: 1,
+      title: "Base Conflict Section",
+      paragraphs: ["Base paragraph before append."],
+      lists: [{
+        kind: "numbered",
+        items: [{ text: "Base list item" }],
+      }],
+    }]
+    const appendSpec = minimalRenderableWordDocSpec()
+    appendSpec.metadata.title = "Append Conflict Document"
+    appendSpec.cover = { title: "Append Conflict Document" }
+    appendSpec.sections = [{
+      id: "append",
+      level: 1,
+      title: "Append Conflict Section",
+      paragraphs: ["Append paragraph with custom style."],
+      lists: [{
+        kind: "numbered",
+        items: [{ text: "Append list item" }],
+      }],
+    }]
+    const baseBytes = await new WordDocBuilder().build(baseSpec)
+    const baseNumberingXml = await readDocxPart(baseBytes, "word/numbering.xml")
+    const baseNumId = baseNumberingXml.match(/<w:num\b[^>]*w:numId="([^"]+)"/)?.[1] ?? "1"
+    let appendBytes = await new WordDocBuilder().build(appendSpec)
+    appendBytes = await replaceDocxPart(appendBytes, "word/styles.xml", (xml) => xml
+      .replace(/(<w:style\b[^>]*w:styleId="Heading1"[\s\S]*?<w:name w:val=")[^"]*("[\s\S]*?<\/w:style>)/, "$1Append Heading One$2")
+      .replace("</w:styles>", '<w:style w:type="paragraph" w:styleId="AppendOnlyStyle"><w:name w:val="Append Only Style"/></w:style></w:styles>'))
+    appendBytes = await replaceDocxPart(appendBytes, "word/document.xml", (xml) => xml.replace(
+      /(<w:p\b[\s\S]*?Append paragraph with custom style\.[\s\S]*?<\/w:p>)/,
+      '$1<w:p><w:pPr><w:pStyle w:val="AppendOnlyStyle"/></w:pPr><w:r><w:t>Append-only styled paragraph.</w:t></w:r></w:p>',
+    ).replace(/<w:numId\b[^>]*w:val="[^"]+"\/>/, `<w:numId w:val="${baseNumId}"/>`))
+    appendBytes = await replaceDocxPart(appendBytes, "word/numbering.xml", (xml) => xml.replace(
+      "</w:numbering>",
+      `<w:abstractNum w:abstractNumId="909"><w:lvl w:ilvl="0"><w:start w:val="1"/><w:numFmt w:val="upperRoman"/><w:lvlText w:val="%1)"/></w:lvl></w:abstractNum><w:num w:numId="${baseNumId}"><w:abstractNumId w:val="909"/></w:num></w:numbering>`,
+    ))
+
+    const result = await new WordDocumentMerger(root).merge({
+      base: { path: "docs/base-conflict.docx", bytes: baseBytes },
+      append: { path: "docs/append-conflict.docx", bytes: appendBytes },
+      outputFilenameBase: "merged-conflict-doc",
+      workspaceRoot: root,
+      timeoutMs: 10_000,
+    })
+
+    expect(result.mergeAudit.styleStrategy.strategy).toBe("base-wins")
+    expect(result.mergeAudit.styleStrategy.conflictingStyleIds).toContain("Heading1")
+    expect(result.mergeAudit.styleStrategy.referencedAppendOnlyStyleIds).toContain("AppendOnlyStyle")
+    expect(result.mergeAudit.numberingStrategy.strategy).toBe("base-wins")
+    expect(result.mergeAudit.numberingStrategy.conflictingNumIds.length).toBeGreaterThan(0)
+    expect(result.warnings.some((warning) => warning.includes("Style merge strategy: base-wins"))).toBe(true)
+    expect(result.warnings.some((warning) => warning.includes("Numbering merge strategy: base-wins"))).toBe(true)
+    const outputBytes = await readFile(join(root, result.path))
+    const documentXml = await readDocxPart(outputBytes, "word/document.xml")
+    expect(documentXml).toContain("Append-only styled paragraph.")
+    expect(result.structureCheckResult.ok).toBe(true)
+  })
+
+  test("merge_word_documents blocks unsupported embedded object relationships", async () => {
+    const baseBytes = await new WordDocBuilder().build(minimalRenderableWordDocSpec())
+    let appendBytes = await new WordDocBuilder().build(minimalRenderableWordDocSpec())
+    appendBytes = await replaceDocxPart(appendBytes, "word/_rels/document.xml.rels", (xml) => xml.replace(
+      "</Relationships>",
+      '<Relationship Id="rIdOleObject1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/oleObject" Target="embeddings/oleObject1.bin"/></Relationships>',
+    ))
+    appendBytes = await replaceDocxPart(appendBytes, "word/document.xml", (xml) => xml.replace(
+      "</w:body>",
+      '<w:p><w:r><w:object><o:OLEObject r:id="rIdOleObject1"/></w:object></w:r></w:p></w:body>',
+    ))
+    appendBytes = await writeDocxPart(appendBytes, "word/embeddings/oleObject1.bin", new Uint8Array([1, 2, 3, 4]))
+
+    await expect(mergeDocxBytes({
+      base: { path: "docs/base.docx", bytes: baseBytes },
+      append: { path: "docs/append-ole.docx", bytes: appendBytes },
+      allowDrawings: true,
+    })).rejects.toThrow(/unsupported embedded object[\s\S]*oleObject/)
+  })
+
+  test("audit_word_document_styles reports direct formatting and heading-like drift", async () => {
+    const bytes = await styleDriftDocxFixture()
+    const report = await auditWordDocumentStyles({ path: "docs/style-drift.docx", bytes })
+
+    expect(report.directRunFormattingRuns).toBeGreaterThan(0)
+    expect(report.directParagraphFormattingParagraphs).toBeGreaterThan(0)
+    expect(report.fontsByCharCount["Courier New"]).toBeGreaterThan(0)
+    expect(report.headingLikeParagraphsNotHeadingStyle.some((item) => item.text.includes("Manual Formatting Heading"))).toBe(true)
+    expect(report.examples.directRunFormatting.some((item) => item.runText.includes("Manual Formatting Heading"))).toBe(true)
+    const inspection = await new WordDocumentInspector().inspect({ path: "docs/style-drift.docx", bytes })
+    expect(inspection.summary.styleCount).toBeGreaterThan(0)
+    expect(inspection.styles.some((style) => style.styleId === "Normal" && style.paragraphUseCount > 0)).toBe(true)
+    expect(inspection.styles.some((style) => style.styleId === "Heading1" && style.type === "paragraph")).toBe(true)
+    expect(inspection.styles.every((style) => style.locator.kind === "style")).toBe(true)
+  })
+
+  test("normalize_word_document_styles clears direct formatting and writes a checked DOCX copy", async () => {
+    const root = await tempDir("chipmate-word-style-normalize-")
+    workspaceFolders = [{ name: "repo", uri: UriShim.file(root) }]
+    const bytes = await styleDriftDocxFixture()
+    const normalized = await normalizeWordDocumentStyleBytes(bytes, "docs/style-drift.docx", { clearParagraphFormatting: true })
+
+    expect(normalized.runOverridesCleared).toBeGreaterThan(0)
+    expect(normalized.paragraphOverridesCleared).toBeGreaterThan(0)
+    expect(normalized.afterReport.directRunFormattingRuns).toBeLessThan(normalized.beforeReport.directRunFormattingRuns)
+    const normalizedXml = await readDocxPart(normalized.bytes, "word/document.xml")
+    expect(normalizedXml).not.toContain("Courier New")
+    expect(normalizedXml).not.toContain("FF0000")
+    expect(normalizedXml).not.toContain('w:after="480"')
+    expect(normalizedXml).not.toContain('w:left="720"')
+
+    const result = await new WordDocumentStyleNormalizer(root).normalize({
+      path: "docs/style-drift.docx",
+      bytes,
+      outputFilenameBase: "style-normalized",
+      options: { clearParagraphFormatting: true },
+    })
+    expect(result.path).toMatch(/^\.chipmate\/docs\/style-normalized-.+\.docx$/)
+    expect(result.structureCheckResult.ok).toBe(true)
+    expect(result.runOverridesCleared).toBeGreaterThan(0)
+    expect(existsSync(join(root, result.path))).toBe(true)
+  })
+
+  test("normalize_word_document_styles can preserve intentional run emphasis while clearing drift", async () => {
+    const bytes = await styleDriftDocxFixture()
+    const normalized = await normalizeWordDocumentStyleBytes(bytes, "docs/style-drift.docx", {
+      clearParagraphFormatting: true,
+      preserveRunFormatting: ["bold", "italic"],
+    })
+
+    expect(normalized.preservedRunFormatting).toEqual(["bold", "italic"])
+    expect(normalized.runOverridesCleared).toBeGreaterThan(0)
+    expect(normalized.runOverridesPreserved).toBeGreaterThan(0)
+    expect(normalized.paragraphOverridesCleared).toBeGreaterThan(0)
+    expect(normalized.afterReport.directRunFormattingRuns).toBeGreaterThan(0)
+
+    const normalizedXml = await readDocxPart(normalized.bytes, "word/document.xml")
+    expect(normalizedXml).toContain("<w:b/>")
+    expect(normalizedXml).toContain("<w:i/>")
+    expect(normalizedXml).not.toContain("Courier New")
+    expect(normalizedXml).not.toContain("FF0000")
+    expect(normalizedXml).not.toContain('<w:sz w:val="32"/>')
+    expect(normalizedXml).not.toContain('w:after="480"')
+    expect(normalizedXml).not.toContain('w:left="720"')
+  })
+
+  test("apply_word_template_styles copies template style parts into a checked DOCX copy", async () => {
+    const root = await tempDir("chipmate-word-template-style-")
+    workspaceFolders = [{ name: "repo", uri: UriShim.file(root) }]
+    const targetBytes = await new WordDocBuilder().build(minimalRenderableWordDocSpec())
+    let templateBytes = await new WordDocBuilder().build(minimalRenderableWordDocSpec())
+    templateBytes = await replaceDocxPart(templateBytes, "word/styles.xml", (xml) => xml.replace("</w:styles>", '<w:style w:type="paragraph" w:styleId="TemplateOnlyStyle"><w:name w:val="Template Only Style"/></w:style></w:styles>'))
+    templateBytes = await replaceDocxPart(templateBytes, "word/numbering.xml", (xml) => xml.replace("</w:numbering>", '<w:abstractNum w:abstractNumId="77"><w:lvl w:ilvl="0"><w:start w:val="1"/><w:numFmt w:val="upperRoman"/><w:lvlText w:val="%1."/></w:lvl></w:abstractNum></w:numbering>'))
+    templateBytes = await writeDocxPart(templateBytes, "word/theme/theme1.xml", '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><a:theme xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" name="ChipMate Template Theme"><a:themeElements><a:clrScheme name="TemplateColors"/><a:fontScheme name="TemplateFonts"/><a:fmtScheme name="TemplateFormats"/></a:themeElements></a:theme>')
+    templateBytes = await writeDocxPart(templateBytes, "word/fontTable.xml", '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:fonts xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:font w:name="Template Sans"/></w:fonts>')
+
+    const applied = await applyTemplateStylesToDocxBytes({
+      target: { path: "docs/target.docx", bytes: targetBytes },
+      template: { path: "docs/template.dotx", bytes: templateBytes },
+    })
+    expect(applied.copiedParts).toEqual([
+      "word/styles.xml",
+      "word/theme/theme1.xml",
+      "word/fontTable.xml",
+      "word/numbering.xml",
+    ])
+    expect(applied.skippedParts).toEqual([])
+    expect(applied.templateAudit.styleStrategy.strategy).toBe("replace-all")
+    expect(applied.templateAudit.styleStrategy.templateOnlyStyleIds).toContain("TemplateOnlyStyle")
+    expect(applied.templateAudit.numberingStrategy.templateOnlyNumIds).toEqual([])
+    const stylesXml = await readDocxPart(applied.bytes, "word/styles.xml")
+    const numberingXml = await readDocxPart(applied.bytes, "word/numbering.xml")
+    const themeXml = await readDocxPart(applied.bytes, "word/theme/theme1.xml")
+    const fontTableXml = await readDocxPart(applied.bytes, "word/fontTable.xml")
+    const contentTypesXml = await readDocxPart(applied.bytes, "[Content_Types].xml")
+    const documentXml = await readDocxPart(applied.bytes, "word/document.xml")
+    expect(stylesXml).toContain('w:styleId="TemplateOnlyStyle"')
+    expect(numberingXml).toContain('w:abstractNumId="77"')
+    expect(themeXml).toContain("ChipMate Template Theme")
+    expect(fontTableXml).toContain("Template Sans")
+    expect(contentTypesXml).toContain('PartName="/word/theme/theme1.xml"')
+    expect(contentTypesXml).toContain('PartName="/word/fontTable.xml"')
+    expect(documentXml).toContain("团队版规则正文")
+    const appliedInspection = await new WordDocumentInspector().inspect({ path: "docs/template-styled.docx", bytes: applied.bytes })
+    expect(appliedInspection.styles.some((style) => style.styleId === "TemplateOnlyStyle" && style.name === "Template Only Style")).toBe(true)
+
+    const result = await new WordTemplateStyleApplier(root).apply({
+      target: { path: "docs/target.docx", bytes: targetBytes },
+      template: { path: "docs/template.dotx", bytes: templateBytes },
+      outputFilenameBase: "template-styled",
+    })
+    expect(result.path).toMatch(/^\.chipmate\/docs\/template-styled-.+\.docx$/)
+    expect(result.structureCheckResult.ok).toBe(true)
+    expect(result.copiedParts).toContain("word/styles.xml")
+    expect(result.templateAudit.styleStrategy.strategy).toBe("replace-all")
+    expect(existsSync(join(root, result.path))).toBe(true)
+  })
+
+  test("apply_word_template_styles can selectively import template styles and report conflicts", async () => {
+    const targetBytes = await replaceDocxPart(await new WordDocBuilder().build(minimalRenderableWordDocSpec()), "word/styles.xml", (xml) => xml
+      .replace("</w:styles>", '<w:style w:type="paragraph" w:styleId="TargetOnlyStyle"><w:name w:val="Target Only Style"/></w:style></w:styles>')
+      .replace(/<w:style\b[^>]*\bw:styleId="Heading1"[\s\S]*?<\/w:style>/, '<w:style w:type="paragraph" w:styleId="Heading1"><w:name w:val="Target Heading 1"/><w:rPr><w:color w:val="111111"/></w:rPr></w:style>'))
+    let templateBytes = await new WordDocBuilder().build(minimalRenderableWordDocSpec())
+    templateBytes = await replaceDocxPart(templateBytes, "word/styles.xml", (xml) => xml
+      .replace(/<w:style\b[^>]*\bw:styleId="Heading1"[\s\S]*?<\/w:style>/, '<w:style w:type="paragraph" w:styleId="Heading1"><w:name w:val="Template Heading 1"/><w:rPr><w:color w:val="222222"/></w:rPr></w:style>')
+      .replace("</w:styles>", [
+        '<w:style w:type="paragraph" w:styleId="TemplateOnlyStyle"><w:name w:val="Template Only Style"/><w:basedOn w:val="TemplateBase"/></w:style>',
+        '<w:style w:type="paragraph" w:styleId="TemplateBase"><w:name w:val="Template Base"/></w:style>',
+        '<w:style w:type="paragraph" w:styleId="UnselectedTemplateStyle"><w:name w:val="Unselected Template Style"/></w:style>',
+        "</w:styles>",
+      ].join("")))
+
+    const applied = await applyTemplateStylesToDocxBytes({
+      target: { path: "docs/target.docx", bytes: targetBytes },
+      template: { path: "docs/template.dotx", bytes: templateBytes },
+      styleAllowlist: ["TemplateOnlyStyle", "Heading1", "MissingTemplateStyle"],
+    })
+
+    const stylesXml = await readDocxPart(applied.bytes, "word/styles.xml")
+    expect(stylesXml).toContain('w:styleId="TemplateOnlyStyle"')
+    expect(stylesXml).toContain('w:styleId="TemplateBase"')
+    expect(stylesXml).toContain('w:styleId="TargetOnlyStyle"')
+    expect(stylesXml).toContain("Template Heading 1")
+    expect(stylesXml).not.toContain("Target Heading 1")
+    expect(stylesXml).not.toContain("UnselectedTemplateStyle")
+    expect(applied.templateAudit.styleStrategy).toMatchObject({
+      strategy: "selective-allowlist",
+      requestedStyleIds: ["Heading1", "MissingTemplateStyle", "TemplateOnlyStyle"],
+      missingStyleIds: ["MissingTemplateStyle"],
+    })
+    expect(applied.templateAudit.styleStrategy.appliedStyleIds).toEqual(["Heading1", "TemplateBase", "TemplateOnlyStyle"])
+    expect(applied.templateAudit.styleStrategy.expandedDependencyStyleIds).toEqual(["TemplateBase"])
+    expect(applied.templateAudit.styleStrategy.conflictingStyleIds).toContain("Heading1")
+    expect(applied.warnings.some((warning) => warning.includes("MissingTemplateStyle"))).toBe(true)
+    expect(applied.warnings.some((warning) => warning.includes("Heading1"))).toBe(true)
+  })
+
+  test("apply_word_template_styles handles template part media relationships and fails closed for unsupported relationships", async () => {
+    const targetBytes = await new WordDocBuilder().build(minimalRenderableWordDocSpec())
+    let templateBytes = await new WordDocBuilder().build(minimalRenderableWordDocSpec())
+    templateBytes = await replaceDocxPart(templateBytes, "word/numbering.xml", (xml) => xml
+      .replace("<w:numbering", '<w:numbering xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:v="urn:schemas-microsoft-com:vml"')
+      .replace("</w:numbering>", [
+        '<w:numPicBullet w:numPicBulletId="42"><w:pict><v:shape><v:imagedata r:id="rIdTemplateBullet"/></v:shape></w:pict></w:numPicBullet>',
+        "</w:numbering>",
+      ].join("")))
+    templateBytes = await writeDocxPart(templateBytes, "word/_rels/numbering.xml.rels", [
+      '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>',
+      '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">',
+      '<Relationship Id="rIdTemplateBullet" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/template-bullet.png"/>',
+      "</Relationships>",
+    ].join(""))
+    templateBytes = await writeDocxPart(templateBytes, "word/media/template-bullet.png", tinyPngBytes())
+    templateBytes = await ensurePngDefaultContentTypeFixture(templateBytes)
+
+    const applied = await applyTemplateStylesToDocxBytes({
+      target: { path: "docs/target.docx", bytes: targetBytes },
+      template: { path: "docs/template-with-media.dotx", bytes: templateBytes },
+    })
+    const numberingRelsXml = await readDocxPart(applied.bytes, "word/_rels/numbering.xml.rels")
+    const mediaBytes = await readDocxBinaryPart(applied.bytes, "word/media/template-bullet.png")
+    expect(numberingRelsXml).toContain('Id="rIdTemplateBullet"')
+    expect(mediaBytes.length).toBeGreaterThan(0)
+    expect(applied.templateAudit.relationshipStrategy.copiedRelationshipParts).toContain("word/_rels/numbering.xml.rels")
+    expect(applied.templateAudit.relationshipStrategy.copiedMediaParts).toContain("word/media/template-bullet.png")
+    expect(applied.warnings.some((warning) => warning.includes("template media part"))).toBe(true)
+
+    let unsafeTemplateBytes = await replaceDocxPart(templateBytes, "word/numbering.xml", (xml) => xml.replace("rIdTemplateBullet", "rIdUnsafeObject"))
+    unsafeTemplateBytes = await writeDocxPart(unsafeTemplateBytes, "word/_rels/numbering.xml.rels", [
+      '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>',
+      '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">',
+      '<Relationship Id="rIdUnsafeObject" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/oleObject" Target="embeddings/oleObject1.bin"/>',
+      "</Relationships>",
+    ].join(""))
+    await expect(applyTemplateStylesToDocxBytes({
+      target: { path: "docs/target.docx", bytes: targetBytes },
+      template: { path: "docs/unsafe-template.dotx", bytes: unsafeTemplateBytes },
+    })).rejects.toThrow(/unsupported|oleObject|cannot safely copy/)
+  })
+
+  test("audit_word_document_fields reports fields and flatten_word_ref_fields freezes cached REF text", async () => {
+    const root = await tempDir("chipmate-word-field-flatten-")
+    workspaceFolders = [{ name: "repo", uri: UriShim.file(root) }]
+    const spec = minimalRenderableWordDocSpec()
+    spec.sections = [
+      {
+        id: "target",
+        level: 1,
+        title: "Referenced Section",
+        bookmark: "sec_target",
+        paragraphs: ["This section is referenced by fields."],
+        tables: [{
+          headers: ["Field", "Status"],
+          rows: [["REF", "target"]],
+        }],
+      },
+      {
+        id: "refs",
+        level: 1,
+        title: "References",
+        richParagraphs: [{
+          runs: [
+            { text: "See " },
+            { reference: { bookmark: "sec_target", field: "REF", fallbackText: "Referenced Section" } },
+            { text: " on page " },
+            { reference: { bookmark: "sec_target", field: "PAGEREF", fallbackText: "3" } },
+            { text: "." },
+          ],
+        }],
+        tables: [{
+          headers: ["Check", "Result"],
+          rows: [["Fields", "Present"]],
+        }],
+      },
+    ]
+    const bytes = await new WordDocBuilder().build(spec)
+    const report = await auditWordDocumentFields({ path: "docs/fields.docx", bytes })
+    expect(report.fieldTypeCounts.REF).toBe(1)
+    expect(report.fieldTypeCounts.PAGEREF).toBe(1)
+    expect(report.staleFieldHints.length).toBeGreaterThan(0)
+    const inspection = await new WordDocumentInspector().inspect({ path: "docs/fields.docx", bytes })
+    expect(inspection.summary.fieldCount).toBeGreaterThanOrEqual(3)
+    expect(inspection.summary.fieldTypeCounts.REF).toBe(1)
+    expect(inspection.summary.fieldTypeCounts.PAGEREF).toBe(1)
+    expect(inspection.summary.fieldTypeCounts.TOC).toBe(1)
+    const refFields = inspection.fields.filter((field) => field.type === "REF" || field.type === "PAGEREF")
+    expect(refFields.map((field) => field.type)).toEqual(["REF", "PAGEREF"])
+    expect(refFields.map((field) => field.cachedText)).toEqual(["Referenced Section", "3"])
+    expect(refFields.every((field) => field.fieldKind === "complex")).toBe(true)
+    expect(inspection.fields.every((field) => field.locator.kind === "field")).toBe(true)
+    expect(inspection.fields.some((field) => field.type === "TOC" && field.fieldKind === "simple")).toBe(true)
+    expect(inspection.locators.some((locator) => locator.kind === "field" && locator.fieldType === "REF")).toBe(true)
+
+    const flattened = await flattenRefFieldsInDocxBytes(bytes, "docs/fields.docx")
+    expect(flattened.flattenedFields).toBe(2)
+    expect(flattened.touchedParts).toContain("word/document.xml")
+    expect(flattened.afterReport.fieldTypeCounts.REF ?? 0).toBe(0)
+    expect(flattened.afterReport.fieldTypeCounts.PAGEREF ?? 0).toBe(0)
+    const flattenedXml = await readDocxPart(flattened.bytes, "word/document.xml")
+    expect(flattenedXml).not.toContain("<w:instrText")
+    expect(flattenedXml).toContain('<w:t xml:space="preserve">Referenced Section</w:t>')
+    expect(flattenedXml).toContain('<w:t xml:space="preserve">3</w:t>')
+
+    const result = await new WordRefFieldFlattener(root).flatten({
+      path: "docs/fields.docx",
+      bytes,
+      outputFilenameBase: "ref-fields-flattened",
+    })
+    expect(result.path).toMatch(/^\.chipmate\/docs\/ref-fields-flattened-.+\.docx$/)
+    expect(result.structureCheckResult.ok).toBe(true)
+    expect(result.flattenedFields).toBe(2)
+    expect(existsSync(join(root, result.path))).toBe(true)
+  })
+
+  test("rich paragraph cross-reference markers are authored as live REF and PAGEREF fields", async () => {
+    const spec = minimalRenderableWordDocSpec()
+    spec.sections = [
+      {
+        id: "target",
+        level: 1,
+        title: "Referenced Section",
+        bookmark: "sec_target",
+        paragraphs: ["This section is the cross-reference target."],
+      },
+      {
+        id: "refs",
+        level: 1,
+        title: "Generated Cross References",
+        richParagraphs: [{
+          runs: [{
+            text: "See {{ref:sec_target|Referenced Section}} on page {{pageref:sec_target|3}}.",
+          }],
+        }],
+      },
+    ]
+
+    const bytes = await new WordDocBuilder().build(spec)
+    const documentXml = await readDocxPart(bytes, "word/document.xml")
+    expect(documentXml).not.toContain("{{ref:")
+    expect(documentXml).not.toContain("{{pageref:")
+    expect(documentXml).toContain('<w:instrText xml:space="preserve"> REF sec_target \\h </w:instrText>')
+    expect(documentXml).toContain('<w:instrText xml:space="preserve"> PAGEREF sec_target \\h </w:instrText>')
+    expect(documentXml).toContain('<w:t xml:space="preserve">Referenced Section</w:t>')
+    expect(documentXml).toContain('<w:t xml:space="preserve">3</w:t>')
+
+    const report = await auditWordDocumentFields({ path: "docs/marker-crossrefs.docx", bytes })
+    expect(report.fieldTypeCounts.REF).toBe(1)
+    expect(report.fieldTypeCounts.PAGEREF).toBe(1)
+
+    const flattened = await flattenRefFieldsInDocxBytes(bytes, "docs/marker-crossrefs.docx")
+    expect(flattened.flattenedFields).toBe(2)
+    expect(flattened.afterReport.fieldTypeCounts.REF ?? 0).toBe(0)
+    expect(flattened.afterReport.fieldTypeCounts.PAGEREF ?? 0).toBe(0)
+  })
+
+  test("apply_word_document_edits converts rich paragraph cross-reference markers into live fields", async () => {
+    const root = await tempDir("chipmate-word-edit-marker-crossrefs-")
+    workspaceFolders = [{ name: "repo", uri: UriShim.file(root) }]
+    const spec = minimalRenderableWordDocSpec()
+    spec.sections = [{
+      id: "target",
+      level: 1,
+      title: "Referenced Section",
+      bookmark: "sec_target",
+      paragraphs: ["This section is referenced by an inserted section."],
+    }]
+    const bytes = await new WordDocBuilder().build(spec)
+    const inspection = await new WordDocumentInspector().inspect({ path: "docs/edit-marker-crossrefs.docx", bytes })
+    const validation = validateDocumentEditPlan({
+      planId: "insert-marker-crossrefs",
+      targetPath: "docs/edit-marker-crossrefs.docx",
+      outputFilenameBase: "edit-marker-crossrefs",
+      operations: [{
+        type: "insertSection",
+        locator: inspection.documentEndLocator,
+        title: "Generated Cross References",
+        level: 1,
+        blocks: [{
+          type: "richParagraph",
+          paragraph: {
+            runs: [{ text: "See {{ref:sec_target|Referenced Section}} on page {{pageref:sec_target|3}}." }],
+          },
+        }],
+      }],
+      warnings: [],
+    }, inspection)
+    expect(validation.ok).toBe(true)
+
+    const result = await new WordDocumentEditor(root).apply({
+      sourcePath: "docs/edit-marker-crossrefs.docx",
+      bytes,
+      inspection,
+      plan: validation.plan!,
+    })
+
+    const outputBytes = await readFile(join(root, result.path))
+    const documentXml = await readDocxPart(outputBytes, "word/document.xml")
+    expect(documentXml).not.toContain("{{ref:")
+    expect(documentXml).not.toContain("{{pageref:")
+    expect(documentXml).toContain('<w:instrText xml:space="preserve"> REF sec_target \\h </w:instrText>')
+    expect(documentXml).toContain('<w:instrText xml:space="preserve"> PAGEREF sec_target \\h </w:instrText>')
+    const inspectionAfter = await new WordDocumentInspector().inspect({ path: result.path, bytes: outputBytes })
+    expect(inspectionAfter.summary.fieldTypeCounts.REF).toBe(1)
+    expect(inspectionAfter.summary.fieldTypeCounts.PAGEREF).toBe(1)
+    expect(result.structureCheckResult.ok).toBe(true)
+  })
+
+  test("materialize_word_seq_fields updates stale caption SEQ cached numbers without flattening fields", async () => {
+    const root = await tempDir("chipmate-word-seq-materialize-")
+    workspaceFolders = [{ name: "repo", uri: UriShim.file(root) }]
+    const spec = minimalRenderableWordDocSpec()
+    spec.sections = [{
+      id: "captioned-assets",
+      level: 1,
+      title: "Captioned Assets",
+      paragraphs: ["Figures and tables should keep live SEQ fields while cached numbers render deterministically."],
+      figures: [
+        {
+          id: "fig-one",
+          title: "First figure",
+          caption: "First figure caption.",
+          label: "Figure",
+          bookmark: "fig_one",
+          altText: "First figure",
+          image: { contentType: "image/png", bytes: tinyPngBytes(), width: 160, height: 90 },
+        },
+        {
+          id: "fig-two",
+          title: "Second figure",
+          caption: "Second figure caption.",
+          label: "Figure",
+          bookmark: "fig_two",
+          altText: "Second figure",
+          image: { contentType: "image/png", bytes: tinyPngBytes(), width: 160, height: 90 },
+        },
+      ],
+      tables: [{
+        headers: ["Name", "Value"],
+        rows: [["alpha", "1"]],
+        caption: "Table caption.",
+        label: "Table",
+        bookmark: "tbl_one",
+      }],
+    }]
+    const bytes = await new WordDocBuilder().build(spec)
+    const staleBytes = await replaceDocxPart(bytes, "word/document.xml", (xml) => {
+      let staleValue = 8
+      return xml.replace(
+        /(<w:r><w:fldChar w:fldCharType="begin"\/><\/w:r>[\s\S]*?<w:instrText xml:space="preserve"> SEQ (?:Figure|Table) \\[*] ARABIC <\/w:instrText>[\s\S]*?<w:fldChar w:fldCharType="separate"\/><\/w:r>)([\s\S]*?)(<w:r><w:fldChar w:fldCharType="end"\/><\/w:r>)/g,
+        (_match, before, _cached, after) => `${before}<w:r><w:t xml:space="preserve">${staleValue += 1}</w:t></w:r>${after}`,
+      )
+    })
+    const staleInspection = await new WordDocumentInspector().inspect({ path: "docs/stale-seq.docx", bytes: staleBytes })
+    const staleSeqFields = staleInspection.fields.filter((field) => field.type === "SEQ")
+    expect(staleSeqFields.map((field) => field.cachedText)).toEqual(["9", "10", "11"])
+
+    const materialized = await materializeSeqFieldsInDocxBytes(staleBytes, "docs/stale-seq.docx")
+    expect(materialized.materializedFields).toBe(3)
+    expect(materialized.updatedFields).toBe(3)
+    expect(materialized.touchedParts).toEqual(["word/document.xml"])
+    expect(materialized.afterReport.fieldTypeCounts.SEQ).toBe(3)
+
+    const materializedInspection = await new WordDocumentInspector().inspect({ path: "docs/stale-seq.docx", bytes: materialized.bytes })
+    const materializedSeqFields = materializedInspection.fields.filter((field) => field.type === "SEQ")
+    expect(materializedSeqFields.map((field) => field.instruction)).toEqual(["SEQ Figure \\* ARABIC", "SEQ Figure \\* ARABIC", "SEQ Table \\* ARABIC"])
+    expect(materializedSeqFields.map((field) => field.cachedText)).toEqual(["1", "2", "1"])
+    const materializedXml = await readDocxPart(materialized.bytes, "word/document.xml")
+    expect(materializedXml).toContain('<w:instrText xml:space="preserve"> SEQ Figure \\* ARABIC </w:instrText>')
+    expect(materializedXml).toContain('<w:instrText xml:space="preserve"> SEQ Table \\* ARABIC </w:instrText>')
+    expect(materializedXml).toContain('<w:fldChar w:fldCharType="begin"/>')
+    expect(materializedXml).toContain('<w:fldChar w:fldCharType="end"/>')
+
+    const result = await new WordSeqFieldMaterializer(root).materialize({
+      path: "docs/stale-seq.docx",
+      bytes: staleBytes,
+      outputFilenameBase: "seq-fields-materialized",
+    })
+    expect(result.path).toMatch(/^\.chipmate\/docs\/seq-fields-materialized-.+\.docx$/)
+    expect(result.structureCheckResult.ok).toBe(true)
+    expect(result.materializedFields).toBe(3)
+    expect(result.updatedFields).toBe(3)
+    expect(existsSync(join(root, result.path))).toBe(true)
+  })
+
+  test("refresh_word_native_fields preserves TOC PAGE NUMPAGES fields and render-verifies a refreshed copy", async () => {
+    const root = await tempDir("chipmate-word-native-field-refresh-")
+    workspaceFolders = [{ name: "repo", uri: UriShim.file(root) }]
+    const spec = minimalRenderableWordDocSpec()
+    spec.layout = {
+      ...spec.layout,
+      navigation: { mode: "field-toc" },
+    }
+    spec.sections = [
+      {
+        id: "overview",
+        level: 1,
+        title: "Overview",
+        paragraphs: ["The table of contents should remain a Word-native TOC field."],
+      },
+      {
+        id: "details",
+        level: 1,
+        title: "Details",
+        paragraphs: Array.from({ length: 16 }, (_, index) => `Detail paragraph ${index + 1} keeps enough content for render verification.`),
+      },
+    ]
+    const bytes = await new WordDocBuilder().build(spec)
+    const documentXml = await readDocxPart(bytes, "word/document.xml")
+    const footerXml = await readDocxPart(bytes, "word/footer1.xml")
+    const settingsXml = await readDocxPart(bytes, "word/settings.xml")
+    expect(documentXml).toContain('w:instr="TOC \\o &quot;1-3&quot; \\h \\z \\u" w:dirty="true"')
+    expect(footerXml).toContain('<w:instrText xml:space="preserve"> PAGE </w:instrText>')
+    expect(footerXml).toContain('<w:instrText xml:space="preserve"> NUMPAGES </w:instrText>')
+    expect(settingsXml).toContain('<w:updateFields w:val="true"/>')
+
+    const report = await auditWordDocumentFields({ path: "docs/native-fields.docx", bytes })
+    expect(report.fieldTypeCounts.TOC).toBe(1)
+    expect(report.fieldTypeCounts.PAGE).toBe(1)
+    expect(report.fieldTypeCounts.NUMPAGES).toBe(1)
+    expect(report.unsupportedMaterialization.join("\n")).toContain("refresh_word_native_fields")
+
+    const prepared = await prepareNativeFieldRefreshInDocxBytes(bytes, "docs/native-fields.docx")
+    expect(prepared.preparedReport.fieldTypeCounts.TOC).toBe(1)
+    expect(prepared.preparedReport.fieldTypeCounts.PAGE).toBe(1)
+    expect(prepared.preparedReport.fieldTypeCounts.NUMPAGES).toBe(1)
+
+    const restoreRenderTools = await installFakeWordRenderTools(root)
+    try {
+      const result = await new WordNativeFieldRefresher(root).refresh({
+        path: "docs/native-fields.docx",
+        bytes,
+        outputFilenameBase: "native-fields-refreshed",
+        timeoutMs: 90_000,
+      })
+      expect(result.path).toMatch(/^\.chipmate\/docs\/native-fields-refreshed-.+\.docx$/)
+      expect(existsSync(join(root, result.path))).toBe(true)
+      expect(["libreoffice-saved-docx", "preserved-live-fields-render-verified"]).toContain(result.refreshMode)
+      expect(result.refreshedFieldTypes).toEqual(["NUMPAGES", "PAGE", "TOC"])
+      expect(result.afterReport.fieldTypeCounts.TOC).toBe(1)
+      expect(result.afterReport.fieldTypeCounts.PAGE).toBe(1)
+      expect(result.afterReport.fieldTypeCounts.NUMPAGES).toBe(1)
+      expect(result.structureCheckResult.ok).toBe(true)
+      expect(result.renderCheckResult.attempted).toBe(true)
+      expect(result.renderCheckResult.visualQaStatus).toBe("completed")
+      expect(result.renderCheckResult.pageCount ?? 0).toBeGreaterThan(0)
+    } finally {
+      restoreRenderTools()
+    }
+  }, 120_000)
+
+  test("refresh_word_native_fields fails closed when LibreOffice is unavailable", async () => {
+    const root = await tempDir("chipmate-word-native-field-refresh-unavailable-")
+    workspaceFolders = [{ name: "repo", uri: UriShim.file(root) }]
+    const spec = minimalRenderableWordDocSpec()
+    spec.layout = {
+      ...spec.layout,
+      navigation: { mode: "field-toc" },
+    }
+    const bytes = await new WordDocBuilder().build(spec)
+    const previousSoffice = process.env.CHIPMATE_SOFFICE_PATH
+    const previousHome = process.env.HOME
+    const previousPath = process.env.PATH
+    process.env.CHIPMATE_SOFFICE_PATH = join(root, "missing-soffice")
+    process.env.HOME = join(root, "missing-home")
+    process.env.PATH = join(root, "missing-bin")
+    try {
+      await expect(new WordNativeFieldRefresher(root).refresh({
+        path: "docs/native-fields.docx",
+        bytes,
+        outputFilenameBase: "native-fields-refreshed",
+        timeoutMs: 1_000,
+      })).rejects.toThrow(/LibreOffice native field refresh failed or is unavailable/)
+    } finally {
+      if (previousSoffice === undefined) delete process.env.CHIPMATE_SOFFICE_PATH
+      else process.env.CHIPMATE_SOFFICE_PATH = previousSoffice
+      if (previousHome === undefined) delete process.env.HOME
+      else process.env.HOME = previousHome
+      if (previousPath === undefined) delete process.env.PATH
+      else process.env.PATH = previousPath
+    }
+    expect(existsSync(join(root, ".chipmate", "docs"))).toBe(false)
   })
 })
 
@@ -1971,6 +5900,196 @@ describe("doc agent merge/spec/render", () => {
     expect(logs.some((line) => line.includes("[doc-agent] source placement progress: 来源块语义归位"))).toBe(true)
   })
 
+  test("v1 usable Word smoke covers create edit report render comments redlines and style QA", async () => {
+    const root = await tempDir("chipmate-word-v1-smoke-")
+    workspaceFolders = [{ name: "repo", uri: UriShim.file(root) }]
+    const restoreRenderTools = await installFakeWordRenderTools(root)
+    try {
+      const spec: WordDocSpec = {
+        ...minimalRenderableWordDocSpec(),
+        metadata: {
+          title: "ChipMate v1 Word smoke report",
+          subtitle: "Offline local Word acceptance fixture",
+          documentType: "generic-word-v1-smoke",
+          language: "en-US",
+          generatedAt: "2026-06-28T00:00:00.000Z",
+          author: "ChipMate Document Agent",
+        },
+        sources: [],
+        references: [],
+        layout: {
+          preset: "narrative_proposal",
+          page: { size: "letter" },
+          navigation: { mode: "static-toc", includeTopBottomLinks: true, includeBackToTocLinks: true },
+          tablePolicy: {
+            useTablesOnlyForComparableRecords: true,
+            avoidProseHeavyTables: true,
+            requireExplicitGeometry: true,
+          },
+          visualQa: { requireRender: true, requirePagePngReview: true },
+        },
+        cover: {
+          title: "ChipMate v1 Word smoke report",
+          subtitle: "Offline local Word acceptance fixture",
+          preparedFor: "Word parity review",
+          preparedBy: "ChipMate Document Agent",
+        },
+        executiveSummary: {
+          paragraphs: ["This fixture verifies that the generic Word pipeline can create, render, inspect, edit, and audit a normal local report."],
+          highlights: ["Creates a DOCX through the public tool", "Uses Word-native report structures", "Edits with locators instead of overwriting the package"],
+        },
+        sections: [
+          {
+            id: "overview",
+            level: 1,
+            title: "Overview",
+            bookmark: "sec_overview",
+            paragraphs: [
+              "This paragraph receives a reviewer comment.",
+              "The report body uses ordinary prose rather than a task-specific producer.",
+            ],
+            richParagraphs: [{
+              runs: [
+                { text: "Jump to " },
+                { text: "implementation", hyperlink: { anchor: "sec_impl" } },
+                { text: " and review " },
+                { reference: { bookmark: "tbl_smoke_status", field: "REF", fallbackText: "Table 1" } },
+                { text: " before handoff." },
+              ],
+            }],
+            bullets: ["Model-owned section planning", "Tool-owned Word structure", "Render-backed verification"],
+            numberedItems: ["Draft the report", "Inspect generated structure", "Apply controlled edits"],
+            tables: [{
+              id: "tbl-smoke-status",
+              caption: "Word v1 smoke workflow status.",
+              label: "Table",
+              number: "1",
+              bookmark: "tbl_smoke_status",
+              headers: ["Workflow", "Evidence", "Status"],
+              rows: [
+                ["New document", "create_word_document wrote .chipmate/docs output", "Pass"],
+                ["Report structure", "TOC, list, table, figure, caption, and cross-reference", "Pass"],
+                ["Edit flow", "inspect_word_document locators feed apply_word_document_edits", "Pass"],
+              ],
+              columnWidthRatios: [28, 52, 20],
+              columnAlignments: ["left", "left", "center"],
+            }],
+          },
+          {
+            id: "implementation",
+            level: 2,
+            title: "Implementation",
+            bookmark: "sec_impl",
+            paragraphs: [
+              "This paragraph will be replaced by a tracked change.",
+              "The section owns its figure so the image is not moved to the start or end of the document.",
+            ],
+            richParagraphs: [{
+              runs: [
+                { text: "The rendered artifact in " },
+                { reference: { bookmark: "fig_smoke_architecture", field: "REF", fallbackText: "Figure 1" } },
+                { text: " proves PNG media insertion with alt text." },
+              ],
+            }],
+            figures: [{
+              id: "fig-smoke-architecture",
+              title: "Smoke architecture",
+              caption: "Rendered PNG media inserted in the owning section.",
+              label: "Figure",
+              number: "1",
+              bookmark: "fig_smoke_architecture",
+              altText: "Smoke architecture PNG",
+              image: {
+                contentType: "image/png",
+                bytes: tinyPngBytes(),
+                width: 320,
+                height: 180,
+              },
+            }],
+          },
+        ],
+        qualityChecklist: {
+          assumptions: ["Local LibreOffice and PDF-to-PNG render tools may be substituted by deterministic test doubles."],
+          limitations: ["This smoke fixture proves the v1 local Word loop, not every v2 edge-case OOXML feature."],
+          missingInputs: [],
+          risks: ["Manual VS Code installation smoke is still required before claiming extension UI acceptance."],
+        },
+      }
+
+      const created = await createWordDocument({ spec, filename: "v1-word-smoke.docx" })
+      expect(created.path).toMatch(/^\.chipmate\/docs\/v1-word-smoke-.+\.docx$/)
+      expect(existsSync(created.absolutePath)).toBe(true)
+      expect(created.renderCheckResult.attempted).toBe(true)
+      expect(created.renderCheckResult.ok).toBe(true)
+      expect(created.renderCheckResult.pageCount).toBe(1)
+      expect(created.renderCheckResult.pagePngPaths?.length).toBe(1)
+      expect(existsSync(join(root, created.renderCheckResult.pagePngPaths![0]!))).toBe(true)
+
+      const createdBytes = await readFile(created.absolutePath)
+      const createdXml = await readDocxPart(createdBytes, "word/document.xml")
+      const createdInspection = await new WordDocumentInspector().inspect({ path: created.path, bytes: createdBytes })
+      expect(createdXml).toContain('w:name="TOC"')
+      expect(createdXml).toContain("返回目录")
+      expect(createdXml).toContain('<w:tblLayout w:type="fixed"/>')
+      expect(createdXml).toContain('<w:tblHeader/>')
+      expect(createdXml).toContain('<w:drawing>')
+      expect(createdXml).toContain('<w:pStyle w:val="Caption"/>')
+      expect(createdXml).toContain('<w:instrText xml:space="preserve"> REF tbl_smoke_status \\h </w:instrText>')
+      expect(createdXml).toContain('<w:instrText xml:space="preserve"> REF fig_smoke_architecture \\h </w:instrText>')
+      expect(createdInspection.summary.headingCount).toBeGreaterThanOrEqual(2)
+      expect(createdInspection.summary.listItemCount).toBeGreaterThanOrEqual(6)
+      expect(createdInspection.summary.tableCount).toBeGreaterThanOrEqual(1)
+      expect(createdInspection.summary.imageCount).toBe(1)
+      expect(createdInspection.summary.captionCount).toBeGreaterThanOrEqual(2)
+      expect(createdInspection.summary.hyperlinkCount).toBeGreaterThanOrEqual(1)
+      expect(createdInspection.summary.fieldTypeCounts.REF).toBeGreaterThanOrEqual(2)
+
+      const commentParagraph = createdInspection.paragraphs.find((item) => item.text === "This paragraph receives a reviewer comment.")!
+      const redlineParagraph = createdInspection.paragraphs.find((item) => item.text === "This paragraph will be replaced by a tracked change.")!
+      const editPlan = validateDocumentEditPlan({
+        planId: "v1-smoke-edit",
+        targetPath: created.path,
+        outputFilenameBase: "v1-word-smoke-edited",
+        operations: [
+          { type: "addComment", locator: commentParagraph.locator, text: "Confirm this summary before publishing.\nSecond reviewer note stays in the same Word comment.", author: "Reviewer", initials: "RV" },
+          { type: "replaceParagraphWithTrackedChange", locator: redlineParagraph.locator, text: "This paragraph is now a tracked replacement for reviewer approval.", author: "Reviewer" },
+        ],
+        warnings: [],
+      }, createdInspection)
+      expect(editPlan.ok).toBe(true)
+
+      const edited = await new WordDocumentEditor(root).apply({
+        sourcePath: created.path,
+        bytes: createdBytes,
+        inspection: createdInspection,
+        plan: editPlan.plan!,
+      })
+      expect(edited.path).toMatch(/^\.chipmate\/docs\/v1-word-smoke-edited-.+\.docx$/)
+      expect(edited.structureCheckResult.ok).toBe(true)
+      expect(edited.renderCheckResult.attempted).toBe(true)
+      expect(edited.renderCheckResult.ok).toBe(true)
+      expect(edited.renderCheckResult.pagePngPaths?.length).toBe(1)
+      const editedInspection = await new WordDocumentInspector().inspect({ path: edited.path, bytes: edited.bytes })
+      expect(editedInspection.summary.commentCount).toBe(1)
+      expect(editedInspection.summary.trackedChangeCount).toBeGreaterThan(0)
+      expect(editedInspection.comments[0]?.text).toContain("Second reviewer note stays in the same Word comment.")
+      expect(editedInspection.paragraphs.some((item) => item.text.includes("tracked replacement for reviewer approval"))).toBe(true)
+
+      const styleReport = await auditWordDocumentStyles({ path: edited.path, bytes: edited.bytes })
+      expect(styleReport.inputPath).toBe(edited.path)
+      expect(styleReport.paragraphCount).toBeGreaterThan(0)
+      expect(styleReport.runCount).toBeGreaterThan(0)
+      expect(styleReport.notes.length).toBeGreaterThan(0)
+      expect(styleReport.headingLikeParagraphsNotHeadingStyle.some((item) => item.text.includes("Manual Formatting Heading"))).toBe(false)
+
+      const driftReport = await auditWordDocumentStyles({ path: "docs/style-drift.docx", bytes: await styleDriftDocxFixture() })
+      expect(driftReport.directRunFormattingRuns).toBeGreaterThan(0)
+      expect(driftReport.headingLikeParagraphsNotHeadingStyle.some((item) => item.text.includes("Manual Formatting Heading"))).toBe(true)
+    } finally {
+      restoreRenderTools()
+    }
+  }, 15_000)
+
   test("passes a focused Word 2016 structural compatibility gate for generated DOCX packages", async () => {
     const bytes = await new WordDocBuilder().build(minimalRenderableWordDocSpec())
     const parts = await docxPartPaths(bytes)
@@ -1999,6 +6118,944 @@ describe("doc agent merge/spec/render", () => {
 
     const issues = await new DocxRenderQualityGate().check(bytes)
     expect(issues.filter((issue) => issue.severity === "error")).toEqual([])
+  })
+
+  test("embeds PNG figures in the section that owns them", async () => {
+    const spec = minimalRenderableWordDocSpec()
+    spec.sections = [
+      {
+        ...spec.sections[0]!,
+        figures: [{
+          id: "fig-architecture",
+          title: "架构边界图",
+          caption: "PNG 图表应位于本章节正文中。",
+          label: "Figure",
+          number: "1",
+          bookmark: "fig_architecture",
+          altText: "架构边界图 PNG",
+          image: {
+            contentType: "image/png",
+            bytes: tinyPngBytes(),
+            width: 320,
+            height: 180,
+          },
+        }],
+      },
+      {
+        id: "after-figure",
+        level: 1,
+        title: "后续章节",
+        paragraphs: ["用于验证图片没有被统一插到文档开头或结尾。"],
+      },
+    ]
+
+    const bytes = await new WordDocBuilder().build(spec)
+    const parts = await docxPartPaths(bytes)
+    const contentTypesXml = await readDocxPart(bytes, "[Content_Types].xml")
+    const documentXml = await readDocxPart(bytes, "word/document.xml")
+    const documentRelsXml = await readDocxPart(bytes, "word/_rels/document.xml.rels")
+
+    expect(parts).toContain("word/media/image1.png")
+    expect(contentTypesXml).toContain('<Default Extension="png" ContentType="image/png"/>')
+    expect(documentRelsXml).toContain('Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/image1.png"')
+    expect(documentXml).toContain('r:embed="rIdImage1"')
+    expect(documentXml).toContain('<w:pStyle w:val="Caption"/>')
+    expect(documentXml).toContain('<w:bookmarkStart w:id="1001" w:name="fig_architecture"/>')
+    expect(documentXml).toContain('<w:t xml:space="preserve">Figure </w:t>')
+    expect(documentXml).toContain('<w:instrText xml:space="preserve"> SEQ Figure \\* ARABIC </w:instrText>')
+    expect(documentXml).toContain('<w:t xml:space="preserve">1</w:t>')
+    expect(documentXml).toContain('<w:bookmarkEnd w:id="1001"/>')
+    expect(documentXml).toContain('<w:t xml:space="preserve">: PNG 图表应位于本章节正文中。</w:t>')
+    const fieldReport = await auditWordDocumentFields({ path: "docs/figure.docx", bytes })
+    expect(fieldReport.fieldTypeCounts.SEQ).toBe(1)
+    const inspection = await new WordDocumentInspector().inspect({ path: "docs/figure.docx", bytes })
+    expect(inspection.summary.fieldTypeCounts.SEQ).toBe(1)
+    expect(inspection.fields.some((field) => field.type === "SEQ" && field.instruction === "SEQ Figure \\* ARABIC" && field.cachedText === "1")).toBe(true)
+    const image = inspection.images[0]!
+    expect(inspection.summary.imageCount).toBe(1)
+    expect(image.placement).toBe("inline")
+    expect(image.relationshipMode).toBe("embedded")
+    expect(image.targetMode).toBeUndefined()
+    expect(image.relId).toBe("rIdImage1")
+    expect(image.target).toBe("media/image1.png")
+    expect(image.mediaPath).toBe("word/media/image1.png")
+    expect(image.mediaExtension).toBe("png")
+    expect(image.contentType).toBe("image/png")
+    expect(image.mediaExists).toBe(true)
+    expect(image.replaceSupported).toBe(true)
+    expect(image.replaceUnsupportedReason).toBeUndefined()
+    expect(image.name).toBe("架构边界图")
+    expect(image.altText).toBe("架构边界图 PNG")
+    expect(image.widthEmu).toBeGreaterThan(0)
+    expect(image.heightEmu).toBeGreaterThan(0)
+    expect(image.locator.kind).toBe("image")
+    expect(image.locator.imageRelId).toBe("rIdImage1")
+    expect(inspection.locators.some((locator) => locator.kind === "image" && locator.imageTarget === "media/image1.png")).toBe(true)
+
+    const sectionIndex = documentXml.indexOf("团队版规则正文")
+    const drawingIndex = documentXml.indexOf("<w:drawing>")
+    const nextSectionIndex = documentXml.indexOf("后续章节")
+	    expect(sectionIndex).toBeGreaterThanOrEqual(0)
+	    expect(drawingIndex).toBeGreaterThan(sectionIndex)
+	    expect(nextSectionIndex).toBeGreaterThan(drawingIndex)
+	  })
+
+	  test("create_word_document hydrates PNG figures from local artifact paths", async () => {
+	    const root = await tempDir("chipmate-doc-agent-figure-path-")
+	    workspaceFolders = [{ name: "repo", uri: UriShim.file(root) }]
+	    const pngPath = join(root, ".chipmate", "docs", "diagrams", "flow.png")
+	    await mkdir(join(root, ".chipmate", "docs", "diagrams"), { recursive: true })
+	    await writeFile(pngPath, tinyPngBytes())
+	    const spec = minimalRenderableWordDocSpec()
+	    spec.sections[0] = {
+	      ...spec.sections[0]!,
+	      figures: [{
+	        title: "Mermaid 渲染图",
+	        caption: "该图片来自 Mermaid PNG artifact。",
+	        altText: "Mermaid 渲染图 PNG",
+	        image: {
+	          contentType: "image/png",
+	          path: ".chipmate/docs/diagrams/flow.png",
+	          artifactPath: ".chipmate/docs/diagrams/flow.png",
+	          width: 320,
+	          height: 180,
+	        },
+	      }],
+	    }
+
+	    const result = await createWordDocument({ spec, filename: "figure-path.docx" })
+	    const bytes = await readFile(result.absolutePath!)
+
+	    expect(await docxPartPaths(bytes)).toContain("word/media/image1.png")
+	    expect((await readDocxBinaryPart(bytes, "word/media/image1.png")).subarray(0, 8)).toEqual(tinyPngBytes().subarray(0, 8))
+	    expect(await readDocxPart(bytes, "word/document.xml")).toContain('r:embed="rIdImage1"')
+	  })
+
+	  test("inspect_word_document reports floating external and non-PNG image boundaries", async () => {
+    const spec = minimalRenderableWordDocSpec()
+    spec.sections = [{
+      id: "advanced-images",
+      level: 1,
+      title: "Advanced Images",
+      figures: [
+        {
+          id: "external",
+          title: "Linked external screenshot",
+          altText: "External screenshot",
+          image: {
+            contentType: "image/png",
+            bytes: tinyPngBytes(),
+            width: 160,
+            height: 90,
+          },
+        },
+        {
+          id: "jpeg",
+          title: "JPEG screenshot",
+          altText: "JPEG screenshot",
+          image: {
+            contentType: "image/png",
+            bytes: tinyPngBytes(),
+            width: 160,
+            height: 90,
+          },
+        },
+      ],
+    }]
+
+    let bytes = await new WordDocBuilder().build(spec)
+    bytes = await replaceDocxPart(bytes, "word/document.xml", (xml) => {
+      let drawingIndex = 0
+      return xml.replace(/<w:drawing\b[\s\S]*?<\/w:drawing>/g, (drawingXml) => {
+        drawingIndex += 1
+        if (drawingIndex !== 1) return drawingXml
+        return drawingXml
+          .replace("<wp:inline", "<wp:anchor")
+          .replace("</wp:inline>", "</wp:anchor>")
+          .replace('r:embed="rIdImage1"', 'r:link="rIdImage1"')
+      })
+    })
+    bytes = await replaceDocxPart(bytes, "word/_rels/document.xml.rels", (xml) => xml
+      .replace(/<Relationship\b[^>]*\bId="rIdImage1"[^>]*\/>/, '<Relationship Id="rIdImage1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="https://example.com/linked-screenshot.jpg" TargetMode="External"/>')
+      .replace('Target="media/image2.png"', 'Target="media/image2.jpg"'))
+    bytes = await replaceDocxPart(bytes, "[Content_Types].xml", (xml) => xml.includes('Extension="jpg"') ? xml : xml.replace("</Types>", '<Default Extension="jpg" ContentType="image/jpeg"/></Types>'))
+    bytes = await writeDocxPart(bytes, "word/media/image2.jpg", Uint8Array.from([0xff, 0xd8, 0xff, 0xd9]))
+
+    const inspection = await new WordDocumentInspector().inspect({ path: "docs/advanced-images.docx", bytes })
+    expect(inspection.summary.imageCount).toBe(2)
+    const external = inspection.images.find((image) => image.relId === "rIdImage1")!
+    const jpeg = inspection.images.find((image) => image.relId === "rIdImage2")!
+
+    expect(external.placement).toBe("floating")
+    expect(external.relationshipMode).toBe("external")
+    expect(external.targetMode).toBe("External")
+    expect(external.target).toBe("https://example.com/linked-screenshot.jpg")
+    expect(external.mediaPath).toBeUndefined()
+    expect(external.mediaExtension).toBe("jpg")
+    expect(external.contentType).toBeUndefined()
+    expect(external.mediaExists).toBeUndefined()
+    expect(external.replaceSupported).toBe(false)
+    expect(external.replaceUnsupportedReason).toBe("external-linked-image")
+
+    expect(jpeg.placement).toBe("inline")
+    expect(jpeg.relationshipMode).toBe("embedded")
+    expect(jpeg.target).toBe("media/image2.jpg")
+    expect(jpeg.mediaPath).toBe("word/media/image2.jpg")
+    expect(jpeg.mediaExtension).toBe("jpg")
+    expect(jpeg.contentType).toBe("image/jpeg")
+    expect(jpeg.mediaExists).toBe(true)
+    expect(jpeg.replaceSupported).toBe(false)
+    expect(jpeg.replaceUnsupportedReason).toBe("non-png-media")
+  })
+
+  test("writes quote and pull quote blocks as real Word quote styles", async () => {
+    const spec = minimalRenderableWordDocSpec()
+    spec.sections = [{
+      id: "quoted-evidence",
+      level: 1,
+      title: "Quoted Evidence",
+      quoteBlocks: [
+        { kind: "quote", text: "Evidence stays attached to a source.", attribution: "Review Board", source: "REQ-9" },
+        { kind: "pullQuote", text: "Use structure, not fake quoted paragraphs.", attribution: "Codex documents" },
+      ],
+    }]
+
+    const bytes = await new WordDocBuilder().build(spec)
+    const documentXml = await readDocxPart(bytes, "word/document.xml")
+    const stylesXml = await readDocxPart(bytes, "word/styles.xml")
+    const issues = await new DocxRenderQualityGate().check(bytes)
+
+    expect(documentXml).toContain('<w:pStyle w:val="Quote"/>')
+    expect(documentXml).toContain('<w:pStyle w:val="IntenseQuote"/>')
+    expect(documentXml).toContain('<w:jc w:val="center"/>')
+    expect(documentXml).toContain('<w:t xml:space="preserve">- Review Board - REQ-9</w:t>')
+    expect(documentXml).toContain('<w:t xml:space="preserve">- Codex documents</w:t>')
+    expect(stylesXml).toContain('w:styleId="Quote"')
+    expect(stylesXml).toContain('w:styleId="IntenseQuote"')
+    expect(issues.filter((issue) => issue.severity === "error")).toEqual([])
+  })
+
+  test("writes multi-column brief cards as fixed-layout Word card tables", async () => {
+    const spec = minimalRenderableWordDocSpec()
+    spec.sections = [{
+      id: "brief-cards",
+      level: 1,
+      title: "Executive Snapshot",
+      briefCards: [
+        { title: "Status", value: "Ready", body: "All required evidence is attached.", footer: "Updated today", tone: "success" },
+        { title: "Risk", value: "Low", body: "No blocking issues remain.", tone: "info" },
+        { title: "Owner", value: "Platform Team", footer: "Primary contact", tone: "neutral" },
+      ],
+      paragraphs: ["Brief cards should stay in this section before the narrative."],
+    }]
+
+    const bytes = await new WordDocBuilder().build(spec)
+    const documentXml = await readDocxPart(bytes, "word/document.xml")
+    const issues = await new DocxRenderQualityGate().check(bytes)
+
+    expect(documentXml).toContain('<w:tblLayout w:type="fixed"/>')
+    expect(documentXml).toContain('<w:shd w:fill="E8F5E9"/>')
+    expect(documentXml).toContain('<w:shd w:fill="EAF3FF"/>')
+    expect(documentXml).toContain('<w:t xml:space="preserve">Status</w:t>')
+    expect(documentXml).toContain('<w:t xml:space="preserve">Ready</w:t>')
+    expect(documentXml).toContain('<w:t xml:space="preserve">All required evidence is attached.</w:t>')
+    expect(documentXml).toContain('<w:t xml:space="preserve">Updated today</w:t>')
+    expect(appearsBefore(documentXml, "Status", "Brief cards should stay in this section before the narrative.")).toBe(true)
+    expect(issues.filter((issue) => issue.severity === "error")).toEqual([])
+  })
+
+  test("writes source evidence cards as traceable fixed-layout Word cards", async () => {
+    const spec = minimalRenderableWordDocSpec()
+    spec.sections = [{
+      id: "evidence-cards",
+      level: 1,
+      title: "Evidence Summary",
+      paragraphs: ["Evidence cards should preserve source context without becoming a plain source list."],
+      evidenceCards: [
+        {
+          title: "Architecture Decision",
+          summary: "The design review requires source evidence to remain attached to the claim.",
+          source: "Architecture Review",
+          path: "docs/review.docx",
+          locator: "section-2",
+          quote: "Evidence must stay anchored.",
+          role: "primary",
+          confidence: "high",
+          sourceRefs: ["REQ-9", "ARCH-2"],
+        },
+        {
+          title: "Open Risk",
+          summary: "One referenced section conflicts with the proposed rollout wording.",
+          source: "Risk Register",
+          path: "docs/risks.docx",
+          role: "contradictory",
+          confidence: "medium",
+        },
+      ],
+    }]
+
+    const bytes = await new WordDocBuilder().build(spec)
+    const documentXml = await readDocxPart(bytes, "word/document.xml")
+    const issues = await new DocxRenderQualityGate().check(bytes)
+
+    expect(documentXml).toContain('<w:tblLayout w:type="fixed"/>')
+    expect(documentXml).toContain('<w:t xml:space="preserve">Architecture Decision</w:t>')
+    expect(documentXml).toContain('<w:t xml:space="preserve">The design review requires source evidence to remain attached to the claim.</w:t>')
+    expect(documentXml).toContain('<w:pStyle w:val="Quote"/>')
+    expect(documentXml).toContain('<w:t xml:space="preserve">Evidence must stay anchored.</w:t>')
+    expect(documentXml).toContain('<w:t xml:space="preserve">来源：Architecture Review</w:t>')
+    expect(documentXml).toContain('<w:t xml:space="preserve">路径：docs/review.docx</w:t>')
+    expect(documentXml).toContain('<w:t xml:space="preserve">定位：section-2</w:t>')
+    expect(documentXml).toContain('<w:t xml:space="preserve">引用：REQ-9, ARCH-2</w:t>')
+    expect(documentXml).toContain('<w:shd w:fill="F0F7FF"/>')
+    expect(documentXml).toContain('<w:shd w:fill="FFF4CE"/>')
+    expect(appearsBefore(documentXml, "Evidence Summary", "Architecture Decision")).toBe(true)
+    expect(issues.filter((issue) => issue.severity === "error")).toEqual([])
+  })
+
+  test("writes external hyperlinks internal anchors and cross-reference fields", async () => {
+    const spec = minimalRenderableWordDocSpec()
+    spec.sections = [
+      {
+        id: "overview",
+        level: 1,
+        title: "Overview",
+        bookmark: "sec_overview",
+        richParagraphs: [{
+          runs: [
+            { text: "Read " },
+            { text: "OpenAI docs", hyperlink: { url: "https://openai.com/docs", tooltip: "Official docs" } },
+            { text: " and jump to " },
+            { text: "implementation", hyperlink: { anchor: "sec_impl" } },
+            { text: "." },
+          ],
+        }],
+        tables: [{
+          id: "tbl-link-support",
+          caption: "Link support status.",
+          label: "Table",
+          number: "1",
+          bookmark: "tbl_link_support",
+          headers: ["Item", "Status"],
+          rows: [["Link support", "Implemented"]],
+        }],
+      },
+      {
+        id: "implementation",
+        level: 1,
+        title: "Implementation",
+        bookmark: "sec_impl",
+        richParagraphs: [{
+          runs: [
+            { text: "See " },
+            { reference: { bookmark: "fig_architecture", field: "REF", fallbackText: "Figure 1" } },
+            { text: " and " },
+            { reference: { bookmark: "tbl_link_support", field: "REF", fallbackText: "Table 1" } },
+            { text: " for the architecture and table references." },
+          ],
+        }],
+        figures: [{
+          id: "fig-architecture",
+          title: "Architecture",
+          caption: "Reference target.",
+          label: "Figure",
+          number: "1",
+          bookmark: "fig_architecture",
+          altText: "Architecture reference target",
+          image: {
+            contentType: "image/png",
+            bytes: tinyPngBytes(),
+            width: 320,
+            height: 180,
+          },
+        }],
+      },
+    ]
+
+    const bytes = await new WordDocBuilder().build(spec)
+    const documentXml = await readDocxPart(bytes, "word/document.xml")
+    const documentRelsXml = await readDocxPart(bytes, "word/_rels/document.xml.rels")
+    const issues = await new DocxRenderQualityGate().check(bytes)
+    const inspection = await new WordDocumentInspector().inspect({ path: "hyperlinks.docx", bytes })
+
+    expect(documentRelsXml).toContain('Id="rIdHyperlink1"')
+    expect(documentRelsXml).toContain('Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink" Target="https://openai.com/docs" TargetMode="External"')
+    expect(documentXml).toContain('<w:hyperlink r:id="rIdHyperlink1" w:tooltip="Official docs">')
+    expect(documentXml).toContain('<w:hyperlink w:anchor="sec_impl">')
+    expect(documentXml).toContain('w:name="sec_overview"')
+    expect(documentXml).toContain('w:name="sec_impl"')
+    expect(documentXml).toContain('w:name="fig_architecture"')
+    expect(documentXml).toContain('w:name="tbl_link_support"')
+    expect(documentXml).toContain('<w:instrText xml:space="preserve"> REF fig_architecture \\h </w:instrText>')
+    expect(documentXml).toContain('<w:instrText xml:space="preserve"> REF tbl_link_support \\h </w:instrText>')
+    expect(documentXml).toContain('<w:instrText xml:space="preserve"> SEQ Table \\* ARABIC </w:instrText>')
+    expect(documentXml).toContain('<w:t xml:space="preserve">Figure 1</w:t>')
+    expect(documentXml).toContain('<w:t xml:space="preserve">Table 1</w:t>')
+    expect(documentXml).toContain('<w:t xml:space="preserve">: Link support status.</w:t>')
+    expect(inspection.summary.hyperlinkCount).toBe(2)
+    expect(inspection.hyperlinks.find((link) => link.relId === "rIdHyperlink1")?.target).toBe("https://openai.com/docs")
+    expect(inspection.hyperlinks.find((link) => link.relId === "rIdHyperlink1")?.tooltip).toBe("Official docs")
+    expect(inspection.hyperlinks.find((link) => link.anchor === "sec_impl")?.text).toBe("implementation")
+    expect(inspection.locators.some((locator) => locator.kind === "hyperlink" && locator.hyperlinkAnchor === "sec_impl")).toBe(true)
+    expect(issues.filter((issue) => issue.severity === "error")).toEqual([])
+  })
+
+  test("writes headless-safe static TOC with internal navigation anchors", async () => {
+    const spec = minimalRenderableWordDocSpec()
+    spec.layout = {
+      ...(spec.layout ?? {}),
+      navigation: { mode: "static-toc", includeTopBottomLinks: true, includeBackToTocLinks: true },
+    }
+    spec.sections = [
+      {
+        id: "overview",
+        level: 1,
+        title: "Overview",
+        paragraphs: ["Overview body."],
+      },
+      {
+        id: "implementation",
+        level: 2,
+        title: "Implementation",
+        paragraphs: ["Implementation body."],
+      },
+    ]
+
+    const bytes = await new WordDocBuilder().build(spec)
+    const documentXml = await readDocxPart(bytes, "word/document.xml")
+    const issues = await new DocxRenderQualityGate().check(bytes)
+
+    expect(documentXml).not.toContain("fldSimple")
+    expect(documentXml).toContain('w:name="Top"')
+    expect(documentXml).toContain('w:name="TOC"')
+    expect(documentXml).toContain('w:name="Bottom"')
+    expect(documentXml).toContain('w:name="sec_1_overview"')
+    expect(documentXml).toContain('w:name="sec_2_implementation"')
+    expect(documentXml).toContain('<w:hyperlink w:anchor="sec_1_overview">')
+    expect(documentXml).toContain('<w:hyperlink w:anchor="sec_2_implementation">')
+    expect(documentXml).toContain('<w:hyperlink w:anchor="Top">')
+    expect(documentXml).toContain('<w:hyperlink w:anchor="Bottom">')
+    expect(documentXml.match(/<w:hyperlink w:anchor="TOC">/g)?.length).toBeGreaterThanOrEqual(2)
+    expect(documentXml).toContain("返回目录")
+    expect(issues.filter((issue) => issue.severity === "error")).toEqual([])
+  })
+
+  test("writes plain text checkbox dropdown and date content controls for fillable forms", async () => {
+    const spec = minimalRenderableWordDocSpec()
+    spec.metadata.documentType = "fillable-form"
+    spec.protection = { mode: "forms" }
+    spec.sections = [{
+      id: "intake",
+      level: 1,
+      title: "Intake Form",
+      paragraphs: ["Please complete the fields below."],
+      formFields: [
+        { label: "Reviewer", tag: "REVIEWER", placeholder: "{{REVIEWER}}", helpText: "Person responsible for review." },
+        { label: "Review date", tag: "REVIEW_DATE", value: "2026-06-27" },
+        { label: "Approved", tag: "APPROVED", kind: "checkbox", checked: true },
+        { label: "Priority", tag: "PRIORITY", kind: "dropdown", value: "High", options: ["Low", "Medium", "High"] },
+        { label: "Due date", tag: "DUE_DATE", kind: "date", value: "2026-07-01", dateFormat: "yyyy-MM-dd" },
+      ],
+    }]
+
+    const bytes = await new WordDocBuilder().build(spec)
+    const parts = await docxPartPaths(bytes)
+    const contentTypesXml = await readDocxPart(bytes, "[Content_Types].xml")
+    const documentXml = await readDocxPart(bytes, "word/document.xml")
+    const documentRelsXml = await readDocxPart(bytes, "word/_rels/document.xml.rels")
+    const settingsXml = await readDocxPart(bytes, "word/settings.xml")
+    const issues = await new DocxRenderQualityGate().check(bytes)
+
+    expect(parts).toContain("word/settings.xml")
+    expect(contentTypesXml).toContain('PartName="/word/settings.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.settings+xml"')
+    expect(documentRelsXml).toContain('Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/settings" Target="settings.xml"')
+    expect(settingsXml).toContain('<w:documentProtection w:edit="forms" w:enforcement="1"/>')
+    expect(documentXml).toContain("<w:sdt>")
+    expect(documentXml).toContain('xmlns:w14="http://schemas.microsoft.com/office/word/2010/wordml"')
+    expect(documentXml).toContain('<w:alias w:val="Reviewer"/>')
+    expect(documentXml).toContain('<w:tag w:val="REVIEWER"/>')
+    expect(documentXml).toContain('<w:text w:multiLine="1"/>')
+    expect(documentXml).toContain("<w14:checkbox>")
+    expect(documentXml).toContain('<w14:checked w14:val="1"/>')
+    expect(documentXml).toContain('<w:t xml:space="preserve">☑</w:t>')
+    expect(documentXml).toContain("<w:dropDownList>")
+    expect(documentXml).toContain('<w:listItem w:value="High" w:displayText="High"/>')
+    expect(documentXml).toContain("<w:date>")
+    expect(documentXml).toContain('<w:dateFormat w:val="yyyy-MM-dd"/>')
+    expect(documentXml).toContain('<w:fullDate w:val="2026-07-01T00:00:00Z"/>')
+    expect(documentXml).toContain('<w:t xml:space="preserve">{{REVIEWER}}</w:t>')
+    expect(documentXml).toContain('<w:t xml:space="preserve">2026-06-27</w:t>')
+    expect(documentXml).toContain('<w:t xml:space="preserve">High</w:t>')
+    expect(documentXml).toContain('<w:t xml:space="preserve">2026-07-01</w:t>')
+    expect(issues.filter((issue) => issue.severity === "error")).toEqual([])
+
+    const inspection = await new WordDocumentInspector().inspect({ path: "docs/form-controls.docx", bytes })
+    expect(inspection.summary.contentControlCount).toBe(5)
+    expect(inspection.contentControls.map((control) => control.kind)).toEqual(["plainText", "plainText", "checkbox", "dropdown", "date"])
+    expect(inspection.contentControls.find((control) => control.tag === "APPROVED")?.checked).toBe(true)
+    expect(inspection.contentControls.find((control) => control.tag === "PRIORITY")?.options).toEqual(["Low", "Medium", "High"])
+    expect(inspection.contentControls.find((control) => control.tag === "DUE_DATE")?.dateFormat).toBe("yyyy-MM-dd")
+  })
+
+  test("writes true footnotes and endnotes with note parts and relationships", async () => {
+    const spec = minimalRenderableWordDocSpec()
+    spec.sections = [{
+      id: "notes",
+      level: 1,
+      title: "Notes",
+      richParagraphs: [{
+        runs: [
+          { text: "This claim has a footnote" },
+          { note: { kind: "footnote", text: "Footnote text should live in word/footnotes.xml." } },
+          { text: " and an endnote" },
+          { note: { kind: "endnote", text: "Endnote text should live in word/endnotes.xml." } },
+          { text: "." },
+        ],
+      }],
+      tables: [{
+        headers: ["Item", "Status"],
+        rows: [["Notes", "Implemented"]],
+      }],
+    }]
+
+    const bytes = await new WordDocBuilder().build(spec)
+    const parts = await docxPartPaths(bytes)
+    const contentTypesXml = await readDocxPart(bytes, "[Content_Types].xml")
+    const documentXml = await readDocxPart(bytes, "word/document.xml")
+    const documentRelsXml = await readDocxPart(bytes, "word/_rels/document.xml.rels")
+    const footnotesXml = await readDocxPart(bytes, "word/footnotes.xml")
+    const endnotesXml = await readDocxPart(bytes, "word/endnotes.xml")
+    const stylesXml = await readDocxPart(bytes, "word/styles.xml")
+    const issues = await new DocxRenderQualityGate().check(bytes)
+
+    expect(parts).toContain("word/footnotes.xml")
+    expect(parts).toContain("word/endnotes.xml")
+    expect(contentTypesXml).toContain('PartName="/word/footnotes.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.footnotes+xml"')
+    expect(contentTypesXml).toContain('PartName="/word/endnotes.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.endnotes+xml"')
+    expect(documentRelsXml).toContain('Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/footnotes" Target="footnotes.xml"')
+    expect(documentRelsXml).toContain('Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/endnotes" Target="endnotes.xml"')
+    expect(documentXml).toContain('<w:footnoteReference w:id="1"/>')
+    expect(documentXml).toContain('<w:endnoteReference w:id="1"/>')
+    expect(footnotesXml).toContain('<w:footnote w:id="-1" w:type="separator">')
+    expect(footnotesXml).toContain('<w:footnote w:id="0" w:type="continuationSeparator">')
+    expect(footnotesXml).toContain("Footnote text should live in word/footnotes.xml.")
+    expect(endnotesXml).toContain('<w:endnote w:id="-1" w:type="separator">')
+    expect(endnotesXml).toContain('<w:endnote w:id="0" w:type="continuationSeparator">')
+    expect(endnotesXml).toContain("Endnote text should live in word/endnotes.xml.")
+    expect(stylesXml).toContain('w:styleId="FootnoteText"')
+    expect(stylesXml).toContain('w:styleId="EndnoteText"')
+    expect(issues.filter((issue) => issue.severity === "error")).toEqual([])
+
+    const inspection = await new WordDocumentInspector().inspect({ path: "docs/notes.docx", bytes })
+    expect(inspection.summary.noteCount).toBe(2)
+    expect(inspection.summary.footnoteCount).toBe(1)
+    expect(inspection.summary.endnoteCount).toBe(1)
+    expect(inspection.notes.map((note) => note.noteKind)).toEqual(["footnote", "endnote"])
+    expect(inspection.notes.map((note) => note.noteId)).toEqual(["1", "1"])
+    expect(inspection.notes.map((note) => note.text)).toEqual([
+      "Footnote text should live in word/footnotes.xml.",
+      "Endnote text should live in word/endnotes.xml.",
+    ])
+    expect(inspection.notes.every((note) => note.locator.kind === "note")).toBe(true)
+    expect(inspection.notes.some((note) => note.text.includes("separator"))).toBe(false)
+  })
+
+  test("writes and inspects multi-paragraph footnotes and endnotes", async () => {
+    const spec = minimalRenderableWordDocSpec()
+    spec.sections = [{
+      id: "multi-note",
+      level: 1,
+      title: "Multi Note",
+      richParagraphs: [{
+        runs: [
+          { text: "This claim has a multi-paragraph footnote" },
+          { note: { kind: "footnote", text: "Footnote first paragraph.\nFootnote second paragraph." } },
+          { text: " and a multi-paragraph endnote" },
+          { note: { kind: "endnote", text: "Endnote first paragraph.\nEndnote second paragraph." } },
+          { text: "." },
+        ],
+      }],
+    }]
+
+    const bytes = await new WordDocBuilder().build(spec)
+    const footnotesXml = await readDocxPart(bytes, "word/footnotes.xml")
+    const endnotesXml = await readDocxPart(bytes, "word/endnotes.xml")
+    const footnoteXml = readNoteItemXml(footnotesXml, "footnote", "1")
+    const endnoteXml = readNoteItemXml(endnotesXml, "endnote", "1")
+    const issues = await new DocxRenderQualityGate().check(bytes)
+
+    expect((footnoteXml.match(/<w:p\b/g) ?? []).length).toBe(2)
+    expect((endnoteXml.match(/<w:p\b/g) ?? []).length).toBe(2)
+    expect(footnoteXml).toContain("<w:footnoteRef/>")
+    expect(endnoteXml).toContain("<w:endnoteRef/>")
+    expect(footnoteXml).not.toContain("<w:br/>")
+    expect(endnoteXml).not.toContain("<w:br/>")
+    expect(issues.filter((issue) => issue.severity === "error")).toEqual([])
+
+    const inspection = await new WordDocumentInspector().inspect({ path: "docs/multi-notes.docx", bytes })
+    expect(inspection.notes.map((note) => note.text)).toEqual([
+      "Footnote first paragraph.\nFootnote second paragraph.",
+      "Endnote first paragraph.\nEndnote second paragraph.",
+    ])
+  })
+
+  test("uses design presets, real Word numbering, and explicit table geometry for generic documents", async () => {
+    const spec = minimalRenderableWordDocSpec()
+    spec.layout = {
+      preset: "compact_reference_guide",
+      page: { size: "letter" },
+      formFactors: [{ sectionId: "team-rules", factor: "checklist", reason: "dense reference" }],
+      tablePolicy: { requireExplicitGeometry: true, avoidProseHeavyTables: true },
+    }
+    spec.sections = [{
+      id: "team-rules",
+      level: 1,
+      title: "Checklist",
+      formFactor: "checklist",
+      paragraphs: ["This generic document is intentionally not a source-backed coding guideline report."],
+      bullets: ["Review scope", "Confirm owner"],
+      numberedItems: ["Draft", "Review", "Publish"],
+      lists: [
+        {
+          kind: "bullet",
+          title: "Nested scope list",
+          items: [
+            { text: "Plan review scope", children: [{ text: "Map owners" }, { text: "Confirm evidence", children: [{ text: "Attach render artifacts" }] }] },
+          ],
+        },
+        {
+          kind: "numbered",
+          items: [
+            { text: "Prepare draft" },
+            { text: "Review draft", level: 1 },
+            { text: "Publish final", level: 2 },
+          ],
+        },
+        {
+          kind: "checklist",
+          items: [
+            { text: "Visual QA completed", checked: true },
+            { text: "Warnings disclosed", checked: false },
+          ],
+        },
+      ],
+      tables: [{
+        headers: ["Item", "Owner", "Status"],
+        rows: [["Scope", "Team", "Open"]],
+        columnWidthRatios: [50, 25, 25],
+        columnAlignments: ["left", "center", "center"],
+      }],
+    }]
+    spec.references = []
+
+    const bytes = await new WordDocBuilder().build(spec)
+    const parts = await docxPartPaths(bytes)
+    const contentTypesXml = await readDocxPart(bytes, "[Content_Types].xml")
+    const documentXml = await readDocxPart(bytes, "word/document.xml")
+    const documentRelsXml = await readDocxPart(bytes, "word/_rels/document.xml.rels")
+    const numberingXml = await readDocxPart(bytes, "word/numbering.xml")
+    const issues = await new DocxRenderQualityGate().check(bytes)
+
+    expect(parts).toContain("word/numbering.xml")
+    expect(contentTypesXml).toContain('PartName="/word/numbering.xml"')
+    expect(documentRelsXml).toContain('Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/numbering" Target="numbering.xml"')
+    expect(numberingXml).toContain('w:numFmt w:val="bullet"')
+    expect(numberingXml).toContain('w:numFmt w:val="decimal"')
+    expect(numberingXml).toContain('w:multiLevelType w:val="hybridMultilevel"')
+    expect(numberingXml).toContain('<w:lvl w:ilvl="2">')
+    expect(numberingXml).toContain('w:lvlText w:val="%1.%2.%3."')
+    expect(numberingXml).toContain('w:lvlText w:val="☐"')
+    expect(numberingXml).toContain('w:lvlText w:val="☑"')
+    expect(documentXml).toContain('<w:pgSz w:w="12240" w:h="15840"/>')
+    expect(documentXml).toContain("<w:numPr>")
+    expect(documentXml).toContain('<w:ilvl w:val="1"/>')
+    expect(documentXml).toContain('<w:ilvl w:val="2"/>')
+    expect(documentXml).toContain('<w:numId w:val="3"/>')
+    expect(documentXml).toContain('<w:numId w:val="4"/>')
+    expect(documentXml).not.toContain("<w:t xml:space=\"preserve\">• Review scope</w:t>")
+    expect(documentXml).not.toContain("<w:t xml:space=\"preserve\">1. Draft</w:t>")
+    expect(documentXml).toContain("<w:tblHeader/>")
+    expect(documentXml).toContain('<w:tblLayout w:type="fixed"/>')
+    expect(documentXml).toContain('<w:vAlign w:val="center"/>')
+    expect(issues.filter((issue) => issue.severity === "error")).toEqual([])
+    const inspection = await new WordDocumentInspector().inspect({ path: "docs/preset.docx", bytes })
+    const section = inspection.sections[0]!
+    expect(inspection.summary.sectionCount).toBe(1)
+    expect(section.page.widthTwips).toBe(12240)
+    expect(section.page.heightTwips).toBe(15840)
+    expect(section.page.orientation).toBe("portrait")
+    expect(section.page.margins?.top).toBeGreaterThan(0)
+    expect(section.headers).toEqual([{ type: "default", relId: "rIdHeader1" }])
+    expect(section.footers).toEqual([{ type: "default", relId: "rIdFooter1" }])
+    expect(section.isFinal).toBe(true)
+    expect(section.locator.kind).toBe("section")
+    expect(inspection.locators.some((locator) => locator.kind === "section" && locator.sectionIndex === 1)).toBe(true)
+    expect(inspection.summary.listCount).toBe(5)
+    expect(inspection.summary.listItemCount).toBe(14)
+    expect(inspection.lists.some((list) => list.kind === "bullet" && list.levelCount === 3 && list.items.some((item) => item.text === "Attach render artifacts" && item.level === 2))).toBe(true)
+    expect(inspection.lists.some((list) => list.kind === "numbered" && list.items.some((item) => item.text === "Publish final" && item.level === 2))).toBe(true)
+    expect(inspection.lists.some((list) => list.kind === "checklist" && list.itemCount === 2)).toBe(true)
+    expect(inspection.paragraphs.find((paragraph) => paragraph.text === "Map owners")?.list).toEqual(expect.objectContaining({ kind: "bullet", level: 1 }))
+    expect(inspection.paragraphs.find((paragraph) => paragraph.text === "Visual QA completed")?.list).toEqual(expect.objectContaining({ kind: "checklist" }))
+    expect(inspection.locators.some((locator) => locator.kind === "list" && locator.listIndex === 1)).toBe(true)
+  })
+
+  test("writes merged table cells with real gridSpan and vMerge OOXML", async () => {
+    const spec = minimalRenderableWordDocSpec()
+    spec.metadata.documentType = "merged-table-sample"
+    spec.sources = []
+    spec.references = []
+    spec.sections = [{
+      id: "merged-table",
+      level: 1,
+      title: "Merged Table",
+      tables: [{
+        headers: ["Phase", "Owner", "Status"],
+        rows: [
+          [{ text: "Implementation overview", colSpan: 3, alignment: "center" }],
+          [{ text: "Design", rowSpan: 2 }, "Alice", "Draft"],
+          ["Bob", "Review"],
+          ["Release", { text: "Program", colSpan: 2 }],
+        ],
+        columnWidthRatios: [30, 35, 35],
+      }],
+    }]
+
+    const bytes = await new WordDocBuilder().build(spec)
+    const documentXml = await readDocxPart(bytes, "word/document.xml")
+    const issues = await new DocxRenderQualityGate().check(bytes)
+
+    expect(documentXml).toContain('<w:gridSpan w:val="3"/>')
+    expect(documentXml).toContain('<w:gridSpan w:val="2"/>')
+    expect(documentXml).toContain('<w:vMerge w:val="restart"/>')
+    expect(documentXml).toContain("<w:vMerge/>")
+    expect(documentXml).toContain("<w:tblHeader/>")
+    expect(documentXml).toContain('<w:tblLayout w:type="fixed"/>')
+    expect(issues.filter((issue) => issue.severity === "error")).toEqual([])
+  })
+
+  test("writes long tables with repeated headers and auto-expanding rows for cross-page rendering", async () => {
+    const spec = minimalRenderableWordDocSpec()
+    spec.metadata.documentType = "long-table-sample"
+    spec.sources = []
+    spec.references = []
+    spec.sections = [{
+      id: "long-table",
+      level: 1,
+      title: "Long Table",
+      paragraphs: ["This table is intentionally long enough to exercise Word pagination behavior."],
+      tables: [{
+        headers: ["ID", "Requirement", "Owner", "Status"],
+        rows: Array.from({ length: 72 }, (_, index) => [
+          `REQ-${String(index + 1).padStart(3, "0")}`,
+          `Requirement ${index + 1} stays concise so rows can wrap naturally without fixed heights.`,
+          index % 2 === 0 ? "Platform" : "Verification",
+          index % 3 === 0 ? "Done" : "Open",
+        ]),
+        columnWidthRatios: [14, 52, 18, 16],
+        columnAlignments: ["center", "left", "center", "center"],
+      }],
+    }]
+
+    const bytes = await new WordDocBuilder().build(spec)
+    const documentXml = await readDocxPart(bytes, "word/document.xml")
+    const tables = documentXml.match(/<w:tbl>[\s\S]*?<\/w:tbl>/g) ?? []
+    const tableXml = tables.find((table) => table.includes("REQ-001") && table.includes("REQ-072"))
+    const issues = await new DocxRenderQualityGate().check(bytes)
+
+    expect(tableXml).toBeDefined()
+    const targetTableXml = tableXml ?? ""
+    expect(targetTableXml).toContain("<w:tblHeader/>")
+    expect(targetTableXml).toContain('<w:tblLayout w:type="fixed"/>')
+    expect(targetTableXml).toContain("<w:tblGrid>")
+    expect(targetTableXml).not.toContain("<w:trHeight")
+    expect(targetTableXml.match(/<w:tr>/g)?.length ?? 0).toBeGreaterThan(70)
+    expect((targetTableXml.match(/<w:tblHeader\/>/g) ?? []).length).toBe(1)
+    expect(issues.filter((issue) => issue.severity === "error")).toEqual([])
+    expect(issues.filter((issue) => issue.code === "a11y-missing-table-header")).toEqual([])
+  })
+
+  test("rejects table merge specs that overflow the declared column grid", () => {
+    const spec = minimalRenderableWordDocSpec()
+    spec.sections = [{
+      id: "bad-merge",
+      level: 1,
+      title: "Bad Merge",
+      tables: [{
+        headers: ["A", "B"],
+        rows: [
+          [{ text: "Too wide", colSpan: 3 }],
+          [{ text: "Too tall", rowSpan: 3 }, "Value"],
+        ],
+      }],
+    }]
+
+    const issues = new WordDocSpecValidator().validate(spec)
+    expect(issues.filter((issue) => issue.code === "invalid-table-span").length).toBeGreaterThanOrEqual(2)
+  })
+
+  test("resolves Word preset aliases and renders first-page header patterns", async () => {
+    const spec = minimalRenderableWordDocSpec()
+    spec.layout = {
+      presetAlias: "decision_memo",
+      headerPattern: "memo_masthead",
+      navigation: { mode: "none" },
+      overrides: [{ role: "memo-title", reason: "Decision memo opening block", tokenChanges: { titleCase: "upper" } }],
+    }
+    spec.cover = {
+      title: "Launch Decision",
+      subtitle: "Delay launch vs ship with onboarding gap",
+      preparedFor: "Executive Team",
+      preparedBy: "ChipMate",
+    }
+
+    const tokens = resolveWordPresetTokenMap(spec.layout)
+    const bytes = await new WordDocBuilder().build(spec)
+    const documentXml = await readDocxPart(bytes, "word/document.xml")
+    const stylesXml = await readDocxPart(bytes, "word/styles.xml")
+    const issues = new WordDocSpecValidator().validate(spec)
+
+    expect(resolveWordDesignPreset(spec.layout)).toBe("standard_business_brief")
+    expect(resolveWordHeaderPattern(spec.layout)).toBe("memo_masthead")
+    expect(tokens.alias).toBe("decision_memo")
+    expect(tokens.typography.bodyFont).toBe("Arial")
+    expect(documentXml).toContain('<w:t xml:space="preserve">Launch Decision</w:t>')
+    expect(documentXml).toContain('<w:t xml:space="preserve">Prepared For</w:t>')
+    expect(documentXml).toContain('<w:t xml:space="preserve">Executive Team</w:t>')
+    expect(documentXml).toContain('<w:tblLayout w:type="fixed"/>')
+    expect(stylesXml).toContain('<w:rFonts w:ascii="Arial"')
+    expect(issues.filter((issue) => issue.severity === "error")).toEqual([])
+  })
+
+  test("keeps google_docs_default first page simple and audits ignored header patterns", async () => {
+    const spec = minimalRenderableWordDocSpec()
+    spec.layout = {
+      preset: "google_docs_default",
+      headerPattern: "proposal_centerpiece",
+      navigation: { mode: "none" },
+    }
+    spec.cover = {
+      title: "Simple Docs Draft",
+      subtitle: "Native-looking Word draft",
+    }
+
+    const bytes = await new WordDocBuilder().build(spec)
+    const documentXml = await readDocxPart(bytes, "word/document.xml")
+    const stylesXml = await readDocxPart(bytes, "word/styles.xml")
+    const issues = new WordDocSpecValidator().validate(spec)
+
+    expect(resolveWordHeaderPattern(spec.layout)).toBe("none")
+    expect(documentXml).toContain('<w:t xml:space="preserve">Simple Docs Draft</w:t>')
+    expect(documentXml).not.toContain('<w:t xml:space="preserve">项目</w:t>')
+    expect(documentXml).not.toContain('<w:t xml:space="preserve">Prepared For</w:t>')
+    expect(stylesXml).toContain('<w:rFonts w:ascii="Arial"')
+    expect(issues.map((issue) => issue.code)).toContain("google-docs-header-pattern-ignored")
+  })
+
+  test("writes definition lists and source lists as structured fixed-layout Word tables", async () => {
+    const spec = minimalRenderableWordDocSpec()
+    spec.metadata.documentType = "technical-reference"
+    spec.sources = []
+    spec.references = []
+    spec.sections = [{
+      id: "structured-blocks",
+      level: 1,
+      title: "Structured Blocks",
+      formFactor: "definition-list",
+      definitionList: [
+        { term: "Review Gate", definition: "A required checkpoint before release.", note: "Owner confirms evidence." },
+        { term: "Render Artifact", definition: "A PNG page image produced from the DOCX." },
+      ],
+      sourceList: [
+        { sourceId: "REQ-1", title: "Internal Requirements", role: "internal", origin: "internal_company", path: "docs/requirements.docx", note: "Primary source." },
+      ],
+    }]
+
+    const bytes = await new WordDocBuilder().build(spec)
+    const documentXml = await readDocxPart(bytes, "word/document.xml")
+    const issues = await new DocxRenderQualityGate().check(bytes)
+    const validatorIssues = new WordDocSpecValidator().validate(spec)
+
+    expect(documentXml).toContain('<w:t xml:space="preserve">术语</w:t>')
+    expect(documentXml).toContain('<w:t xml:space="preserve">定义 / 说明</w:t>')
+    expect(documentXml).toContain('<w:t xml:space="preserve">Review Gate</w:t>')
+    expect(documentXml).toContain('<w:t xml:space="preserve">备注：Owner confirms evidence.</w:t>')
+    expect(documentXml).toContain('<w:t xml:space="preserve">来源</w:t>')
+    expect(documentXml).toContain('<w:t xml:space="preserve">Internal Requirements</w:t>')
+    expect(documentXml).toContain('<w:t xml:space="preserve">docs/requirements.docx</w:t>')
+    expect(documentXml.match(/<w:tblLayout w:type="fixed"\/>/g)?.length).toBeGreaterThanOrEqual(2)
+    expect(issues.filter((issue) => issue.severity === "error")).toEqual([])
+    expect(validatorIssues.some((issue) => issue.code === "missing-sources")).toBe(true)
+  })
+
+  test("reports common accessibility audit warnings for images tables and headings", async () => {
+    const spec = minimalRenderableWordDocSpec()
+    spec.sections = [
+      {
+        id: "top",
+        level: 1,
+        title: "Top Section",
+        paragraphs: ["A11y audit sample."],
+        figures: [{
+          id: "fig-a11y",
+          title: "A11y Figure",
+          caption: "This image intentionally loses alt text in the test fixture.",
+          image: {
+            contentType: "image/png",
+            bytes: tinyPngBytes(),
+            width: 120,
+            height: 80,
+          },
+        }],
+        tables: [{
+          headers: ["Field", "Value"],
+          rows: [["Owner", "Team"]],
+        }],
+      },
+      {
+        id: "skipped",
+        level: 3,
+        title: "Skipped Level",
+        paragraphs: ["This heading skips level 2."],
+      },
+    ]
+    let bytes = await new WordDocBuilder().build(spec)
+    bytes = await replaceDocxPart(bytes, "word/document.xml", (xml) => xml
+      .replace(/\sdescr="[^"]*"/, ' descr=""')
+      .replace("<w:tblHeader/>", ""))
+
+    const issueCodes = (await new DocxRenderQualityGate().check(bytes)).map((issue) => issue.code)
+    expect(issueCodes).toContain("a11y-missing-image-alt")
+    expect(issueCodes).toContain("a11y-missing-table-header")
+    expect(issueCodes).toContain("a11y-heading-level-skip")
+  })
+
+  test("reports table overflow and prose-heavy cell risks before visual rendering", async () => {
+    const spec = minimalRenderableWordDocSpec()
+    const longCell = "This table cell is intentionally written as prose rather than comparable row and column data. ".repeat(6)
+    spec.references = []
+    spec.sections = [{
+      id: "wide-table",
+      level: 1,
+      title: "Wide Table",
+      tables: [{
+        headers: ["A", "B", "C", "D", "E", "F", "G"],
+        rows: [[longCell, "b", "c", "d", "e", "f", "g"]],
+        columnWidthRatios: [1, 1, 1, 1, 1, 1, 1],
+      }],
+    }]
+
+    let bytes = await new WordDocBuilder().build(spec)
+    bytes = await replaceDocxPart(bytes, "word/document.xml", (xml) => xml
+      .replace(/<w:tblW w:w="\d+" w:type="dxa"\/>/, '<w:tblW w:w="20000" w:type="dxa"/>')
+      .replace(/<w:gridCol w:w="\d+"\/>/, '<w:gridCol w:w="20000"/>'))
+
+    const warnings = (await new DocxRenderQualityGate().check(bytes))
+      .filter((issue) => issue.code === "table-overflow-risk")
+      .map((issue) => issue.message)
+    expect(warnings.some((message) => message.includes("exceeds usable page width"))).toBe(true)
+    expect(warnings.some((message) => message.includes("has 7 columns"))).toBe(true)
+    expect(warnings.some((message) => message.includes("long prose-heavy cells"))).toBe(true)
   })
 
   test("rejects Word 2016 repair-prone ordering and broken package relationships", async () => {
@@ -4073,8 +9130,12 @@ function sourceBlockTextForTest(block: SourceBackedBlock) {
     block.codeBlock?.code,
     block.items?.join("\n"),
     block.text,
-    block.table ? [block.table.headers.join(" | "), ...block.table.rows.map((row) => row.join(" | "))].join("\n") : "",
+    block.table ? [block.table.headers.join(" | "), ...plainTableRowsForTest(block.table).map((row) => row.join(" | "))].join("\n") : "",
   ].filter(Boolean).join("\n")
+}
+
+function plainTableRowsForTest(table: TableSpec) {
+  return table.rows.map((row) => row.map((cell) => typeof cell === "string" ? cell : cell.text))
 }
 
 class TimeoutModelProvider implements DocAgentModelProvider {
@@ -4425,6 +9486,20 @@ async function readDocxPart(bytes: Uint8Array, partPath: string) {
   return await part.async("string")
 }
 
+function readNoteItemXml(xml: string, kind: "footnote" | "endnote", id: string) {
+  const match = xml.match(new RegExp(`<w:${kind}\\b[^>]*\\bw:id="${id}"[\\s\\S]*?<\\/w:${kind}>`))
+  if (!match) throw new Error(`Missing ${kind} ${id}`)
+  return match[0]
+}
+
+async function readDocxBinaryPart(bytes: Uint8Array, partPath: string) {
+  const JSZip = (await import("jszip")).default
+  const zip = await JSZip.loadAsync(Buffer.from(bytes))
+  const part = zip.file(partPath)
+  if (!part) throw new Error(`Missing DOCX part: ${partPath}`)
+  return await part.async("uint8array")
+}
+
 async function docxPartPaths(bytes: Uint8Array) {
   const JSZip = (await import("jszip")).default
   const zip = await JSZip.loadAsync(Buffer.from(bytes))
@@ -4443,10 +9518,320 @@ async function replaceDocxPart(bytes: Uint8Array, partPath: string, replace: (xm
   return await zip.generateAsync({ type: "nodebuffer", compression: "DEFLATE" })
 }
 
+async function writeDocxPart(bytes: Uint8Array, partPath: string, content: string | Uint8Array) {
+  const JSZip = (await import("jszip")).default
+  const zip = await JSZip.loadAsync(Buffer.from(bytes))
+  zip.file(partPath, content)
+  return await zip.generateAsync({ type: "nodebuffer", compression: "DEFLATE" })
+}
+
+function replaceFirstSdtByTag(xml: string, tag: string, replace: (sdtXml: string) => string) {
+  let replaced = false
+  return xml.replace(/<w:sdt\b[\s\S]*?<\/w:sdt>/g, (sdtXml) => {
+    if (replaced || !sdtXml.includes(`<w:tag w:val="${tag}"`)) return sdtXml
+    replaced = true
+    return replace(sdtXml)
+  })
+}
+
+function splitSdtTextRuns(sdtXml: string, originalText: string, parts: [string, string]) {
+  return sdtXml.replace(
+    new RegExp(`<w:t\\\\b([^>]*)>${escapeRegExp(originalText)}<\\/w:t>`),
+    `<w:t$1>${parts[0]}</w:t></w:r><w:r><w:t$1>${parts[1]}</w:t>`,
+  )
+}
+
+function richContentControlFixtureXml() {
+  return [
+    "<w:sdt>",
+    "<w:sdtPr><w:alias w:val=\"Rich field\"/><w:tag w:val=\"RICH\"/><w:id w:val=\"9101\"/><w:richText/></w:sdtPr>",
+    "<w:sdtContent>",
+    "<w:p><w:r><w:t>Rich </w:t></w:r><w:r><w:rPr><w:b/></w:rPr><w:t>body</w:t></w:r></w:p>",
+    "</w:sdtContent>",
+    "</w:sdt>",
+  ].join("")
+}
+
+function nestedContentControlFixtureXml() {
+  return [
+    "<w:sdt>",
+    "<w:sdtPr><w:alias w:val=\"Outer field\"/><w:tag w:val=\"OUTER\"/><w:id w:val=\"9201\"/></w:sdtPr>",
+    "<w:sdtContent>",
+    "<w:p><w:r><w:t>Outer before</w:t></w:r></w:p>",
+    "<w:sdt>",
+    "<w:sdtPr><w:alias w:val=\"Inner field\"/><w:tag w:val=\"INNER\"/><w:id w:val=\"9202\"/><w:text/></w:sdtPr>",
+    "<w:sdtContent><w:p><w:r><w:t>Inner text</w:t></w:r></w:p></w:sdtContent>",
+    "</w:sdt>",
+    "<w:p><w:r><w:t>Outer after</w:t></w:r></w:p>",
+    "</w:sdtContent>",
+    "</w:sdt>",
+  ].join("")
+}
+
+function escapeRegExp(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+}
+
+async function addCommentMetadataParts(bytes: Uint8Array, comments: Array<{ commentId: string; paraId: string; parentParaId?: string; durableId?: string; done?: boolean }>) {
+  let nextBytes = await replaceDocxPart(bytes, "word/comments.xml", (xml) => {
+    let nextXml = xml
+    if (!nextXml.includes("xmlns:w14=")) nextXml = nextXml.replace("<w:comments ", '<w:comments xmlns:w14="http://schemas.microsoft.com/office/word/2010/wordml" ')
+    if (!nextXml.includes("xmlns:w15=")) nextXml = nextXml.replace("<w:comments ", '<w:comments xmlns:w15="http://schemas.microsoft.com/office/word/2012/wordml" ')
+    return nextXml.replace(/<w:comment\b[\s\S]*?<\/w:comment>/g, (commentXml) => {
+      const id = commentXml.match(/\bw:id="([^"]+)"/)?.[1]
+      const item = comments.find((comment) => comment.commentId === id)
+      if (!item) return commentXml
+      return commentXml.replace(/<w:p\b(?![^>]*\b(?:[A-Za-z0-9_-]+:)?paraId=)/, `<w:p w14:paraId="${item.paraId}"`)
+    })
+  })
+  nextBytes = await writeDocxPart(nextBytes, "word/commentsExtended.xml", commentsExtendedFixtureXml(comments))
+  nextBytes = await writeDocxPart(nextBytes, "word/commentsIds.xml", commentsIdsFixtureXml(comments))
+  nextBytes = await replaceDocxPart(nextBytes, "[Content_Types].xml", (xml) => addCommentMetadataContentTypes(xml))
+  nextBytes = await replaceDocxPart(nextBytes, "word/_rels/document.xml.rels", (xml) => addCommentMetadataRelationships(xml))
+  return nextBytes
+}
+
+function commentsExtendedFixtureXml(comments: Array<{ paraId: string; parentParaId?: string; done?: boolean }>) {
+  return [
+    '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>',
+    '<w15:commentsEx xmlns:w15="http://schemas.microsoft.com/office/word/2012/wordml">',
+    ...comments.map((comment) => [
+      `<w15:commentEx w15:paraId="${comment.paraId}"`,
+      comment.parentParaId ? ` w15:paraIdParent="${comment.parentParaId}"` : "",
+      comment.done ? ' w15:done="1"' : "",
+      "/>",
+    ].join("")),
+    "</w15:commentsEx>",
+  ].join("")
+}
+
+function commentsIdsFixtureXml(comments: Array<{ paraId: string; durableId?: string }>) {
+  return [
+    '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>',
+    '<w16cid:commentsIds xmlns:w16cid="http://schemas.microsoft.com/office/word/2016/wordml/cid">',
+    ...comments.map((comment) => `<w16cid:commentId w16cid:paraId="${comment.paraId}" w16cid:durableId="${comment.durableId ?? `durable-${comment.paraId}`}"/>`),
+    "</w16cid:commentsIds>",
+  ].join("")
+}
+
+function addCommentMetadataContentTypes(xml: string) {
+  let next = xml
+  if (!next.includes('PartName="/word/commentsExtended.xml"')) next = next.replace("</Types>", '<Override PartName="/word/commentsExtended.xml" ContentType="application/vnd.ms-word.commentsExtended+xml"/></Types>')
+  if (!next.includes('PartName="/word/commentsIds.xml"')) next = next.replace("</Types>", '<Override PartName="/word/commentsIds.xml" ContentType="application/vnd.ms-word.commentsIds+xml"/></Types>')
+  return next
+}
+
+function addCommentMetadataRelationships(xml: string) {
+  let next = xml
+  if (!next.includes('Target="commentsExtended.xml"')) next = next.replace("</Relationships>", '<Relationship Id="rIdChipMateCommentsExtendedFixture" Type="http://schemas.microsoft.com/office/2011/relationships/commentsExtended" Target="commentsExtended.xml"/></Relationships>')
+  if (!next.includes('Target="commentsIds.xml"')) next = next.replace("</Relationships>", '<Relationship Id="rIdChipMateCommentsIdsFixture" Type="http://schemas.microsoft.com/office/2016/09/relationships/commentsIds" Target="commentsIds.xml"/></Relationships>')
+  return next
+}
+
+function watermarkHeaderFixtureXml(text?: string) {
+  return watermarkStoryFixtureXml("hdr", text)
+}
+
+function watermarkFooterFixtureXml(text?: string) {
+  return watermarkStoryFixtureXml("ftr", text)
+}
+
+async function ensurePngDefaultContentTypeFixture(bytes: Uint8Array) {
+  const contentTypesXml = await readDocxPart(bytes, "[Content_Types].xml")
+  if (contentTypesXml.includes('Extension="png"')) return bytes
+  return writeDocxPart(bytes, "[Content_Types].xml", contentTypesXml.replace("</Types>", '<Default Extension="png" ContentType="image/png"/></Types>'))
+}
+
+function backgroundImageRelsFixtureXml(relId: string, target: string) {
+  return [
+    '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>',
+    '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">',
+    `<Relationship Id="${relId}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="${target}"/>`,
+    "</Relationships>",
+  ].join("")
+}
+
+function drawingBackgroundHeaderFixtureXml() {
+  return [
+    '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>',
+    '<w:hdr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture">',
+    '<w:p><w:r><w:drawing>',
+    '<wp:anchor behindDoc="1" simplePos="0" relativeHeight="0">',
+    '<wp:extent cx="914400" cy="914400"/>',
+    '<wp:docPr id="81" name="Background image" descr="Header background image"/>',
+    '<a:graphic><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture">',
+    '<pic:pic><pic:nvPicPr><pic:cNvPr id="82" name="background.png"/><pic:cNvPicPr/></pic:nvPicPr>',
+    '<pic:blipFill><a:blip r:embed="rIdDrawingBg"/></pic:blipFill>',
+    '<pic:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="914400" cy="914400"/></a:xfrm></pic:spPr>',
+    '</pic:pic>',
+    '</a:graphicData></a:graphic>',
+    '</wp:anchor>',
+    '</w:drawing></w:r></w:p>',
+    '</w:hdr>',
+  ].join("")
+}
+
+function vmlImageBackgroundFooterFixtureXml() {
+  return [
+    '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>',
+    '<w:ftr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:v="urn:schemas-microsoft-com:vml" xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">',
+    '<w:p><w:r><w:pict>',
+    '<v:shape id="vml-background" style="position:absolute;margin-left:0;margin-top:0;width:468pt;height:468pt;z-index:-251654144">',
+    '<v:imagedata r:id="rIdVmlBg" o:title="vml background"/>',
+    '</v:shape>',
+    '</w:pict></w:r></w:p>',
+    '</w:ftr>',
+  ].join("")
+}
+
+function watermarkStoryFixtureXml(root: "hdr" | "ftr", text?: string) {
+  return [
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:${root} xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:v="urn:schemas-microsoft-com:vml" xmlns:o="urn:schemas-microsoft-com:office:office">`,
+    text
+      ? `<w:p><w:r><w:pict><v:shape id="fixture-watermark" o:spid="_x0000_s1026" type="#_x0000_t136"><v:textpath string="${text}"/></v:shape></w:pict></w:r></w:p>`
+      : "<w:p><w:r><w:t>Fixture story part</w:t></w:r></w:p>",
+    `</w:${root}>`,
+  ].join("")
+}
+
 function appearsBefore(text: string, earlier: string, later: string) {
   const earlierIndex = text.indexOf(earlier)
   const laterIndex = text.indexOf(later)
   return earlierIndex >= 0 && laterIndex >= 0 && earlierIndex < laterIndex
+}
+
+function tinyPngBytes() {
+  return Uint8Array.from([
+    0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+    0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
+    0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
+    0x08, 0x06, 0x00, 0x00, 0x00, 0x1f, 0x15, 0xc4,
+    0x89, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x44, 0x41,
+    0x54, 0x78, 0x9c, 0x63, 0xf8, 0x0f, 0x04, 0x00,
+    0x09, 0xfb, 0x03, 0xfd, 0xa7, 0x98, 0x9d, 0xa6,
+    0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e, 0x44,
+    0xae, 0x42, 0x60, 0x82,
+  ])
+}
+
+function alternateTinyPngBytes() {
+  return Uint8Array.from(Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=", "base64"))
+}
+
+async function installFakeWordRenderTools(_root: string, options?: { remote?: "ok" | "fail" | "invalid-json" }) {
+  const canvasModule = await import("canvas")
+  const server = createServer(async (request, response) => {
+    if (request.method !== "POST" || request.url !== "/render/word") {
+      response.writeHead(404, { "content-type": "application/json" })
+      response.end(JSON.stringify({ ok: false, issues: [{ severity: "error", code: "not-found", message: "not found" }] }))
+      return
+    }
+    if (options?.remote === "fail") {
+      response.writeHead(503, { "content-type": "application/json" })
+      response.end(JSON.stringify({ ok: false, issues: [{ severity: "error", code: "remote-fixture-failed", message: "fixture failure" }] }))
+      return
+    }
+    if (options?.remote === "invalid-json") {
+      response.writeHead(200, { "content-type": "application/json" })
+      response.end("{not valid json")
+      return
+    }
+    const body = await readRequestBody(request)
+    const payload = JSON.parse(body) as { docxBase64?: string }
+    const docxBytes = Buffer.from(payload.docxBase64 ?? "", "base64")
+    const hash = createHash("sha256").update(docxBytes).digest()
+    const canvas = canvasModule.createCanvas(32, 32)
+    const ctx = canvas.getContext("2d")
+    ctx.fillStyle = "#ffffff"
+    ctx.fillRect(0, 0, 32, 32)
+    ctx.fillStyle = `rgb(${hash[0]}, ${hash[1]}, ${hash[2]})`
+    ctx.fillRect(0, 0, 32, 32)
+    ctx.fillStyle = "rgba(0, 0, 0, 0.35)"
+    ctx.fillRect(hash[3]! % 24, hash[4]! % 24, 8, 8)
+    const png = canvas.toBuffer("image/png")
+    response.writeHead(200, { "content-type": "application/json" })
+    response.end(JSON.stringify({
+      ok: true,
+      pageCount: 1,
+      pdf: { contentType: "application/pdf", base64: Buffer.from("%PDF-1.4\n% ChipMate fixture\n").toString("base64") },
+      pages: [{
+        page: 1,
+        contentType: "image/png",
+        base64: png.toString("base64"),
+        width: 32,
+        height: 32,
+        visualSummary: fakeRemoteVisualSummary(),
+      }],
+      issues: [],
+      renderer: { kind: "remote-opencode", docxToPdf: "libreoffice", pdfToPng: "pdftoppm", sofficePath: "fixture-soffice", pdftoppmPath: "fixture-pdftoppm" },
+    }))
+  })
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve))
+  const address = server.address() as AddressInfo
+  const previousEndpoint = process.env.CHIPMATE_WORD_RENDER_REMOTE_ENDPOINT
+  process.env.CHIPMATE_WORD_RENDER_REMOTE_ENDPOINT = `http://127.0.0.1:${address.port}`
+  return () => {
+    server.close()
+    if (previousEndpoint === undefined) delete process.env.CHIPMATE_WORD_RENDER_REMOTE_ENDPOINT
+    else process.env.CHIPMATE_WORD_RENDER_REMOTE_ENDPOINT = previousEndpoint
+  }
+}
+
+function fakeRemoteVisualSummary() {
+  return {
+    page: 1,
+    width: 32,
+    height: 32,
+    totalPixels: 1024,
+    inkPixels: 1024,
+    inkRatio: 1,
+    contentBounds: { left: 0, top: 0, right: 31, bottom: 31, width: 32, height: 32 },
+    edgeInk: { top: true, right: true, bottom: true, left: true },
+    visualRegions: ["top", "middle", "bottom"].flatMap((row, rowIndex) => ["left", "center", "right"].map((column, columnIndex) => ({
+      id: `${row}-${column}`,
+      row,
+      column,
+      bounds: {
+        left: columnIndex * 10,
+        top: rowIndex * 10,
+        right: columnIndex === 2 ? 31 : columnIndex * 10 + 9,
+        bottom: rowIndex === 2 ? 31 : rowIndex * 10 + 9,
+        width: columnIndex === 2 ? 12 : 10,
+        height: rowIndex === 2 ? 12 : 10,
+      },
+      inkPixels: 16,
+      inkRatio: 0.16,
+    }))),
+    inkComponents: [{
+      id: "ink-component-1",
+      bounds: { left: 0, top: 0, right: 31, bottom: 31, width: 32, height: 32 },
+      inkPixels: 1024,
+      tileCount: 1,
+      inkRatio: 1,
+      pageArea: "middle-center",
+      edgeTouching: { top: true, right: true, bottom: true, left: true },
+      riskFlags: ["near-page-edge"],
+    }],
+  }
+}
+
+async function readRequestBody(request: IncomingMessage) {
+  const chunks: Buffer[] = []
+  for await (const chunk of request) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk))
+  return Buffer.concat(chunks).toString("utf8")
+}
+
+async function styleDriftDocxFixture() {
+  const bytes = await new WordDocBuilder().build(minimalRenderableWordDocSpec())
+  return await replaceDocxPart(bytes, "word/document.xml", (xml) => xml.replace("<w:body>", [
+    "<w:body>",
+    "<w:p>",
+    '<w:pPr><w:pStyle w:val="Normal"/><w:spacing w:after="480"/><w:ind w:left="720"/></w:pPr>',
+    '<w:r><w:rPr><w:rFonts w:ascii="Courier New" w:hAnsi="Courier New"/><w:b/><w:i/><w:color w:val="FF0000"/><w:sz w:val="32"/></w:rPr>',
+    '<w:t xml:space="preserve">Manual Formatting Heading</w:t>',
+    "</w:r>",
+    "</w:p>",
+  ].join("")))
 }
 
 function minimalRenderableWordDocSpec(): WordDocSpec {

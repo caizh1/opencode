@@ -41,6 +41,10 @@ export function chipMateEventSessionID(event: ChipMateEvent) {
   if (event.type === "message.part.removed" || event.type === "message.removed" || event.type === "session.status") {
     return stringValue(properties.sessionID)
   }
+  if (event.type === "usage.updated") return stringValue(properties.sessionID)
+  if (event.type === "goal.updated" || event.type === "goal.cleared" || event.type === "goal.operation.started" || event.type === "goal.operation.finished") {
+    return stringValue(properties.sessionID)
+  }
   if (event.type === "session.error") return stringValue(properties.sessionID)
   if (event.type === "session.created" || event.type === "session.updated" || event.type === "session.deleted") {
     return stringValue(objectRecord(properties.info).id)
@@ -140,6 +144,15 @@ export function applyChipMateEventToMessages(
         ...result,
         sessionID: relevantSessionID,
         error: sessionErrorMessage(objectRecord(event.properties).error),
+      }
+    case "goal.updated":
+    case "goal.cleared":
+    case "goal.operation.started":
+    case "goal.operation.finished":
+      return {
+        ...result,
+        sessionID: relevantSessionID,
+        changed: true,
       }
     case "session.created":
     case "session.updated":

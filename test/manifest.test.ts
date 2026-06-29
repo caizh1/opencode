@@ -35,6 +35,30 @@ describe("extension manifest", () => {
     expect(vscodeIgnore).not.toMatch(/^node_modules\/\*\*$/m)
   })
 
+  test("trims dependency package extras without excluding runtime packages", () => {
+    const vscodeIgnore = readFileSync(join(import.meta.dir, "..", ".vscodeignore"), "utf8")
+
+    for (const pattern of [
+      "node_modules/**/demo/**",
+      "node_modules/**/example/**",
+      "node_modules/**/fixtures/**",
+      "node_modules/**/__tests__/**",
+      "node_modules/@types/**",
+    ]) {
+      expect(vscodeIgnore).toContain(pattern)
+    }
+    for (const runtimePackage of [
+      "node_modules/elkjs/**",
+      "node_modules/mermaid/**",
+      "node_modules/pdfjs-dist/**",
+      "node_modules/canvas/**",
+      "node_modules/web-tree-sitter/**",
+      "node_modules/js-tiktoken/**",
+    ]) {
+      expect(vscodeIgnore).not.toMatch(new RegExp(`^${runtimePackage.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`, "m"))
+    }
+  })
+
   test("packages ELKJS as the offline draw.io layout engine", () => {
     const elkPackage = JSON.parse(readFileSync(join(import.meta.dir, "..", "node_modules", "elkjs", "package.json"), "utf8"))
     const elkLicense = readFileSync(join(import.meta.dir, "..", "node_modules", "elkjs", "LICENSE.md"), "utf8")
@@ -49,11 +73,38 @@ describe("extension manifest", () => {
     expect(vscodeIgnore).not.toMatch(/^node_modules\/elkjs\/lib\/elk-worker\.min\.js$/m)
   })
 
+  test("packages Mermaid as the offline PNG renderer runtime", () => {
+    const vscodeIgnore = readFileSync(join(import.meta.dir, "..", ".vscodeignore"), "utf8")
+
+    expect(typeof manifest.dependencies?.mermaid).toBe("string")
+    expect(manifest.devDependencies?.mermaid).toBeUndefined()
+    expect(existsSync(join(import.meta.dir, "..", "node_modules", "mermaid", "dist", "mermaid.esm.min.mjs"))).toBe(true)
+    expect(existsSync(join(import.meta.dir, "..", "node_modules", "mermaid", "dist", "chunks", "mermaid.esm.min"))).toBe(true)
+    expect(vscodeIgnore).not.toMatch(/^node_modules\/mermaid\/\*\*$/m)
+    expect(vscodeIgnore).not.toMatch(/^node_modules\/mermaid\/dist\/mermaid\.esm\.min\.mjs$/m)
+    expect(vscodeIgnore).not.toMatch(/^node_modules\/mermaid\/dist\/chunks\/mermaid\.esm\.min\/\*\*$/m)
+    expect(vscodeIgnore).toMatch(/^node_modules\/mermaid\/dist\/chunks\/mermaid\.esm\/\*\*$/m)
+    expect(vscodeIgnore).toMatch(/^node_modules\/mermaid\/dist\/mermaid\.esm\.mjs$/m)
+  })
+
   test("keeps PDF canvas rendering runtime while trimming non-runtime package files", () => {
     const canvasPackage = JSON.parse(readFileSync(join(import.meta.dir, "..", "node_modules", "canvas", "package.json"), "utf8"))
     const vscodeIgnore = readFileSync(join(import.meta.dir, "..", ".vscodeignore"), "utf8")
 
     expect(typeof manifest.dependencies?.["pdfjs-dist"]).toBe("string")
+    expect(properties["chipmate.wordRender.remoteEndpoint"]?.default).toBe("")
+    expect(properties["chipmate.wordRender.remoteEndpoint"]?.description).toContain("Remote ChipMate Word/Mermaid render server")
+    expect(existsSync(join(import.meta.dir, "..", "node_modules", "pdfjs-dist", "legacy", "build", "pdf.mjs"))).toBe(true)
+    expect(existsSync(join(import.meta.dir, "..", "node_modules", "pdfjs-dist", "cmaps", "Adobe-GB1-UCS2.bcmap"))).toBe(true)
+    expect(existsSync(join(import.meta.dir, "..", "node_modules", "pdfjs-dist", "standard_fonts", "LiberationSans-Regular.ttf"))).toBe(true)
+    expect(existsSync(join(import.meta.dir, "..", "node_modules", "pdfjs-dist", "image_decoders", "pdf.image_decoders.mjs"))).toBe(true)
+    expect(vscodeIgnore).not.toMatch(/^node_modules\/pdfjs-dist\/legacy\/build\/pdf\.mjs$/m)
+    expect(vscodeIgnore).not.toMatch(/^node_modules\/pdfjs-dist\/cmaps\/\*\*$/m)
+    expect(vscodeIgnore).not.toMatch(/^node_modules\/pdfjs-dist\/standard_fonts\/\*\*$/m)
+    expect(vscodeIgnore).not.toMatch(/^node_modules\/pdfjs-dist\/image_decoders\/\*\*$/m)
+    expect(vscodeIgnore).not.toMatch(/^node_modules\/\*\*\/doc\/\*\*$/m)
+    expect(vscodeIgnore).not.toMatch(/^node_modules\/pdfjs-dist\/legacy\/build\/pdf\.worker\.mjs$/m)
+    expect(vscodeIgnore).toMatch(/^node_modules\/pdfjs-dist\/legacy\/build\/pdf\.worker\.min\.mjs$/m)
     expect(canvasPackage.name).toBe("canvas")
     expect(existsSync(join(import.meta.dir, "..", "node_modules", "canvas", "build", "Release", "canvas.node"))).toBe(true)
     expect(vscodeIgnore).not.toMatch(/^node_modules\/canvas\/\*\*$/m)
@@ -94,6 +145,80 @@ describe("extension manifest", () => {
     expect(chatHtml).not.toContain("embed.diagrams.net")
     expect(chatHtml).not.toContain("viewer.diagrams.net")
     expect(vscodeIgnore).not.toMatch(/^media\/vendor\/drawio/m)
+  })
+
+  test("packages the documents helper script catalog as skill resources", () => {
+    const skillRoot = join(import.meta.dir, "..", ".agents", "skills", "documents")
+    const skillMarkdown = readFileSync(join(skillRoot, "SKILL.md"), "utf8")
+    const scriptsReadme = readFileSync(join(skillRoot, "scripts", "README.md"), "utf8")
+    const helperManifest = JSON.parse(readFileSync(join(skillRoot, "scripts", "manifest.json"), "utf8")) as {
+      schemaVersion?: number
+      executionPolicy?: { directExecution?: boolean }
+      helpers?: Array<{ name?: string; codexScript?: string; chipmateEquivalent?: string[]; status?: string; execution?: Record<string, unknown> }>
+    }
+    const helperNames = new Set((helperManifest.helpers ?? []).map((helper) => helper.codexScript))
+    const helperManifestReport = helperManifest.helpers?.find((helper) => helper.name === "helper_manifest_report")
+    const wordRuntimeReport = helperManifest.helpers?.find((helper) => helper.name === "word_runtime_field_refresh_report")
+    const wordRuntimeReportJson = wordRuntimeReport ? JSON.parse(JSON.stringify(wordRuntimeReport)) as {
+      execution?: {
+        inputSchema?: {
+          additionalProperties?: boolean
+          properties?: { documentPath?: { pathKind?: string; allowedExtensions?: string[] } }
+        }
+      }
+    } : undefined
+    const wordRuntimeInputSchema = wordRuntimeReportJson?.execution?.inputSchema as {
+      additionalProperties?: boolean
+      properties?: { documentPath?: { pathKind?: string; allowedExtensions?: string[] } }
+    } | undefined
+    const vscodeIgnore = readFileSync(join(import.meta.dir, "..", ".vscodeignore"), "utf8")
+
+    expect(skillMarkdown).toContain("scripts/manifest.json")
+    expect(scriptsReadme).toContain("Do not execute files from this directory")
+    expect(scriptsReadme).toContain("directly. Script execution")
+    expect(helperManifest.schemaVersion).toBe(2)
+    expect(helperManifest.executionPolicy?.directExecution).toBe(false)
+    expect(helperManifest.helpers?.length).toBeGreaterThanOrEqual(30)
+    expect(helperManifestReport).toMatchObject({
+      status: "executable",
+      chipmateEquivalent: ["chipmate_run_skill_script"],
+      execution: expect.objectContaining({
+        directExecution: true,
+        runtime: "node",
+        entrypoint: "scripts/helper_manifest_report.mjs",
+        networkPolicy: "none",
+      }),
+    })
+    expect(wordRuntimeReport).toMatchObject({
+      status: "executable",
+      chipmateEquivalent: ["refresh_word_native_fields", "chipmate_run_skill_script"],
+      execution: expect.objectContaining({
+        directExecution: true,
+        runtime: "node",
+        entrypoint: "scripts/word_runtime_field_refresh_report.mjs",
+        networkPolicy: "none",
+      }),
+    })
+    expect(wordRuntimeInputSchema?.additionalProperties).toBe(false)
+    expect(wordRuntimeInputSchema?.properties?.documentPath?.pathKind).toBe("workspace")
+    expect(wordRuntimeInputSchema?.properties?.documentPath?.allowedExtensions).toEqual([".docx"])
+    for (const script of [
+      "apply_template_styles.py",
+      "render_and_diff.py",
+      "docx_ooxml_patch.py",
+      "merge_docx_append.py",
+      "xlsx_to_docx_table.py",
+      "watermark_audit_remove.py",
+    ]) {
+      expect(helperNames.has(script)).toBe(true)
+    }
+    expect(helperManifest.helpers?.find((helper) => helper.codexScript === "docx_ooxml_patch.py")).toMatchObject({
+      status: "native-tool",
+      chipmateEquivalent: ["apply_word_document_edits.patchOoxmlPart"],
+    })
+    expect(helperManifest.helpers?.every((helper) => Array.isArray(helper.chipmateEquivalent) && helper.chipmateEquivalent.length > 0)).toBe(true)
+    expect(vscodeIgnore).not.toMatch(/^\.agents\/\*\*$/m)
+    expect(vscodeIgnore).not.toMatch(/^\.agents\/skills\/documents\/scripts/m)
   })
 
   test("runs as a workspace extension for local and Remote SSH workspace hosts", () => {

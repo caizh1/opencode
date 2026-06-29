@@ -41,9 +41,6 @@ import {
   relativePath,
 } from "./context"
 import type { DocumentRagContextProvider } from "./document-rag"
-import { ChipMateDocModelProvider } from "./docAgent/ChipMateDocModelProvider"
-import { GuidelineReferencePackFlow } from "./docAgent/DocumentAgentFlow"
-import { DocxIntentDetector } from "./docAgent/DocxIntentDetector"
 import type {
   ConflictResolutionChoice,
   ConflictResolutionDecision,
@@ -67,18 +64,22 @@ import type {
   ChipMateAgentInfo as ChipMateAgentInfo,
   ChipMateMessage as ChipMateMessage,
   ChipMateModelInfo as ChipMateModelInfo,
+  ChipMateModelLimit,
   ChipMatePart as ChipMatePart,
   ChipMateEvent as ChipMateEvent,
   ChipMateSession as ChipMateSession,
   ChipMateSessionStatus as ChipMateSessionStatus,
+  ChipMateUsageStatsSnapshot,
   PromptModel,
   PermissionMode,
   CodeGraphStatus,
   RagConfigurationApplyResult,
-  RagStatus,
-  RenderedUsage,
-  RemoteSettings,
-} from "./types"
+	  RagStatus,
+	  RenderedUsage,
+	  RemoteSettings,
+	  ThreadGoal,
+	  ThreadGoalOperation,
+	} from "./types"
 
 import { connectionInputHasPassword, ragSettingsInputChangesEmbeddingIdentity, ragSettingsInputMatchesCurrent, saveCompletionSettings, savePermissionMode, saveRagSettings, saveSkillsSettings, saveToolsEnabled, type CompletionSettingsInput, type ConnectionSettingsInput, type RagSettingsInput } from "./settings"
 
@@ -96,6 +97,7 @@ const MODEL_REFRESH_TIMEOUT_MS = 8000
 const AGENT_REFRESH_TIMEOUT_MS = 8000
 const SESSION_REFRESH_TIMEOUT_MS = 8000
 const MESSAGE_REFRESH_TIMEOUT_MS = 5000
+const USAGE_STATS_TIMEOUT_MS = 8000
 const SESSION_STATUS_TIMEOUT_MS = 5000
 const SESSION_ABORT_TIMEOUT_MS = 5000
 const SESSION_TITLE_TIMEOUT_MS = 4000
@@ -104,6 +106,7 @@ const SEND_STATUS_POLL_INTERVAL_MS = 5000
 const MESSAGE_POLL_INTERVAL_MS = 1000
 const STREAMING_STATE_POST_THROTTLE_MS = 50
 const EXPORT_INTENT_TIMEOUT_MS = 15000
+const MERMAID_REPAIR_TIMEOUT_MS = 30000
 const EXPORT_INTENT_SESSION_TITLE = "VS Code export intent"
 const MAX_QUEUED_CHAT_SENDS = 10
 const DIAGNOSTIC_CONTEXT_LIMIT = 60
@@ -134,6 +137,7 @@ type WorkspaceFileQuickPickItem = vscode.QuickPickItem & {
 type ChatViewMessage =
   | { type: "ready" }
   | { type: "refresh" }
+  | { type: "loadUsageStats" }
   | { type: "refreshSessions" }
   | { type: "openAgentTerminal" }
   | { type: "openOutput" }
@@ -163,6 +167,16 @@ type ChatViewMessage =
     }
   | { type: "exportDrawioImage"; diagramId?: string; filenameHint?: string; dataUri?: string }
   | {
+      type: "mermaidRenderFailed"
+      sessionID?: string
+      messageId?: string
+      diagramId?: string
+      sourceHash?: string
+      source?: string
+      error?: string
+      language?: string
+    }
+  | {
       type: "drawioRenderTelemetry"
       phase?: string
       code?: string
@@ -173,12 +187,26 @@ type ChatViewMessage =
       frameSrc?: string
       usesCdn?: boolean
     }
+  | {
+      type: "webviewError"
+      message?: string
+      source?: string
+      lineno?: number
+      colno?: number
+      stack?: string
+      reason?: string
+    }
   | { type: "exportMermaidImage"; format?: "png"; filenameHint?: string; dataUrl?: string }
   | { type: "deleteQueuedSend"; id?: string }
   | { type: "editQueuedSend"; id?: string }
   | { type: "selectSession"; sessionID: string }
   | { type: "deleteSession"; sessionID: string }
   | { type: "deleteSessions"; sessionIDs: string[] }
+  | { type: "createGoal"; objective?: string; tokenBudget?: number; clientQueueID?: string }
+  | { type: "editGoal"; objective?: string; tokenBudget?: number | null }
+  | { type: "pauseGoal" }
+  | { type: "resumeGoal" }
+  | { type: "clearGoal" }
   | { type: "refreshModels" }
   | { type: "selectModel"; model: string }
   | { type: "searchFilesForMention"; query?: string; requestId?: number }
@@ -219,13 +247,14 @@ type ChatViewMessage =
   | { type: "saveSkillsSettings"; enabled: string[] }
   | { type: "savePermissionMode"; mode: PermissionMode }
   | { type: "saveToolsEnabled"; enabled: boolean }
-  | {
-      type: "sendMessage"
-      text: string
-      clientQueueID?: string
-      mentionedFiles?: MentionedFileRef[]
-      options?: Partial<ChatContextOptions>
-    }
+	  | {
+	      type: "sendMessage"
+	      text: string
+	      clientSendID?: string
+	      clientQueueID?: string
+	      mentionedFiles?: MentionedFileRef[]
+	      options?: Partial<ChatContextOptions>
+	    }
 
 type RenderedSession = {
   id: string
@@ -241,17 +270,46 @@ type RenderedPart = {
   title?: string
   text?: string
   xml?: string
+  sourceText?: string
   status?: string
   detail?: string
   preview?: string
   source?: string
+  displayMode?: string
   diagramId?: string
   toolCallID?: string
+  mmdPath?: string
+  absoluteMmdPath?: string
+  pngPath?: string
+  absolutePngPath?: string
+  width?: number
+  height?: number
+  renderProvider?: string
+  fallbackUsed?: boolean
   path?: string
   absolutePath?: string
   sourceCount?: number
   warningCount?: number
   warnings?: string[]
+  renderArtifactDir?: string
+  pdfArtifactPath?: string
+  pagePngPaths?: string[]
+  pagePngPreviewUris?: string[]
+  pageCount?: number
+  attempted?: boolean
+  ok?: boolean
+  visualQaStatus?: "completed" | "skipped"
+  skipReason?: "remote-unconfigured" | "remote-unavailable" | "remote-invalid-response" | "artifact-persist-failed"
+  remoteEndpoint?: string
+  pageVisualSummaries?: unknown[]
+  visualQaCoverage?: {
+    totalPages?: number
+    queuedPages?: number
+    batchSize?: number
+    batchCount?: number
+    mode?: string
+  }
+  runSummaryPath?: string
   approvalRequestId?: string
   approvalTitle?: string
   approvalSummary?: string
@@ -270,10 +328,12 @@ type RenderedPart = {
   answers?: Array<{ questionId: string; choiceId?: string; text?: string }>
   events?: DocAgentTimelineEvent[]
   startedAt?: number
+  updatedAt?: number
   current?: number
   total?: number
   fallbackCount?: number
   conflictCount?: number
+  items?: unknown[]
   requestId?: string
   conflicts?: RenderedDocAgentConflict[]
 }
@@ -300,6 +360,7 @@ type PendingDocAgentConflictResolution = {
 type RenderedMessage = {
   id: string
   role: string
+  mode?: string
   text: string
   timeCreated?: number
   timeCompleted?: number
@@ -339,12 +400,13 @@ type ActiveSendActivity = {
 
 type QueuedChatSend = {
   id: string
+  kind: "message" | "goal"
   fingerprint: string
   text: string
   options: ChatContextOptions
-  mentionedFiles: vscode.Uri[]
   mentionedFileRefs: QueuedMentionedFileRef[]
   contextItems: LocalContextItem[]
+  tokenBudget?: number
 }
 
 type RemoteChatViewProviderDeps = {
@@ -396,6 +458,9 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
   private codeIntelligence?: CodeIntelligenceSnapshot
   private loadingCodeIntelligence = false
   private codeIntelligenceError = ""
+  private usageStats?: ChipMateUsageStatsSnapshot
+  private loadingUsageStats = false
+  private usageStatsError = ""
   private skills: SkillMetadata[] = []
   private skillsError = ""
   private loadingSkills = false
@@ -405,6 +470,7 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
   private readonly hiddenExternalSessions = new Set<string>()
   private readonly hiddenExportIntentSessions = new Set<string>()
   private readonly acceptedLegacyPluginSessions = new Set<string>()
+  private readonly mermaidRepairAttempts = new Set<string>()
   private mentionIndex?: MentionIndexState
   private mentionIndexBuild?: MentionIndexBuildState
   private mentionIndexGeneration = 0
@@ -424,6 +490,8 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
   private readonly activeSendControllers = new Map<string, AbortController>()
   private readonly activeSendStartedAt = new Map<string, number>()
   private readonly sessionStatuses = new Map<string, ChipMateSessionStatus>()
+  private readonly goalsBySession = new Map<string, ThreadGoal>()
+  private readonly goalOperationsBySession = new Map<string, ThreadGoalOperation>()
   private readonly pendingSessionTitleIDs = new Set<string>()
   private localSendSessionID?: string
   private sessionTitleQueue = Promise.resolve()
@@ -498,12 +566,30 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
   resolveWebviewView(webviewView: vscode.WebviewView) {
     this.view = webviewView
     this.deps.output.appendLine(`[view] ChipMate using ${CHIPMATE_CHAT_VIEW_ID}`)
+    this.deps.output.appendLine(`[webview] resolved viewType=${webviewView.viewType} visible=${webviewView.visible}`)
+    const visibilitySubscription = webviewView.onDidChangeVisibility(() => {
+      this.deps.output.appendLine(`[webview] visibility visible=${webviewView.visible}`)
+      if (webviewView.visible) {
+        this.deps.output.appendLine("[webview] state repost reason=visibility")
+        this.postState()
+      }
+    })
+    webviewView.onDidDispose(() => {
+      visibilitySubscription.dispose()
+      this.deps.output.appendLine("[webview] disposed")
+      if (this.view === webviewView) this.view = undefined
+    })
+    const localResourceRoots = [
+      vscode.Uri.joinPath(this.deps.extensionUri, "media"),
+      vscode.Uri.joinPath(this.deps.extensionUri, "assets"),
+    ]
+    const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri
+    if (workspaceRoot) {
+      localResourceRoots.push(vscode.Uri.joinPath(workspaceRoot, ".chipmate", "docs"))
+    }
     webviewView.webview.options = {
       enableScripts: true,
-      localResourceRoots: [
-        vscode.Uri.joinPath(this.deps.extensionUri, "media"),
-        vscode.Uri.joinPath(this.deps.extensionUri, "assets"),
-      ],
+      localResourceRoots,
     }
     const brandIconUri = webviewView.webview.asWebviewUri(vscode.Uri.joinPath(this.deps.extensionUri, "media", "chipmate-icon.png")).toString()
     const mermaidScriptUri = webviewView.webview.asWebviewUri(vscode.Uri.joinPath(this.deps.extensionUri, "media", "vendor", "mermaid", "mermaid.min.js")).toString()
@@ -535,6 +621,7 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
     webviewView.webview.onDidReceiveMessage((message: ChatViewMessage) => {
       void this.handleMessage(message)
     })
+    this.deps.output.appendLine("[webview] state repost reason=resolve")
     this.postState()
     void this.refreshSkills()
   }
@@ -579,6 +666,7 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
         this.refreshModelList(client),
         this.refreshAgentList(client),
         this.refreshSessionList(client),
+        this.refreshUsageStats(client),
       ])
       if (sessionResult.status === "rejected") {
         this.reportRemoteConnectionFailure(client, "Failed to load sessions", sessionResult.reason)
@@ -869,13 +957,23 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
     this.pendingLocalUserMessages.delete(id)
   }
 
-  private addPendingLocalUserMessage(sessionID: string, fingerprint: string, message: RenderedMessage) {
+  private addPendingLocalUserMessage(sessionID: string | undefined, fingerprint: string, message: RenderedMessage) {
     this.pendingLocalUserMessages.set(message.id, {
       sessionID,
       fingerprint,
       text: message.text,
       createdAt: message.timeCreated ?? Date.now(),
       message,
+    })
+  }
+
+  private bindPendingLocalUserMessage(id: string, sessionID: string, fingerprint: string) {
+    const pending = this.pendingLocalUserMessages.get(id)
+    if (!pending) return
+    this.pendingLocalUserMessages.set(id, {
+      ...pending,
+      sessionID,
+      fingerprint,
     })
   }
 
@@ -892,14 +990,13 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   private pendingLocalUserMessagesForSession(sessionID: string | undefined) {
-    if (!sessionID) return []
     return [...this.pendingLocalUserMessages.values()].filter((pending) => pending.sessionID === sessionID)
   }
 
-  private sendFingerprint(
-    text: string,
-    options: ChatContextOptions,
-    mentionedFileRefs: QueuedMentionedFileRef[] | MentionedFileRef[],
+	  private sendFingerprint(
+	    text: string,
+	    options: ChatContextOptions,
+	    mentionedFileRefs: QueuedMentionedFileRef[] | MentionedFileRef[],
     contextItems: LocalContextItem[],
   ) {
     return chatSendFingerprint({
@@ -920,11 +1017,15 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
         endLine: item.kind === "selection" ? item.endLine : undefined,
         text: item.kind === "selection" ? item.text : undefined,
       })),
-    })
-  }
+	    })
+	  }
 
-  private duplicateSendMessage(sessionID: string | undefined, fingerprint: string) {
-    if (sessionID && this.pendingLocalUserMessagesForSession(sessionID).some((pending) => pending.fingerprint === fingerprint)) {
+	  private goalQueueFingerprint(objective: string, tokenBudget?: number) {
+	    return `goal:${objective.trim()}:${tokenBudget ?? ""}`
+	  }
+
+	  private duplicateSendMessage(sessionID: string | undefined, fingerprint: string) {
+    if (this.pendingLocalUserMessagesForSession(sessionID).some((pending) => pending.fingerprint === fingerprint)) {
       return "This message is already being sent."
     }
     if (sessionID && this.activeSends.get(sessionID)?.fingerprint === fingerprint) {
@@ -938,16 +1039,19 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
 
   private currentSessionSending() {
     const sessionID = this.sessionID
-    if (!sessionID) return false
+    if (!sessionID) return this.pendingLocalUserMessagesForSession(undefined).length > 0
+    if (this.pendingLocalUserMessagesForSession(sessionID).length > 0) return true
     if (this.activeSends.has(sessionID) || this.activeSendControllers.has(sessionID)) return true
     if (this.localSendSessionID === sessionID) return true
-    return this.sessionStatuses.get(sessionID)?.type === "busy"
+    const statusType = this.sessionStatuses.get(sessionID)?.type
+    return statusType === "busy" || statusType === "retry"
   }
 
   private currentSessionCancellable() {
     const sessionID = this.sessionID
     if (!sessionID || !this.currentSessionSending()) return false
-    return Boolean(this.activeSendControllers.has(sessionID) || this.activeSends.has(sessionID) || this.sessionStatuses.get(sessionID)?.type === "busy")
+    const statusType = this.sessionStatuses.get(sessionID)?.type
+    return Boolean(this.activeSendControllers.has(sessionID) || this.activeSends.has(sessionID) || statusType === "busy" || statusType === "retry")
   }
 
   private currentActiveSendActivity(): ActiveSendActivity | undefined {
@@ -983,7 +1087,7 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
 
   private updateSessionStatus(sessionID: string | undefined, status: ChipMateSessionStatus | undefined) {
     if (!sessionID || !status?.type) return
-    if (status.type === "busy") this.markSessionBusy(sessionID, status)
+    if (status.type === "busy" || status.type === "retry") this.markSessionBusy(sessionID, status)
     else {
       this.sessionStatuses.set(sessionID, status)
       this.markSessionInactive(sessionID)
@@ -992,7 +1096,7 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
     if (stage && this.sessionID === sessionID) {
       this.updatePendingLocalUserStage(sessionID, stage, chatSendStatusDetail(status))
     }
-    if ((status.type === "idle" || status.type === "error" || status.type === "retry") && !this.activeSends.has(sessionID)) {
+    if ((status.type === "idle" || status.type === "error") && !this.activeSends.has(sessionID)) {
       this.activeSendControllers.delete(sessionID)
       if (this.localSendSessionID === sessionID) this.localSendSessionID = undefined
       this.stopSendStatusWatchdog(sessionID)
@@ -1047,23 +1151,64 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
       return false
     }
 
-    this.queuedSends = [
-      ...this.queuedSends,
-      {
-        id: this.queuedSendID(clientQueueID),
-        fingerprint,
-        text,
-        options: { ...options },
-        mentionedFiles: [...mentionedFiles],
-        mentionedFileRefs: mentionedFileRefs.map((file) => ({ ...file })),
-        contextItems: contextItems.map((item) => ({ ...item })),
-      },
-    ]
+	    this.queuedSends = [
+	      ...this.queuedSends,
+	      {
+	        id: this.queuedSendID(clientQueueID),
+	        kind: "message",
+	        fingerprint,
+	        text,
+	        options: { ...options },
+	        mentionedFileRefs: mentionedFileRefs.map((file) => ({ ...file })),
+	        contextItems: contextItems.map((item) => ({ ...item })),
+	      },
+	    ]
     const message = `Queued ${this.queuedSends.length}/${MAX_QUEUED_CHAT_SENDS}.`
     this.deps.output.appendLine(`[send-queue] ${message}`)
-    this.postQueueUpdated(message)
-    return true
-  }
+	    this.postQueueUpdated(message)
+	    return true
+	  }
+
+	  private enqueueGoalCreate(objective: string, tokenBudget?: number, clientQueueID?: string) {
+	    const text = objective.trim()
+	    if (!text) {
+	      this.postQueueRejected(clientQueueID, "Describe a goal before sending.")
+	      return false
+	    }
+	    const fingerprint = this.goalQueueFingerprint(text, tokenBudget)
+	    if (this.queuedSends.some((item) => item.kind === "goal" && item.fingerprint === fingerprint)) {
+	      const duplicate = "This goal is already queued."
+	      this.deps.output.appendLine(`[send-queue] rejected duplicate goal: ${duplicate}`)
+	      this.postQueueRejected(clientQueueID, duplicate, "duplicate")
+	      this.postQueueUpdated(duplicate, "warning")
+	      return false
+	    }
+	    if (this.queuedSends.length >= MAX_QUEUED_CHAT_SENDS) {
+	      const message = `Chat send queue is full (${MAX_QUEUED_CHAT_SENDS}/${MAX_QUEUED_CHAT_SENDS}). Wait for the current reply to finish.`
+	      this.deps.output.appendLine(`[send-queue] ${message}`)
+	      this.postQueueRejected(clientQueueID, message)
+	      this.postQueueUpdated(message, "warning")
+	      return false
+	    }
+
+	    this.queuedSends = [
+	      ...this.queuedSends,
+	      {
+	        id: this.queuedSendID(clientQueueID),
+	        kind: "goal",
+	        fingerprint,
+	        text,
+	        options: this.contextOptions({}),
+	        mentionedFileRefs: [],
+	        contextItems: [],
+	        tokenBudget,
+	      },
+	    ]
+	    const message = `Goal queued ${this.queuedSends.length}/${MAX_QUEUED_CHAT_SENDS}.`
+	    this.deps.output.appendLine(`[send-queue] ${message}`)
+	    this.postQueueUpdated(message)
+	    return true
+	  }
 
   private clearQueuedSends() {
     if (this.queuedSends.length === 0) return
@@ -1079,21 +1224,23 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
     this.postQueueUpdated(this.queuedSends.length > 0 ? `Queued ${this.queuedSends.length}/${MAX_QUEUED_CHAT_SENDS}.` : "")
   }
 
-  private editQueuedSend(id: string | undefined) {
-    if (!id) return
-    const queued = this.queuedSends.find((item) => item.id === id)
-    if (!queued) return
-    this.queuedSends = this.queuedSends.filter((item) => item.id !== id)
-    this.postQueueUpdated(this.queuedSends.length > 0 ? `Queued ${this.queuedSends.length}/${MAX_QUEUED_CHAT_SENDS}.` : "")
-    this.deps.contextStore.restore(queued.contextItems)
-    this.postState()
-    this.view?.webview.postMessage({
-      type: "restoreQueuedSendDraft",
-      text: queued.text,
-      mentionedFiles: queued.mentionedFileRefs,
-      options: queued.options,
-    })
-  }
+	  private editQueuedSend(id: string | undefined) {
+	    if (!id) return
+	    const queued = this.queuedSends.find((item) => item.id === id)
+	    if (!queued) return
+	    this.queuedSends = this.queuedSends.filter((item) => item.id !== id)
+	    this.postQueueUpdated(this.queuedSends.length > 0 ? `Queued ${this.queuedSends.length}/${MAX_QUEUED_CHAT_SENDS}.` : "")
+	    if (queued.kind === "message") this.deps.contextStore.restore(queued.contextItems)
+	    this.postState()
+	    this.view?.webview.postMessage({
+	      type: "restoreQueuedSendDraft",
+	      kind: queued.kind,
+	      text: queued.text,
+	      mentionedFiles: queued.kind === "message" ? queued.mentionedFileRefs : [],
+	      options: queued.kind === "message" ? queued.options : {},
+	      tokenBudget: queued.kind === "goal" ? queued.tokenBudget : undefined,
+	    })
+	  }
 
   private async drainQueuedSends() {
     if (this.drainingQueuedSends || this.currentSessionSending() || this.queuedSends.length === 0) return
@@ -1102,12 +1249,16 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
     this.drainingQueuedSends = true
     try {
       while (!this.currentSessionSending() && this.queuedSends.length > 0 && this.connectionState === "connected" && this.deps.getClient()) {
-        const next = this.queuedSends.shift()
-        if (!next) continue
-        this.postQueueUpdated(this.queuedSends.length > 0 ? `Queued ${this.queuedSends.length}/${MAX_QUEUED_CHAT_SENDS}.` : "")
-        const mentioned = await this.resolveExistingMentionedFiles(next.mentionedFileRefs)
-        await this.processSendMessage(next.text, next.options, mentioned.uris, next.contextItems, mentioned.refs)
-      }
+	        const next = this.queuedSends.shift()
+	        if (!next) continue
+	        this.postQueueUpdated(this.queuedSends.length > 0 ? `Queued ${this.queuedSends.length}/${MAX_QUEUED_CHAT_SENDS}.` : "")
+	        if (next.kind === "goal") {
+	          await this.createGoal(next.text, next.tokenBudget)
+	          continue
+	        }
+	        const mentioned = await this.resolveExistingMentionedFiles(next.mentionedFileRefs)
+	        await this.processSendMessage(next.text, next.options, next.contextItems, mentioned.refs)
+	      }
     } finally {
       this.drainingQueuedSends = false
       this.postState()
@@ -1193,7 +1344,8 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
         return
       }
       if (status?.type === "retry") {
-        await this.failActiveSendWithRetry(client, sessionID, status, generation)
+        this.postState()
+        if (this.isActiveSend(client, sessionID, generation)) this.scheduleSendStatusWatchdog(client, sessionID, generation)
         return
       }
       if (status?.type === "error") {
@@ -1244,38 +1396,6 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
     if (this.isActiveSend(client, sessionID, generation)) this.scheduleMessagePollingFallback(client, sessionID, generation)
   }
 
-  private async failActiveSendWithRetry(
-    client: DirectAgentClient,
-    sessionID: string,
-    status: ChipMateSessionStatus,
-    generation = this.activeSends.get(sessionID)?.generation,
-  ) {
-    if (generation === undefined || !this.isActiveSend(client, sessionID, generation)) return
-
-    this.stopSendStatusWatchdog(sessionID)
-    this.stopMessagePollingFallback(sessionID)
-    const message = remoteRetryMessage(status)
-    this.deps.output.appendLine(`[event] ${message}`)
-    try {
-      await this.refreshSessionList(client)
-      if (this.sessionID === sessionID) await this.loadSessionMessages(client, sessionID)
-    } catch (error) {
-      this.logEventError("retry message refresh failed", error)
-    }
-    if (!this.isActiveSend(client, sessionID, generation)) return
-
-    this.updateSessionStatus(sessionID, status)
-    this.activeSends.delete(sessionID)
-    this.activeSendControllers.delete(sessionID)
-    if (this.localSendSessionID === sessionID) this.localSendSessionID = undefined
-    if (this.sessionID === sessionID) {
-      this.clearPendingLocalUserMessages(sessionID)
-      this.messages = [...this.messages, localMessage("error", message)]
-    }
-    this.postState()
-    if (this.sessionID === sessionID) void this.drainQueuedSends()
-  }
-
   private async failActiveSendWithInterruption(
     client: DirectAgentClient,
     sessionID: string,
@@ -1317,6 +1437,36 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
     if (!event) return
     this.logRemoteEventType(event.type)
     if (event.type === "server.connected") return
+    if (event.type === "usage.updated") {
+      void this.refreshUsageStats(client)
+      return
+    }
+    if (event.type === "goal.updated") {
+      const properties = event.properties ?? {}
+      const sessionID = typeof properties.sessionID === "string" ? properties.sessionID : ""
+      const goal = goalFromEvent(properties.goal)
+      if (sessionID && goal) this.goalsBySession.set(sessionID, goal)
+      if (sessionID === this.sessionID) this.postState()
+      return
+    }
+    if (event.type === "goal.cleared") {
+      const properties = event.properties ?? {}
+      const sessionID = typeof properties.sessionID === "string" ? properties.sessionID : ""
+      if (sessionID) {
+        this.goalsBySession.delete(sessionID)
+        this.goalOperationsBySession.delete(sessionID)
+      }
+      if (sessionID === this.sessionID) this.postState()
+      return
+    }
+    if (event.type === "goal.operation.started" || event.type === "goal.operation.finished") {
+      const properties = event.properties ?? {}
+      const sessionID = typeof properties.sessionID === "string" ? properties.sessionID : ""
+      const operation = goalOperationFromEvent(properties.operation)
+      if (sessionID && operation) this.goalOperationsBySession.set(sessionID, operation)
+      if (sessionID === this.sessionID) this.postState()
+      return
+    }
 
     const eventSessionID = chipMateEventSessionID(event)
     if (this.shouldSuppressStreamingEvent(event, eventSessionID)) {
@@ -1334,7 +1484,7 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
       }
       if (eventStatus.type === "retry") {
         this.flushStreamingStatePost()
-        void this.failActiveSendWithRetry(client, eventSessionID, eventStatus)
+        this.postState()
         return
       }
       if (eventStatus.type === "error" && eventStatus.interrupted === true) {
@@ -1369,7 +1519,8 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
     }
     if (sessionID && result.retry) {
       this.flushStreamingStatePost()
-      void this.failActiveSendWithRetry(client, sessionID, result.retry)
+      this.updateSessionStatus(sessionID, result.retry)
+      if (sessionID === this.sessionID) this.postState()
       return
     }
     if (sessionID && result.interruption) {
@@ -1439,6 +1590,7 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
       if (this.deps.getClient() !== client) return
       await this.refreshSessionList(client)
       if (this.sessionID === sessionID) await this.loadSessionMessages(client, sessionID)
+      void this.refreshUsageStats(client)
     } catch (error) {
       this.logEventError("final message refresh failed", error)
     } finally {
@@ -1458,7 +1610,9 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   private syncRenderedMessages() {
-    const renderedRemote = this.remoteMessages.map(renderMessage).filter((message) => message.text || message.parts.length > 0)
+    const renderedRemote = this.remoteMessages
+      .map((message) => renderMessage(message, this.modelLimitForMessage(message)))
+      .filter((message) => message.text || message.parts.length > 0)
     const result = mergeRenderedChatMessages({
       remoteMessages: renderedRemote,
       pendingMessages: this.pendingLocalUserMessagesForSession(this.sessionID),
@@ -1468,6 +1622,27 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
     }
     this.messages = result.messages
     if (this.sessionID) this.applyServerToolWarnings(this.sessionID)
+  }
+
+  private modelLimitForMessage(message: ChipMateMessage): ChipMateModelLimit | undefined {
+    const contextLimits = this.contextLimitsByModelID()
+    const qualifiedID = message.info.providerID && message.info.modelID ? `${message.info.providerID}/${message.info.modelID}` : undefined
+    const contextValue =
+      (qualifiedID ? contextLimits[qualifiedID] : undefined) ??
+      (message.info.modelID ? contextLimits[message.info.modelID] : undefined)
+    const context = typeof contextValue === "number" && Number.isFinite(contextValue) && contextValue > 0 ? contextValue : undefined
+    return context ? { context } : undefined
+  }
+
+  private contextLimitsByModelID() {
+    const entries: Array<[string, number]> = []
+    for (const model of this.models) {
+      if (!model.contextLimit || !Number.isFinite(model.contextLimit)) continue
+      entries.push([model.id, model.contextLimit])
+      entries.push([`${model.providerID}/${model.modelID}`, model.contextLimit])
+      entries.push([model.modelID, model.contextLimit])
+    }
+    return Object.fromEntries(entries)
   }
 
   private applyServerToolWarnings(sessionID: string) {
@@ -1542,6 +1717,31 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
     }
   }
 
+  private async refreshUsageStats(client = this.deps.getClient()) {
+    if (!client || this.connectionState !== "connected") {
+      this.loadingUsageStats = false
+      this.usageStatsError = this.connectionState === "connected" ? "用量统计客户端不可用。" : ""
+      this.postState()
+      return
+    }
+    if (this.loadingUsageStats) return
+    this.loadingUsageStats = true
+    this.usageStatsError = ""
+    this.postState()
+    try {
+      this.usageStats = await withRequestTimeout("usage stats", USAGE_STATS_TIMEOUT_MS, (signal) => client.getUsageStats(signal, {
+        contextLimitsByModelID: this.contextLimitsByModelID(),
+      }))
+      this.usageStatsError = ""
+    } catch (error) {
+      this.usageStatsError = `加载用量统计失败：${formatErrorMessage(error)}`
+      this.deps.output.appendLine(`[usage] ${this.usageStatsError}`)
+    } finally {
+      this.loadingUsageStats = false
+      this.postState()
+    }
+  }
+
   async sendQuickQuestion(text: string, options: Partial<ChatContextOptions>) {
     await this.reveal()
     await this.handleSendMessage(text, this.contextOptions(options), [])
@@ -1552,10 +1752,18 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
       this.deps.output.appendLine(`[webview] ${message.type}`)
       switch (message.type) {
         case "ready":
+          this.deps.output.appendLine(`[webview] ready visible=${this.view?.visible ?? false}`)
+          this.deps.output.appendLine("[webview] state repost reason=ready")
           this.postState()
+          break
+        case "webviewError":
+          this.logWebviewError(message)
           break
         case "refresh":
           await this.refresh()
+          break
+        case "loadUsageStats":
+          await this.refreshUsageStats()
           break
         case "refreshSessions":
           await this.refreshHistorySessions()
@@ -1610,6 +1818,9 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
         case "exportDrawioImage":
           await this.exportDrawioImage(message)
           break
+        case "mermaidRenderFailed":
+          await this.repairMermaidRenderFailure(message)
+          break
         case "drawioRenderTelemetry":
           this.logDrawioRenderTelemetry(message)
           break
@@ -1630,6 +1841,21 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
           break
         case "deleteSessions":
           await this.deleteSessions(message.sessionIDs)
+          break
+	        case "createGoal":
+	          await this.createGoal(message.objective, message.tokenBudget, message.clientQueueID)
+	          break
+        case "editGoal":
+          await this.editGoal(message.objective, message.tokenBudget)
+          break
+        case "pauseGoal":
+          await this.pauseGoal()
+          break
+        case "resumeGoal":
+          await this.resumeGoal()
+          break
+        case "clearGoal":
+          await this.clearGoal()
           break
         case "refreshModels":
           await this.refreshModels()
@@ -1735,13 +1961,12 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
           break
         case "sendMessage":
           {
-            const mentionedFileRefs = await this.resolveExistingMentionedFiles(message.mentionedFiles ?? [])
             await this.handleSendMessage(
               message.text,
               this.contextOptions(message.options),
-              mentionedFileRefs.uris,
-              mentionedFileRefs.refs,
+              message.mentionedFiles ?? [],
               message.clientQueueID,
+              message.clientSendID,
             )
           }
           break
@@ -1820,8 +2045,8 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
     const root = vscode.workspace.workspaceFolders?.[0]
     if (!root || !relative) return
     const normalized = relative.replace(/\\/g, "/").replace(/^\/+/, "")
-    if (!normalized.startsWith(".chipmate/docs/") || normalized.split("/").includes("..") || !normalized.toLowerCase().endsWith(".docx")) {
-      vscode.window.showWarningMessage("Generated document path is outside .chipmate/docs.")
+    if (!normalized.startsWith(".chipmate/docs/") || normalized.split("/").includes("..") || !/\.(?:docx|pdf|png)$/i.test(normalized)) {
+      vscode.window.showWarningMessage("Generated document path is outside .chipmate/docs or uses an unsupported extension.")
       return
     }
     const uri = vscode.Uri.joinPath(root.uri, ...normalized.split("/"))
@@ -1936,7 +2161,7 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
       "",
       "请基于以上澄清继续刚才的请求。",
     ].join("\n")
-    await this.sendMessage(fallbackText, this.contextOptions({}), [], this.deps.contextStore.snapshot(), [])
+    await this.sendMessage(fallbackText, this.contextOptions({}), this.deps.contextStore.snapshot(), [])
   }
 
   private async connectWithSettings(input: ConnectionSettingsInput, requestId?: number) {
@@ -2450,6 +2675,85 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
       this.loadingMessages = false
       this.postState()
     }
+	  }
+
+	  private async createGoal(objectiveInput?: string, tokenBudget?: number, clientQueueID?: string) {
+	    const client = this.connectedClient("Connect before creating a goal.")
+	    if (!client) {
+	      if (clientQueueID) this.postQueueRejected(clientQueueID, "Connect before creating a goal.")
+	      return
+	    }
+	    const objective = (objectiveInput ?? await vscode.window.showInputBox({
+	      title: "Create ChipMate Goal",
+	      prompt: "Persistent objective for ChipMate to pursue across turns.",
+	      ignoreFocusOut: true,
+	    }) ?? "").trim()
+	    if (!objective) return
+	    if (this.currentSessionSending()) {
+	      this.enqueueGoalCreate(objective, tokenBudget, clientQueueID)
+	      return
+	    }
+	    const sessionID = await this.getOrCreateSession(client)
+	    const goal = await withRequestTimeout("create goal", SESSION_REFRESH_TIMEOUT_MS, (signal) =>
+	      client.startGoalOperation({ sessionID, objective, tokenBudget, signal }),
+	    )
+    this.goalsBySession.set(sessionID, goal)
+    const operation = client.getGoalOperation(sessionID)
+    if (operation) this.goalOperationsBySession.set(sessionID, operation)
+    this.postState()
+  }
+
+  private async editGoal(objectiveInput?: string, tokenBudget?: number | null) {
+    const client = this.connectedClient("Connect before editing a goal.")
+    const sessionID = this.sessionID
+    if (!client || !sessionID) return
+    const current = this.goalsBySession.get(sessionID) ?? await client.getGoal(sessionID)
+    const objective = (objectiveInput ?? await vscode.window.showInputBox({
+      title: "Edit ChipMate Goal",
+      prompt: "Update the persistent goal objective.",
+      value: current?.objective ?? "",
+      ignoreFocusOut: true,
+    }) ?? "").trim()
+    if (!objective) return
+    const goal = await withRequestTimeout("edit goal", SESSION_REFRESH_TIMEOUT_MS, (signal) =>
+      client.setGoal({ sessionID, objective, status: "active", tokenBudget, signal }),
+    )
+    this.goalsBySession.set(sessionID, goal)
+    const operation = client.getGoalOperation(sessionID)
+    if (operation) this.goalOperationsBySession.set(sessionID, operation)
+    this.postState()
+  }
+
+  private async pauseGoal() {
+    const client = this.connectedClient("Connect before pausing a goal.")
+    const sessionID = this.sessionID
+    if (!client || !sessionID) return
+    const goal = await withRequestTimeout("pause goal", SESSION_REFRESH_TIMEOUT_MS, (signal) => client.pauseGoal(sessionID, signal))
+    if (goal) this.goalsBySession.set(sessionID, goal)
+    const operation = client.getGoalOperation(sessionID)
+    if (operation) this.goalOperationsBySession.set(sessionID, operation)
+    this.postState()
+  }
+
+  private async resumeGoal() {
+    const client = this.connectedClient("Connect before resuming a goal.")
+    const sessionID = this.sessionID
+    if (!client || !sessionID) return
+    const goal = await withRequestTimeout("resume goal", SESSION_REFRESH_TIMEOUT_MS, (signal) => client.resumeGoal(sessionID, signal))
+    if (goal) this.goalsBySession.set(sessionID, goal)
+    const operation = client.getGoalOperation(sessionID)
+    if (operation) this.goalOperationsBySession.set(sessionID, operation)
+    this.postState()
+  }
+
+  private async clearGoal() {
+    const client = this.connectedClient("Connect before clearing a goal.")
+    const sessionID = this.sessionID
+    if (!client || !sessionID) return
+    await withRequestTimeout("clear goal", SESSION_REFRESH_TIMEOUT_MS, (signal) => client.clearGoal(sessionID, signal))
+    this.goalsBySession.delete(sessionID)
+    this.goalOperationsBySession.delete(sessionID)
+    this.postState()
   }
 
   private async refreshModels() {
@@ -2537,46 +2841,51 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
   private async sendMessage(
     text: string,
     options: ChatContextOptions,
-    mentionedFiles: vscode.Uri[],
     contextItems: LocalContextItem[] = this.deps.contextStore.snapshot(),
-    mentionedFileRefs = this.mentionedFileRefsFromUris(mentionedFiles),
+    mentionedFileRefs: QueuedMentionedFileRef[] | MentionedFileRef[] = [],
+    clientSendID?: string,
   ): Promise<boolean> {
     const trimmed = text.trim()
     if (!trimmed && mentionedFileRefs.length === 0 && contextItems.length === 0) return false
     if (this.currentSessionSending()) {
-      const enqueued = this.enqueueChatSend(text, options, mentionedFiles, mentionedFileRefs, undefined, contextItems)
+      const mentioned = await this.resolveExistingMentionedFiles(mentionedFileRefs)
+      const enqueued = this.enqueueChatSend(text, options, mentioned.uris, mentioned.refs, undefined, contextItems)
       if (enqueued && !this.shouldPreserveOneShotContext(text)) this.deps.contextStore.consumeOneShot(contextItems)
       return enqueued
     }
-
-    const documentAgentResult = await this.tryRunDocumentAgentFlow(trimmed || "Please review the referenced files.", mentionedFiles, mentionedFileRefs, contextItems)
-    if (documentAgentResult !== undefined) return documentAgentResult
 
     const client = this.connectedClient("Configure a ChipMate provider before sending.")
     if (!client) return false
 
     this.clearStreamingEventSuppression()
     const controller = new AbortController()
-    const optimistic = localMessage("user", trimmed || "Please review the referenced files.", {
+    const initialSessionID = this.sessionID
+    const sendFingerprint = this.sendFingerprint(text, options, mentionedFileRefs, contextItems)
+    const duplicate = this.duplicateSendMessage(initialSessionID, sendFingerprint)
+    if (duplicate) {
+      this.deps.output.appendLine(`[send] rejected duplicate: ${duplicate}`)
+      this.postQueueRejected(undefined, duplicate, "duplicate")
+      return false
+    }
+    const optimisticOverrides: Partial<RenderedMessage> = {
       sendStatus: sendStatusForStage("pending"),
-    })
-    let sendSessionID: string | undefined
-    let sendFingerprint = ""
+    }
+    const localID = clientLocalMessageID(clientSendID)
+    if (localID) optimisticOverrides.id = localID
+    const optimistic = localMessage("user", trimmed || "Please review the referenced files.", optimisticOverrides)
+    this.addPendingLocalUserMessage(initialSessionID, sendFingerprint, optimistic)
+    this.syncRenderedMessages()
+    this.postState()
+    let sendSessionID: string | undefined = initialSessionID
     let strictAgentHint = ""
     let preparedMessage: { text: string; historyText?: string; messageMode?: string; evidenceLedger?: EvidenceLedgerEntry[]; model?: PromptModel; agent?: string; fingerprint?: string } | undefined
     let sentStreaming = false
     try {
+      const mentioned = await this.resolveExistingMentionedFiles(mentionedFileRefs)
       sendSessionID = await this.getOrCreateSession(client, controller.signal)
-      sendFingerprint = this.sendFingerprint(text, options, mentionedFileRefs, contextItems)
-      const duplicate = this.duplicateSendMessage(sendSessionID, sendFingerprint)
-      if (duplicate) {
-        this.deps.output.appendLine(`[send] rejected duplicate: ${duplicate}`)
-        this.postQueueRejected(undefined, duplicate, "duplicate")
-        return false
-      }
+      this.bindPendingLocalUserMessage(optimistic.id, sendSessionID, sendFingerprint)
       this.activeSendControllers.set(sendSessionID, controller)
       this.updateSessionStatus(sendSessionID, { type: "busy", stage: "preparing", message: "Preparing context" })
-      this.addPendingLocalUserMessage(sendSessionID, sendFingerprint, optimistic)
       if (this.sessionID === sendSessionID) this.syncRenderedMessages()
       this.postState()
       const settings = this.deps.getSettings()
@@ -2598,10 +2907,10 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
         question: trimmed || "Please review the referenced files.",
         options,
         settings,
-        contextStore: this.deps.contextStore,
-        contextItems,
-        mentionedFiles,
-        mentionedContext: this.mentionedContextFromRefs(mentionedFileRefs),
+	        contextStore: this.deps.contextStore,
+	        contextItems,
+	        mentionedFiles: mentioned.uris,
+	        mentionedContext: this.mentionedContextFromRefs(mentioned.refs),
         editorContext: this.deps.getEditorContext(),
         codeGraph: this.deps.codeGraph,
         documentRag: this.deps.documentRag,
@@ -2686,140 +2995,6 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
       }
       this.postState()
       if (!sentStreaming && !controller.signal.aborted) void this.drainQueuedSends()
-    }
-  }
-
-  private async tryRunDocumentAgentFlow(
-    text: string,
-    mentionedFiles: vscode.Uri[],
-    mentionedFileRefs: QueuedMentionedFileRef[],
-    contextItems: LocalContextItem[],
-  ): Promise<boolean | undefined> {
-    const refByUri = new Map(mentionedFileRefs.map((ref, index) => [ref.uri, { ref, index }]))
-    const docxFiles = mentionedFiles
-      .filter((uri) => uri.fsPath.toLowerCase().endsWith(".docx"))
-      .map((uri, index) => ({ uri, order: refByUri.get(uri.toString())?.ref.mentionIndex ?? refByUri.get(uri.toString())?.index ?? index }))
-      .sort((left, right) => left.order - right.order)
-    const detection = new DocxIntentDetector().detect({ text, docxCount: docxFiles.length })
-    if (!detection.matched) return undefined
-
-    const controller = new AbortController()
-    const historyClient = this.deps.getClient()
-    const historySessionID = historyClient && this.connectionState === "connected"
-      ? await this.documentAgentHistorySession(historyClient, controller.signal)
-      : undefined
-    const localSessionID = historySessionID ?? this.sessionID
-    if (localSessionID) {
-      this.localSendSessionID = localSessionID
-      this.activeSendControllers.set(localSessionID, controller)
-      this.updateSessionStatus(localSessionID, { type: "busy", stage: "preparing", message: "Preparing local Word flow" })
-    }
-    const user = localMessage("user", text, { sendStatus: sendStatusForStage("preparing", "Preparing local Word flow.") })
-    const userFingerprint = localSessionID ? this.sendFingerprint(text, this.contextOptions({}), mentionedFileRefs, contextItems) : ""
-    this.messages = [...this.messages, user]
-    if (localSessionID) this.addPendingLocalUserMessage(localSessionID, userFingerprint, user)
-    this.postState()
-
-    try {
-      if (detection.reason) {
-        const assistant = localMessage("assistant", detection.reason)
-        this.messages = [...this.messages, assistant]
-        await this.persistDocumentAgentHistory({
-          client: historyClient,
-          sessionID: historySessionID,
-          userText: text,
-          assistantText: detection.reason,
-          assistantParts: assistant.parts,
-        })
-        return true
-      }
-      const progress = localMessage("assistant", "正在准备本地 Word 资料包生成流程...", {
-        parts: [
-          { type: "text", text: "正在准备本地 Word 资料包生成流程..." },
-          createDocAgentTimelinePart(),
-        ],
-      })
-      this.messages = [...this.messages, progress]
-      this.postState()
-      const files: Array<{ path: string; bytes: Uint8Array; mentionIndex?: number }> = []
-      for (const item of docxFiles) {
-        controller.signal.throwIfAborted()
-        const uri = item.uri
-        files.push({
-          path: relativePath(uri),
-          bytes: await vscode.workspace.fs.readFile(uri),
-          mentionIndex: item.order,
-        })
-      }
-      const flow = new GuidelineReferencePackFlow()
-      const result = await flow.run({
-        question: text,
-        files,
-        model: new ChipMateDocModelProvider({
-          getSettings: this.deps.getSettings,
-          getApiKey: this.deps.getProviderApiKey,
-          log: (message) => this.deps.output.appendLine(message),
-          onStillWaiting: (event) => {
-            appendDocAgentTimelineEvent(progress, docAgentModelWaitingEvent(event))
-            this.postState()
-          },
-        }),
-        signal: controller.signal,
-        log: (message) => this.deps.output.appendLine(message),
-        onProgress: (item) => {
-          progress.text = item.message
-          updateTextPart(progress, item.message)
-          updatePart(progress, "docAgentTimeline", {
-            title: item.message,
-            current: "current" in item ? item.current : undefined,
-            total: "total" in item ? item.total : undefined,
-          })
-          this.postState()
-        },
-        onTimeline: (event) => {
-          appendDocAgentTimelineEvent(progress, event)
-          this.postState()
-        },
-        resolveConflictDecisions: (conflicts, signal) => this.requestDocAgentConflictDecisions(progress, conflicts, signal),
-      })
-      const warningLine = result.warningCount > 0 ? `\n\nWarning：${result.warningCount} 条。打开 Word 后请更新目录域。` : "\n\n打开 Word 后请更新目录域。"
-      progress.text = `已生成${result.title ?? "Word 文档"}：${result.path}${warningLine}`
-      updateTextPart(progress, progress.text)
-      upsertPart(progress, generatedDocumentPart(result))
-      await this.persistDocumentAgentHistory({
-        client: historyClient,
-        sessionID: historySessionID,
-        userText: text,
-        assistantText: progress.text,
-        assistantParts: [
-          { type: "text", text: progress.text },
-          persistedDocAgentTimelinePart(progress, result),
-          generatedDocumentPart(result),
-        ],
-      })
-      this.deps.contextStore.consumeOneShot(contextItems)
-      return true
-    } catch (error) {
-      if (controller.signal.aborted) return false
-      const message = error instanceof Error ? error.message : String(error)
-      const errorText = `Word 文档生成失败：${message}`
-      this.messages = [...this.messages, localMessage("error", errorText)]
-      this.deps.output.appendLine(`[doc-agent] failed: ${message}`)
-      await this.persistDocumentAgentHistory({
-        client: historyClient,
-        sessionID: historySessionID,
-        userText: text,
-        assistantText: errorText,
-        assistantParts: [{ type: "text", text: errorText }],
-        error: errorText,
-      })
-      return false
-    } finally {
-      if (localSessionID && this.activeSendControllers.get(localSessionID) === controller) this.activeSendControllers.delete(localSessionID)
-      if (localSessionID && this.localSendSessionID === localSessionID) this.localSendSessionID = undefined
-      if (localSessionID) this.updateSessionStatus(localSessionID, { type: "idle" })
-      this.deletePendingLocalUserMessage(user.id)
-      this.postState()
     }
   }
 
@@ -3054,9 +3229,31 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
       if (this.sessionID) await this.loadSessionMessages(client, this.sessionID, this.sessionLoadGeneration)
       return
     }
-    if (sessionSource === "legacy-plugin") this.logAcceptedLegacyPluginSession(sessionID, session, messages)
+	    if (sessionSource === "legacy-plugin") this.logAcceptedLegacyPluginSession(sessionID, session, messages)
 
-    this.setRemoteMessagesForSession(sessionID, messages, loadGeneration)
+	    this.setRemoteMessagesForSession(sessionID, messages, loadGeneration)
+	    await this.refreshSessionGoal(client, sessionID)
+	  }
+
+  private async refreshSessionGoal(client: DirectAgentClient, sessionID: string) {
+    try {
+      const goal = await withRequestTimeout("session goal", SESSION_STATUS_TIMEOUT_MS, (signal) => client.getGoal(sessionID, signal))
+      if (goal) this.goalsBySession.set(sessionID, goal)
+      else this.goalsBySession.delete(sessionID)
+      const operation = client.getGoalOperation(sessionID)
+      if (operation) this.goalOperationsBySession.set(sessionID, operation)
+      else this.goalOperationsBySession.delete(sessionID)
+      if (this.sessionID === sessionID) this.postState()
+      const restored = await withRequestTimeout("restore session goal", SESSION_STATUS_TIMEOUT_MS, (signal) =>
+        client.restoreGoalAfterSessionResume(sessionID, signal),
+      )
+      if (restored) this.goalsBySession.set(sessionID, restored)
+      const restoredOperation = client.getGoalOperation(sessionID)
+      if (restoredOperation) this.goalOperationsBySession.set(sessionID, restoredOperation)
+      else this.goalOperationsBySession.delete(sessionID)
+    } catch (error) {
+      this.deps.output.appendLine(`[goal] refresh failed for ${sessionID}: ${formatErrorMessage(error)}`)
+    }
   }
 
   private async hideCompletionSession(client: DirectAgentClient, sessionID: string) {
@@ -3282,13 +3479,13 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
   private async handleSendMessage(
     text: string,
     options: ChatContextOptions,
-    mentionedFiles: vscode.Uri[],
-    mentionedFileRefs = this.mentionedFileRefsFromUris(mentionedFiles),
+    mentionedFileRefs: MentionedFileRef[] = [],
     clientQueueID?: string,
+    clientSendID?: string,
   ) {
-    const mentioned = await this.resolveExistingMentionedFiles(mentionedFileRefs)
     const contextItems = this.deps.contextStore.snapshot()
     if (this.currentSessionSending()) {
+      const mentioned = await this.resolveExistingMentionedFiles(mentionedFileRefs)
       const enqueued = this.enqueueChatSend(text, options, mentioned.uris, mentioned.refs, clientQueueID, contextItems)
       if (enqueued && !this.shouldPreserveOneShotContext(text)) {
         this.deps.contextStore.consumeOneShot(contextItems)
@@ -3297,7 +3494,7 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
       return
     }
 
-    await this.processSendMessage(text, options, mentioned.uris, contextItems, mentioned.refs)
+    await this.processSendMessage(text, options, contextItems, mentionedFileRefs, clientSendID)
   }
 
   private shouldPreserveOneShotContext(text: string) {
@@ -3307,9 +3504,9 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
   private async processSendMessage(
     text: string,
     options: ChatContextOptions,
-    mentionedFiles: vscode.Uri[],
     contextItems: LocalContextItem[] = this.deps.contextStore.snapshot(),
-    mentionedFileRefs = this.mentionedFileRefsFromUris(mentionedFiles),
+    mentionedFileRefs: QueuedMentionedFileRef[] | MentionedFileRef[] = [],
+    clientSendID?: string,
   ): Promise<boolean> {
     const explicitExport = parseExplicitExportCommand(text)
     if (explicitExport) {
@@ -3320,19 +3517,19 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
     if (isExportIntentCandidate(text)) {
       const client = this.deps.getClient()
       if (client && this.connectionState === "connected") {
-        const decision = await this.classifyExportIntent(client, text)
-        if (decision.intent === "export") {
-          await this.exportMarkdown(decision.scope, decision.filenameHint)
-          return false
-        }
-      }
-      this.postExportStatus("")
-    }
+	        const decision = await this.classifyExportIntent(client, text)
+	        if (decision.intent === "export") {
+	          await this.exportMarkdown(decision.scope, decision.filenameHint)
+	          return false
+	        }
+	      }
+	      this.postExportStatus("")
+	    }
 
-    return this.sendMessage(text, options, mentionedFiles, contextItems, mentionedFileRefs)
-  }
+	    return this.sendMessage(text, options, contextItems, mentionedFileRefs, clientSendID)
+	  }
 
-  private async classifyExportIntent(client: DirectAgentClient, text: string) {
+	  private async classifyExportIntent(client: DirectAgentClient, text: string) {
     this.postExportStatus("Checking whether this is an export request...")
     const settings = this.deps.getSettings()
     const prompt = buildExportIntentPrompt({
@@ -3423,6 +3620,58 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
     }
   }
 
+  private async repairMermaidRenderFailure(message: Extract<ChatViewMessage, { type: "mermaidRenderFailed" }>) {
+    const sessionID = this.sessionID
+    if (!sessionID || message.sessionID !== sessionID) return
+    const messageID = String(message.messageId || "").trim()
+    const sourceHash = String(message.sourceHash || "").trim()
+    const source = String(message.source || "")
+    const error = String(message.error || "")
+    if (!messageID || !sourceHash || !source.trim() || !error.trim()) return
+
+    const key = [sessionID, messageID, sourceHash, normalizeMermaidRepairError(error)].join(":")
+    if (this.mermaidRepairAttempts.has(key)) return
+    this.mermaidRepairAttempts.add(key)
+
+    if (this.currentSessionSending()) {
+      this.deps.output.appendLine(`[mermaid-repair] skipped session=${sessionID} message=${messageID} reason=active-send`)
+      return
+    }
+    const client = this.deps.getClient()
+    if (!client || this.connectionState !== "connected") {
+      this.deps.output.appendLine(`[mermaid-repair] skipped session=${sessionID} message=${messageID} reason=not-connected`)
+      return
+    }
+
+    this.localSendSessionID = sessionID
+    this.updateSessionStatus(sessionID, { type: "busy", stage: "thinking", message: "Repairing Mermaid diagram" })
+    this.postState()
+    try {
+      await withRequestTimeout("Mermaid diagram repair", MERMAID_REPAIR_TIMEOUT_MS, (signal) =>
+        client.repairMermaidDiagram({
+          sessionID,
+          messageID,
+          diagramId: message.diagramId,
+          sourceHash,
+          source,
+          error,
+          language: message.language,
+          signal,
+        }),
+      )
+      this.deps.output.appendLine(`[mermaid-repair] repaired session=${sessionID} message=${messageID} sourceHash=${sourceHash}`)
+      await this.refreshSessionList(client)
+      if (this.sessionID === sessionID) await this.loadSessionMessages(client, sessionID)
+      void this.refreshUsageStats(client)
+    } catch (error) {
+      this.deps.output.appendLine(`[mermaid-repair] failed session=${sessionID} message=${messageID}: ${formatErrorMessage(error)}`)
+    } finally {
+      if (this.localSendSessionID === sessionID) this.localSendSessionID = undefined
+      this.updateSessionStatus(sessionID, { type: "idle" })
+      this.postState()
+    }
+  }
+
   private async exportDrawioImage(message: Extract<ChatViewMessage, { type: "exportDrawioImage" }>) {
     let bytes: Uint8Array
     try {
@@ -3466,6 +3715,18 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
       message.usesCdn === undefined ? undefined : `usesCdn=${message.usesCdn ? "true" : "false"}`,
     ].filter(Boolean)
     this.deps.output.appendLine(`[drawio-render] ${fields.join(" ")}`)
+  }
+
+  private logWebviewError(message: Extract<ChatViewMessage, { type: "webviewError" }>) {
+    const fields = [
+      message.message ? `message=${truncate(message.message, 500)}` : undefined,
+      message.reason ? `reason=${truncate(message.reason, 500)}` : undefined,
+      message.source ? `source=${truncate(message.source, 240)}` : undefined,
+      Number.isFinite(message.lineno) ? `line=${message.lineno}` : undefined,
+      Number.isFinite(message.colno) ? `column=${message.colno}` : undefined,
+    ].filter(Boolean)
+    this.deps.output.appendLine(`[webview-error] ${fields.join(" ") || "unknown"}`)
+    if (message.stack) this.deps.output.appendLine(`[webview-error] stack=${truncate(message.stack.replace(/\s+/g, " "), 1200)}`)
   }
 
   private async exportMermaidImage(message: Extract<ChatViewMessage, { type: "exportMermaidImage" }>) {
@@ -3557,12 +3818,14 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
 
   private queuedSendSnapshot() {
     return {
-      queuedSends: this.queuedSends.map((item) => ({
-        id: item.id,
-        text: item.text,
-        options: item.options,
-        mentionedFiles: item.mentionedFileRefs,
-      })),
+	      queuedSends: this.queuedSends.map((item) => ({
+	        id: item.id,
+	        kind: item.kind,
+	        text: item.text,
+	        options: item.options,
+	        mentionedFiles: item.mentionedFileRefs,
+	        tokenBudget: item.kind === "goal" ? item.tokenBudget : undefined,
+	      })),
       queuedSendCount: this.queuedSends.length,
       queuedSendLimit: MAX_QUEUED_CHAT_SENDS,
     }
@@ -3667,18 +3930,25 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
           selectedModel: settings.defaultModel,
           loadedMessageLimit: SESSION_MESSAGE_LIMIT,
         }),
-        sessions: this.sessions,
-        currentSessionID: this.sessionID,
-        messages: this.messages,
+        usageStats: this.usageStats,
+        loadingUsageStats: this.loadingUsageStats,
+        usageStatsError: this.usageStatsError,
+	        sessions: this.sessions,
+	        currentSessionID: this.sessionID,
+	        goal: this.sessionID ? this.goalsBySession.get(this.sessionID) : undefined,
+	        goalOperation: this.sessionID ? this.goalOperationsBySession.get(this.sessionID) : undefined,
+	        messages: this.messagesWithWebviewArtifacts(),
         sending,
         sendCancellable: sending && this.currentSessionCancellable(),
         activeSendActivity: this.currentActiveSendActivity(),
-        queuedSends: this.queuedSends.map((item) => ({
-          id: item.id,
-          text: item.text,
-          options: item.options,
-          mentionedFiles: item.mentionedFileRefs,
-        })),
+	        queuedSends: this.queuedSends.map((item) => ({
+	          id: item.id,
+	          kind: item.kind,
+	          text: item.text,
+	          options: item.options,
+	          mentionedFiles: item.mentionedFileRefs,
+	          tokenBudget: item.kind === "goal" ? item.tokenBudget : undefined,
+	        })),
         queuedSendCount: this.queuedSends.length,
         queuedSendLimit: MAX_QUEUED_CHAT_SENDS,
         loadingMessages: this.loadingMessages,
@@ -3690,6 +3960,37 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
     const message = error instanceof Error ? error.message : String(error)
     this.deps.output.appendLine(`${prefix}: ${message}`)
     this.deps.setConnectionState("error", `${prefix}: ${message}`)
+  }
+
+  private messagesWithWebviewArtifacts() {
+    return this.messages.map((message) => ({
+      ...message,
+      parts: message.parts.map((part) => this.partWithWebviewArtifacts(part)),
+    }))
+  }
+
+  private partWithWebviewArtifacts(part: RenderedPart): RenderedPart {
+    if (part.type !== "wordRender") return part
+    const pagePngPreviewUris = (part.pagePngPaths ?? [])
+      .slice(0, 4)
+      .map((relative) => this.webviewGeneratedDocumentPngUri(relative))
+      .filter((uri): uri is string => Boolean(uri))
+    if (!pagePngPreviewUris.length) return part
+    return {
+      ...part,
+      pagePngPreviewUris,
+    }
+  }
+
+  private webviewGeneratedDocumentPngUri(relative: string | undefined) {
+    const root = vscode.workspace.workspaceFolders?.[0]
+    const webview = this.view?.webview
+    if (!root || !webview || !relative) return undefined
+    const normalized = relative.replace(/\\/g, "/").replace(/^\/+/, "")
+    if (!normalized.startsWith(".chipmate/docs/") || normalized.split("/").includes("..") || !/\.png$/i.test(normalized)) {
+      return undefined
+    }
+    return webview.asWebviewUri(vscode.Uri.joinPath(root.uri, ...normalized.split("/"))).toString()
   }
 
   private reportRemoteConnectionFailure(
@@ -3904,15 +4205,6 @@ function codeGraphErrorMessage(status: CodeGraphStatus, cause?: unknown) {
   return `Local code graph is not ready: ${detail} Rebuild the local code graph or disable chipmate.codeGraph.enabled before sending.`
 }
 
-function remoteRetryMessage(status: ChipMateSessionStatus) {
-  const attempt = "attempt" in status && typeof status.attempt === "number" ? `（第 ${status.attempt} 次）` : ""
-  const detail =
-    "message" in status && typeof status.message === "string" && status.message.trim()
-      ? `：${status.message.trim()}`
-      : ""
-  return `远端 ChipMate 正在重试模型请求${attempt}${detail}。当前会话可能过大，可以新建会话后重试。`
-}
-
 function sessionInterruptionReason(status: ChipMateSessionStatus) {
   if ("message" in status && typeof status.message === "string" && status.message.trim()) {
     return status.message.trim()
@@ -3925,6 +4217,7 @@ function chatInterruptedMessage(reason: string) {
 }
 
 function chatSendStageFromSessionStatus(status: ChipMateSessionStatus): ChatSendStage | undefined {
+  if (status.type === "retry") return "thinking"
   if (status.type !== "busy") return undefined
   const stage = "stage" in status && typeof status.stage === "string" ? status.stage : ""
   if (stage === "preparing" || stage === "summarizing" || stage === "sending" || stage === "thinking") return stage
@@ -3932,11 +4225,25 @@ function chatSendStageFromSessionStatus(status: ChipMateSessionStatus): ChatSend
 }
 
 function chatSendStatusDetail(status: ChipMateSessionStatus) {
+  if (status.type === "retry") return retryStatusDetail(status)
   if ("message" in status && typeof status.message === "string") return status.message
   return ""
 }
 
-function renderMessage(message: ChipMateMessage): RenderedMessage {
+function retryStatusDetail(status: ChipMateSessionStatus) {
+  const attempt = "attempt" in status && typeof status.attempt === "number" ? `（第 ${status.attempt} 次）` : ""
+  const detail =
+    "message" in status && typeof status.message === "string" && status.message.trim()
+      ? `：${status.message.trim()}`
+      : ""
+  const next =
+    "next" in status && typeof status.next === "number"
+      ? `，下次尝试约 ${new Date(status.next).toLocaleTimeString()}`
+      : ""
+  return `正在重试模型请求${attempt}${detail}${next}。`
+}
+
+function renderMessage(message: ChipMateMessage, modelLimit?: ChipMateModelLimit): RenderedMessage {
   const error = message.info.error?.message
   if (error) {
     return {
@@ -3975,10 +4282,11 @@ function renderMessage(message: ChipMateMessage): RenderedMessage {
   const rawText = split.text
   const hasTool = parts.some((part) => part.type === "tool")
   const role = rawText ? (message.info.role ?? "message") : hasTool ? "tool" : (message.info.role ?? "message")
-  const usage = usageFromMessageInfo(message.info)
+  const usage = usageFromMessageInfo(message.info, modelLimit)
   return {
     id: message.info.id,
     role,
+    mode: message.info.mode,
     text: displayText(role, rawText),
     timeCreated: message.info.time?.created,
     timeCompleted: message.info.time?.completed,
@@ -4023,17 +4331,65 @@ function renderPart(part: ChipMatePart): RenderedPart {
       warnings: stringArrayFromPart(record.warnings),
     }
   }
-  if (part.type === "diagram") {
+  if (part.type === "wordRender") {
     const record = part as Record<string, unknown>
     return {
-      type: "diagram",
-      kind: stringFromPart(record.kind) || "drawio",
-      title: stringFromPart(record.title) || "draw.io diagram",
+      type: "wordRender",
+      title: stringFromPart(record.title) || "Word render QA",
+      path: stringFromPart(record.path),
+      absolutePath: stringFromPart(record.absolutePath),
+      renderArtifactDir: stringFromPart(record.renderArtifactDir),
+      pdfArtifactPath: stringFromPart(record.pdfArtifactPath),
+      pagePngPaths: stringArrayFromPart(record.pagePngPaths),
+      pageCount: numberFromPart(record.pageCount),
+      attempted: booleanFromPart(record.attempted),
+      ok: booleanFromPart(record.ok),
+      visualQaStatus: wordRenderVisualQaStatusFromPart(record.visualQaStatus),
+      skipReason: wordRenderSkipReasonFromPart(record.skipReason),
+      remoteEndpoint: stringFromPart(record.remoteEndpoint),
+      warnings: stringArrayFromPart(record.warnings),
+      pageVisualSummaries: arrayFromPart(record.pageVisualSummaries),
+      visualQaCoverage: wordVisualQaCoverageFromPart(record.visualQaCoverage),
+      toolCallID: stringFromPart(record.toolCallID),
+    }
+  }
+	  if (part.type === "diagram") {
+	    const record = part as Record<string, unknown>
+	    const kind = stringFromPart(record.kind) || "drawio"
+	    return {
+	      type: "diagram",
+	      kind,
+	      title: stringFromPart(record.title) || (kind === "mermaid" ? "Mermaid diagram" : "draw.io diagram"),
       xml: stringFromPart(record.xml),
+      sourceText: stringFromPart(record.sourceText),
       warnings: stringArrayFromPart(record.warnings),
       source: stringFromPart(record.source),
+      displayMode: stringFromPart(record.displayMode),
       diagramId: stringFromPart(record.diagramId),
       toolCallID: stringFromPart(record.toolCallID),
+      mmdPath: stringFromPart(record.mmdPath),
+      absoluteMmdPath: stringFromPart(record.absoluteMmdPath),
+      pngPath: stringFromPart(record.pngPath),
+      absolutePngPath: stringFromPart(record.absolutePngPath),
+      width: numberFromPart(record.width),
+      height: numberFromPart(record.height),
+      renderProvider: stringFromPart(record.renderProvider),
+      fallbackUsed: booleanFromPart(record.fallbackUsed),
+    }
+  }
+  if (part.type === "runProgress") {
+    const record = part as Record<string, unknown>
+    return {
+      type: "runProgress",
+      title: stringFromPart(record.title) || "执行进度",
+      status: stringFromPart(record.status),
+      startedAt: numberFromPart(record.startedAt),
+      updatedAt: numberFromPart(record.updatedAt),
+      current: numberFromPart(record.current),
+      total: numberFromPart(record.total),
+      warningCount: numberFromPart(record.warningCount),
+      fallbackCount: numberFromPart(record.fallbackCount),
+      items: arrayFromPart(record.items),
     }
   }
   if (part.type === "clarification") {
@@ -4095,11 +4451,14 @@ function isRenderablePart(part: RenderedPart) {
     || part.detail
     || part.status
     || part.xml
+    || part.sourceText
     || part.path
     || part.absolutePath
     || part.events?.length
     || part.type === "generatedDocument"
+    || part.type === "wordRender"
     || part.type === "diagram"
+    || part.type === "runProgress"
     || part.type === "clarification"
     || part.type === "docAgentTimeline",
   )
@@ -4111,6 +4470,39 @@ function stringFromPart(value: unknown) {
 
 function numberFromPart(value: unknown) {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined
+}
+
+function booleanFromPart(value: unknown) {
+  return typeof value === "boolean" ? value : undefined
+}
+
+function arrayFromPart(value: unknown) {
+  return Array.isArray(value) ? value : undefined
+}
+
+function wordRenderVisualQaStatusFromPart(value: unknown) {
+  return value === "completed" || value === "skipped" ? value : undefined
+}
+
+function wordRenderSkipReasonFromPart(value: unknown) {
+  return value === "remote-unconfigured"
+    || value === "remote-unavailable"
+    || value === "remote-invalid-response"
+    || value === "artifact-persist-failed"
+    ? value
+    : undefined
+}
+
+function wordVisualQaCoverageFromPart(value: unknown) {
+  const record = recordFromPart(value)
+  if (!Object.keys(record).length) return undefined
+  return {
+    totalPages: numberFromPart(record.totalPages),
+    queuedPages: numberFromPart(record.queuedPages),
+    batchSize: numberFromPart(record.batchSize),
+    batchCount: numberFromPart(record.batchCount),
+    mode: stringFromPart(record.mode),
+  }
 }
 
 function recordFromPart(value: unknown): Record<string, unknown> {
@@ -4219,8 +4611,14 @@ function localMessage(role: string, text: string, overrides: Partial<RenderedMes
   }
 }
 
+function clientLocalMessageID(clientSendID: string | undefined) {
+  const value = typeof clientSendID === "string" ? clientSendID.trim() : ""
+  if (!value) return undefined
+  return `local-${value}`
+}
+
 function generatedDocumentMessage(result: GeneratedDocumentResult): RenderedMessage {
-  const warningLine = result.warningCount > 0 ? `\n\nWarning：${result.warningCount} 条。打开 Word 后请更新目录域。` : "\n\n打开 Word 后请更新目录域。"
+  const warningLine = result.warningCount > 0 ? `\n\nWarning：${result.warningCount} 条。` : ""
   const title = result.title ?? "Word 文档"
   return localMessage("assistant", `已生成${title}：${result.path}${warningLine}`, {
     parts: [
@@ -4239,6 +4637,7 @@ function generatedDocumentPart(result: GeneratedDocumentResult): RenderedPart {
     sourceCount: result.sourceCount,
     warningCount: result.warningCount,
     warnings: result.warnings,
+    runSummaryPath: result.runSummaryPath,
   }
 }
 
@@ -4255,6 +4654,11 @@ function persistedDocAgentTimelinePart(message: RenderedMessage, result: Generat
     || event.type === "merge"
     || event.type === "word_spec"
     || event.type === "quality_gate"
+    || event.type === "inspect_word_document"
+    || event.type === "edit_plan"
+    || event.type === "apply_word_document_edits"
+    || event.type === "render_word_document"
+    || event.type === "repair_word_document"
     || event.type === "create_word_document"
     || event.type === "done"
     || event.type === "error",
@@ -4361,6 +4765,7 @@ function docAgentModelWaitingEvent(event: DocAgentModelWaitEvent): DocAgentTimel
 }
 
 function docAgentModelTimelineStage(purpose: DocAgentModelWaitEvent["purpose"]): { type: DocAgentTimelineEvent["type"]; title: string; timelineKey: string; current: number; total: number } {
+  if (purpose === "resolve-design-doc-targets") return { type: "plan", title: "定位详细设计目标范围", timelineKey: "target-resolution", current: 1, total: 8 }
   if (purpose === "plan-document") return { type: "plan", title: "生成 DocumentPlan", timelineKey: "plan", current: 2, total: 8 }
   if (purpose === "plan-source-roles") return { type: "source_classify", title: "识别来源角色", timelineKey: "source_classify", current: 2, total: 8 }
   if (purpose === "extract-rules" || purpose === "extract-rules-batch") return { type: "model.extract", title: "模型抽取候选规则", timelineKey: "model.extract", current: 4, total: 8 }
@@ -4749,6 +5154,54 @@ function isDroppedWorkspaceContext(stat: vscode.FileStat) {
   return Boolean(stat.type & (vscode.FileType.File | vscode.FileType.Directory))
 }
 
+function goalFromEvent(input: unknown): ThreadGoal | undefined {
+  if (!input || typeof input !== "object") return undefined
+  const record = input as Partial<ThreadGoal>
+  if (typeof record.threadID !== "string" || typeof record.goalID !== "string" || typeof record.objective !== "string") return undefined
+  if (!isGoalStatus(record.status)) return undefined
+  return {
+    threadID: record.threadID,
+    goalID: record.goalID,
+    objective: record.objective,
+    status: record.status,
+    tokenBudget: positiveNumber(record.tokenBudget),
+    tokensUsed: positiveNumber(record.tokensUsed) ?? 0,
+    timeUsedSeconds: positiveNumber(record.timeUsedSeconds) ?? 0,
+    createdAt: positiveNumber(record.createdAt) ?? Date.now(),
+    updatedAt: positiveNumber(record.updatedAt) ?? Date.now(),
+  }
+}
+
+function goalOperationFromEvent(input: unknown): ThreadGoalOperation | undefined {
+  if (!input || typeof input !== "object") return undefined
+  const record = input as Partial<ThreadGoalOperation>
+  if (typeof record.sessionID !== "string") return undefined
+  return {
+    sessionID: record.sessionID,
+    active: record.active === true,
+    startedAt: positiveNumber(record.startedAt) ?? Date.now(),
+    updatedAt: positiveNumber(record.updatedAt) ?? Date.now(),
+    turnCount: positiveNumber(record.turnCount) ?? 0,
+    currentTurnID: typeof record.currentTurnID === "string" ? record.currentTurnID : undefined,
+    status: isGoalStatus(record.status) ? record.status : undefined,
+    objective: typeof record.objective === "string" ? record.objective : undefined,
+  }
+}
+
+function isGoalStatus(input: unknown): input is ThreadGoal["status"] {
+  return input === "active" ||
+    input === "paused" ||
+    input === "blocked" ||
+    input === "usage_limited" ||
+    input === "budget_limited" ||
+    input === "complete"
+}
+
+function positiveNumber(input: unknown) {
+  const value = Number(input)
+  return Number.isFinite(value) && value >= 0 ? value : undefined
+}
+
 function connectionSettingsFromMessage(message: Extract<ChatViewMessage, { type: "connectWithSettings" | "testWithSettings" }>): ConnectionSettingsInput {
   const input: ConnectionSettingsInput = {
     serverUrl: message.serverUrl,
@@ -4770,6 +5223,10 @@ function connectionSettingsForDeps(input: ConnectionSettingsInput): ConnectionSe
 function truncate(input: string, max: number) {
   if (input.length <= max) return input
   return `${input.slice(0, max)}...`
+}
+
+function normalizeMermaidRepairError(error: string) {
+  return truncate(error.replace(/\s+/g, " ").trim(), 400)
 }
 
 function uniqueStrings(values: string[]) {

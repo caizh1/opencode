@@ -4,7 +4,9 @@ export type ReportTheme = {
   id: string
   name: string
   page: {
-    size: "A4"
+    size: "A4" | "Letter"
+    width?: Twip
+    height?: Twip
     margin: { top: Twip; right: Twip; bottom: Twip; left: Twip }
   }
   fonts: {

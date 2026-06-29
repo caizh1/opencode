@@ -4,11 +4,11 @@ import * as http from "node:http"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import type { SkillRegistry } from "../src/skills"
-import type { ToolRuntime as ToolRuntimeInstance, ToolRuntimeResult } from "../src/tool-runtime"
+import type { GoalToolHandler, ToolRuntime as ToolRuntimeInstance, ToolRuntimeResult } from "../src/tool-runtime"
 import type { DrawioGeneratedDiagram } from "../src/drawio-diagram-generator"
-import type { RemoteSettings } from "../src/types"
+import type { RemoteSettings, ThreadGoalStatus } from "../src/types"
 import { CHAT_SESSION_TITLE } from "../src/chat-session"
-import { docxFixture } from "./document-fixtures"
+import { cGuidelineDocxFixture, docxFixture } from "./document-fixtures"
 
 let workspaceFolders: Array<{ name: string; uri: UriShim }> = []
 let warningMessageSelection: string | undefined
@@ -129,30 +129,54 @@ mock.module("vscode", () => ({
 
 const { DirectAgentClient } = await import("../src/direct-agent-client")
 const { ToolRuntime } = await import("../src/tool-runtime")
+const { GoalRuntime, GoalStore, MAX_THREAD_GOAL_OBJECTIVE_CHARS } = await import("../src/goal-runtime")
 const { generateDrawioDiagram } = await import("../src/drawio-diagram-generator")
 const { setDrawioElkLayoutRunnerForTest } = await import("../src/drawio-layout-engine")
+const { MermaidPngRenderError, setMermaidPngRendererForTest } = await import("../src/mermaid-png-renderer")
+const ExcelJSModule = await import("exceljs")
+const ExcelJS = (ExcelJSModule.default ?? ExcelJSModule) as typeof import("exceljs")
 
 let servers: http.Server[] = []
+let previousKiloSessionRetryLimit: string | undefined
 
 beforeEach(() => {
   workspaceFolders = []
   warningMessageSelection = undefined
   warningMessageCalls = 0
+  previousKiloSessionRetryLimit = process.env.KILO_SESSION_RETRY_LIMIT
+  delete process.env.KILO_SESSION_RETRY_LIMIT
 })
 
 afterEach(async () => {
   setDrawioElkLayoutRunnerForTest(undefined)
+  setMermaidPngRendererForTest(undefined)
   await Promise.all(servers.map((server) => new Promise<void>((resolve) => server.close(() => resolve()))))
   servers = []
+  if (previousKiloSessionRetryLimit === undefined) delete process.env.KILO_SESSION_RETRY_LIMIT
+  else process.env.KILO_SESSION_RETRY_LIMIT = previousKiloSessionRetryLimit
 })
 
 describe("ToolRuntime", () => {
-  test("exposes read evidence and bounded workspace write tool definitions to models", () => {
-    const runtime = new ToolRuntime({} as never)
-    const toolNames = runtime.toolDefinitions().map((definition) => definition.function.name)
+  test("chat view leaves document requests on the generic DirectAgent route", async () => {
+    const source = await readFile(join(process.cwd(), "src", "chat-view.ts"), "utf8")
 
-    expect(toolNames).toEqual([
-      "chipmate_search_text",
+    expect(source).not.toContain("tryRunDesignDocAgentFlow")
+    expect(source).not.toContain("tryRunDocumentAgentFlow")
+    expect(source).not.toContain("new DesignDocAgentFlow")
+    expect(source).not.toContain("new WordEditAgentFlow")
+    expect(source).not.toContain("isDesignDocIntent")
+    expect(source).not.toContain("isWordEditIntent")
+  })
+
+		  test("exposes read evidence and bounded workspace write tool definitions to models", () => {
+	    const runtime = new ToolRuntime({} as never)
+	    const toolNames = runtime.toolDefinitions().map((definition) => definition.function.name)
+
+	    expect(toolNames).toEqual([
+	      "get_goal",
+	      "create_goal",
+	      "update_goal",
+	      "chipmate_search_text",
       "chipmate_search_code",
       "chipmate_graph_inspect_symbol",
       "chipmate_graph_find_references",
@@ -170,11 +194,27 @@ describe("ToolRuntime", () => {
       "chipmate_read_evidence",
       "chipmate_read",
       "chipmate_read_skill_resource",
+      "chipmate_run_skill_script",
       "read_docx",
-      "chipmate_ask_user_clarification",
-      "chipmate_validate_diagram_ir",
-      "chipmate_create_drawio_diagram",
-      "create_word_document",
+      "inspect_word_document",
+      "apply_word_document_edits",
+      "render_word_document",
+      "compare_word_documents",
+      "merge_word_documents",
+      "extract_xlsx_table",
+      "export_word_table_to_csv",
+      "audit_word_document_styles",
+      "normalize_word_document_styles",
+      "apply_word_template_styles",
+      "audit_word_document_fields",
+      "flatten_word_ref_fields",
+      "materialize_word_seq_fields",
+	      "refresh_word_native_fields",
+	      "chipmate_ask_user_clarification",
+	      "chipmate_validate_diagram_ir",
+	      "chipmate_render_mermaid_diagram",
+	      "chipmate_create_drawio_diagram",
+	      "create_word_document",
       "chipmate_create_file",
       "chipmate_create_directory",
       "chipmate_edit_file",
@@ -198,25 +238,759 @@ describe("ToolRuntime", () => {
       additionalProperties: false,
     })
     const drawio = runtime.toolDefinitions().find((definition) => definition.function.name === "chipmate_create_drawio_diagram")
-    expect(drawio?.function.parameters).toMatchObject({
-      required: ["title"],
-      additionalProperties: false,
-    })
-    expect(drawio?.function.parameters.properties).toHaveProperty("composition")
+	    expect(drawio?.function.parameters).toMatchObject({
+	      required: ["title"],
+	      additionalProperties: false,
+	    })
+	    expect(drawio?.function.parameters.properties).toHaveProperty("composition")
+	    const mermaid = runtime.toolDefinitions().find((definition) => definition.function.name === "chipmate_render_mermaid_diagram")
+	    expect(mermaid?.function.parameters).toMatchObject({
+	      required: ["source", "title"],
+	      additionalProperties: false,
+	    })
+	    expect(mermaid?.function.description).toContain("PNG figure")
     const clarification = runtime.toolDefinitions().find((definition) => definition.function.name === "chipmate_ask_user_clarification")
     expect(clarification?.function.parameters).toMatchObject({
       required: ["reason"],
       additionalProperties: false,
     })
     expect(clarification?.function.parameters.properties).toHaveProperty("questions")
+    const getGoal = runtime.toolDefinitions().find((definition) => definition.function.name === "get_goal")
+    const createGoal = runtime.toolDefinitions().find((definition) => definition.function.name === "create_goal")
+    const updateGoal = runtime.toolDefinitions().find((definition) => definition.function.name === "update_goal")
+    expect(getGoal?.function.description).toContain("token and elapsed-time usage")
+    expect(createGoal?.function.parameters).toMatchObject({
+      required: ["objective"],
+      additionalProperties: false,
+    })
+    expect(createGoal?.function.parameters.properties).toHaveProperty("token_budget")
+    expect(createGoal?.function.parameters.properties).not.toHaveProperty("tokenBudget")
+    expect(createGoal?.function.description).toContain("system/developer instructions")
+    expect(createGoal?.function.description).toContain("do not infer goals from ordinary tasks")
+    expect(updateGoal?.function.parameters).toMatchObject({
+      required: ["status"],
+      additionalProperties: false,
+    })
+    expect(updateGoal?.function.parameters.properties.status.enum).toEqual(["complete", "blocked"])
+    expect(updateGoal?.function.description).toContain("at least three consecutive goal turns")
+    expect(updateGoal?.function.description).toContain("fresh blocked audit")
+    expect(updateGoal?.function.description).toContain("Do not mark a goal complete merely because its budget is nearly exhausted")
+    expect(updateGoal?.function.description).toContain("controlled by the user or system")
     expect(runtime.toolDefinitions().every((definition) => definition.function.description.includes("Use when"))).toBe(true)
     expect(runtime.toolDefinitions().every((definition) => definition.function.description.includes("Do not use"))).toBe(true)
     expect(runtime.toolDefinitions().every((definition) => definition.function.description.includes("Returns"))).toBe(true)
-    expect(runtime.toolDefinitions().find((definition) => definition.function.name === "chipmate_read")?.function.description).toContain("Office/PDF")
+	    expect(runtime.toolDefinitions().find((definition) => definition.function.name === "chipmate_read")?.function.description).toContain("Office/PDF")
+	  })
+
+	  test("executes goal tools through injected goal handlers", async () => {
+	    const runtime = new ToolRuntime({ append: async () => undefined } as never)
+	    const calls: string[] = []
+	    const goal = {
+	      threadID: "session-1",
+	      goalID: "goal-1",
+	      objective: "finish the migration",
+	      status: "active" as const,
+	      tokenBudget: 100,
+	      tokensUsed: 25,
+	      timeUsedSeconds: 7,
+	      createdAt: 1,
+	      updatedAt: 2,
+	    }
+	    const goals: GoalToolHandler = {
+	      getGoal: async (sessionID: string) => {
+	        calls.push(`get:${sessionID}`)
+	        return { goal: null, remainingTokens: null, completionBudgetReport: null }
+	      },
+	      createGoal: async (sessionID: string, input: { objective: string; tokenBudget?: number }) => {
+	        calls.push(`create:${sessionID}:${input.objective}:${input.tokenBudget}`)
+	        return { goal: { ...goal, objective: input.objective, tokenBudget: input.tokenBudget }, remainingTokens: input.tokenBudget ?? null, completionBudgetReport: null }
+	      },
+	      updateGoal: async (sessionID: string, input: { status: ThreadGoalStatus }) => {
+	        calls.push(`update:${sessionID}:${input.status}`)
+	        return { goal: { ...goal, status: input.status }, remainingTokens: 75, completionBudgetReport: input.status === "complete" ? "Goal achieved. Report final usage from this tool result's structured goal fields." : null }
+	      },
+	    }
+
+	    const getResult = await runtime.execute({
+	      sessionID: "session-1",
+	      mode: "auto",
+	      name: "get_goal",
+	      arguments: {},
+	      goals,
+	    })
+	    const createResult = await runtime.execute({
+	      sessionID: "session-1",
+	      mode: "auto",
+	      name: "create_goal",
+	      arguments: { objective: "ship goal", token_budget: 100 },
+	      goals,
+	    })
+	    const updateResult = await runtime.execute({
+	      sessionID: "session-1",
+	      mode: "auto",
+	      name: "update_goal",
+	      arguments: { status: "complete" },
+	      goals,
+	    })
+
+	    expect(getResult.status).toBe("completed")
+	    expect(JSON.parse(getResult.output)).toMatchObject({ goal: null, remainingTokens: null })
+	    expect(JSON.parse(createResult.output)).toMatchObject({ goal: { objective: "ship goal", status: "active" }, remainingTokens: 100 })
+	    expect(JSON.parse(updateResult.output)).toMatchObject({ goal: { status: "complete" }, completionBudgetReport: expect.stringContaining("structured goal fields") })
+	    expect(calls).toEqual([
+	      "get:session-1",
+	      "create:session-1:ship goal:100",
+	      "update:session-1:complete",
+	    ])
+	  })
+
+  test("create_word_document uses the real Word toolchain and writes a DOCX artifact", async () => {
+    const root = await tempDir("chipmate-real-create-word-")
+    workspaceFolders = [{ name: "repo", uri: UriShim.file(root) }]
+    const runtime = new ToolRuntime({ append: async () => undefined } as never)
+
+    const result = await runtime.execute({
+      sessionID: "session-1",
+      mode: "auto",
+      name: "create_word_document",
+      arguments: {
+        filename: "annual-business-review.docx",
+        spec: {
+          metadata: {
+            title: "年度经营分析",
+            documentType: "business-report",
+            language: "zh-CN",
+            generatedAt: "2026-06-28T00:00:00.000Z",
+            author: "ChipMate Document Agent",
+          },
+          sources: [],
+          layout: {
+            preset: "standard_business_brief",
+            navigation: { mode: "static-toc" },
+          },
+          cover: {
+            title: "年度经营分析",
+            subtitle: "本地 Word v1 真实工具链验收",
+            preparedFor: "Management Review",
+            preparedBy: "ChipMate",
+          },
+          sections: [{
+            id: "overview",
+            level: 1,
+            title: "经营概览",
+            paragraphs: ["本节概述年度经营表现。"],
+            lists: [{
+              kind: "bullet",
+              items: [{ text: "收入增长" }, { text: "成本可控" }],
+            }],
+            tables: [{
+              headers: ["指标", "结果"],
+              rows: [["收入", "增长"], ["成本", "稳定"]],
+              columnWidthRatios: [35, 65],
+            }],
+          }],
+          references: [],
+          qualityChecklist: {
+            assumptions: ["输入数据来自用户提供的经营材料。"],
+            limitations: ["该测试只验证真实 DOCX artifact 写出。"],
+            missingInputs: [],
+            risks: [],
+          },
+        },
+      },
+    })
+
+    expect(result).toMatchObject({
+      title: expect.stringContaining("Created Word document"),
+      approved: true,
+      status: "completed",
+    })
+    const payload = JSON.parse(result.output) as {
+      answerSummary: string
+      data: { path: string; absolutePath: string; title: string; renderCheckResult: { ok: boolean; attempted: boolean } }
+    }
+    expect(payload.answerSummary).toContain("Created Word document: .chipmate/docs/")
+    expect(payload.data.path).toMatch(/^\.chipmate\/docs\/annual-business-review-\d{8}-\d{6}\.docx$/)
+    expect(payload.data.absolutePath).toBe(join(root, payload.data.path))
+    expect(payload.data.title).toBe("年度经营分析")
+    expect(payload.data.renderCheckResult.ok).toBe(true)
+    expect(typeof payload.data.renderCheckResult.attempted).toBe("boolean")
+    const bytes = await readFile(payload.data.absolutePath)
+    expect(bytes.length).toBeGreaterThan(1000)
+    expect(Buffer.from(bytes.subarray(0, 2)).toString("utf8")).toBe("PK")
+  }, 20_000)
+
+  test("create_word_document accepts a stringified WordDocSpec object", async () => {
+    const root = await tempDir("chipmate-real-create-word-string-spec-")
+    workspaceFolders = [{ name: "repo", uri: UriShim.file(root) }]
+    const runtime = new ToolRuntime({ append: async () => undefined } as never)
+
+    const result = await runtime.execute({
+      sessionID: "session-1",
+      mode: "auto",
+      name: "create_word_document",
+      arguments: {
+        filename: "string-spec.docx",
+        spec: JSON.stringify(minimalWordDocSpecForTest("String Spec Document")),
+      },
+    })
+
+    expect(result.status).toBe("completed")
+    const payload = JSON.parse(result.output) as { data: { path: string; absolutePath: string; title: string } }
+    expect(payload.data.path).toMatch(/^\.chipmate\/docs\/string-spec-\d{8}-\d{6}\.docx$/)
+    expect(payload.data.title).toBe("String Spec Document")
+    expect((await readFile(payload.data.absolutePath)).length).toBeGreaterThan(1000)
+  }, 20_000)
+
+  test("create_word_document returns structured diagnostics when spec is missing or invalid", async () => {
+    const root = await tempDir("chipmate-real-create-word-invalid-spec-")
+    workspaceFolders = [{ name: "repo", uri: UriShim.file(root) }]
+    const runtime = new ToolRuntime({ append: async () => undefined } as never)
+
+    const missing = await runtime.execute({
+      sessionID: "session-1",
+      mode: "auto",
+      name: "create_word_document",
+      arguments: { filename: "missing-spec.docx" },
+    })
+    const missingPayload = JSON.parse(missing.output) as { data: { errorCode: string; expectedShape: unknown; receivedArgumentKeys: string[] }; gaps: string[] }
+    expect(missing.status).toBe("failed")
+    expect(missingPayload.data.errorCode).toBe("word-doc-spec-missing")
+    expect(missingPayload.data.expectedShape).toEqual(expect.objectContaining({ metadata: expect.any(Object), sources: [], sections: expect.any(Array) }))
+    expect(missingPayload.data.receivedArgumentKeys).toEqual(["filename"])
+    expect(missingPayload.gaps[0]).toContain("Missing required argument: spec")
+
+    const invalid = await runtime.execute({
+      sessionID: "session-1",
+      mode: "auto",
+      name: "create_word_document",
+      arguments: {
+        filename: "invalid-spec.docx",
+        spec: { metadata: {}, sections: [] },
+      },
+    })
+    const invalidPayload = JSON.parse(invalid.output) as { data: { errorCode: string; validationErrors: string[] }; gaps: string[] }
+    expect(invalid.status).toBe("failed")
+    expect(invalid.output).not.toBe("Missing or invalid WordDocSpec.")
+    expect(invalidPayload.data.errorCode).toBe("word-doc-spec-validation-failed")
+    expect(invalidPayload.data.validationErrors).toEqual(expect.arrayContaining([
+      "WordDocSpec metadata.title is required.",
+      "WordDocSpec metadata.documentType is required.",
+      "WordDocSpec sources must be an array, even when empty.",
+      "WordDocSpec must include sections.",
+    ]))
+    expect(invalidPayload.gaps).toEqual(expect.arrayContaining(["WordDocSpec metadata.title is required."]))
   })
 
-  test("creates draw.io diagrams without workspace writes or approval", async () => {
+  test("render_word_document runs as a public ToolRuntime visual QA tool", async () => {
+    const root = await tempDir("chipmate-real-render-word-")
+    workspaceFolders = [{ name: "repo", uri: UriShim.file(root) }]
     const runtime = new ToolRuntime({ append: async () => undefined } as never)
+
+    const created = await runtime.execute({
+      sessionID: "session-1",
+      mode: "auto",
+      name: "create_word_document",
+      arguments: {
+        filename: "render-target.docx",
+        spec: {
+          metadata: {
+            title: "Render Target",
+            documentType: "render-smoke",
+            language: "en-US",
+            generatedAt: "2026-06-28T00:00:00.000Z",
+          },
+          sources: [],
+          layout: {
+            preset: "standard_business_brief",
+          },
+          sections: [{
+            id: "overview",
+            level: 1,
+            title: "Overview",
+            paragraphs: [
+              "This document is rendered through the standalone public visual QA tool so the model can inspect layout evidence without changing the source file.",
+              "The smoke document includes enough body text to pass the document quality gate while keeping the test focused on render artifact exposure.",
+            ],
+            lists: [{
+              kind: "bullet",
+              items: [
+                { text: "Generate a local DOCX artifact first." },
+                { text: "Run render_word_document as an independent visual QA step." },
+                { text: "Return PDF and page PNG evidence when local render tools are available." },
+              ],
+            }],
+          }],
+          references: [],
+          qualityChecklist: {
+            assumptions: [],
+            limitations: [],
+            missingInputs: [],
+            risks: [],
+          },
+        },
+      },
+    })
+    if (created.status !== "completed") {
+      throw new Error(created.output)
+    }
+    expect(created.status).toBe("completed")
+    const createdPayload = JSON.parse(created.output) as { data: { path: string; absolutePath: string } }
+
+    const rendered = await runtime.execute({
+      sessionID: "session-1",
+      mode: "auto",
+      name: "render_word_document",
+      arguments: {
+        path: createdPayload.data.path,
+        artifactNameBase: "render-tool-smoke",
+        timeoutMs: 5_000,
+      },
+    })
+
+    expect(rendered.approved).toBe(true)
+    expect(rendered.status).toBe("completed")
+    expect(rendered.artifacts).toEqual([
+      expect.objectContaining({
+        kind: "word-render",
+        payload: expect.objectContaining({
+          kind: "word-render",
+          path: createdPayload.data.path,
+          absolutePath: createdPayload.data.absolutePath,
+          renderCheckResult: expect.objectContaining({
+            ok: expect.any(Boolean),
+            attempted: expect.any(Boolean),
+          }),
+        }),
+      }),
+    ])
+    const payload = JSON.parse(rendered.output) as {
+      answerSummary: string
+      data: { renderCheckResult: { ok: boolean; attempted: boolean; pagePngPaths?: string[]; pdfArtifactPath?: string; visualQaStatus?: string; skipReason?: string } }
+      coverage: string
+      gaps: string[]
+    }
+    expect(payload.answerSummary).toContain("Word document")
+    expect(typeof payload.data.renderCheckResult.ok).toBe("boolean")
+    if (payload.data.renderCheckResult.attempted && (payload.data.renderCheckResult.pagePngPaths?.length ?? 0) > 0) {
+      expect(payload.coverage).toBe("complete")
+      expect(payload.data.renderCheckResult.pagePngPaths?.[0]).toMatch(/^\.chipmate\/docs\/rendered\/render-tool-smoke-/)
+    } else {
+      expect(payload.coverage).toBe("partial")
+      expect(payload.answerSummary).toContain("Page-level visual QA skipped")
+      expect(payload.data.renderCheckResult.visualQaStatus).toBe("skipped")
+      expect(payload.data.renderCheckResult.skipReason).toBeTruthy()
+      expect(payload.gaps.length).toBeGreaterThan(0)
+    }
+  }, 30_000)
+
+  test("extract_xlsx_table returns a TableSpec that can be used by create_word_document", async () => {
+    const root = await tempDir("chipmate-xlsx-table-spec-")
+    workspaceFolders = [{ name: "repo", uri: UriShim.file(root) }]
+    const workbookPath = join(root, "metrics.xlsx")
+    const workbook = new ExcelJS.Workbook()
+    const sheet = workbook.addWorksheet("Summary")
+    sheet.addRow(["Metric", "Count", "Formula"])
+    sheet.addRow(["Boards", 3, { formula: "B2*2", result: 6 }])
+    sheet.addRow(["Units", 5, { formula: "B3*2", result: 10 }])
+    await workbook.xlsx.writeFile(workbookPath)
+    const runtime = new ToolRuntime({ append: async () => undefined } as never)
+
+    const extracted = await runtime.execute({
+      sessionID: "session-1",
+      mode: "auto",
+      name: "extract_xlsx_table",
+      arguments: {
+        path: "metrics.xlsx",
+        sheetName: "Summary",
+        range: "A1:C3",
+      },
+    })
+    expect(extracted.status).toBe("completed")
+    const extractedPayload = JSON.parse(extracted.output) as {
+      data: {
+        sourceRange: string
+        table: { headers: string[]; rows: string[][]; repeatHeader: boolean; columnWidthRatios: number[] }
+      }
+      gaps: string[]
+    }
+    expect(extractedPayload.data.sourceRange).toBe("A1:C3")
+    expect(extractedPayload.data.table.headers).toEqual(["Metric", "Count", "Formula"])
+    expect(extractedPayload.data.table.rows).toEqual([["Boards", "3", "6"], ["Units", "5", "10"]])
+    expect(extractedPayload.data.table.repeatHeader).toBe(true)
+    expect(extractedPayload.data.table.columnWidthRatios).toHaveLength(3)
+    expect(extractedPayload.gaps).toEqual([])
+
+    const created = await runtime.execute({
+      sessionID: "session-1",
+      mode: "auto",
+      name: "create_word_document",
+      arguments: {
+        filename: "metrics-report.docx",
+        spec: {
+          metadata: {
+            title: "Metrics Report",
+            documentType: "spreadsheet-backed-report",
+            language: "en-US",
+            generatedAt: "2026-06-28T00:00:00.000Z",
+          },
+          sources: [{ id: "metrics-xlsx", title: "metrics.xlsx", path: "metrics.xlsx" }],
+          cover: {
+            title: "Metrics Report",
+            subtitle: "Spreadsheet-backed Word table smoke test",
+            preparedBy: "ChipMate",
+          },
+          sections: [{
+            id: "metrics",
+            level: 1,
+            title: "Metrics",
+            paragraphs: [
+              "Spreadsheet data is inserted as a real Word table so the model can still choose surrounding document structure, section placement, and explanatory prose.",
+              "This test intentionally keeps spreadsheet conversion bounded to simple rectangular data while proving that the returned TableSpec is accepted by the generic Word document pipeline.",
+            ],
+            tables: [extractedPayload.data.table],
+          }],
+          qualityChecklist: {
+            assumptions: ["The selected worksheet range is a simple rectangular table with one header row."],
+            limitations: ["Spreadsheet styling and formula recalculation are intentionally out of scope for this helper."],
+            missingInputs: [],
+            risks: [],
+          },
+        },
+      },
+    })
+    expect(created.status, created.output).toBe("completed")
+    const createdPayload = JSON.parse(created.output) as { data: { absolutePath: string } }
+    expect((await readFile(createdPayload.data.absolutePath)).subarray(0, 2).toString()).toBe("PK")
+  }, 20_000)
+
+  test("export_word_table_to_csv writes a CSV artifact from an inspected Word table", async () => {
+    const root = await tempDir("chipmate-word-table-csv-")
+    workspaceFolders = [{ name: "repo", uri: UriShim.file(root) }]
+    const docxPath = join(root, "guideline-table.docx")
+    await writeFile(docxPath, cGuidelineDocxFixture({
+      title: "Guideline",
+      sections: [{ heading: "Tables", paragraphs: ["Export this table."] }],
+      tableRows: [
+        ["Naming", "Use clear names"],
+        ["Comma", "Value, with comma"],
+        ["Quote", "Use \"quoted\" text"],
+      ],
+    }))
+    const runtime = new ToolRuntime({ append: async () => undefined } as never)
+
+    const exported = await runtime.execute({
+      sessionID: "session-1",
+      mode: "auto",
+      name: "export_word_table_to_csv",
+      arguments: {
+        path: "guideline-table.docx",
+        tableIndex: 1,
+        outputFilenameBase: "guideline-table-export",
+      },
+    })
+
+    expect(exported.status).toBe("completed")
+    const payload = JSON.parse(exported.output) as {
+      data: { path: string; absolutePath: string; rowCount: number; columnCount: number; tableIndex: number }
+      evidence: Array<{ path: string; kind: string }>
+    }
+    expect(payload.data).toMatchObject({
+      path: ".chipmate/docs/tables/guideline-table-export.csv",
+      absolutePath: join(root, ".chipmate", "docs", "tables", "guideline-table-export.csv"),
+      rowCount: 4,
+      columnCount: 2,
+      tableIndex: 1,
+    })
+    expect(payload.evidence).toEqual([{ path: payload.data.path, kind: "csv-table" }])
+    expect(await readFile(payload.data.absolutePath, "utf8")).toBe([
+      "规则,说明",
+      "Naming,Use clear names",
+      "Comma,\"Value, with comma\"",
+      "Quote,\"Use \"\"quoted\"\" text\"",
+      "",
+    ].join("\n"))
+  })
+
+  test("v1 local Word user path runs through ToolRuntime create inspect edit render and style audit", async () => {
+    const root = await tempDir("chipmate-v1-toolruntime-word-")
+    workspaceFolders = [{ name: "repo", uri: UriShim.file(root) }]
+    const runtime = new ToolRuntime({ append: async () => undefined } as never)
+    const pngBase64 = Buffer.from(tinyPngBytes()).toString("base64")
+
+    const created = await runtime.execute({
+      sessionID: "session-1",
+      mode: "auto",
+      name: "create_word_document",
+      arguments: {
+        filename: "v1-toolruntime-word-smoke.docx",
+        spec: {
+          metadata: {
+            title: "ToolRuntime Word v1 smoke",
+            documentType: "local-word-v1-smoke",
+            language: "en-US",
+            generatedAt: "2026-06-28T00:00:00.000Z",
+            author: "ChipMate Documents Skill",
+          },
+          sources: [],
+          layout: {
+            preset: "narrative_proposal",
+            navigation: { mode: "static-toc", includeTopBottomLinks: true, includeBackToTocLinks: true },
+            visualQa: { requireRender: true, requirePagePngReview: true },
+          },
+          cover: {
+            title: "ToolRuntime Word v1 smoke",
+            subtitle: "Create, inspect, edit, render, and audit through public Word tools",
+            preparedBy: "ChipMate",
+          },
+          sections: [{
+            id: "overview",
+            level: 1,
+            title: "Overview",
+            paragraphs: [
+              "Draft overview paragraph for locator editing.",
+              "This local report is generated from a model-owned WordDocSpec.",
+            ],
+            lists: [{
+              kind: "numbered",
+              items: [{ text: "Plan the document" }, { text: "Generate real Word structure" }, { text: "Verify artifacts" }],
+            }],
+            tables: [{
+              caption: "Smoke workflow coverage.",
+              headers: ["Workflow", "Evidence"],
+              rows: [
+                ["New document", "create_word_document writes a local .docx"],
+                ["Inspection", "inspect_word_document returns locators"],
+                ["Edit", "apply_word_document_edits writes a checked copy"],
+              ],
+              columnWidthRatios: [35, 65],
+            }],
+            figures: [{
+              title: "Smoke PNG figure",
+              caption: "PNG figure inserted in the section that owns it.",
+              label: "Figure",
+              bookmark: "fig_toolruntime_smoke",
+              altText: "ToolRuntime smoke PNG",
+              image: {
+                contentType: "image/png",
+                base64: pngBase64,
+                width: 32,
+                height: 16,
+              },
+            }],
+          }],
+          references: [],
+          qualityChecklist: {
+            assumptions: ["The model chooses content and layout before calling create_word_document."],
+            limitations: ["This smoke covers the v1 local Word path, not every v2 OOXML edge case."],
+            missingInputs: [],
+            risks: [],
+          },
+        },
+      },
+    })
+    expect(created.status).toBe("completed")
+    const createdPayload = JSON.parse(created.output) as {
+      gaps: string[]
+      data: {
+        path: string
+        absolutePath: string
+        renderCheckResult: { ok: boolean; attempted: boolean; pagePngPaths?: string[] }
+      }
+    }
+    expect(createdPayload.data.path).toMatch(/^\.chipmate\/docs\/v1-toolruntime-word-smoke-\d{8}-\d{6}\.docx$/)
+    expect(createdPayload.data.absolutePath).toBe(join(root, createdPayload.data.path))
+    await expectRenderAttemptOrHonestFallback(root, createdPayload)
+    expect((await readFile(createdPayload.data.absolutePath)).subarray(0, 2).toString()).toBe("PK")
+
+    const readResult = await runtime.execute({
+      sessionID: "session-1",
+      mode: "auto",
+      name: "read_docx",
+      arguments: { path: createdPayload.data.path },
+    })
+    expect(readResult.status).toBe("completed")
+    const readPayload = JSON.parse(readResult.output) as { data: { blocks: unknown[]; metadata: { path: string } } }
+    expect(readPayload.data.metadata.path).toBe(createdPayload.data.path)
+    expect(readPayload.data.blocks.length).toBeGreaterThan(0)
+
+    const inspected = await runtime.execute({
+      sessionID: "session-1",
+      mode: "auto",
+      name: "inspect_word_document",
+      arguments: { path: createdPayload.data.path },
+    })
+    expect(inspected.status).toBe("completed")
+    const inspectionPayload = JSON.parse(inspected.output) as {
+      data: {
+        documentEndLocator: Record<string, unknown>
+        summary: {
+          tableCount: number
+          listItemCount: number
+          imageCount: number
+          captionCount: number
+          fieldCount: number
+        }
+        paragraphs: Array<{ text: string; locator: Record<string, unknown> }>
+      }
+    }
+    const inspection = inspectionPayload.data
+    expect(inspection.summary.tableCount).toBeGreaterThanOrEqual(1)
+    expect(inspection.summary.listItemCount).toBeGreaterThanOrEqual(3)
+    expect(inspection.summary.imageCount).toBe(1)
+    expect(inspection.summary.captionCount).toBeGreaterThanOrEqual(1)
+    expect(inspection.summary.fieldCount).toBeGreaterThan(0)
+    const overviewParagraph = inspection.paragraphs.find((item) => item.text === "Draft overview paragraph for locator editing.")
+    expect(overviewParagraph).toBeDefined()
+
+    const edited = await runtime.execute({
+      sessionID: "session-1",
+      mode: "auto",
+      name: "apply_word_document_edits",
+      arguments: {
+        path: createdPayload.data.path,
+        plan: {
+          planId: "toolruntime-v1-word-smoke-edit",
+          targetPath: createdPayload.data.path,
+          outputFilenameBase: "v1-toolruntime-word-smoke-edited",
+          operations: [
+            {
+              type: "addComment",
+              locator: overviewParagraph!.locator,
+              text: "Reviewer note inserted through apply_word_document_edits.",
+              author: "Reviewer",
+              initials: "RV",
+            },
+            {
+              type: "insertSection",
+              locator: inspection.documentEndLocator,
+              title: "Follow-up Evidence",
+              level: 1,
+              paragraphs: ["This section was inserted into an existing .docx using inspected locators."],
+              lists: [{ kind: "checklist", items: [{ text: "Confirm generated DOCX", checked: true }, { text: "Confirm edited DOCX" }] }],
+              tables: [{
+                headers: ["Artifact", "Status"],
+                rows: [["Generated DOCX", "Present"], ["Edited DOCX", "Present"]],
+                columnWidthRatios: [45, 55],
+              }],
+              figures: [{
+                title: "Inserted smoke PNG",
+                caption: "PNG inserted during the edit path.",
+                label: "Figure",
+                altText: "Inserted ToolRuntime smoke PNG",
+                image: {
+                  contentType: "image/png",
+                  base64: pngBase64,
+                  width: 32,
+                  height: 16,
+                },
+              }],
+            },
+          ],
+          warnings: [],
+        },
+      },
+    })
+    expect(edited.status).toBe("completed")
+    const editedPayload = JSON.parse(edited.output) as {
+      gaps: string[]
+      data: {
+        path: string
+        absolutePath: string
+        appliedOperations: Array<{ type: string }>
+        structureCheckResult: { ok: boolean }
+        renderCheckResult: { ok: boolean; attempted: boolean; pagePngPaths?: string[] }
+      }
+    }
+    expect(editedPayload.data.path).toMatch(/^\.chipmate\/docs\/v1-toolruntime-word-smoke-edited-\d{8}-\d{6}\.docx$/)
+    expect(editedPayload.data.appliedOperations.map((operation) => operation.type)).toEqual(["addComment", "insertSection"])
+    expect(editedPayload.data.structureCheckResult.ok).toBe(true)
+    await expectRenderAttemptOrHonestFallback(root, editedPayload)
+
+    const editedInspectionResult = await runtime.execute({
+      sessionID: "session-1",
+      mode: "auto",
+      name: "inspect_word_document",
+      arguments: { path: editedPayload.data.path },
+    })
+    const editedInspection = (JSON.parse(editedInspectionResult.output) as {
+      data: { summary: { commentCount: number; tableCount: number; imageCount: number; listItemCount: number }; paragraphs: Array<{ text: string }> }
+    }).data
+    expect(editedInspection.summary.commentCount).toBe(1)
+    expect(editedInspection.summary.tableCount).toBeGreaterThanOrEqual(2)
+    expect(editedInspection.summary.imageCount).toBe(2)
+    expect(editedInspection.summary.listItemCount).toBeGreaterThanOrEqual(5)
+    expect(editedInspection.paragraphs.some((item) => item.text === "Follow-up Evidence")).toBe(true)
+
+    const styleAudit = await runtime.execute({
+      sessionID: "session-1",
+      mode: "auto",
+      name: "audit_word_document_styles",
+      arguments: { path: editedPayload.data.path },
+    })
+    expect(styleAudit.status).toBe("completed")
+    const stylePayload = JSON.parse(styleAudit.output) as { data: { inputPath: string; paragraphCount: number; runCount: number } }
+    expect(stylePayload.data.inputPath).toBe(editedPayload.data.path)
+    expect(stylePayload.data.paragraphCount).toBeGreaterThan(0)
+    expect(stylePayload.data.runCount).toBeGreaterThan(0)
+  }, 20_000)
+
+	  test("blocks goal tools without session-scoped goal handlers and validates status and budgets", async () => {
+	    const runtime = new ToolRuntime({ append: async () => undefined } as never)
+	    const unavailable = await runtime.execute({
+	      sessionID: "session-1",
+	      mode: "auto",
+	      name: "get_goal",
+	      arguments: {},
+	    })
+	    const missingSession = await runtime.execute({
+	      mode: "auto",
+	      name: "get_goal",
+	      arguments: {},
+	      goals: {
+	        getGoal: async () => ({ goal: null, remainingTokens: null, completionBudgetReport: null }),
+	        createGoal: async () => ({ goal: null, remainingTokens: null, completionBudgetReport: null }),
+	        updateGoal: async () => ({ goal: null, remainingTokens: null, completionBudgetReport: null }),
+	      },
+	    })
+	    const badBudget = await runtime.execute({
+	      sessionID: "session-1",
+	      mode: "auto",
+	      name: "create_goal",
+	      arguments: { objective: "budget", token_budget: 0 },
+	      goals: {
+	        getGoal: async () => ({ goal: null, remainingTokens: null, completionBudgetReport: null }),
+	        createGoal: async () => ({ goal: null, remainingTokens: null, completionBudgetReport: null }),
+	        updateGoal: async () => ({ goal: null, remainingTokens: null, completionBudgetReport: null }),
+	      },
+	    })
+	    const badStatus = await runtime.execute({
+	      sessionID: "session-1",
+	      mode: "auto",
+	      name: "update_goal",
+	      arguments: { status: "paused" },
+	      goals: {
+	        getGoal: async () => ({ goal: null, remainingTokens: null, completionBudgetReport: null }),
+	        createGoal: async () => ({ goal: null, remainingTokens: null, completionBudgetReport: null }),
+	        updateGoal: async (_sessionID, input) => {
+	          if (input.status !== "complete" && input.status !== "blocked") throw new Error("invalid status")
+	          return { goal: null, remainingTokens: null, completionBudgetReport: null }
+	        },
+	      },
+	    })
+
+	    expect(unavailable.status).toBe("failed")
+	    expect(unavailable.error).toContain("goal tools unavailable")
+	    expect(missingSession.status).toBe("failed")
+	    expect(missingSession.error).toContain("missing sessionID")
+	    expect(badBudget.status).toBe("failed")
+	    expect(badBudget.error).toContain("budgets must be positive")
+	    expect(badStatus.status).toBe("failed")
+	    expect(badStatus.error).toContain("invalid status")
+	  })
+
+	  test("creates draw.io diagrams without workspace writes or approval", async () => {
+	    const runtime = new ToolRuntime({ append: async () => undefined } as never)
     const result = await runtime.execute({
       name: "chipmate_create_drawio_diagram",
       mode: "auto",
@@ -242,10 +1016,194 @@ describe("ToolRuntime", () => {
     expect(result.artifacts?.[0]?.kind).toBe("drawio")
     expect(result.artifacts?.[0]?.payload.mxGraphModelXml).toContain("<mxGraphModel")
     expect(result.artifacts?.[0]?.payload.mxGraphModelXml).toContain('source="n-a"')
-    expect(result.artifacts?.[0]?.payload.normalizedSpec.layoutEngine).toBe("elk")
-  })
+	    expect(result.artifacts?.[0]?.payload.normalizedSpec.layoutEngine).toBe("elk")
+	  })
 
-  test("fails draw.io rendering when ELK fails instead of returning a fallback diagram", async () => {
+	  test("renders Mermaid diagrams to .mmd and PNG artifacts for Word figures", async () => {
+	    const root = await tempDir("chipmate-mermaid-tool-")
+	    workspaceFolders = [{ name: "repo", uri: UriShim.file(root) }]
+	    setMermaidPngRendererForTest(async (input) => {
+	      expect(input.source).toContain("flowchart TD")
+	      expect(input.outputPath).toMatch(/\.png$/)
+	      await writeFile(input.outputPath!, tinyPngBytes())
+	      return {
+	        bytes: tinyPngBytes(),
+	        width: 320,
+	        height: 180,
+	        artifactPath: input.outputPath,
+	      }
+	    })
+    const runtime = new ToolRuntime({ append: async () => undefined } as never)
+    const result = await runtime.execute({
+      name: "chipmate_render_mermaid_diagram",
+      mode: "full-access",
+      arguments: {
+	        title: "Mermaid tool flow",
+	        diagramId: "word-flow",
+	        artifactNameBase: "word-flow",
+	        source: "flowchart TD\n  A[Start] --> B[Done]",
+	      },
+	    })
+
+	    expect(result.status).toBe("completed")
+	    expect(result.approved).toBe(true)
+	    expect(result.artifacts?.[0]?.kind).toBe("mermaid")
+	    const payload = JSON.parse(result.output)
+	    expect(payload.data.mmdPath).toMatch(/\.chipmate\/docs\/diagrams\/word-flow-.+\.mmd/)
+	    expect(payload.data.pngPath).toMatch(/\.chipmate\/docs\/diagrams\/word-flow-.+\.png/)
+	    expect(payload.data.figure.image).toMatchObject({
+	      contentType: "image/png",
+	      path: payload.data.pngPath,
+	      artifactPath: payload.data.pngPath,
+	      width: 320,
+	      height: 180,
+	    })
+	    expect(await readFile(join(root, payload.data.mmdPath), "utf8")).toContain("flowchart TD")
+	    expect((await readFile(join(root, payload.data.pngPath))).subarray(0, 8)).toEqual(tinyPngBytes().subarray(0, 8))
+	  })
+
+	  test("renders Mermaid diagrams through the remote render server before local fallback", async () => {
+	    const root = await tempDir("chipmate-mermaid-tool-remote-")
+	    workspaceFolders = [{ name: "repo", uri: UriShim.file(root) }]
+	    const baseUrl = (await listen(async (request, response) => {
+	      if (request.method !== "POST" || request.url !== "/render/mermaid") {
+	        response.writeHead(404).end()
+	        return
+	      }
+	      const body = await collectJson(request)
+	      expect(body.source).toContain("flowchart TD")
+	      response.writeHead(200, { "content-type": "application/json" })
+	      response.end(JSON.stringify({
+	        ok: true,
+	        png: { contentType: "image/png", base64: Buffer.from(tinyPngBytes()).toString("base64") },
+	        width: 640,
+	        height: 360,
+	        issues: [],
+	        renderer: { kind: "remote-opencode", diagramToPng: "mermaid-chromium" },
+	      }))
+	    })).replace(/\/v1$/, "")
+	    const previousEndpoint = process.env.CHIPMATE_WORD_RENDER_REMOTE_ENDPOINT
+	    process.env.CHIPMATE_WORD_RENDER_REMOTE_ENDPOINT = baseUrl
+	    let localCalls = 0
+	    setMermaidPngRendererForTest(async () => {
+	      localCalls += 1
+	      throw new Error("local renderer should not be called")
+	    })
+	    try {
+	      const runtime = new ToolRuntime({ append: async () => undefined } as never)
+	      const result = await runtime.execute({
+	        name: "chipmate_render_mermaid_diagram",
+	        mode: "full-access",
+	        arguments: {
+	          title: "Remote Mermaid tool flow",
+	          diagramId: "remote-word-flow",
+	          artifactNameBase: "remote-word-flow",
+	          source: "flowchart TD\n  A[Start] --> B[Done]",
+	        },
+	      })
+
+	      expect(result.status).toBe("completed")
+	      expect(localCalls).toBe(0)
+	      const payload = JSON.parse(result.output)
+	      expect(payload.data.renderProvider).toBe("remote-opencode")
+	      expect(payload.data.fallbackUsed).toBe(false)
+	      expect(payload.data.figure.image.path).toBe(payload.data.pngPath)
+	      expect((await readFile(join(root, payload.data.pngPath))).subarray(0, 8)).toEqual(tinyPngBytes().subarray(0, 8))
+	    } finally {
+	      if (previousEndpoint === undefined) delete process.env.CHIPMATE_WORD_RENDER_REMOTE_ENDPOINT
+	      else process.env.CHIPMATE_WORD_RENDER_REMOTE_ENDPOINT = previousEndpoint
+	    }
+	  })
+
+	  test("falls back to local Mermaid rendering after remote render failure and reports the fallback", async () => {
+	    const root = await tempDir("chipmate-mermaid-tool-remote-fallback-")
+	    workspaceFolders = [{ name: "repo", uri: UriShim.file(root) }]
+	    const baseUrl = (await listen(async (request, response) => {
+	      if (request.method !== "POST" || request.url !== "/render/mermaid") {
+	        response.writeHead(404).end()
+	        return
+	      }
+	      await collectJson(request)
+	      response.writeHead(200, { "content-type": "application/json" })
+	      response.end(JSON.stringify({
+	        ok: false,
+	        issues: [{ severity: "error", code: "remote-render-failed", message: "mock remote Mermaid failure" }],
+	      }))
+	    })).replace(/\/v1$/, "")
+	    const previousEndpoint = process.env.CHIPMATE_WORD_RENDER_REMOTE_ENDPOINT
+	    process.env.CHIPMATE_WORD_RENDER_REMOTE_ENDPOINT = baseUrl
+	    setMermaidPngRendererForTest(async (input) => {
+	      await writeFile(input.outputPath!, tinyPngBytes())
+	      return { bytes: tinyPngBytes(), width: 320, height: 180, artifactPath: input.outputPath }
+	    })
+	    try {
+	      const runtime = new ToolRuntime({ append: async () => undefined } as never)
+	      const result = await runtime.execute({
+	        name: "chipmate_render_mermaid_diagram",
+	        mode: "full-access",
+	        arguments: {
+	          title: "Fallback Mermaid tool flow",
+	          diagramId: "fallback-word-flow",
+	          artifactNameBase: "fallback-word-flow",
+	          source: "flowchart TD\n  A[Start] --> B[Done]",
+	        },
+	      })
+
+	      expect(result.status).toBe("completed")
+	      const payload = JSON.parse(result.output)
+	      expect(payload.data.renderProvider).toBe("local-chrome")
+	      expect(payload.data.fallbackUsed).toBe(true)
+	      expect(payload.data.remoteFailure.errorCode).toBe("remote-render-failed")
+	      expect(payload.gaps.join("\n")).toContain("mock remote Mermaid failure")
+	      expect(payload.answerSummary).toContain("local fallback")
+	    } finally {
+	      if (previousEndpoint === undefined) delete process.env.CHIPMATE_WORD_RENDER_REMOTE_ENDPOINT
+	      else process.env.CHIPMATE_WORD_RENDER_REMOTE_ENDPOINT = previousEndpoint
+	    }
+	  })
+
+	  test("returns structured diagnostics and the written .mmd path when Mermaid PNG rendering fails", async () => {
+	    const root = await tempDir("chipmate-mermaid-tool-fail-")
+	    workspaceFolders = [{ name: "repo", uri: UriShim.file(root) }]
+	    const outputLines: string[] = []
+	    setMermaidPngRendererForTest(async () => {
+	      throw new MermaidPngRenderError({
+	        errorCode: "chrome-not-found",
+	        message: "No Chrome/Edge executable found for Mermaid PNG rendering.",
+	        checkedChromeCandidates: ["%ProgramFiles% Google Chrome: C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe", "where.exe chrome.exe"],
+	        platform: "win32",
+	        cwd: root,
+	        nodeVersion: "v22.0.0",
+	      })
+	    })
+	    const runtime = new ToolRuntime({ append: async () => undefined } as never, { appendLine: (line: string) => outputLines.push(line), append: () => undefined } as never)
+	    const result = await runtime.execute({
+	      name: "chipmate_render_mermaid_diagram",
+	      mode: "full-access",
+	      arguments: {
+	        title: "Mermaid tool flow",
+	        diagramId: "word-flow",
+	        artifactNameBase: "word-flow",
+	        source: "flowchart TD\n  A[Start] --> B[Done]",
+	      },
+	    })
+
+	    expect(result.status).toBe("failed")
+	    expect(result.artifacts).toBeUndefined()
+	    const payload = JSON.parse(result.output)
+	    expect(payload.errorCode).toBe("chrome-not-found")
+	    expect(payload.data.pngGenerated).toBe(false)
+	    expect(payload.data.mmdPath).toMatch(/\.chipmate\/docs\/diagrams\/word-flow-.+\.mmd/)
+	    expect(payload.data.expectedPngPath).toMatch(/\.chipmate\/docs\/diagrams\/word-flow-.+\.png/)
+	    expect(payload.data.diagnostic.checkedChromeCandidates).toContain("where.exe chrome.exe")
+	    expect(payload.gaps.join("\n")).toContain("PNG artifact was not generated")
+	    expect(payload.nextActions[0].action).toContain("Install Chrome or Edge")
+	    expect(await readFile(join(root, payload.data.mmdPath), "utf8")).toContain("flowchart TD")
+	    expect(outputLines.some((line) => line.includes("[mermaid-render] failed code=chrome-not-found"))).toBe(true)
+	    expect(outputLines.some((line) => line.includes("chrome candidates"))).toBe(true)
+	  })
+
+	  test("fails draw.io rendering when ELK fails instead of returning a fallback diagram", async () => {
     setDrawioElkLayoutRunnerForTest(async () => {
       throw new Error("mock elk unavailable")
     })
@@ -331,7 +1289,11 @@ describe("ToolRuntime", () => {
     workspaceFolders = [{ name: "repo", uri: UriShim.file(root) }]
     const skillRoot = join(root, ".agents", "skills", "review")
     await mkdir(join(skillRoot, "references"), { recursive: true })
+    await mkdir(join(skillRoot, "tasks"), { recursive: true })
+    await mkdir(join(skillRoot, "scripts"), { recursive: true })
     await writeFile(join(skillRoot, "references", "guide.md"), "Guide text\n")
+    await writeFile(join(skillRoot, "tasks", "verify.md"), "Verify text\n")
+    await writeFile(join(skillRoot, "scripts", "manifest.json"), JSON.stringify({ helpers: [{ codexScript: "render_and_diff.py" }] }))
     const auditEvents: Array<{ detail?: Record<string, unknown> }> = []
     const runtime = new ToolRuntime({ append: async (event: { detail?: Record<string, unknown> }) => { auditEvents.push(event) } } as never)
 
@@ -354,12 +1316,342 @@ describe("ToolRuntime", () => {
       status: "completed",
       output: expect.stringContaining("Guide text"),
     })
+    const taskResult = await runtime.execute({
+      mode: "ask",
+      name: "chipmate_read_skill_resource",
+      arguments: { skill: "review", path: "tasks/verify.md" },
+      activeSkills: [{
+        id: "repo:review",
+        name: "review",
+        path: join(skillRoot, "SKILL.md"),
+        skillRoot,
+        allowedTools: ["chipmate_read_skill_resource"],
+        invocationMode: "explicit",
+      }],
+    })
+    expect(taskResult).toMatchObject({
+      approved: true,
+      status: "completed",
+      output: expect.stringContaining("Verify text"),
+    })
+    const scriptResult = await runtime.execute({
+      mode: "ask",
+      name: "chipmate_read_skill_resource",
+      arguments: { skill: "review", path: "scripts/manifest.json" },
+      activeSkills: [{
+        id: "repo:review",
+        name: "review",
+        path: join(skillRoot, "SKILL.md"),
+        skillRoot,
+        allowedTools: ["chipmate_read_skill_resource"],
+        invocationMode: "explicit",
+      }],
+    })
+    expect(scriptResult).toMatchObject({
+      approved: true,
+      status: "completed",
+      output: expect.stringContaining("render_and_diff.py"),
+    })
     expect(auditEvents[0]?.detail).toMatchObject({
       skillId: "repo:review",
       skillName: "review",
       invocationMode: "explicit",
       toolAllowedBySkill: true,
     })
+  })
+
+  test("runs active skill scripts only through manifest-approved execution boundary", async () => {
+    const root = await tempDir("chipmate-tool-skill-script-")
+    workspaceFolders = [{ name: "repo", uri: UriShim.file(root) }]
+    const skillRoot = join(root, ".agents", "skills", "scripted")
+    await mkdir(join(skillRoot, "scripts"), { recursive: true })
+    await writeFile(join(skillRoot, "scripts", "hello.mjs"), [
+      "let input = ''",
+      "process.stdin.on('data', chunk => { input += chunk })",
+      "process.stdin.on('end', () => {",
+      "  const args = JSON.parse(input || '{}')",
+      "  console.log(JSON.stringify({ greeting: `hello ${args.name}` }))",
+      "})",
+      "",
+    ].join("\n"))
+    await writeFile(join(skillRoot, "scripts", "manifest.json"), JSON.stringify({
+      version: "test-script-manifest",
+      executionPolicy: { directExecution: true },
+      helpers: [{
+        codexScript: "hello.py",
+        status: "executable",
+        execution: {
+          runtime: "node",
+          entrypoint: "scripts/hello.mjs",
+          timeoutMs: 5000,
+        },
+      }],
+    }))
+    const auditEvents: Array<{ detail?: Record<string, unknown> }> = []
+    const runtime = new ToolRuntime({ append: async (event: { detail?: Record<string, unknown> }) => { auditEvents.push(event) } } as never)
+
+    const result = await runtime.execute({
+      mode: "full-access",
+      name: "chipmate_run_skill_script",
+      arguments: { skill: "scripted", script: "hello.py", arguments: { name: "Ada" } },
+      activeSkills: [{
+        id: "repo:scripted",
+        name: "scripted",
+        path: join(skillRoot, "SKILL.md"),
+        skillRoot,
+        allowedTools: ["chipmate_run_skill_script"],
+        invocationMode: "explicit",
+      }],
+    })
+
+    const resultOutput = result.output
+    expect(result).toMatchObject({
+      approved: true,
+      status: "completed",
+      output: expect.stringContaining("hello Ada"),
+    })
+    expect(resultOutput).toContain("test-script-manifest")
+    expect(auditEvents[0]?.detail).toMatchObject({
+      skillId: "repo:scripted",
+      skillName: "scripted",
+      toolAllowedBySkill: true,
+      skillScript: "hello.py",
+      entrypoint: "scripts/hello.mjs",
+      runtime: "node",
+      argumentKeys: ["name"],
+    })
+
+    await writeFile(join(skillRoot, "scripts", "manifest.json"), JSON.stringify({
+      executionPolicy: { directExecution: false },
+      helpers: [{
+        codexScript: "hello.py",
+        status: "executable",
+        execution: { runtime: "node", entrypoint: "scripts/hello.mjs" },
+      }],
+    }))
+    const blocked = await runtime.execute({
+      mode: "full-access",
+      name: "chipmate_run_skill_script",
+      arguments: { skill: "scripted", script: "hello.py" },
+      activeSkills: [{
+        id: "repo:scripted",
+        name: "scripted",
+        path: join(skillRoot, "SKILL.md"),
+        skillRoot,
+        allowedTools: ["chipmate_run_skill_script"],
+        invocationMode: "explicit",
+      }],
+    })
+    expect(blocked).toMatchObject({
+      approved: false,
+      status: "failed",
+      error: expect.stringContaining("directExecution"),
+    })
+  })
+
+  test("runs v2 per-helper skill scripts with bounded artifacts and evidence", async () => {
+    const root = await tempDir("chipmate-tool-skill-script-v2-")
+    workspaceFolders = [{ name: "repo", uri: UriShim.file(root) }]
+    await writeFile(join(root, "input.docx"), "fixture")
+    const skillRoot = join(root, ".agents", "skills", "scripted")
+    await mkdir(join(skillRoot, "scripts"), { recursive: true })
+    await writeFile(join(skillRoot, "scripts", "report.mjs"), [
+      "import { mkdir, writeFile } from 'node:fs/promises'",
+      "import { join } from 'node:path'",
+      "let input = ''",
+      "process.stdin.on('data', chunk => { input += chunk })",
+      "process.stdin.on('end', async () => {",
+      "  const args = JSON.parse(input || '{}')",
+      "  const artifactDir = process.env.CHIPMATE_SKILL_ARTIFACT_DIR",
+      "  await mkdir(artifactDir, { recursive: true })",
+      "  await writeFile(join(artifactDir, 'report.json'), JSON.stringify({ ok: true, documentPath: args.documentPath }) + '\\n')",
+      "  console.log(JSON.stringify({ ok: true, artifact: 'report.json' }))",
+      "})",
+      "",
+    ].join("\n"))
+    await writeFile(join(skillRoot, "scripts", "manifest.json"), JSON.stringify({
+      schemaVersion: 2,
+      version: "test-script-manifest-v2",
+      executionPolicy: { directExecution: false, networkPolicy: "none" },
+      helpers: [{
+        name: "report",
+        status: "executable",
+        execution: {
+          directExecution: true,
+          runtime: "node",
+          entrypoint: "scripts/report.mjs",
+          inputSchema: {
+            type: "object",
+            required: ["documentPath"],
+            additionalProperties: false,
+            properties: {
+              documentPath: { type: "string", pathKind: "workspace", allowedExtensions: [".docx"] },
+            },
+          },
+          outputArtifacts: [{
+            name: "report",
+            kind: "diagnostic-json",
+            contentType: "application/json",
+            path: "report.json",
+            required: true,
+          }],
+          timeoutMs: 5000,
+          maxOutputBytes: 4096,
+          allowedExtensions: [".docx"],
+          networkPolicy: "none",
+        },
+      }],
+    }))
+    const auditEvents: Array<{ detail?: Record<string, unknown> }> = []
+    const runtime = new ToolRuntime({ append: async (event: { detail?: Record<string, unknown> }) => { auditEvents.push(event) } } as never)
+
+    const result = await runtime.execute({
+      mode: "full-access",
+      name: "chipmate_run_skill_script",
+      arguments: { skill: "scripted", script: "report", arguments: { documentPath: "input.docx" } },
+      activeSkills: [{
+        id: "repo:scripted",
+        name: "scripted",
+        path: join(skillRoot, "SKILL.md"),
+        skillRoot,
+        allowedTools: ["chipmate_run_skill_script"],
+        invocationMode: "explicit",
+      }],
+    })
+
+    const payload = JSON.parse(result.output)
+    expect(result.status).toBe("completed")
+    expect(result.artifacts?.[0]).toMatchObject({
+      kind: "skill-script",
+      payload: {
+        kind: "skill-script",
+        skill: "scripted",
+        script: "report",
+        artifactRoot: expect.stringContaining(".chipmate/docs/skill-script-artifacts"),
+        artifacts: [],
+      },
+    })
+    const artifactPath = String(payload.data.artifacts[0].path)
+    expect(payload.data.artifacts[0].name).toBe("report")
+    expect(artifactPath).toContain(".chipmate/docs/skill-script-artifacts")
+    expect(typeof payload.data.artifacts[0].bytes).toBe("number")
+    expect(payload.evidence?.[0]).toMatchObject({
+      sourceKind: "skill-script-artifact",
+      snippet: expect.stringContaining("input.docx"),
+    })
+    expect(auditEvents[0]?.detail).toMatchObject({
+      skillScript: "report",
+      directExecutionScope: "helper",
+      networkPolicy: "none",
+      outputArtifactCount: 1,
+    })
+    expect(artifactPath ? await readFile(join(root, artifactPath), "utf8") : "").toContain("input.docx")
+  })
+
+  test("runs documents word runtime field refresh diagnostic helper through manifest opt-in", async () => {
+    const root = await tempDir("chipmate-tool-documents-runtime-helper-")
+    workspaceFolders = [{ name: "repo", uri: UriShim.file(root) }]
+    const skillRoot = join(import.meta.dir, "..", ".agents", "skills", "documents")
+    const runtime = new ToolRuntime({ append: async () => undefined } as never)
+
+    const result = await runtime.execute({
+      mode: "full-access",
+      name: "chipmate_run_skill_script",
+      arguments: { skill: "documents", script: "word_runtime_field_refresh_report", arguments: {} },
+      activeSkills: [{
+        id: "repo:documents",
+        name: "documents",
+        path: join(skillRoot, "SKILL.md"),
+        skillRoot,
+        allowedTools: ["chipmate_run_skill_script"],
+        invocationMode: "explicit",
+      }],
+    })
+
+    const payload = JSON.parse(result.output)
+    expect(result.status).toBe("completed")
+    expect(payload.data.script).toBe("word_runtime_field_refresh_report")
+    expect(payload.data.networkPolicy).toBe("none")
+    expect(payload.data.artifacts[0]).toMatchObject({
+      name: "word-runtime-field-refresh-report",
+      kind: "diagnostic-json",
+      contentType: "application/json",
+    })
+    const artifactPath = String(payload.data.artifacts[0].path)
+    const report = JSON.parse(await readFile(join(root, artifactPath), "utf8"))
+    expect(report.directHelperScope).toMatchObject({
+      readOnly: true,
+      nativeToolToUseForRefresh: "refresh_word_native_fields",
+    })
+  })
+
+  test("rejects v2 skill script inputs outside declared schema and extensions", async () => {
+    const root = await tempDir("chipmate-tool-skill-script-v2-reject-")
+    workspaceFolders = [{ name: "repo", uri: UriShim.file(root) }]
+    const skillRoot = join(root, ".agents", "skills", "scripted")
+    await mkdir(join(skillRoot, "scripts"), { recursive: true })
+    await writeFile(join(skillRoot, "scripts", "noop.mjs"), "console.log('{}')\n")
+    await writeFile(join(skillRoot, "scripts", "manifest.json"), JSON.stringify({
+      schemaVersion: 2,
+      executionPolicy: { directExecution: false, networkPolicy: "none" },
+      helpers: [{
+        name: "noop",
+        status: "executable",
+        execution: {
+          directExecution: true,
+          runtime: "node",
+          entrypoint: "scripts/noop.mjs",
+          inputSchema: {
+            type: "object",
+            required: ["documentPath"],
+            additionalProperties: false,
+            properties: {
+              documentPath: { type: "string", pathKind: "workspace", allowedExtensions: [".docx"] },
+            },
+          },
+          timeoutMs: 5000,
+          maxOutputBytes: 1024,
+          allowedExtensions: [".docx"],
+          networkPolicy: "none",
+        },
+      }],
+    }))
+    const runtime = new ToolRuntime({ append: async () => undefined } as never)
+
+    const badExtension = await runtime.execute({
+      mode: "full-access",
+      name: "chipmate_run_skill_script",
+      arguments: { skill: "scripted", script: "noop", arguments: { documentPath: "notes.txt" } },
+      activeSkills: [{
+        id: "repo:scripted",
+        name: "scripted",
+        path: join(skillRoot, "SKILL.md"),
+        skillRoot,
+        allowedTools: ["chipmate_run_skill_script"],
+        invocationMode: "explicit",
+      }],
+    })
+    expect(badExtension).toMatchObject({
+      approved: false,
+      status: "failed",
+      error: expect.stringContaining("extension"),
+    })
+
+    const outsideWorkspace = await runtime.execute({
+      mode: "full-access",
+      name: "chipmate_run_skill_script",
+      arguments: { skill: "scripted", script: "noop", arguments: { documentPath: "../outside.docx", extra: true } },
+      activeSkills: [{
+        id: "repo:scripted",
+        name: "scripted",
+        path: join(skillRoot, "SKILL.md"),
+        skillRoot,
+        allowedTools: ["chipmate_run_skill_script"],
+        invocationMode: "explicit",
+      }],
+    })
+    expect(outsideWorkspace.output).toContain("Unexpected argument: extra")
+    expect(outsideWorkspace.output).toContain("inside the workspace")
   })
 
   test("graph tools return refIds that can be read with chipmate_read_evidence", async () => {
@@ -1082,7 +2374,993 @@ describe("ToolRuntime", () => {
   })
 })
 
+describe("GoalRuntime", () => {
+  test("validates objectives and preserves create-goal exclusivity until completion", async () => {
+    const runtime = new GoalRuntime(extensionContext(await tempDir("chipmate-goal-runtime-")))
+
+    await expect(runtime.createGoalFromTool("thread-1", "")).rejects.toThrow("must not be empty")
+
+    const created = await runtime.createGoalFromTool("thread-1", "finish the migration", 100)
+    expect(created.goal).toMatchObject({
+      threadID: "thread-1",
+      objective: "finish the migration",
+      status: "active",
+      tokenBudget: 100,
+      tokensUsed: 0,
+    })
+    expect(created.remainingTokens).toBe(100)
+    await expect(runtime.createGoalFromTool("thread-1", "start another goal")).rejects.toThrow("unfinished goal")
+
+    const completed = await runtime.updateGoalFromTool("thread-1", "complete")
+    expect(completed.goal?.status).toBe("complete")
+    expect(completed.completionBudgetReport).toContain("structured goal fields")
+    expect(completed.completionBudgetReport).toContain("goal.tokensUsed")
+    expect(completed.completionBudgetReport).toContain("goal.tokenBudget")
+
+    const replacement = await runtime.createGoalFromTool("thread-1", "next migration")
+    expect(replacement.goal).toMatchObject({
+      objective: "next migration",
+      status: "active",
+      tokensUsed: 0,
+      timeUsedSeconds: 0,
+    })
+    expect(replacement.goal?.goalID).not.toBe(created.goal?.goalID)
+  })
+
+  test("materializes long objectives and expands them for prompts and editing", async () => {
+    const runtime = new GoalRuntime(extensionContext(await tempDir("chipmate-goal-materialized-")))
+    const longObjective = `ship the whole migration\n${"long objective detail ".repeat(260)}`.trim()
+    expect([...longObjective].length).toBeGreaterThan(MAX_THREAD_GOAL_OBJECTIVE_CHARS)
+
+    const created = await runtime.createGoalFromTool("thread-long", longObjective, 100000)
+    const storedObjective = created.goal?.objective ?? ""
+    expect(storedObjective).toContain("Read the ChipMate goal objective file at ")
+    expect(storedObjective).toContain(" before continuing.")
+    expect([...storedObjective].length).toBeLessThanOrEqual(MAX_THREAD_GOAL_OBJECTIVE_CHARS)
+    expect(storedObjective).not.toContain("long objective detail long objective detail long objective detail")
+
+    const match = storedObjective.match(/^Read the ChipMate goal objective file at (.*) before continuing\.$/)
+    expect(match?.[1]).toBeTruthy()
+    expect(await readFile(match![1], "utf8")).toBe(longObjective)
+
+    const displayGoal = await runtime.goalForDisplay(created.goal!)
+    expect(displayGoal.objective).toBe(longObjective)
+
+    const prompt = await runtime.continuationPrompt(created.goal!)
+    expect(prompt).toContain("ship the whole migration")
+    expect(prompt).toContain("long objective detail long objective detail")
+    expect(prompt).not.toContain("Read the ChipMate goal objective file")
+
+    const editedObjective = `${longObjective}\nupdated requirement`
+    await runtime.setGoal("thread-long", { objective: editedObjective, status: "active" })
+    const steering = runtime.consumePendingSteering("thread-long").join("\n")
+    expect(steering).toContain("updated requirement")
+    expect(steering).not.toContain("Read the ChipMate goal objective file")
+  })
+
+  test("accounts usage, enforces token budget, and ignores stale expected goal ids", async () => {
+    const store = new GoalStore(extensionContext(await tempDir("chipmate-goal-store-")))
+    const goal = await store.createGoal("thread-2", "budgeted goal", 10)
+    expect(goal?.status).toBe("active")
+
+    const stale = await store.accountUsage({
+      threadID: "thread-2",
+      expectedGoalID: "old-goal",
+      tokenDelta: 5,
+      timeDeltaSeconds: 2,
+    })
+    expect(stale).toBeUndefined()
+    expect(await store.getGoal("thread-2")).toMatchObject({ tokensUsed: 0, timeUsedSeconds: 0, status: "active" })
+
+    const accounted = await store.accountUsage({
+      threadID: "thread-2",
+      expectedGoalID: goal?.goalID,
+      tokenDelta: 12,
+      timeDeltaSeconds: 3,
+    })
+    expect(accounted).toMatchObject({
+      tokensUsed: 12,
+      timeUsedSeconds: 3,
+      status: "budget_limited",
+    })
+
+    const budgetLimited = await store.accountUsage({
+      threadID: "thread-2",
+      expectedGoalID: goal?.goalID,
+      tokenDelta: 2,
+      mode: "activeOnly",
+    })
+    expect(budgetLimited).toMatchObject({ tokensUsed: 14, status: "budget_limited" })
+
+    const paused = await store.replaceGoal("thread-paused", "paused accounting", "paused")
+    expect(await store.accountUsage({
+      threadID: "thread-paused",
+      expectedGoalID: paused.goalID,
+      tokenDelta: 5,
+      mode: "activeOnly",
+    })).toBeUndefined()
+    expect(await store.accountUsage({
+      threadID: "thread-paused",
+      expectedGoalID: paused.goalID,
+      tokenDelta: 5,
+      mode: "activeOrStopped",
+    })).toMatchObject({ tokensUsed: 5, status: "paused" })
+
+    const completed = await store.replaceGoal("thread-complete", "complete accounting", "complete")
+    expect(await store.accountUsage({
+      threadID: "thread-complete",
+      expectedGoalID: completed.goalID,
+      tokenDelta: 5,
+      mode: "activeOrStopped",
+    })).toBeUndefined()
+    expect(await store.accountUsage({
+      threadID: "thread-complete",
+      expectedGoalID: completed.goalID,
+      tokenDelta: 5,
+      mode: "activeOrComplete",
+    })).toMatchObject({ tokensUsed: 5, status: "complete" })
+  })
+
+  test("runtime emits budget steering and restricts model-side status updates", async () => {
+    const runtime = new GoalRuntime(extensionContext(await tempDir("chipmate-goal-budget-")))
+    const created = await runtime.createGoalFromTool("thread-3", "finish within budget", 5)
+    const goalID = created.goal?.goalID
+    expect(goalID).toBeTruthy()
+
+    await runtime.startTurn("thread-3", "assistant-1")
+    const limited = await runtime.recordTokenUsage("thread-3", { input: 2, output: 4, total: 6 })
+    expect(limited).toMatchObject({ status: "budget_limited", tokensUsed: 6 })
+    const stillLimited = await runtime.recordTokenUsage("thread-3", { input: 5, output: 5, total: 10 })
+    expect(stillLimited).toMatchObject({ status: "budget_limited", tokensUsed: 10 })
+    const steering = runtime.consumePendingSteering("thread-3").join("\n")
+    expect(steering).toContain("token budget")
+    expect(steering.split("The active ChipMate thread goal has reached its token budget.").length - 1).toBe(1)
+    expect(runtime.consumePendingSteering("thread-3")).toEqual([])
+    await expect(runtime.updateGoalFromTool("thread-3", "paused")).rejects.toThrow("can only mark")
+  })
+
+  test("runtime accounts idle goal progress before external mutations", async () => {
+    const realNow = Date.now
+    let now = 1_000_000
+    Date.now = () => now
+    try {
+      const runtime = new GoalRuntime(extensionContext(await tempDir("chipmate-goal-idle-accounting-")))
+      const goal = await runtime.setGoal("thread-idle", {
+        objective: "account idle time before pausing",
+        status: "active",
+        tokenBudget: 100000,
+      })
+      expect(goal).toMatchObject({ status: "active", timeUsedSeconds: 0 })
+      now += 2500
+
+      const paused = await runtime.pauseGoal("thread-idle")
+      expect(paused).toMatchObject({
+        status: "paused",
+        goalID: goal.goalID,
+        timeUsedSeconds: 2,
+      })
+    } finally {
+      Date.now = realNow
+    }
+  })
+
+  test("continuation prompt preserves Codex-grade completion and blocked audits", async () => {
+    const runtime = new GoalRuntime(extensionContext(await tempDir("chipmate-goal-prompt-")))
+    const prompt = await runtime.continuationPrompt({
+      threadID: "thread-prompt",
+      goalID: "goal-prompt",
+      objective: "ship the goal implementation",
+      status: "active",
+      tokenBudget: 1000,
+      tokensUsed: 42,
+      timeUsedSeconds: 7,
+      createdAt: 1,
+      updatedAt: 1,
+    })
+
+    expect(prompt).toContain("If update_plan is available")
+    expect(prompt).toContain("Treat alignment as movement toward the requested end state")
+    expect(prompt).toContain("Derive concrete requirements from the objective")
+    expect(prompt).toContain("For every explicit requirement, numbered item, named artifact, command, test, gate, invariant, and deliverable")
+    expect(prompt).toContain("The audit must prove completion, not merely fail to find obvious remaining work.")
+    expect(prompt).toContain("Do not call update_goal with status \"blocked\" the first time a blocker appears.")
+    expect(prompt).toContain("If the user resumes a goal that was previously marked \"blocked\", treat the resumed run as a fresh blocked audit.")
+    expect(prompt).toContain("Do not mark a goal complete merely because the budget is nearly exhausted or because you are stopping work.")
+  })
+})
+
 describe("DirectAgentClient", () => {
+  test("runs active goals through internal continuation and completes via update_goal without user-history pollution", async () => {
+    const requests: Array<{ body: Record<string, unknown> }> = []
+    const baseUrl = await listen(async (request, response) => {
+      if (request.url !== "/v1/chat/completions") {
+        response.writeHead(404).end()
+        return
+      }
+      const body = await collectJson(request)
+      requests.push({ body })
+      if (requests.length === 1) {
+        response.writeHead(200, { "content-type": "text/event-stream" })
+        response.end([
+          sse({ choices: [{ delta: { tool_calls: [{ index: 0, id: "call_goal", function: { name: "update_goal", arguments: "{\"status\":\"complete\"}" } }] } }] }),
+          "data: [DONE]\n\n",
+        ].join(""))
+        return
+      }
+      writeChatSse(response, "Goal completed.")
+    })
+    const client = directClient(baseUrl, {
+      storageRoot: await tempDir("chipmate-goal-continuation-storage-"),
+      tools: new ToolRuntime({ append: async () => undefined } as never),
+      toolsEnabled: true,
+      maxAgentSteps: 4,
+    })
+    const events: unknown[] = []
+    const controller = new AbortController()
+    const subscription = client.subscribeEvents((event) => events.push(event), controller.signal)
+    const session = await client.createSession()
+
+    const goal = await client.startGoalOperation({
+      sessionID: session.id,
+      objective: "complete the active goal",
+      tokenBudget: 100,
+    })
+    expect(goal.status).toBe("active")
+
+    await waitFor(async () => (await client.getGoal(session.id))?.status === "complete", 1500)
+    controller.abort()
+    await subscription
+
+    const completed = await client.getGoal(session.id)
+    expect(completed).toMatchObject({
+      status: "complete",
+      objective: "complete the active goal",
+    })
+    expect(requests).toHaveLength(2)
+    const firstMessages = (requests[0]?.body.messages ?? []) as Array<{ role?: string; content?: string }>
+    expect(firstMessages[firstMessages.length - 1]).toMatchObject({
+      role: "user",
+      content: expect.stringContaining("Continue working toward the active ChipMate thread goal."),
+    })
+    const toolNames = ((requests[0]?.body.tools ?? []) as Array<{ function: { name: string } }>)
+      .map((tool) => tool.function.name)
+    expect(toolNames).toEqual(expect.arrayContaining(["get_goal", "create_goal", "update_goal"]))
+    const messages = await client.getMessages(session.id)
+    expect(messages.some((message) => message.info.role === "user")).toBe(false)
+    expect(messages.some((message) => textPartsForTest(message).includes("Goal completed."))).toBe(true)
+    expect(events).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: "goal.operation.started" }),
+      expect.objectContaining({ type: "goal.updated", properties: expect.objectContaining({ goal: expect.objectContaining({ status: "complete" }) }) }),
+      expect.objectContaining({ type: "goal.operation.finished" }),
+    ]))
+  })
+
+  test("schedules goal continuation after an ordinary async user turn becomes idle", async () => {
+    const requests: Array<{ body: Record<string, unknown> }> = []
+    const baseUrl = await listen(async (request, response) => {
+      if (request.url !== "/v1/chat/completions") {
+        response.writeHead(404).end()
+        return
+      }
+      const body = await collectJson(request)
+      requests.push({ body })
+      if (requests.length === 1) {
+        writeChatSse(response, "Initial progress.")
+        return
+      }
+      if (requests.length === 2) {
+        response.writeHead(200, { "content-type": "text/event-stream" })
+        response.end([
+          sse({ choices: [{ delta: { tool_calls: [{ index: 0, id: "call_goal", function: { name: "update_goal", arguments: "{\"status\":\"complete\"}" } }] } }] }),
+          "data: [DONE]\n\n",
+        ].join(""))
+        return
+      }
+      writeChatSse(response, "Goal finished after continuation.")
+    })
+    const storageRoot = await tempDir("chipmate-goal-after-user-storage-")
+    const client = directClient(baseUrl, {
+      storageRoot,
+      tools: new ToolRuntime({ append: async () => undefined } as never),
+      toolsEnabled: true,
+      maxAgentSteps: 4,
+    })
+    const session = await client.createSession()
+    const store = new GoalStore(extensionContext(storageRoot))
+    await store.createGoal(session.id, "continue after the user turn", 100000)
+
+    await client.sendMessageAsync({ sessionID: session.id, text: "make some progress" })
+    await waitFor(async () => {
+      const goal = await client.getGoal(session.id)
+      const messages = await client.getMessages(session.id)
+      return goal?.status === "complete"
+        && messages.some((message) => textPartsForTest(message).includes("Goal finished after continuation."))
+    }, 1500)
+
+    expect(requests).toHaveLength(3)
+    const continuationMessages = (requests[1]?.body.messages ?? []) as Array<{ role?: string; content?: string }>
+    expect(continuationMessages[continuationMessages.length - 1]?.content).toContain("Continue working toward the active ChipMate thread goal.")
+    const messages = await client.getMessages(session.id)
+    expect(messages.filter((message) => message.info.role === "user")).toHaveLength(1)
+    expect(messages.some((message) => textPartsForTest(message).includes("Goal finished after continuation."))).toBe(true)
+  })
+
+  test("restores active goals after session resume and starts continuation without user-history pollution", async () => {
+    const requests: Array<{ body: Record<string, unknown> }> = []
+    const baseUrl = await listen(async (request, response) => {
+      if (request.url !== "/v1/chat/completions") {
+        response.writeHead(404).end()
+        return
+      }
+      const body = await collectJson(request)
+      requests.push({ body })
+      if (requests.length === 1) {
+        response.writeHead(200, { "content-type": "text/event-stream" })
+        response.end([
+          sse({ choices: [{ delta: { tool_calls: [{ index: 0, id: "call_goal", function: { name: "update_goal", arguments: "{\"status\":\"complete\"}" } }] } }] }),
+          "data: [DONE]\n\n",
+        ].join(""))
+        return
+      }
+      writeChatSse(response, "Restored goal completed.")
+    })
+    const storageRoot = await tempDir("chipmate-goal-restore-active-storage-")
+    const seedClient = directClient(baseUrl, { storageRoot })
+    const session = await seedClient.createSession()
+    const store = new GoalStore(extensionContext(storageRoot))
+    await store.createGoal(session.id, "continue after extension reload", 100000)
+    const restoredClient = directClient(baseUrl, {
+      storageRoot,
+      tools: new ToolRuntime({ append: async () => undefined } as never),
+      toolsEnabled: true,
+      maxAgentSteps: 4,
+    })
+    const events: unknown[] = []
+    const controller = new AbortController()
+    const subscription = restoredClient.subscribeEvents((event) => events.push(event), controller.signal)
+
+    const restored = await restoredClient.restoreGoalAfterSessionResume(session.id)
+    expect(restored).toMatchObject({ status: "active", objective: "continue after extension reload" })
+    await waitFor(async () => (await restoredClient.getGoal(session.id))?.status === "complete", 1500)
+    controller.abort()
+    await subscription
+
+    expect(requests).toHaveLength(2)
+    const continuationMessages = (requests[0]?.body.messages ?? []) as Array<{ role?: string; content?: string }>
+    expect(continuationMessages[continuationMessages.length - 1]).toMatchObject({
+      role: "user",
+      content: expect.stringContaining("Continue working toward the active ChipMate thread goal."),
+    })
+    await waitFor(async () => (await restoredClient.getMessages(session.id))
+      .some((message) => textPartsForTest(message).includes("Restored goal completed.")), 1500)
+    const messages = await restoredClient.getMessages(session.id)
+    expect(messages.some((message) => message.info.role === "user")).toBe(false)
+    expect(messages.some((message) => textPartsForTest(message).includes("Restored goal completed."))).toBe(true)
+    expect(events).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: "goal.updated", properties: expect.objectContaining({ goal: expect.objectContaining({ status: "active" }) }) }),
+      expect.objectContaining({ type: "goal.operation.started" }),
+      expect.objectContaining({ type: "goal.updated", properties: expect.objectContaining({ goal: expect.objectContaining({ status: "complete" }) }) }),
+    ]))
+  })
+
+  test("does not auto-continue paused blocked or usage-limited goals after session resume", async () => {
+    const requests: Array<{ body: Record<string, unknown> }> = []
+    const baseUrl = await listen(async (request, response) => {
+      if (request.url === "/v1/chat/completions") {
+        requests.push({ body: await collectJson(request) })
+        writeChatSse(response, "Unexpected continuation.")
+        return
+      }
+      response.writeHead(404).end()
+    })
+    const storageRoot = await tempDir("chipmate-goal-restore-stopped-storage-")
+    const seedClient = directClient(baseUrl, { storageRoot })
+    const store = new GoalStore(extensionContext(storageRoot))
+    const statuses: ThreadGoalStatus[] = ["paused", "blocked", "usage_limited"]
+
+    for (const status of statuses) {
+      const session = await seedClient.createSession(`goal ${status}`)
+      await store.replaceGoal(session.id, `restore ${status}`, status, 100000)
+      const restoredClient = directClient(baseUrl, {
+        storageRoot,
+        tools: new ToolRuntime({ append: async () => undefined } as never),
+        toolsEnabled: true,
+      })
+      const restored = await restoredClient.restoreGoalAfterSessionResume(session.id)
+      expect(restored).toMatchObject({ status, objective: `restore ${status}` })
+      expect(restoredClient.getGoalOperation(session.id)).toBeUndefined()
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 180))
+    expect(requests).toHaveLength(0)
+  })
+
+  test("uses the edited goal objective when edit races with restored continuation", async () => {
+    const requests: Array<{ body: Record<string, unknown> }> = []
+    const baseUrl = await listen(async (request, response) => {
+      if (request.url !== "/v1/chat/completions") {
+        response.writeHead(404).end()
+        return
+      }
+      const body = await collectJson(request)
+      requests.push({ body })
+      if (requests.length === 1) {
+        response.writeHead(200, { "content-type": "text/event-stream" })
+        response.end([
+          sse({ choices: [{ delta: { tool_calls: [{ index: 0, id: "call_goal", function: { name: "update_goal", arguments: "{\"status\":\"complete\"}" } }] } }] }),
+          "data: [DONE]\n\n",
+        ].join(""))
+        return
+      }
+      writeChatSse(response, "Edited goal completed.")
+    })
+    const storageRoot = await tempDir("chipmate-goal-edit-race-storage-")
+    const seedClient = directClient(baseUrl, { storageRoot })
+    const session = await seedClient.createSession()
+    const store = new GoalStore(extensionContext(storageRoot))
+    await store.createGoal(session.id, "old objective", 100000)
+    const client = directClient(baseUrl, {
+      storageRoot,
+      tools: new ToolRuntime({ append: async () => undefined } as never),
+      toolsEnabled: true,
+      maxAgentSteps: 4,
+    })
+
+    await client.restoreGoalAfterSessionResume(session.id)
+    await client.setGoal({ sessionID: session.id, objective: "new objective" })
+    await waitFor(async () => (await client.getGoal(session.id))?.status === "complete", 1500)
+
+    const firstPrompt = JSON.stringify(requests[0]?.body.messages ?? [])
+    expect(firstPrompt).toContain("new objective")
+    expect(firstPrompt).not.toContain("old objective")
+  })
+
+  test("does not start restored continuation after a racing clear", async () => {
+    const requests: Array<{ body: Record<string, unknown> }> = []
+    const baseUrl = await listen(async (request, response) => {
+      if (request.url === "/v1/chat/completions") {
+        requests.push({ body: await collectJson(request) })
+        writeChatSse(response, "Unexpected goal turn.")
+        return
+      }
+      response.writeHead(404).end()
+    })
+    const storageRoot = await tempDir("chipmate-goal-clear-race-storage-")
+    const seedClient = directClient(baseUrl, { storageRoot })
+    const session = await seedClient.createSession()
+    const store = new GoalStore(extensionContext(storageRoot))
+    await store.createGoal(session.id, "clear before continuation", 100000)
+    const client = directClient(baseUrl, {
+      storageRoot,
+      tools: new ToolRuntime({ append: async () => undefined } as never),
+      toolsEnabled: true,
+    })
+
+    await client.restoreGoalAfterSessionResume(session.id)
+    await client.clearGoal(session.id)
+    await new Promise((resolve) => setTimeout(resolve, 180))
+
+    expect(requests).toHaveLength(0)
+    expect(await client.getGoal(session.id)).toBeUndefined()
+  })
+
+  test("ordinary abort accounts but does not pause an active goal", async () => {
+    let receivedRequest!: () => void
+    const requestReceived = new Promise<void>((resolve) => {
+      receivedRequest = resolve
+    })
+    const baseUrl = await listen(async (request, response) => {
+      if (request.url !== "/v1/chat/completions") {
+        response.writeHead(404).end()
+        return
+      }
+      await collectJson(request)
+      response.writeHead(200, { "content-type": "text/event-stream" })
+      response.write(sse({ choices: [{ delta: { content: "Partial goal work before stop." } }] }))
+      receivedRequest()
+    })
+    const storageRoot = await tempDir("chipmate-goal-ordinary-abort-storage-")
+    const client = directClient(baseUrl, { storageRoot })
+    const session = await client.createSession()
+    const store = new GoalStore(extensionContext(storageRoot))
+    await store.createGoal(session.id, "stay active after ordinary abort", 100000)
+
+    await client.sendMessageAsync({ sessionID: session.id, text: "work on active goal" })
+    await requestReceived
+    await client.abortSession(session.id)
+    await new Promise((resolve) => setTimeout(resolve, 30))
+
+    expect(await client.getGoal(session.id)).toMatchObject({
+      status: "active",
+      objective: "stay active after ordinary abort",
+    })
+    expect(client.getGoalOperation(session.id)).toMatchObject({ active: false, status: "active" })
+  })
+
+  test("explicit goal operation cancel pauses the active goal", async () => {
+    let receivedRequest!: () => void
+    const requestReceived = new Promise<void>((resolve) => {
+      receivedRequest = resolve
+    })
+    const baseUrl = await listen(async (request, response) => {
+      if (request.url !== "/v1/chat/completions") {
+        response.writeHead(404).end()
+        return
+      }
+      await collectJson(request)
+      response.writeHead(200, { "content-type": "text/event-stream" })
+      response.write(sse({ choices: [{ delta: { content: "Partial goal operation before cancel." } }] }))
+      receivedRequest()
+    })
+    const client = directClient(baseUrl, {
+      storageRoot: await tempDir("chipmate-goal-cancel-operation-storage-"),
+      tools: new ToolRuntime({ append: async () => undefined } as never),
+      toolsEnabled: true,
+      maxAgentSteps: 4,
+    })
+    const session = await client.createSession()
+    await client.startGoalOperation({
+      sessionID: session.id,
+      objective: "pause when canceling whole goal operation",
+      tokenBudget: 100000,
+    })
+    await requestReceived
+
+    await client.cancelGoalOperation(session.id)
+    await new Promise((resolve) => setTimeout(resolve, 30))
+
+    expect(await client.getGoal(session.id)).toMatchObject({
+      status: "paused",
+      objective: "pause when canceling whole goal operation",
+    })
+    expect(client.getGoalOperation(session.id)).toMatchObject({ active: false, status: "paused" })
+  })
+
+  test("resumes blocked goals without losing progress and continues when idle", async () => {
+    const requests: Array<{ body: Record<string, unknown> }> = []
+    const baseUrl = await listen(async (request, response) => {
+      if (request.url !== "/v1/chat/completions") {
+        response.writeHead(404).end()
+        return
+      }
+      requests.push({ body: await collectJson(request) })
+      response.writeHead(200, { "content-type": "text/event-stream" })
+      response.end([
+        sse({ choices: [{ delta: { tool_calls: [{ index: 0, id: "call_goal", function: { name: "update_goal", arguments: "{\"status\":\"complete\"}" } }] } }] }),
+        "data: [DONE]\n\n",
+      ].join(""))
+    })
+    const storageRoot = await tempDir("chipmate-goal-resume-blocked-storage-")
+    const seedClient = directClient(baseUrl, { storageRoot })
+    const session = await seedClient.createSession()
+    const store = new GoalStore(extensionContext(storageRoot))
+    const blocked = await store.replaceGoal(session.id, "resume this blocked goal", "blocked", 100000)
+    await store.accountUsage({
+      threadID: session.id,
+      expectedGoalID: blocked.goalID,
+      tokenDelta: 12,
+      timeDeltaSeconds: 3,
+      mode: "activeOrStopped",
+    })
+    const client = directClient(baseUrl, {
+      storageRoot,
+      tools: new ToolRuntime({ append: async () => undefined } as never),
+      toolsEnabled: true,
+      maxAgentSteps: 4,
+    })
+
+    const resumed = await client.resumeGoal(session.id)
+    expect(resumed).toMatchObject({
+      status: "active",
+      goalID: blocked.goalID,
+      tokensUsed: 12,
+      timeUsedSeconds: 3,
+    })
+    await waitFor(async () => (await client.getGoal(session.id))?.status === "complete", 1500)
+
+    expect(requests).toHaveLength(2)
+    expect(JSON.stringify(requests[0]?.body.messages ?? [])).toContain("resume this blocked goal")
+  })
+
+  test("marks active goals blocked on non-retry provider errors", async () => {
+    const baseUrl = await listen(async (request, response) => {
+      if (request.url !== "/v1/chat/completions") {
+        response.writeHead(404).end()
+        return
+      }
+      response.writeHead(400, { "content-type": "text/plain" }).end("bad request")
+    })
+    const storageRoot = await tempDir("chipmate-goal-provider-blocked-storage-")
+    const client = directClient(baseUrl, { storageRoot })
+    const session = await client.createSession()
+    const store = new GoalStore(extensionContext(storageRoot))
+    const goal = await store.createGoal(session.id, "provider error should block", 100000)
+
+    await expect(client.sendMessage({ sessionID: session.id, text: "trigger provider error" })).rejects.toThrow(/400 Bad Request/)
+    const blocked = await client.getGoal(session.id)
+    expect(blocked).toMatchObject({
+      status: "blocked",
+      goalID: goal?.goalID,
+    })
+  })
+
+  test("marks active goals usage-limited when retryable usage errors are exhausted", async () => {
+    process.env.KILO_SESSION_RETRY_LIMIT = "1"
+    const requests: Array<{ body: Record<string, unknown> }> = []
+    const baseUrl = await listen(async (request, response) => {
+      if (request.url !== "/v1/chat/completions") {
+        response.writeHead(404).end()
+        return
+      }
+      requests.push({ body: await collectJson(request) })
+      response.writeHead(429, {
+        "content-type": "text/plain",
+        "retry-after-ms": "0",
+      }).end("too many requests")
+    })
+    const storageRoot = await tempDir("chipmate-goal-usage-limited-storage-")
+    const client = directClient(baseUrl, { storageRoot })
+    const session = await client.createSession()
+    const store = new GoalStore(extensionContext(storageRoot))
+    const goal = await store.createGoal(session.id, "usage limit should pause goal", 100000)
+
+    await expect(client.sendMessage({ sessionID: session.id, text: "trigger usage limit" })).rejects.toThrow(/429 Too Many Requests/)
+    const limited = await client.getGoal(session.id)
+    expect(requests).toHaveLength(2)
+    expect(limited).toMatchObject({
+      status: "usage_limited",
+      goalID: goal?.goalID,
+    })
+  })
+
+  test("retries chat completion 429 responses with Retry-After-MS and resends the same request", async () => {
+    const requests: Array<{ body: Record<string, unknown> }> = []
+    const outputLines: string[] = []
+    const baseUrl = await listen(async (request, response) => {
+      if (request.url !== "/v1/chat/completions") {
+        response.writeHead(404).end()
+        return
+      }
+      const body = await collectJson(request)
+      requests.push({ body })
+      if (requests.length === 1) {
+        response.writeHead(429, {
+          "content-type": "text/plain",
+          "retry-after-ms": "0",
+        }).end("provider overloaded")
+        return
+      }
+      writeChatSse(response, "Recovered answer.")
+    })
+    const client = directClient(baseUrl, {
+      storageRoot: await tempDir("chipmate-retry-429-storage-"),
+      outputLines,
+    })
+    const events: unknown[] = []
+    const controller = new AbortController()
+    const subscription = client.subscribeEvents((event) => events.push(event), controller.signal)
+    const session = await client.createSession()
+
+    const assistant = await client.sendMessage({ sessionID: session.id, text: "please answer" })
+    controller.abort()
+    await subscription
+
+    expect(textPartsForTest(assistant)).toContain("Recovered answer.")
+    expect(requests).toHaveLength(2)
+    expect(requests[1]?.body.messages).toEqual(requests[0]?.body.messages)
+    const retryEvent = events.find((event) =>
+      Boolean(
+        event &&
+        typeof event === "object" &&
+        (event as { type?: unknown }).type === "session.status" &&
+        (event as { properties?: { status?: { type?: unknown } } }).properties?.status?.type === "retry",
+      ),
+    )
+    expect(retryEvent).toMatchObject({
+      type: "session.status",
+      properties: {
+        sessionID: session.id,
+        status: {
+          type: "retry",
+          attempt: 1,
+          message: "Too Many Requests",
+          next: expect.any(Number),
+        },
+      },
+    })
+    expect(outputLines.join("\n")).toContain("[chat-retry] retryable model error")
+  })
+
+  test("retries chat completion JSON too_many_requests errors", async () => {
+    const requests: Array<{ body: Record<string, unknown> }> = []
+    const baseUrl = await listen(async (request, response) => {
+      if (request.url !== "/v1/chat/completions") {
+        response.writeHead(404).end()
+        return
+      }
+      requests.push({ body: await collectJson(request) })
+      if (requests.length === 1) {
+        response.writeHead(429, {
+          "content-type": "application/json",
+          "retry-after-ms": "0",
+        }).end(JSON.stringify({ type: "error", error: { type: "too_many_requests" } }))
+        return
+      }
+      writeChatSse(response, "JSON retry recovered.")
+    })
+    const client = directClient(baseUrl, { storageRoot: await tempDir("chipmate-retry-json-storage-") })
+    const session = await client.createSession()
+
+    const assistant = await client.sendMessage({ sessionID: session.id, text: "retry json" })
+
+    expect(requests).toHaveLength(2)
+    expect(textPartsForTest(assistant)).toContain("JSON retry recovered.")
+  })
+
+  test("retries chat completion plain text rate-limit errors", async () => {
+    for (const errorText of ["rate limit exceeded", "too many requests"]) {
+      const requests: Array<{ body: Record<string, unknown> }> = []
+      const baseUrl = await listen(async (request, response) => {
+        if (request.url !== "/v1/chat/completions") {
+          response.writeHead(404).end()
+          return
+        }
+        requests.push({ body: await collectJson(request) })
+        if (requests.length === 1) {
+          response.writeHead(429, {
+            "content-type": "text/plain",
+            "retry-after-ms": "0",
+          }).end(errorText)
+          return
+        }
+        writeChatSse(response, `Recovered from ${errorText}.`)
+      })
+      const client = directClient(baseUrl, { storageRoot: await tempDir("chipmate-retry-text-storage-") })
+      const session = await client.createSession()
+
+      const assistant = await client.sendMessage({ sessionID: session.id, text: errorText })
+
+      expect(requests).toHaveLength(2)
+      expect(textPartsForTest(assistant)).toContain(`Recovered from ${errorText}.`)
+    }
+  })
+
+  test("does not retry non-rate-limit 400 chat completion errors", async () => {
+    const requests: Array<{ body: Record<string, unknown> }> = []
+    const baseUrl = await listen(async (request, response) => {
+      if (request.url !== "/v1/chat/completions") {
+        response.writeHead(404).end()
+        return
+      }
+      requests.push({ body: await collectJson(request) })
+      response.writeHead(400, {
+        "content-type": "text/plain",
+        "retry-after-ms": "0",
+      }).end("bad request")
+    })
+    const client = directClient(baseUrl, { storageRoot: await tempDir("chipmate-no-retry-400-storage-") })
+    const session = await client.createSession()
+
+    await expect(client.sendMessage({ sessionID: session.id, text: "bad request" })).rejects.toThrow(/400 Bad Request/)
+
+    expect(requests).toHaveLength(1)
+  })
+
+  test("requests and records reported stream usage chunks", async () => {
+    const requests: Array<{ body: Record<string, unknown> }> = []
+    const baseUrl = await listen(async (request, response) => {
+      if (request.url !== "/v1/chat/completions") {
+        response.writeHead(404).end()
+        return
+      }
+      requests.push({ body: await collectJson(request) })
+      response.writeHead(200, { "content-type": "text/event-stream" })
+      response.end([
+        sse({ choices: [{ delta: { content: "Reported answer." } }] }),
+        sse({
+          choices: [],
+          usage: {
+            prompt_tokens: 12,
+            completion_tokens: 5,
+            total_tokens: 17,
+            completion_tokens_details: { reasoning_tokens: 2 },
+            prompt_tokens_details: { cached_tokens: 3 },
+          },
+        }),
+        "data: [DONE]\n\n",
+      ].join(""))
+    })
+    const client = directClient(baseUrl, { storageRoot: await tempDir("chipmate-reported-usage-storage-") })
+    const session = await client.createSession()
+
+    const assistant = await client.sendMessage({ sessionID: session.id, text: "usage please" })
+    const stats = await client.getUsageStats()
+
+    expect(requests).toHaveLength(1)
+    expect(requests[0]?.body.stream_options).toEqual({ include_usage: true })
+    expect(textPartsForTest(assistant)).toContain("Reported answer.")
+    expect(assistant.info.usageKind).toBe("reported")
+    expect(assistant.info.tokens).toMatchObject({
+      total: 17,
+      input: 12,
+      output: 5,
+      reasoning: 2,
+      cache: { read: 3 },
+    })
+    expect(stats.summary.recordedResponses).toBe(1)
+    expect(stats.summary.reportedTokens).toBe(14)
+  })
+
+  test("keeps only the latest model-call usage for one visible assistant turn", async () => {
+    const requests: Array<{ body: Record<string, unknown> }> = []
+    const baseUrl = await listen(async (request, response) => {
+      if (request.url !== "/v1/chat/completions") {
+        response.writeHead(404).end()
+        return
+      }
+      requests.push({ body: await collectJson(request) })
+      response.writeHead(200, { "content-type": "text/event-stream" })
+      if (requests.length === 1) {
+        response.end([
+          sse({ choices: [{ delta: { tool_calls: [{ index: 0, id: "call_1", function: { name: "chipmate_read", arguments: "{\"path\":\"README.md\"}" } }] } }] }),
+          sse({ choices: [], usage: { prompt_tokens: 100_000, completion_tokens: 20, total_tokens: 100_020 } }),
+          "data: [DONE]\n\n",
+        ].join(""))
+        return
+      }
+      response.end([
+        sse({ choices: [{ delta: { content: "Final answer." } }] }),
+        sse({ choices: [], usage: { prompt_tokens: 1_000, completion_tokens: 50, total_tokens: 1_050 } }),
+        "data: [DONE]\n\n",
+      ].join(""))
+    })
+    const client = directClient(baseUrl, {
+      storageRoot: await tempDir("chipmate-latest-usage-storage-"),
+      toolsEnabled: true,
+      tools: {
+        toolDefinitions: () => [{
+          type: "function",
+          function: {
+            name: "chipmate_read",
+            description: "Read a file",
+            parameters: { type: "object", properties: { path: { type: "string" } }, required: ["path"] },
+          },
+        }],
+        execute: async (): Promise<ToolRuntimeResult> => ({
+          title: "Read file",
+          output: "tool result text",
+          approved: true,
+        }),
+      } as unknown as ToolRuntimeInstance,
+    })
+    const session = await client.createSession()
+
+    const assistant = await client.sendMessage({ sessionID: session.id, text: "inspect repo" })
+    const stats = await client.getUsageStats()
+
+    expect(requests).toHaveLength(2)
+    expect(textPartsForTest(assistant)).toContain("Final answer.")
+    expect(assistant.info.tokens).toMatchObject({
+      total: 1_050,
+      input: 1_000,
+      output: 50,
+    })
+    expect(stats.summary.totalTokens).toBe(1_050)
+  })
+
+  test("retries stream chat without usage options and records estimated fallback", async () => {
+    const requests: Array<{ body: Record<string, unknown> }> = []
+    const baseUrl = await listen(async (request, response) => {
+      if (request.url !== "/v1/chat/completions") {
+        response.writeHead(404).end()
+        return
+      }
+      const body = await collectJson(request)
+      requests.push({ body })
+      if (body.stream_options) {
+        response.writeHead(400, { "content-type": "text/plain" }).end("stream_options include_usage unsupported")
+        return
+      }
+      writeChatSse(response, "Estimated answer.")
+    })
+    const client = directClient(baseUrl, { storageRoot: await tempDir("chipmate-estimated-usage-storage-") })
+    const session = await client.createSession()
+
+    const assistant = await client.sendMessage({ sessionID: session.id, text: "usage fallback" })
+    const stats = await client.getUsageStats()
+
+    expect(requests).toHaveLength(2)
+    expect(requests[0]?.body.stream_options).toEqual({ include_usage: true })
+    expect(requests[1]?.body.stream_options).toBeUndefined()
+    expect(textPartsForTest(assistant)).toContain("Estimated answer.")
+    expect(assistant.info.usageKind).toBe("estimated")
+    expect(assistant.info.tokens?.total).toBeGreaterThan(0)
+    expect(stats.summary.recordedResponses).toBe(1)
+    expect(stats.summary.estimatedResponses).toBe(1)
+    expect(stats.summary.estimatedTokens).toBe(assistant.info.tokens?.total)
+  })
+
+  test("aborts during retry sleep without recording a chat error", async () => {
+    const requests: Array<{ body: Record<string, unknown> }> = []
+    const outputLines: string[] = []
+    let retrySeen!: () => void
+    const retryEventSeen = new Promise<void>((resolve) => {
+      retrySeen = resolve
+    })
+    const baseUrl = await listen(async (request, response) => {
+      if (request.url !== "/v1/chat/completions") {
+        response.writeHead(404).end()
+        return
+      }
+      requests.push({ body: await collectJson(request) })
+      response.writeHead(429, {
+        "content-type": "text/plain",
+        "retry-after-ms": "1000",
+      }).end("rate limit exceeded")
+    })
+    const client = directClient(baseUrl, {
+      storageRoot: await tempDir("chipmate-retry-abort-storage-"),
+      outputLines,
+    })
+    const events: unknown[] = []
+    const controller = new AbortController()
+    const subscription = client.subscribeEvents((event) => {
+      events.push(event)
+      if (
+        event &&
+        typeof event === "object" &&
+        (event as { type?: unknown }).type === "session.status" &&
+        (event as { properties?: { status?: { type?: unknown } } }).properties?.status?.type === "retry"
+      ) {
+        retrySeen()
+      }
+    }, controller.signal)
+    const session = await client.createSession()
+
+    await client.sendMessageAsync({ sessionID: session.id, text: "abort while retrying" })
+    await retryEventSeen
+    await client.abortSession(session.id)
+    await new Promise((resolve) => setTimeout(resolve, 30))
+    controller.abort()
+    await subscription
+
+    const messages = await client.getMessages(session.id)
+    expect(requests).toHaveLength(1)
+    expect(messages.some((message) => Boolean(message.info.error))).toBe(false)
+    expect(outputLines.join("\n")).not.toContain("[send] interrupted")
+    expect(events).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        type: "session.status",
+        properties: expect.objectContaining({
+          sessionID: session.id,
+          status: expect.objectContaining({ type: "idle" }),
+        }),
+      }),
+    ]))
+  })
+
+  test("honors KILO_SESSION_RETRY_LIMIT for chat completion retries", async () => {
+    process.env.KILO_SESSION_RETRY_LIMIT = "2"
+    const requests: Array<{ body: Record<string, unknown> }> = []
+    const baseUrl = await listen(async (request, response) => {
+      if (request.url !== "/v1/chat/completions") {
+        response.writeHead(404).end()
+        return
+      }
+      requests.push({ body: await collectJson(request) })
+      response.writeHead(429, {
+        "content-type": "text/plain",
+        "retry-after-ms": "0",
+      }).end("too many requests")
+    })
+    const client = directClient(baseUrl, { storageRoot: await tempDir("chipmate-retry-limit-storage-") })
+    const session = await client.createSession()
+
+    await expect(client.sendMessage({ sessionID: session.id, text: "retry until limit" })).rejects.toThrow(/429 Too Many Requests/)
+
+    expect(requests).toHaveLength(3)
+  })
+
   test("discovers /models and falls back to configured model names", async () => {
     const baseUrl = await listen((request, response) => {
       if (request.url === "/v1/models") {
@@ -2932,11 +5210,122 @@ describe("DirectAgentClient", () => {
     const toolMessage = ((requests[1]?.body.messages ?? []) as Array<{ role?: string; tool_call_id?: string; content?: string }>)
       .find((message) => message.role === "tool" && message.tool_call_id === "call_drawio")
     expect(toolMessage?.content).toContain("hasChatDiagramArtifact")
-    expect(toolMessage?.content).not.toContain("mxGraphModelXml")
-    expect(toolMessage?.content).not.toContain("<mxGraphModel")
-  })
+	    expect(toolMessage?.content).not.toContain("mxGraphModelXml")
+	    expect(toolMessage?.content).not.toContain("<mxGraphModel")
+	  })
 
-  test("keeps legacy draw.io output parsing when no artifact is present", async () => {
+	  test("inserts a rendered Mermaid diagram part after the Mermaid tool succeeds", async () => {
+	    const requests: Array<{ body: Record<string, unknown> }> = []
+	    const outputLines: string[] = []
+	    const source = "flowchart TD\n  start[Start] --> done[Done]"
+	    const baseUrl = await listen(async (request, response) => {
+	      if (request.url !== "/v1/chat/completions") {
+	        response.writeHead(404).end()
+	        return
+	      }
+	      const body = await collectJson(request)
+	      requests.push({ body })
+	      response.writeHead(200, { "content-type": "text/event-stream" })
+	      if (requests.length === 1) {
+	        response.end([
+	          sse({ choices: [{ delta: { tool_calls: [{ index: 0, id: "call_mermaid", function: { name: "chipmate_render_mermaid_diagram", arguments: JSON.stringify({ title: "Mermaid renderer flow", source, diagramId: "mermaid-flow" }) } }] } }] }),
+	          "data: [DONE]\n\n",
+	        ].join(""))
+	        return
+	      }
+	      response.end([
+	        sse({ choices: [{ delta: { content: "Mermaid 图已经生成。" } }] }),
+	        "data: [DONE]\n\n",
+	      ].join(""))
+	    })
+	    const client = directClient(baseUrl, {
+	      storageRoot: await tempDir("chipmate-direct-mermaid-storage-"),
+	      outputLines,
+	      toolsEnabled: true,
+	      tools: {
+	        toolDefinitions: () => [{
+	          type: "function",
+	          function: {
+	            name: "chipmate_render_mermaid_diagram",
+	            description: "Use when a Mermaid diagram should be rendered. Do not use for draw.io. Returns artifacts.",
+	            parameters: { type: "object", properties: { title: { type: "string" }, source: { type: "string" } }, required: ["source", "title"], additionalProperties: false },
+	          },
+	        }],
+	        execute: async (): Promise<ToolRuntimeResult> => ({
+	          title: "Rendered Mermaid diagram: Mermaid renderer flow",
+	          output: JSON.stringify({
+	            answerSummary: "Rendered Mermaid diagram.",
+	            data: {
+	              kind: "mermaid",
+	              title: "Mermaid renderer flow",
+	              diagramId: "mermaid-flow",
+	              sourceText: source,
+	              mmdPath: ".chipmate/docs/diagrams/mermaid-flow.mmd",
+	              pngPath: ".chipmate/docs/diagrams/mermaid-flow.png",
+	              width: 320,
+	              height: 180,
+	            },
+	          }),
+	          artifacts: [{
+	            kind: "mermaid",
+	            payload: {
+	              kind: "mermaid",
+	              title: "Mermaid renderer flow",
+	              diagramId: "mermaid-flow",
+	              sourceText: source,
+	              mmdPath: ".chipmate/docs/diagrams/mermaid-flow.mmd",
+	              absoluteMmdPath: "/tmp/mermaid-flow.mmd",
+	              pngPath: ".chipmate/docs/diagrams/mermaid-flow.png",
+	              absolutePngPath: "/tmp/mermaid-flow.png",
+	              width: 320,
+	              height: 180,
+	              warnings: [],
+	            },
+	          }],
+	          approved: true,
+	          status: "completed",
+	          risk: "low",
+	        }),
+	      } as unknown as ToolRuntimeInstance,
+	    })
+
+	    const session = await client.createSession()
+	    const assistant = await client.sendMessage({ sessionID: session.id, text: "生成一个可嵌入 Word 的 Mermaid 流程图" })
+
+	    expect(requests).toHaveLength(2)
+	    expect(assistant.parts).toEqual(expect.arrayContaining([
+	      expect.objectContaining({ type: "tool", tool: "chipmate_render_mermaid_diagram" }),
+	      expect.objectContaining({
+	        type: "diagram",
+	        kind: "mermaid",
+	        title: "Mermaid renderer flow",
+	        sourceText: source,
+	        source: "tool",
+	        displayMode: "artifact",
+	        toolCallID: "call_mermaid",
+	        diagramId: "mermaid-flow",
+	        mmdPath: ".chipmate/docs/diagrams/mermaid-flow.mmd",
+	        pngPath: ".chipmate/docs/diagrams/mermaid-flow.png",
+	        width: 320,
+	        height: 180,
+	      }),
+	      expect.objectContaining({
+	        type: "runProgress",
+	        title: "执行进度",
+	        status: "completed",
+	        items: expect.arrayContaining([
+	          expect.objectContaining({
+	            title: "渲染 Mermaid PNG",
+	            status: "completed",
+	          }),
+	        ]),
+	      }),
+	      expect.objectContaining({ type: "text", text: "Mermaid 图已经生成。" }),
+	    ]))
+	    expect(outputLines.join("\n")).toContain("[mermaid-artifact] inserted count=1")
+	  })
+
+	  test("keeps legacy draw.io output parsing when no artifact is present", async () => {
     const generated = await generateDrawioDiagram({
       title: "Legacy renderer flow",
       nodes: [{ id: "model", label: "Model" }, { id: "tool", label: "Tool" }],
@@ -3753,6 +6142,1034 @@ describe("DirectAgentClient", () => {
     ]))
   })
 
+  test("loads the documents skill implicitly for Chinese local Word generation requests", async () => {
+    const requests: Array<{ url?: string; body: Record<string, unknown> }> = []
+    const toolArgs = {
+      spec: {
+        metadata: { title: "年度经营分析", documentType: "business-report", language: "zh-CN" },
+        layout: { preset: "standard_business_brief" },
+        sections: [{ id: "overview", level: 1, title: "概览", paragraphs: ["年度经营分析。"] }],
+      },
+      filename: "implicit-loaded-doc.docx",
+    }
+    const baseUrl = await listen(async (request, response) => {
+      if (request.url !== "/v1/chat/completions") {
+        response.writeHead(404).end()
+        return
+      }
+      const body = await collectJson(request)
+      requests.push({ url: request.url, body })
+      response.writeHead(200, {
+        "content-type": "text/event-stream",
+      })
+      if (requests.length === 1) {
+        response.end([
+          sse({ choices: [{ delta: { content: "Documents skill loaded." } }] }),
+          "data: [DONE]\n\n",
+        ].join(""))
+        return
+      }
+      if (requests.length === 2) {
+        response.end([
+          sse({ choices: [{ delta: { tool_calls: [{ index: 0, id: "call_create_loaded_doc", function: { name: "create_word_document", arguments: JSON.stringify(toolArgs) } }] } }] }),
+          "data: [DONE]\n\n",
+        ].join(""))
+        return
+      }
+      response.end([
+        sse({ choices: [{ delta: { content: "已生成 Word 文档：.chipmate/docs/implicit-loaded-doc.docx" } }] }),
+        "data: [DONE]\n\n",
+      ].join(""))
+    })
+    const skill = {
+      id: "repo:documents",
+      name: "documents",
+      description: "Create, edit, review, and verify general Word `.docx` documents.",
+      path: "/repo/.agents/skills/documents/SKILL.md",
+      skillRoot: "/repo/.agents/skills/documents",
+      sourceRoot: "/repo/.agents/skills",
+      scope: "workspace",
+      sourceKind: "agents",
+      commandName: "documents",
+      visibility: "on",
+      enabled: true,
+      modelVisible: true,
+      userVisible: true,
+      invalid: false,
+      allowedTools: ["create_word_document"],
+      disableModelInvocation: false,
+      userInvocable: true,
+      compatibility: "",
+      license: "",
+      metadata: { keywords: JSON.stringify(["word", "docx", "Word 文档", "生成*文档", "修改*文档"]) },
+      resourceFiles: ["tasks/create_edit_v1.md"],
+      validationErrors: [],
+      validationWarnings: [],
+    }
+    const client = directClient(baseUrl, {
+      toolsEnabled: true,
+      skills: {
+        enabledSkills: async () => [skill],
+        loadSkill: async (_id, invocationMode) => ({
+          ...skill,
+          body: "Documents skill body marker: create real Word structures before calling create_word_document.",
+          invocationMode,
+        }),
+      } as unknown as SkillRegistry,
+      tools: {
+        toolDefinitions: () => [{
+          type: "function",
+          function: {
+            name: "create_word_document",
+            description: "Create a Word document",
+            parameters: { type: "object", properties: { spec: { type: "object" } }, required: ["spec"] },
+          },
+        }],
+        execute: async (): Promise<ToolRuntimeResult> => ({
+          title: "Create Word document",
+          output: JSON.stringify({
+            answerSummary: "Created Word document: .chipmate/docs/implicit-loaded-doc.docx",
+            evidence: [],
+            gaps: [],
+            nextActions: [],
+            truncated: false,
+            coverage: "complete",
+            data: { path: ".chipmate/docs/implicit-loaded-doc.docx" },
+          }),
+          approved: true,
+          status: "completed",
+        }),
+      } as unknown as ToolRuntimeInstance,
+    })
+
+    const session = await client.createSession()
+    const assistant = await client.sendMessage({ sessionID: session.id, text: "请生成一份年度经营分析文档，带目录和表格。" })
+
+    expect(requests).toHaveLength(3)
+    const systemContent = ((requests[0]?.body.messages ?? []) as Array<{ role?: string; content?: string }>).find((message) => message.role === "system")?.content ?? ""
+    expect(systemContent).toContain('<skill name="documents"')
+    expect(systemContent).toContain("Invocation: implicit")
+    expect(systemContent).toContain("tasks/create_edit_v1.md")
+    expect(systemContent).toContain("Documents skill body marker")
+    expect(JSON.stringify(requests[1]?.body.messages)).toContain("ChipMate deliverable discipline checkpoint")
+    expect(assistant.parts).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: "tool", tool: "create_word_document" }),
+      expect.objectContaining({ type: "text", text: "已生成 Word 文档：.chipmate/docs/implicit-loaded-doc.docx" }),
+    ]))
+  })
+
+  test("executes create_word_document for an implicit Chinese documents skill request", async () => {
+    const requests: Array<{ url?: string; body: Record<string, unknown> }> = []
+    const toolArgs = {
+      spec: {
+        metadata: {
+          title: "年度经营分析",
+          documentType: "business-report",
+          language: "zh-CN",
+        },
+        layout: {
+          preset: "standard_business_brief",
+          navigation: { mode: "static-toc" },
+        },
+        sections: [{
+          id: "overview",
+          level: 1,
+          title: "经营概览",
+          paragraphs: ["本节概述年度经营表现。"],
+          tables: [{
+            headers: ["指标", "结果"],
+            rows: [["收入", "增长"]],
+          }],
+        }],
+      },
+      filename: "annual-business-review.docx",
+    }
+    const baseUrl = await listen(async (request, response) => {
+      if (request.url !== "/v1/chat/completions") {
+        response.writeHead(404).end()
+        return
+      }
+      const body = await collectJson(request)
+      requests.push({ url: request.url, body })
+      response.writeHead(200, {
+        "content-type": "text/event-stream",
+      })
+      if (requests.length === 1) {
+        response.end([
+          sse({ choices: [{ delta: { tool_calls: [{ index: 0, id: "call_create_word", function: { name: "create_word_document", arguments: JSON.stringify(toolArgs) } }] } }] }),
+          "data: [DONE]\n\n",
+        ].join(""))
+        return
+      }
+      response.end([
+        sse({ choices: [{ delta: { content: "已生成年度经营分析 Word：.chipmate/docs/annual-business-review.docx" } }] }),
+        "data: [DONE]\n\n",
+      ].join(""))
+    })
+    const skill = {
+      id: "repo:documents",
+      name: "documents",
+      description: "Create, edit, review, and verify general Word `.docx` documents.",
+      path: "/repo/.agents/skills/documents/SKILL.md",
+      skillRoot: "/repo/.agents/skills/documents",
+      sourceRoot: "/repo/.agents/skills",
+      scope: "workspace",
+      sourceKind: "agents",
+      commandName: "documents",
+      visibility: "on",
+      enabled: true,
+      modelVisible: true,
+      userVisible: true,
+      invalid: false,
+      allowedTools: ["create_word_document"],
+      disableModelInvocation: false,
+      userInvocable: true,
+      compatibility: "",
+      license: "",
+      metadata: { keywords: JSON.stringify(["word", "docx", "Word 文档", "生成*文档"]) },
+      resourceFiles: ["tasks/create_edit_v1.md"],
+      validationErrors: [],
+      validationWarnings: [],
+    }
+    const executions: Array<Parameters<ToolRuntimeInstance["execute"]>[0]> = []
+    const client = directClient(baseUrl, {
+      toolsEnabled: true,
+      skills: {
+        enabledSkills: async () => [skill],
+        loadSkill: async (_id, invocationMode) => ({
+          ...skill,
+          body: "Documents skill body marker: plan first, then call create_word_document.",
+          invocationMode,
+        }),
+      } as unknown as SkillRegistry,
+      tools: {
+        toolDefinitions: () => [{
+          type: "function",
+          function: {
+            name: "create_word_document",
+            description: "Create a Word document",
+            parameters: {
+              type: "object",
+              properties: {
+                spec: { type: "object" },
+                filename: { type: "string" },
+              },
+              required: ["spec"],
+            },
+          },
+        }],
+        execute: async (input: Parameters<ToolRuntimeInstance["execute"]>[0]): Promise<ToolRuntimeResult> => {
+          executions.push(input)
+          return {
+            title: "Create Word document",
+            output: "Generated document: .chipmate/docs/annual-business-review.docx",
+            approved: true,
+            status: "completed",
+          }
+        },
+      } as unknown as ToolRuntimeInstance,
+    })
+
+    const session = await client.createSession()
+    const assistant = await client.sendMessage({ sessionID: session.id, text: "请生成一份年度经营分析文档，带目录和表格。" })
+
+    expect(requests).toHaveLength(2)
+    expect(requests[0]?.body.tools).toEqual(expect.arrayContaining([
+      expect.objectContaining({ function: expect.objectContaining({ name: "create_word_document" }) }),
+    ]))
+    const systemContent = ((requests[0]?.body.messages ?? []) as Array<{ role?: string; content?: string }>).find((message) => message.role === "system")?.content ?? ""
+    expect(systemContent).toContain('<skill name="documents"')
+    expect(systemContent).toContain("Invocation: implicit")
+    expect(executions).toHaveLength(1)
+    expect(executions[0]).toEqual(expect.objectContaining({
+      name: "create_word_document",
+      arguments: expect.objectContaining({
+        filename: "annual-business-review.docx",
+        spec: expect.objectContaining({
+          metadata: expect.objectContaining({ title: "年度经营分析" }),
+          layout: expect.objectContaining({ preset: "standard_business_brief" }),
+        }),
+      }),
+      activeSkills: [expect.objectContaining({
+        id: "repo:documents",
+        name: "documents",
+        invocationMode: "implicit",
+        allowedTools: ["create_word_document"],
+      })],
+    }))
+    const secondRequestMessages = (requests[1]?.body.messages ?? []) as Array<{ role?: string; tool_call_id?: string; content?: string }>
+    expect(secondRequestMessages).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        role: "tool",
+        tool_call_id: "call_create_word",
+        content: "Generated document: .chipmate/docs/annual-business-review.docx",
+      }),
+    ]))
+    expect(assistant.parts).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: "tool", tool: "create_word_document" }),
+      expect.objectContaining({ type: "text", text: "已生成年度经营分析 Word：.chipmate/docs/annual-business-review.docx" }),
+    ]))
+  })
+
+  test("steers document requests to converge on create_word_document before the tool budget is exhausted", async () => {
+    const requests: Array<{ url?: string; body: Record<string, unknown> }> = []
+    const outputLines: string[] = []
+    const toolArgs = {
+      spec: {
+        metadata: { title: "机制说明", documentType: "technical-report", language: "zh-CN" },
+        layout: { preset: "standard_business_brief" },
+        sections: [{ id: "overview", level: 1, title: "概览", paragraphs: ["基于已收集证据生成。"] }],
+      },
+      filename: "converged-doc.docx",
+    }
+    const baseUrl = await listen(async (request, response) => {
+      if (request.url !== "/v1/chat/completions") {
+        response.writeHead(404).end()
+        return
+      }
+      const body = await collectJson(request)
+      requests.push({ url: request.url, body })
+      response.writeHead(200, { "content-type": "text/event-stream" })
+      if (requests.length === 1) {
+        response.end([
+          sse({ choices: [{ delta: { tool_calls: [{ index: 0, id: "call_read", function: { name: "chipmate_read", arguments: "{\"path\":\"src/direct-agent-client.ts\"}" } }] } }] }),
+          "data: [DONE]\n\n",
+        ].join(""))
+        return
+      }
+      if (requests.length === 2) {
+        response.end([
+          sse({ choices: [{ delta: { tool_calls: [{ index: 0, id: "call_create_word", function: { name: "create_word_document", arguments: JSON.stringify(toolArgs) } }] } }] }),
+          "data: [DONE]\n\n",
+        ].join(""))
+        return
+      }
+      response.end([
+        sse({ choices: [{ delta: { content: "已生成 Word 文档：.chipmate/docs/converged-doc.docx" } }] }),
+        "data: [DONE]\n\n",
+      ].join(""))
+    })
+    const skill = {
+      id: "repo:documents",
+      name: "documents",
+      description: "Create, edit, review, and verify general Word `.docx` documents.",
+      path: "/repo/.agents/skills/documents/SKILL.md",
+      skillRoot: "/repo/.agents/skills/documents",
+      sourceRoot: "/repo/.agents/skills",
+      scope: "workspace",
+      sourceKind: "agents",
+      commandName: "documents",
+      visibility: "on",
+      enabled: true,
+      modelVisible: true,
+      userVisible: true,
+      invalid: false,
+      allowedTools: ["chipmate_read", "create_word_document"],
+      disableModelInvocation: false,
+      userInvocable: true,
+      compatibility: "",
+      license: "",
+      metadata: { keywords: JSON.stringify(["word", "docx", "Word 文档", "生成*文档"]) },
+      resourceFiles: ["tasks/create_edit_v1.md"],
+      validationErrors: [],
+      validationWarnings: [],
+    }
+    const executions: Array<Parameters<ToolRuntimeInstance["execute"]>[0]> = []
+    const client = directClient(baseUrl, {
+      storageRoot: await tempDir("chipmate-doc-convergence-storage-"),
+      outputLines,
+      toolsEnabled: true,
+      maxAgentSteps: 6,
+      skills: {
+        enabledSkills: async () => [skill],
+        loadSkill: async (_id, invocationMode) => ({
+          ...skill,
+          body: "Documents skill body marker: evidence enough means create_word_document now.",
+          invocationMode,
+        }),
+      } as unknown as SkillRegistry,
+      tools: {
+        toolDefinitions: () => [
+          {
+            type: "function",
+            function: {
+              name: "chipmate_read",
+              description: "Read a file",
+              parameters: { type: "object", properties: { path: { type: "string" } }, required: ["path"] },
+            },
+          },
+          {
+            type: "function",
+            function: {
+              name: "create_word_document",
+              description: "Create a Word document",
+              parameters: { type: "object", properties: { spec: { type: "object" }, filename: { type: "string" } }, required: ["spec"] },
+            },
+          },
+        ],
+        execute: async (input: Parameters<ToolRuntimeInstance["execute"]>[0]): Promise<ToolRuntimeResult> => {
+          executions.push(input)
+          if (input.name === "create_word_document") {
+            return {
+              title: "Create Word document",
+              output: JSON.stringify({
+                answerSummary: "Created Word document: .chipmate/docs/converged-doc.docx",
+                evidence: [],
+                gaps: [],
+                nextActions: [],
+                truncated: false,
+                coverage: "complete",
+                data: { path: ".chipmate/docs/converged-doc.docx" },
+              }),
+              approved: true,
+              status: "completed",
+            }
+          }
+          return {
+            title: "Read file",
+            output: JSON.stringify({
+              answerSummary: "Read source evidence.",
+              evidence: [],
+              gaps: [],
+              nextActions: [],
+              truncated: false,
+              coverage: "bounded-complete",
+              data: { text: "evidence" },
+            }),
+            approved: true,
+            status: "completed",
+          }
+        },
+      } as unknown as ToolRuntimeInstance,
+    })
+
+    const session = await client.createSession()
+    const assistant = await client.sendMessage({ sessionID: session.id, text: "请生成一份 Word 文档，总结当前机制。" })
+
+    expect(requests).toHaveLength(3)
+    const checkpointMessages = JSON.stringify(requests[1]?.body.messages)
+    expect(checkpointMessages).toContain("ChipMate evidence convergence checkpoint")
+    expect(checkpointMessages).toContain("Stop open-ended search/read loops")
+    expect(checkpointMessages).toContain("Expected deliverables: Word .docx document")
+    expect(executions.map((item) => item.name)).toEqual(["chipmate_read", "create_word_document"])
+    expect(assistant.parts).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: "tool", tool: "create_word_document" }),
+      expect.objectContaining({ type: "text", text: "已生成 Word 文档：.chipmate/docs/converged-doc.docx" }),
+    ]))
+    expect(outputLines.join("\n")).toContain("[tool-loop] evidence convergence checkpoint inserted")
+  })
+
+  test("steers a failed document producer tool to repair WordDocSpec instead of broad search", async () => {
+    const requests: Array<{ url?: string; body: Record<string, unknown> }> = []
+    const outputLines: string[] = []
+    const baseUrl = await listen(async (request, response) => {
+      if (request.url !== "/v1/chat/completions") {
+        response.writeHead(404).end()
+        return
+      }
+      const body = await collectJson(request)
+      requests.push({ url: request.url, body })
+      response.writeHead(200, { "content-type": "text/event-stream" })
+      if (requests.length === 1) {
+        response.end([
+          sse({ choices: [{ delta: { tool_calls: [{ index: 0, id: "call_create_bad", function: { name: "create_word_document", arguments: JSON.stringify({ filename: "repair.docx", spec: { metadata: {}, sections: [] } }) } }] } }] }),
+          "data: [DONE]\n\n",
+        ].join(""))
+        return
+      }
+      if (requests.length === 2) {
+        response.end([
+          sse({ choices: [{ delta: { tool_calls: [{ index: 0, id: "call_create_good", function: { name: "create_word_document", arguments: JSON.stringify({ filename: "repair.docx", spec: minimalWordDocSpecForTest("修复后的文档") }) } }] } }] }),
+          "data: [DONE]\n\n",
+        ].join(""))
+        return
+      }
+      response.end([
+        sse({ choices: [{ delta: { content: "已生成修复后的 Word 文档：.chipmate/docs/repair.docx" } }] }),
+        "data: [DONE]\n\n",
+      ].join(""))
+    })
+    const skill = {
+      id: "repo:documents",
+      name: "documents",
+      description: "Create, edit, review, and verify general Word `.docx` documents.",
+      path: "/repo/.agents/skills/documents/SKILL.md",
+      skillRoot: "/repo/.agents/skills/documents",
+      sourceRoot: "/repo/.agents/skills",
+      scope: "workspace",
+      sourceKind: "agents",
+      commandName: "documents",
+      visibility: "on",
+      enabled: true,
+      modelVisible: true,
+      userVisible: true,
+      invalid: false,
+      allowedTools: ["create_word_document", "chipmate_search_text"],
+      disableModelInvocation: false,
+      userInvocable: true,
+      compatibility: "",
+      license: "",
+      metadata: { keywords: JSON.stringify(["word", "docx", "Word 文档", "生成*文档"]) },
+      resourceFiles: ["tasks/create_edit_v1.md"],
+      validationErrors: [],
+      validationWarnings: [],
+    }
+    const executions: Array<Parameters<ToolRuntimeInstance["execute"]>[0]> = []
+    const client = directClient(baseUrl, {
+      storageRoot: await tempDir("chipmate-doc-producer-repair-storage-"),
+      outputLines,
+      toolsEnabled: true,
+      maxAgentSteps: 4,
+      skills: {
+        enabledSkills: async () => [skill],
+        loadSkill: async (_id, invocationMode) => ({
+          ...skill,
+          body: "Documents skill body marker: repair invalid WordDocSpec and retry create_word_document.",
+          invocationMode,
+        }),
+      } as unknown as SkillRegistry,
+      tools: {
+        toolDefinitions: () => [
+          {
+            type: "function",
+            function: {
+              name: "create_word_document",
+              description: "Create a Word document",
+              parameters: { type: "object", properties: { spec: { type: "object" }, filename: { type: "string" } }, required: ["spec"] },
+            },
+          },
+          {
+            type: "function",
+            function: {
+              name: "chipmate_search_text",
+              description: "Search text",
+              parameters: { type: "object", properties: { query: { type: "string" } }, required: ["query"] },
+            },
+          },
+        ],
+        execute: async (input: Parameters<ToolRuntimeInstance["execute"]>[0]): Promise<ToolRuntimeResult> => {
+          executions.push(input)
+          if (executions.length === 1) {
+            return {
+              title: "Create Word document",
+              output: JSON.stringify({
+                answerSummary: "Create Word document failed: WordDocSpec validation failed: WordDocSpec metadata.title is required.",
+                evidence: [],
+                gaps: ["WordDocSpec metadata.title is required."],
+                nextActions: [{ tool: "create_word_document", reason: "Repair the WordDocSpec and retry.", args: {} }],
+                truncated: false,
+                coverage: "partial",
+                data: {
+                  errorCode: "word-doc-spec-validation-failed",
+                  errorMessage: "WordDocSpec validation failed: WordDocSpec metadata.title is required.",
+                  validationErrors: ["WordDocSpec metadata.title is required."],
+                },
+              }),
+              approved: false,
+              status: "failed",
+              error: "WordDocSpec validation failed: WordDocSpec metadata.title is required.",
+            }
+          }
+          return {
+            title: "Create Word document",
+            output: JSON.stringify({
+              answerSummary: "Created Word document: .chipmate/docs/repair.docx",
+              evidence: [],
+              gaps: [],
+              nextActions: [],
+              truncated: false,
+              coverage: "complete",
+              data: { path: ".chipmate/docs/repair.docx" },
+            }),
+            approved: true,
+            status: "completed",
+          }
+        },
+      } as unknown as ToolRuntimeInstance,
+    })
+    const session = await client.createSession()
+
+    const assistant = await client.sendMessage({ sessionID: session.id, text: "请生成一份 Word 文档，总结当前机制。" })
+
+    expect(executions.map((item) => item.name)).toEqual(["create_word_document", "create_word_document"])
+    expect(JSON.stringify(requests[1]?.body.messages)).toContain("ChipMate producer failure repair checkpoint")
+    expect(JSON.stringify(requests[1]?.body.messages)).toContain("Do not resume broad search/read loops")
+    expect(JSON.stringify(requests[1]?.body.messages)).toContain("WordDocSpec metadata.title is required.")
+    expect(textPartsForTest(assistant)).toContain(".chipmate/docs/repair.docx")
+    expect(outputLines.join("\n")).toContain("[tool-loop] producer failure repair checkpoint inserted")
+  })
+
+  test("executes render_word_document for an implicit Chinese Word visual QA request and inserts render artifacts", async () => {
+    const requests: Array<{ url?: string; body: Record<string, unknown> }> = []
+    const outputLines: string[] = []
+    const root = await tempDir("chipmate-render-word-workspace-")
+    workspaceFolders = [{ name: "repo", uri: UriShim.file(root) }]
+    const pagePngPath = join(root, ".chipmate", "docs", "rendered", "sample-render-20260628-000000-test", "page-1.png")
+    await mkdir(join(root, ".chipmate", "docs", "rendered", "sample-render-20260628-000000-test"), { recursive: true })
+    await writeFile(pagePngPath, Buffer.from(tinyPngDataUri().replace(/^data:image\/png;base64,/, ""), "base64"))
+    const toolArgs = {
+      path: ".chipmate/docs/sample.docx",
+      artifactNameBase: "sample-render",
+    }
+    const baseUrl = await listen(async (request, response) => {
+      if (request.url !== "/v1/chat/completions") {
+        response.writeHead(404).end()
+        return
+      }
+      const body = await collectJson(request)
+      requests.push({ url: request.url, body })
+      response.writeHead(200, {
+        "content-type": "text/event-stream",
+      })
+      if (requests.length === 1) {
+        response.end([
+          sse({ choices: [{ delta: { tool_calls: [{ index: 0, id: "call_render_word", function: { name: "render_word_document", arguments: JSON.stringify(toolArgs) } }] } }] }),
+          "data: [DONE]\n\n",
+        ].join(""))
+        return
+      }
+      response.end([
+        sse({ choices: [{ delta: { content: "已完成 Word 渲染质检，发现 1 页 PNG 证据。" } }] }),
+        "data: [DONE]\n\n",
+      ].join(""))
+    })
+    const skill = {
+      id: "repo:documents",
+      name: "documents",
+      description: "Create, edit, review, and verify general Word `.docx` documents.",
+      path: "/repo/.agents/skills/documents/SKILL.md",
+      skillRoot: "/repo/.agents/skills/documents",
+      sourceRoot: "/repo/.agents/skills",
+      scope: "workspace",
+      sourceKind: "agents",
+      commandName: "documents",
+      visibility: "on",
+      enabled: true,
+      modelVisible: true,
+      userVisible: true,
+      invalid: false,
+      allowedTools: ["render_word_document"],
+      disableModelInvocation: false,
+      userInvocable: true,
+      compatibility: "",
+      license: "",
+      metadata: { keywords: JSON.stringify(["word", "docx", "Word 文档", "渲染", "排版"]) },
+      resourceFiles: ["tasks/render_verify_v1.md"],
+      validationErrors: [],
+      validationWarnings: [],
+    }
+    const executions: Array<Parameters<ToolRuntimeInstance["execute"]>[0]> = []
+    const renderPayload = {
+      kind: "word-render",
+      path: ".chipmate/docs/sample.docx",
+      absolutePath: "/repo/.chipmate/docs/sample.docx",
+      renderArtifactDir: ".chipmate/docs/rendered/sample-render-20260628-000000-test",
+      pdfArtifactPath: ".chipmate/docs/rendered/sample-render-20260628-000000-test/document.pdf",
+      pagePngPaths: [".chipmate/docs/rendered/sample-render-20260628-000000-test/page-1.png"],
+      pageVisualSummaries: [{
+        page: 1,
+        path: ".chipmate/docs/rendered/sample-render-20260628-000000-test/page-1.png",
+        width: 32,
+        height: 32,
+        inkRatio: 0.2,
+        contentBounds: { left: 1, top: 1, right: 20, bottom: 20 },
+        edgeInk: { top: true, right: false, bottom: false, left: true },
+      }],
+      issues: [{ severity: "warning", code: "render-page-edge-ink", message: "Rendered page has near-edge ink." }],
+      renderCheckResult: {
+        attempted: true,
+        ok: true,
+        renderArtifactDir: ".chipmate/docs/rendered/sample-render-20260628-000000-test",
+        pdfArtifactPath: ".chipmate/docs/rendered/sample-render-20260628-000000-test/document.pdf",
+        pagePngPaths: [".chipmate/docs/rendered/sample-render-20260628-000000-test/page-1.png"],
+        pageCount: 1,
+        pageVisualSummaries: [{
+          page: 1,
+          path: ".chipmate/docs/rendered/sample-render-20260628-000000-test/page-1.png",
+          width: 32,
+          height: 32,
+          inkRatio: 0.2,
+          contentBounds: { left: 1, top: 1, right: 20, bottom: 20 },
+          edgeInk: { top: true, right: false, bottom: false, left: true },
+        }],
+        issues: [{ severity: "warning", code: "render-page-edge-ink", message: "Rendered page has near-edge ink." }],
+      },
+    }
+    const storageRoot = await tempDir("chipmate-render-word-storage-")
+    const client = directClient(baseUrl, {
+      storageRoot,
+      outputLines,
+      toolsEnabled: true,
+      skills: {
+        enabledSkills: async () => [skill],
+        loadSkill: async (_id, invocationMode) => ({
+          ...skill,
+          body: "Documents render skill body marker: use render_word_document for visual QA.",
+          invocationMode,
+        }),
+      } as unknown as SkillRegistry,
+      tools: {
+        toolDefinitions: () => [{
+          type: "function",
+          function: {
+            name: "render_word_document",
+            description: "Render a Word document",
+            parameters: {
+              type: "object",
+              properties: {
+                path: { type: "string" },
+                artifactNameBase: { type: "string" },
+              },
+              required: ["path"],
+            },
+          },
+        }],
+        execute: async (input: Parameters<ToolRuntimeInstance["execute"]>[0]): Promise<ToolRuntimeResult> => {
+          executions.push(input)
+          return {
+            title: "Rendered Word document: .chipmate/docs/sample.docx",
+            output: JSON.stringify({
+              answerSummary: "Rendered Word document: .chipmate/docs/sample.docx; pages: 1; PNG artifacts: 1.",
+              data: {
+                path: ".chipmate/docs/sample.docx",
+                renderCheckResult: renderPayload.renderCheckResult,
+              },
+            }),
+            approved: true,
+            status: "completed",
+            artifacts: [{ kind: "word-render", payload: renderPayload as never }],
+          }
+        },
+      } as unknown as ToolRuntimeInstance,
+    })
+
+    const session = await client.createSession()
+    const assistant = await client.sendMessage({ sessionID: session.id, text: "帮我渲染检查这个 Word 文档 .chipmate/docs/sample.docx 的排版，有没有溢出。" })
+
+    expect(requests).toHaveLength(2)
+    expect(requests[0]?.body.tools).toEqual(expect.arrayContaining([
+      expect.objectContaining({ function: expect.objectContaining({ name: "render_word_document" }) }),
+    ]))
+    const systemContent = ((requests[0]?.body.messages ?? []) as Array<{ role?: string; content?: string }>).find((message) => message.role === "system")?.content ?? ""
+    expect(systemContent).toContain("render_word_document")
+    expect(systemContent).toContain("Use render_word_document directly")
+    expect(executions).toEqual([expect.objectContaining({
+      name: "render_word_document",
+      arguments: toolArgs,
+      activeSkills: [expect.objectContaining({
+        id: "repo:documents",
+        allowedTools: ["render_word_document"],
+      })],
+    })])
+    expect(assistant.parts).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: "tool", tool: "render_word_document" }),
+      expect.objectContaining({
+        type: "wordRender",
+        path: ".chipmate/docs/sample.docx",
+        pdfArtifactPath: ".chipmate/docs/rendered/sample-render-20260628-000000-test/document.pdf",
+        pagePngPaths: [".chipmate/docs/rendered/sample-render-20260628-000000-test/page-1.png"],
+        pageCount: 1,
+        warnings: ["render-page-edge-ink: Rendered page has near-edge ink."],
+      }),
+      expect.objectContaining({ type: "text", text: "已完成 Word 渲染质检，发现 1 页 PNG 证据。" }),
+    ]))
+    expect(outputLines.join("\n")).toContain("[word-render-artifact] inserted count=1")
+    expect(outputLines.join("\n")).toContain("[word-visual-qa] steering batch=1 renderRound=1/2 artifact=1 pages=1 images=1")
+    const qaRequest = requests[1]?.body.messages as Array<{ role?: string; content?: unknown }>
+    const qaUser = qaRequest[qaRequest.length - 1]
+    expect(qaUser?.role).toBe("user")
+    expect(qaUser?.content).toEqual([
+      expect.objectContaining({ type: "text", text: expect.stringContaining("Word visual QA render round 1/2, page batch 1/1") }),
+      expect.objectContaining({ type: "image_url", image_url: expect.objectContaining({ url: tinyPngDataUri() }) }),
+    ])
+    const sessionLog = await readFile(join(storageRoot, "sessions", `${session.id}.jsonl`), "utf8")
+    expect(sessionLog).toContain("\"kind\":\"word-render-page\"")
+    expect(sessionLog).not.toContain(tinyPngDataUri())
+  })
+
+  test("queues all long Word render page PNGs for visual QA in fixed-size batches", async () => {
+    const requests: Array<{ url?: string; body: Record<string, unknown> }> = []
+    const outputLines: string[] = []
+    const root = await tempDir("chipmate-render-word-batches-workspace-")
+    workspaceFolders = [{ name: "repo", uri: UriShim.file(root) }]
+    const renderDir = ".chipmate/docs/rendered/long-render"
+    await mkdir(join(root, renderDir), { recursive: true })
+    const pagePngPaths = Array.from({ length: 6 }, (_, index) => `${renderDir}/page-${index + 1}.png`)
+    for (const relative of pagePngPaths) {
+      await writeFile(join(root, relative), Buffer.from(tinyPngDataUri().replace(/^data:image\/png;base64,/, ""), "base64"))
+    }
+    const toolArgs = { path: ".chipmate/docs/long.docx", artifactNameBase: "long-render" }
+    const baseUrl = await listen(async (request, response) => {
+      if (request.url !== "/v1/chat/completions") {
+        response.writeHead(404).end()
+        return
+      }
+      const body = await collectJson(request)
+      requests.push({ url: request.url, body })
+      response.writeHead(200, { "content-type": "text/event-stream" })
+      if (requests.length === 1) {
+        response.end([
+          sse({ choices: [{ delta: { tool_calls: [{ index: 0, id: "call_render_long_word", function: { name: "render_word_document", arguments: JSON.stringify(toolArgs) } }] } }] }),
+          "data: [DONE]\n\n",
+        ].join(""))
+        return
+      }
+      if (requests.length === 2) {
+        response.end([sse({ choices: [{ delta: { content: "第 1 批页面已检查。" } }] }), "data: [DONE]\n\n"].join(""))
+        return
+      }
+      response.end([sse({ choices: [{ delta: { content: "6 页 Word 图片级视觉 QA 已全部检查。" } }] }), "data: [DONE]\n\n"].join(""))
+    })
+    const pageVisualSummaries = pagePngPaths.map((path, index) => ({
+      page: index + 1,
+      path,
+      width: 32,
+      height: 32,
+      inkRatio: 0.2,
+      edgeInk: { top: false, right: false, bottom: false, left: false },
+    }))
+    const renderPayload = {
+      kind: "word-render",
+      path: ".chipmate/docs/long.docx",
+      renderArtifactDir: renderDir,
+      pdfArtifactPath: `${renderDir}/document.pdf`,
+      pagePngPaths,
+      pageVisualSummaries,
+      renderCheckResult: {
+        attempted: true,
+        ok: true,
+        pagePngPaths,
+        pageCount: 6,
+        pageVisualSummaries,
+        issues: [],
+      },
+    }
+    const client = directClient(baseUrl, {
+      storageRoot: await tempDir("chipmate-render-word-batches-storage-"),
+      outputLines,
+      toolsEnabled: true,
+      tools: {
+        toolDefinitions: () => [{
+          type: "function",
+          function: {
+            name: "render_word_document",
+            description: "Render a Word document",
+            parameters: {
+              type: "object",
+              properties: {
+                path: { type: "string" },
+                artifactNameBase: { type: "string" },
+              },
+              required: ["path"],
+            },
+          },
+        }],
+        execute: async (): Promise<ToolRuntimeResult> => ({
+          title: "Rendered Word document: .chipmate/docs/long.docx",
+          output: JSON.stringify({ answerSummary: "Rendered Word document: .chipmate/docs/long.docx; pages: 6." }),
+          approved: true,
+          status: "completed",
+          artifacts: [{ kind: "word-render", payload: renderPayload as never }],
+        }),
+      } as unknown as ToolRuntimeInstance,
+    })
+
+    const session = await client.createSession()
+    const assistant = await client.sendMessage({ sessionID: session.id, text: "帮我逐页图片级检查 6 页 Word 文档 .chipmate/docs/long.docx" })
+
+    expect(requests).toHaveLength(3)
+    const firstBatch = JSON.stringify(requests[1]?.body.messages)
+    const secondBatch = JSON.stringify(requests[2]?.body.messages)
+    const firstBatchMessages = requests[1]?.body.messages as Array<{ role?: string; content?: unknown }>
+    const secondBatchMessages = requests[2]?.body.messages as Array<{ role?: string; content?: unknown }>
+    const firstBatchContent = firstBatchMessages.at(-1)?.content as Array<{ type?: string }>
+    const secondBatchContent = secondBatchMessages.at(-1)?.content as Array<{ type?: string }>
+    expect(firstBatch).toContain("Word visual QA render round 1/2, page batch 1/2")
+    expect(firstBatch).toContain("Pages in this batch: 1, 2, 3")
+    expect(secondBatch).toContain("Word visual QA render round 1/2, page batch 2/2")
+    expect(secondBatch).toContain("Pages in this batch: 4, 5, 6")
+    expect(firstBatchContent.filter((part) => part.type === "image_url")).toHaveLength(3)
+    expect(secondBatchContent.filter((part) => part.type === "image_url")).toHaveLength(3)
+    expect(outputLines.join("\n")).toContain("[word-visual-qa] steering batch=1 renderRound=1/2 artifact=1 pages=1,2,3 images=3")
+    expect(outputLines.join("\n")).toContain("[word-visual-qa] steering batch=2 renderRound=1/2 artifact=1 pages=4,5,6 images=3")
+    expect(assistant.parts).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        type: "wordRender",
+        pagePngPaths,
+        visualQaCoverage: expect.objectContaining({ totalPages: 6, queuedPages: 6, batchSize: 3, batchCount: 2 }),
+      }),
+      expect.objectContaining({ type: "text", text: "6 页 Word 图片级视觉 QA 已全部检查。" }),
+    ]))
+  })
+
+  test("falls back to text-only during Word visual QA when provider rejects page PNG input", async () => {
+    const requests: Array<{ url?: string; body: Record<string, unknown> }> = []
+    const outputLines: string[] = []
+    const root = await tempDir("chipmate-word-visual-fallback-workspace-")
+    workspaceFolders = [{ name: "repo", uri: UriShim.file(root) }]
+    const relativePng = ".chipmate/docs/rendered/word-visual-fallback/page-1.png"
+    await mkdir(join(root, ".chipmate", "docs", "rendered", "word-visual-fallback"), { recursive: true })
+    await writeFile(join(root, relativePng), Buffer.from(tinyPngDataUri().replace(/^data:image\/png;base64,/, ""), "base64"))
+    const toolArgs = { path: ".chipmate/docs/sample.docx" }
+    const baseUrl = await listen(async (request, response) => {
+      if (request.url !== "/v1/chat/completions") {
+        response.writeHead(404).end()
+        return
+      }
+      const body = await collectJson(request)
+      requests.push({ url: request.url, body })
+      if (requests.length === 1) {
+        response.writeHead(200, { "content-type": "text/event-stream" })
+        response.end([
+          sse({ choices: [{ delta: { tool_calls: [{ index: 0, id: "call_render_word_reject", function: { name: "render_word_document", arguments: JSON.stringify(toolArgs) } }] } }] }),
+          "data: [DONE]\n\n",
+        ].join(""))
+        return
+      }
+      if (requests.length === 2) {
+        response.writeHead(400, { "content-type": "application/json" })
+        response.end(JSON.stringify({ error: { message: "image input is not supported" } }))
+        return
+      }
+      response.writeHead(200, { "content-type": "text/event-stream" })
+      response.end([
+        sse({ choices: [{ delta: { content: "已基于视觉摘要完成检查，未完成逐页图片视觉检查。" } }] }),
+        "data: [DONE]\n\n",
+      ].join(""))
+    })
+    const renderPayload = {
+      kind: "word-render",
+      path: ".chipmate/docs/sample.docx",
+      renderArtifactDir: ".chipmate/docs/rendered/word-visual-fallback",
+      pagePngPaths: [relativePng],
+      renderCheckResult: {
+        attempted: true,
+        ok: true,
+        pagePngPaths: [relativePng],
+        pageCount: 1,
+        pageVisualSummaries: [{
+          page: 1,
+          path: relativePng,
+          width: 32,
+          height: 32,
+          inkRatio: 0.2,
+          edgeInk: { top: false, right: false, bottom: false, left: false },
+        }],
+        issues: [],
+      },
+    }
+    const client = directClient(baseUrl, {
+      storageRoot: await tempDir("chipmate-word-visual-fallback-storage-"),
+      outputLines,
+      toolsEnabled: true,
+      tools: {
+        toolDefinitions: () => [{
+          type: "function",
+          function: {
+            name: "render_word_document",
+            description: "Render a Word document",
+            parameters: { type: "object", properties: { path: { type: "string" } }, required: ["path"] },
+          },
+        }],
+        execute: async (): Promise<ToolRuntimeResult> => ({
+          title: "Rendered Word document",
+          output: JSON.stringify({ answerSummary: "Rendered Word document; pages: 1." }),
+          approved: true,
+          status: "completed",
+          artifacts: [{ kind: "word-render", payload: renderPayload as never }],
+        }),
+      } as unknown as ToolRuntimeInstance,
+    })
+
+    const session = await client.createSession()
+    const assistant = await client.sendMessage({ sessionID: session.id, text: "渲染检查 sample.docx" })
+
+    expect(requests).toHaveLength(3)
+    expect(JSON.stringify(requests[1]?.body.messages)).toContain("image_url")
+    expect(JSON.stringify(requests[1]?.body.messages)).toContain("Word visual QA render round 1/2, page batch 1/1")
+    expect(JSON.stringify(requests[2]?.body.messages)).not.toContain("image_url")
+    expect(JSON.stringify(requests[2]?.body.messages)).toContain("Word visual QA render round 1/2, page batch 1/1")
+    expect(outputLines.join("\n")).toContain("[visual-context] provider rejected image input; retrying text-only")
+    expect(textPartsForTest(assistant)).toContain("未完成逐页图片视觉检查")
+  })
+
+  test("bounds Word visual QA steering to two checkpoints", async () => {
+    const requests: Array<{ url?: string; body: Record<string, unknown> }> = []
+    const outputLines: string[] = []
+    const root = await tempDir("chipmate-word-visual-max-workspace-")
+    workspaceFolders = [{ name: "repo", uri: UriShim.file(root) }]
+    const relativePng = ".chipmate/docs/rendered/word-visual-max/page-1.png"
+    await mkdir(join(root, ".chipmate", "docs", "rendered", "word-visual-max"), { recursive: true })
+    await writeFile(join(root, relativePng), Buffer.from(tinyPngDataUri().replace(/^data:image\/png;base64,/, ""), "base64"))
+    const renderToolCall = (id: string) => sse({ choices: [{ delta: { tool_calls: [{ index: 0, id, function: { name: "render_word_document", arguments: JSON.stringify({ path: ".chipmate/docs/sample.docx" }) } }] } }] })
+    const baseUrl = await listen(async (request, response) => {
+      if (request.url !== "/v1/chat/completions") {
+        response.writeHead(404).end()
+        return
+      }
+      const body = await collectJson(request)
+      requests.push({ url: request.url, body })
+      response.writeHead(200, { "content-type": "text/event-stream" })
+      if (requests.length <= 3) {
+        response.end([renderToolCall(`call_render_${requests.length}`), "data: [DONE]\n\n"].join(""))
+        return
+      }
+      response.end([sse({ choices: [{ delta: { content: "最终只保留两轮 Word 视觉 QA checkpoint。" } }] }), "data: [DONE]\n\n"].join(""))
+    })
+    const renderPayload = {
+      kind: "word-render",
+      path: ".chipmate/docs/sample.docx",
+      renderArtifactDir: ".chipmate/docs/rendered/word-visual-max",
+      pagePngPaths: [relativePng],
+      renderCheckResult: {
+        attempted: true,
+        ok: true,
+        pagePngPaths: [relativePng],
+        pageCount: 1,
+        pageVisualSummaries: [{ page: 1, path: relativePng, width: 32, height: 32, inkRatio: 0.2 }],
+        issues: [],
+      },
+    }
+    const executions: Array<Parameters<ToolRuntimeInstance["execute"]>[0]> = []
+    const client = directClient(baseUrl, {
+      storageRoot: await tempDir("chipmate-word-visual-max-storage-"),
+      outputLines,
+      toolsEnabled: true,
+      tools: {
+        toolDefinitions: () => [{
+          type: "function",
+          function: {
+            name: "render_word_document",
+            description: "Render a Word document",
+            parameters: { type: "object", properties: { path: { type: "string" } }, required: ["path"] },
+          },
+        }],
+        execute: async (input: Parameters<ToolRuntimeInstance["execute"]>[0]): Promise<ToolRuntimeResult> => {
+          executions.push(input)
+          return {
+            title: "Rendered Word document",
+            output: JSON.stringify({ answerSummary: "Rendered Word document; pages: 1." }),
+            approved: true,
+            status: "completed",
+            artifacts: [{ kind: "word-render", payload: renderPayload as never }],
+          }
+        },
+      } as unknown as ToolRuntimeInstance,
+    })
+
+    const session = await client.createSession()
+    const assistant = await client.sendMessage({ sessionID: session.id, text: "连续渲染检查 sample.docx" })
+
+    expect(executions).toHaveLength(3)
+    expect(requests).toHaveLength(4)
+    expect(JSON.stringify(requests[1]?.body.messages)).toContain("Word visual QA render round 1/2, page batch 1/1")
+    expect(JSON.stringify(requests[2]?.body.messages)).toContain("Word visual QA render round 2/2, page batch 1/1")
+    expect(outputLines.join("\n")).toContain("[word-visual-qa] steering batch=1 renderRound=1/2")
+    expect(outputLines.join("\n")).toContain("[word-visual-qa] steering batch=2 renderRound=2/2")
+    expect(outputLines.join("\n")).not.toContain("renderRound=3/2")
+    expect(textPartsForTest(assistant)).toContain("最终只保留两轮")
+  })
+
   test("converts exposed tool runtime exceptions into failed tool results", async () => {
     const requests: Array<{ url?: string; body: Record<string, unknown> }> = []
     const outputLines: string[] = []
@@ -4469,6 +7886,481 @@ describe("DirectAgentClient", () => {
     expect(output).toContain("[tool-loop] finalization success")
   })
 
+  test("does not present inline Markdown as completed Word output when the tool loop limit is reached without a DOCX", async () => {
+    const requests: Array<{ url?: string; body: Record<string, unknown> }> = []
+    const outputLines: string[] = []
+    const baseUrl = await listen(async (request, response) => {
+      if (request.url !== "/v1/chat/completions") {
+        response.writeHead(404).end()
+        return
+      }
+      const body = await collectJson(request)
+      requests.push({ url: request.url, body })
+      response.writeHead(200, { "content-type": "text/event-stream" })
+      if (requests.length === 1) {
+        response.end([
+          sse({ choices: [{ delta: { tool_calls: [{ index: 0, id: "call_mermaid", function: { name: "chipmate_render_mermaid_diagram", arguments: "{\"source\":\"flowchart TD\\nA-->B\",\"title\":\"流程图\"}" } }] } }] }),
+          "data: [DONE]\n\n",
+        ].join(""))
+        return
+      }
+      response.end([
+        sse({ choices: [{ delta: { content: "完整 Word 文档如下：\n\n# 详细设计\n\n这里是正文。" } }] }),
+        "data: [DONE]\n\n",
+      ].join(""))
+    })
+    const skill = {
+      id: "repo:documents",
+      name: "documents",
+      description: "Create, edit, review, and verify general Word `.docx` documents.",
+      path: "/repo/.agents/skills/documents/SKILL.md",
+      skillRoot: "/repo/.agents/skills/documents",
+      sourceRoot: "/repo/.agents/skills",
+      scope: "workspace",
+      sourceKind: "agents",
+      commandName: "documents",
+      visibility: "on",
+      enabled: true,
+      modelVisible: true,
+      userVisible: true,
+      invalid: false,
+      allowedTools: ["chipmate_render_mermaid_diagram", "create_word_document"],
+      disableModelInvocation: false,
+      userInvocable: true,
+      compatibility: "",
+      license: "",
+      metadata: { keywords: JSON.stringify(["word", "docx", "Word 文档", "生成*文档"]) },
+      resourceFiles: ["tasks/create_edit_v1.md"],
+      validationErrors: [],
+      validationWarnings: [],
+    }
+    let toolExecutions = 0
+    const client = directClient(baseUrl, {
+      storageRoot: await tempDir("chipmate-doc-missing-deliverable-storage-"),
+      outputLines,
+      toolsEnabled: true,
+      maxAgentSteps: 1,
+      skills: {
+        enabledSkills: async () => [skill],
+        loadSkill: async (_id, invocationMode) => ({
+          ...skill,
+          body: "Documents skill body marker: final answer must link the generated .docx.",
+          invocationMode,
+        }),
+      } as unknown as SkillRegistry,
+      tools: {
+        toolDefinitions: () => [{
+          type: "function",
+          function: {
+            name: "chipmate_render_mermaid_diagram",
+            description: "Render Mermaid",
+            parameters: { type: "object", properties: { source: { type: "string" }, title: { type: "string" } }, required: ["source", "title"] },
+          },
+        }],
+        execute: async (): Promise<ToolRuntimeResult> => {
+          toolExecutions += 1
+          return {
+            title: "Rendered Mermaid diagram: 流程图",
+            output: JSON.stringify({
+              answerSummary: "Rendered Mermaid diagram \"流程图\" to .chipmate/docs/diagrams/flow.png.",
+              evidence: [],
+              gaps: [],
+              nextActions: [{ tool: "create_word_document", reason: "Insert the returned PNG artifact path into the matching WordDocSpec section as a FigureSpec.", args: {} }],
+              truncated: false,
+              coverage: "complete",
+              data: {
+                kind: "mermaid",
+                pngPath: ".chipmate/docs/diagrams/flow.png",
+                mmdPath: ".chipmate/docs/diagrams/flow.mmd",
+              },
+            }),
+            approved: true,
+            status: "completed",
+          }
+        },
+      } as unknown as ToolRuntimeInstance,
+    })
+    const session = await client.createSession()
+
+    const assistant = await client.sendMessage({ sessionID: session.id, text: "请生成一份 Word 文档，包含流程图。" })
+
+    expect(requests).toHaveLength(2)
+    expect(toolExecutions).toBe(1)
+    expect(requests[1]?.body.tools).toBeUndefined()
+    const finalizationPrompt = JSON.stringify(requests[1]?.body.messages)
+    expect(finalizationPrompt).toContain("Deliverable discipline")
+    expect(finalizationPrompt).toContain("create_word_document")
+    expect(finalizationPrompt).toContain("Do not present inline Markdown")
+    const text = textPartsForTest(assistant)
+    expect(text).toContain("未生成请求的本地交付物")
+    expect(text).toContain("Word .docx document")
+    expect(text).toContain("create_word_document")
+    expect(text).not.toContain("完整 Word 文档如下")
+    expect(outputLines.join("\n")).toContain("[tool-loop] enforced missing deliverable final answer")
+  })
+
+  test("does not truncate create_word_document arguments above the generic stream limit", async () => {
+    const requests: Array<{ url?: string; body: Record<string, unknown> }> = []
+    const outputLines: string[] = []
+    const largeParagraph = "A".repeat(150 * 1024)
+    const largeSpec = minimalWordDocSpecForTest("大规格 Word 文档")
+    largeSpec.sections[0].paragraphs.push(largeParagraph)
+    const toolArgs = { filename: "large-word-spec.docx", spec: largeSpec }
+    const serializedArgs = JSON.stringify(toolArgs)
+    expect(Buffer.byteLength(serializedArgs, "utf8")).toBeGreaterThan(128 * 1024)
+    const baseUrl = await listen(async (request, response) => {
+      if (request.url !== "/v1/chat/completions") {
+        response.writeHead(404).end()
+        return
+      }
+      const body = await collectJson(request)
+      requests.push({ url: request.url, body })
+      response.writeHead(200, { "content-type": "text/event-stream" })
+      if (requests.length === 1) {
+        response.end([
+          sse({ choices: [{ delta: { tool_calls: [{ index: 0, id: "call_large_word", function: { name: "create_word_document", arguments: serializedArgs } }] } }] }),
+          "data: [DONE]\n\n",
+        ].join(""))
+        return
+      }
+      response.end([
+        sse({ choices: [{ delta: { content: "已生成 Word 文档：.chipmate/docs/large-word-spec.docx" } }] }),
+        "data: [DONE]\n\n",
+      ].join(""))
+    })
+    let receivedArgs: Record<string, unknown> | undefined
+    const client = directClient(baseUrl, {
+      storageRoot: await tempDir("chipmate-large-word-args-storage-"),
+      outputLines,
+      toolsEnabled: true,
+      skills: {
+        enabledSkills: async () => [documentsSkillForTest(["create_word_document"])],
+        loadSkill: async (_id, invocationMode) => ({
+          ...documentsSkillForTest(["create_word_document"]),
+          body: "Documents skill body marker: large WordDocSpec should be passed intact.",
+          invocationMode,
+        }),
+      } as unknown as SkillRegistry,
+      tools: {
+        toolDefinitions: () => [{
+          type: "function",
+          function: {
+            name: "create_word_document",
+            description: "Create a Word document",
+            parameters: { type: "object", properties: { spec: { type: "object" }, filename: { type: "string" } }, required: ["spec"] },
+          },
+        }],
+        execute: async (input: Parameters<ToolRuntimeInstance["execute"]>[0]): Promise<ToolRuntimeResult> => {
+          receivedArgs = input.arguments
+          return {
+            title: "Create Word document",
+            output: JSON.stringify({
+              answerSummary: "Created Word document: .chipmate/docs/large-word-spec.docx",
+              evidence: [],
+              gaps: [],
+              nextActions: [],
+              truncated: false,
+              coverage: "complete",
+              data: { path: ".chipmate/docs/large-word-spec.docx" },
+            }),
+            approved: true,
+            status: "completed",
+          }
+        },
+      } as unknown as ToolRuntimeInstance,
+    })
+    const session = await client.createSession()
+
+    const assistant = await client.sendMessage({ sessionID: session.id, text: "请生成一份很长的 Word 文档。" })
+
+    expect(receivedArgs?.filename).toBe("large-word-spec.docx")
+    const receivedSpec = receivedArgs?.spec as ReturnType<typeof minimalWordDocSpecForTest> | undefined
+    expect(receivedSpec?.sections[0].paragraphs.at(-1)).toBe(largeParagraph)
+    expect(textPartsForTest(assistant)).toContain(".chipmate/docs/large-word-spec.docx")
+    expect(outputLines.join("\n")).not.toContain("tool-arguments-truncated")
+  })
+
+  test("keeps the generic stream argument limit for non-Word tools", async () => {
+    const requests: Array<{ url?: string; body: Record<string, unknown> }> = []
+    const outputLines: string[] = []
+    const hugeArgs = JSON.stringify({ path: `${"a".repeat(150 * 1024)}.txt` })
+    const baseUrl = await listen(async (request, response) => {
+      if (request.url !== "/v1/chat/completions") {
+        response.writeHead(404).end()
+        return
+      }
+      const body = await collectJson(request)
+      requests.push({ url: request.url, body })
+      response.writeHead(200, { "content-type": "text/event-stream" })
+      if (requests.length === 1) {
+        response.end([
+          sse({ choices: [{ delta: { tool_calls: [{ index: 0, id: "call_huge_read", function: { name: "chipmate_read", arguments: hugeArgs } }] } }] }),
+          "data: [DONE]\n\n",
+        ].join(""))
+        return
+      }
+      response.end([
+        sse({ choices: [{ delta: { content: "普通工具参数过大，未执行读取。" } }] }),
+        "data: [DONE]\n\n",
+      ].join(""))
+    })
+    let toolExecutions = 0
+    const client = directClient(baseUrl, {
+      storageRoot: await tempDir("chipmate-generic-tool-arg-limit-storage-"),
+      outputLines,
+      toolsEnabled: true,
+      tools: {
+        toolDefinitions: () => [{
+          type: "function",
+          function: {
+            name: "chipmate_read",
+            description: "Read a file",
+            parameters: { type: "object", properties: { path: { type: "string" } }, required: ["path"] },
+          },
+        }],
+        execute: async (): Promise<ToolRuntimeResult> => {
+          toolExecutions += 1
+          return { title: "Read file", output: "should not run", approved: true, status: "completed" }
+        },
+      } as unknown as ToolRuntimeInstance,
+    })
+    const session = await client.createSession()
+
+    await client.sendMessage({ sessionID: session.id, text: "读取一个超长路径。" })
+
+    expect(toolExecutions).toBe(0)
+    expect(JSON.stringify(requests[1]?.body.messages)).toContain("tool-arguments-truncated")
+    expect(outputLines.join("\n")).toContain("[tool] chipmate_read status=failed")
+  })
+
+  test("reports invalid create_word_document JSON without treating it as a missing spec", async () => {
+    const requests: Array<{ url?: string; body: Record<string, unknown> }> = []
+    const outputLines: string[] = []
+    const baseUrl = await listen(async (request, response) => {
+      if (request.url !== "/v1/chat/completions") {
+        response.writeHead(404).end()
+        return
+      }
+      const body = await collectJson(request)
+      requests.push({ url: request.url, body })
+      response.writeHead(200, { "content-type": "text/event-stream" })
+      if (requests.length === 1) {
+        response.end([
+          sse({ choices: [{ delta: { tool_calls: [{ index: 0, id: "call_bad_word_json", function: { name: "create_word_document", arguments: "{\"filename\":\"bad.docx\",\"spec\":" } }] } }] }),
+          "data: [DONE]\n\n",
+        ].join(""))
+        return
+      }
+      response.end([
+        sse({ choices: [{ delta: { content: "完整 Word 文档如下：\n\n# 未实际生成的文档" } }] }),
+        "data: [DONE]\n\n",
+      ].join(""))
+    })
+    let toolExecutions = 0
+    const client = directClient(baseUrl, {
+      storageRoot: await tempDir("chipmate-invalid-word-json-storage-"),
+      outputLines,
+      toolsEnabled: true,
+      maxAgentSteps: 1,
+      skills: {
+        enabledSkills: async () => [documentsSkillForTest(["create_word_document"])],
+        loadSkill: async (_id, invocationMode) => ({
+          ...documentsSkillForTest(["create_word_document"]),
+          body: "Documents skill body marker: invalid tool JSON must not become a missing WordDocSpec.",
+          invocationMode,
+        }),
+      } as unknown as SkillRegistry,
+      tools: {
+        toolDefinitions: () => [{
+          type: "function",
+          function: {
+            name: "create_word_document",
+            description: "Create a Word document",
+            parameters: { type: "object", properties: { spec: { type: "object" }, filename: { type: "string" } }, required: ["spec"] },
+          },
+        }],
+        execute: async (): Promise<ToolRuntimeResult> => {
+          toolExecutions += 1
+          return { title: "Create Word document", output: "should not run", approved: true, status: "completed" }
+        },
+      } as unknown as ToolRuntimeInstance,
+    })
+    const session = await client.createSession()
+
+    const assistant = await client.sendMessage({ sessionID: session.id, text: "请生成一份 Word 文档。" })
+
+    expect(toolExecutions).toBe(0)
+    const text = textPartsForTest(assistant)
+    expect(text).toContain("未生成请求的本地交付物")
+    expect(text).toContain("tool-arguments-invalid-json")
+    expect(text).not.toContain("word-doc-spec-missing")
+    expect(text).not.toContain("完整 Word 文档如下")
+    expect(JSON.stringify(requests[1]?.body.messages)).toContain("tool-arguments-invalid-json")
+  })
+
+  test("does not accept copy-to-Word Markdown as a completed DOCX deliverable", async () => {
+    const requests: Array<{ url?: string; body: Record<string, unknown> }> = []
+    const outputLines: string[] = []
+    const baseUrl = await listen(async (request, response) => {
+      if (request.url !== "/v1/chat/completions") {
+        response.writeHead(404).end()
+        return
+      }
+      const body = await collectJson(request)
+      requests.push({ url: request.url, body })
+      response.writeHead(200, { "content-type": "text/event-stream" })
+      response.end([
+        sse({ choices: [{ delta: { content: "由于 Word 文档生成工具在处理大型 JSON 规范时遇到了解析限制，我将直接在此提供完整文档内容。您可以直接将以下内容复制到 Word 或 Markdown 编辑器中使用。\n\n---\n\nUFS3030-CV 项目 CI/CD 流程详细设计文档" } }] }),
+        "data: [DONE]\n\n",
+      ].join(""))
+    })
+    const client = directClient(baseUrl, {
+      storageRoot: await tempDir("chipmate-copy-markdown-docx-storage-"),
+      outputLines,
+      toolsEnabled: true,
+      skills: {
+        enabledSkills: async () => [documentsSkillForTest(["create_word_document"])],
+        loadSkill: async (_id, invocationMode) => ({
+          ...documentsSkillForTest(["create_word_document"]),
+          body: "Documents skill body marker: inline Markdown is not a DOCX artifact.",
+          invocationMode,
+        }),
+      } as unknown as SkillRegistry,
+      tools: {
+        toolDefinitions: () => [{
+          type: "function",
+          function: {
+            name: "create_word_document",
+            description: "Create a Word document",
+            parameters: { type: "object", properties: { spec: { type: "object" }, filename: { type: "string" } }, required: ["spec"] },
+          },
+        }],
+        execute: async (): Promise<ToolRuntimeResult> => ({ title: "Create Word document", output: "should not run", approved: true, status: "completed" }),
+      } as unknown as ToolRuntimeInstance,
+    })
+    const session = await client.createSession()
+
+    const assistant = await client.sendMessage({ sessionID: session.id, text: "请生成 UFS3030-CV 项目 CI/CD 流程详细设计 Word 文档。" })
+
+    const text = textPartsForTest(assistant)
+    expect(requests.length).toBeGreaterThanOrEqual(1)
+    expect(text).toContain("未生成请求的本地交付物")
+    expect(text).not.toContain("复制到 Word 或 Markdown")
+    expect(text).not.toContain("UFS3030-CV 项目 CI/CD 流程详细设计文档")
+    expect(outputLines.join("\n")).toContain("[tool-loop] enforced missing deliverable final answer")
+  })
+
+  test("reports producer validation failures when repeated create_word_document attempts never produce DOCX", async () => {
+    const requests: Array<{ url?: string; body: Record<string, unknown> }> = []
+    const outputLines: string[] = []
+    const baseUrl = await listen(async (request, response) => {
+      if (request.url !== "/v1/chat/completions") {
+        response.writeHead(404).end()
+        return
+      }
+      const body = await collectJson(request)
+      requests.push({ url: request.url, body })
+      response.writeHead(200, { "content-type": "text/event-stream" })
+      if (requests.length <= 2) {
+        response.end([
+          sse({ choices: [{ delta: { tool_calls: [{ index: 0, id: `call_create_fail_${requests.length}`, function: { name: "create_word_document", arguments: JSON.stringify({ filename: "still-invalid.docx", spec: { metadata: {}, sections: [] } }) } }] } }] }),
+          "data: [DONE]\n\n",
+        ].join(""))
+        return
+      }
+      response.end([
+        sse({ choices: [{ delta: { content: "完整 Word 文档如下：\n\n# 未实际生成的文档" } }] }),
+        "data: [DONE]\n\n",
+      ].join(""))
+    })
+    const skill = {
+      id: "repo:documents",
+      name: "documents",
+      description: "Create, edit, review, and verify general Word `.docx` documents.",
+      path: "/repo/.agents/skills/documents/SKILL.md",
+      skillRoot: "/repo/.agents/skills/documents",
+      sourceRoot: "/repo/.agents/skills",
+      scope: "workspace",
+      sourceKind: "agents",
+      commandName: "documents",
+      visibility: "on",
+      enabled: true,
+      modelVisible: true,
+      userVisible: true,
+      invalid: false,
+      allowedTools: ["create_word_document"],
+      disableModelInvocation: false,
+      userInvocable: true,
+      compatibility: "",
+      license: "",
+      metadata: { keywords: JSON.stringify(["word", "docx", "Word 文档", "生成*文档"]) },
+      resourceFiles: ["tasks/create_edit_v1.md"],
+      validationErrors: [],
+      validationWarnings: [],
+    }
+    let toolExecutions = 0
+    const client = directClient(baseUrl, {
+      storageRoot: await tempDir("chipmate-doc-repeated-producer-failure-storage-"),
+      outputLines,
+      toolsEnabled: true,
+      maxAgentSteps: 2,
+      skills: {
+        enabledSkills: async () => [skill],
+        loadSkill: async (_id, invocationMode) => ({
+          ...skill,
+          body: "Documents skill body marker: failed WordDocSpec must not be treated as a completed document.",
+          invocationMode,
+        }),
+      } as unknown as SkillRegistry,
+      tools: {
+        toolDefinitions: () => [{
+          type: "function",
+          function: {
+            name: "create_word_document",
+            description: "Create a Word document",
+            parameters: { type: "object", properties: { spec: { type: "object" }, filename: { type: "string" } }, required: ["spec"] },
+          },
+        }],
+        execute: async (): Promise<ToolRuntimeResult> => {
+          toolExecutions += 1
+          return {
+            title: "Create Word document",
+            output: JSON.stringify({
+              answerSummary: "Create Word document failed: WordDocSpec validation failed: WordDocSpec metadata.title is required.",
+              evidence: [],
+              gaps: ["WordDocSpec metadata.title is required."],
+              nextActions: [{ tool: "create_word_document", reason: "Repair the WordDocSpec and retry.", args: {} }],
+              truncated: false,
+              coverage: "partial",
+              data: {
+                errorCode: "word-doc-spec-validation-failed",
+                errorMessage: "WordDocSpec validation failed: WordDocSpec metadata.title is required.",
+                validationErrors: ["WordDocSpec metadata.title is required."],
+              },
+            }),
+            approved: false,
+            status: "failed",
+            error: "WordDocSpec validation failed: WordDocSpec metadata.title is required.",
+          }
+        },
+      } as unknown as ToolRuntimeInstance,
+    })
+    const session = await client.createSession()
+
+    const assistant = await client.sendMessage({ sessionID: session.id, text: "请生成一份 Word 文档。" })
+
+    expect(toolExecutions).toBe(2)
+    expect(requests).toHaveLength(3)
+    expect(JSON.stringify(requests[1]?.body.messages)).toContain("ChipMate producer failure repair checkpoint")
+    expect(JSON.stringify(requests[2]?.body.messages)).toContain("Producer failures this turn")
+    const text = textPartsForTest(assistant)
+    expect(text).toContain("未生成请求的本地交付物")
+    expect(text).toContain("最终产物工具失败原因")
+    expect(text).toContain("word-doc-spec-validation-failed")
+    expect(text).toContain("WordDocSpec metadata.title is required.")
+    expect(text).not.toContain("完整 Word 文档如下")
+  })
+
   test("does not execute tool calls returned by tool-loop finalization", async () => {
     const requests: Array<{ url?: string; body: Record<string, unknown> }> = []
     const outputLines: string[] = []
@@ -4567,6 +8459,130 @@ describe("DirectAgentClient", () => {
     expect(outputLines.join("\n")).not.toContain("[send] interrupted")
   })
 
+  test("repairs Mermaid render failures without exposing tools and persists a repair assistant message", async () => {
+    const requests: Array<{ body: Record<string, unknown> }> = []
+    const outputLines: string[] = []
+    const brokenSource = [
+      "graph TD",
+      "EE[extension-entry.ts] --> Settings[settings]",
+      "classDef external fill:#fafafa,stroke:#9e9e9e,color:#616161,stroke-dasharray=5 5",
+      "class EE external",
+    ].join("\n")
+    const repairedSource = [
+      "```mermaid",
+      "graph TD",
+      "  EE[\"extension-entry.ts\"] --> Settings[\"settings\"]",
+      "  classDef external fill:#fafafa,stroke:#9e9e9e,color:#616161",
+      "  class EE external",
+      "```",
+    ].join("\n")
+    const baseUrl = await listen(async (request, response) => {
+      if (request.url !== "/v1/chat/completions") {
+        response.writeHead(404).end()
+        return
+      }
+      const body = await collectJson(request)
+      requests.push({ body })
+      json(response, 200, {
+        choices: [{ message: { role: "assistant", content: repairedSource } }],
+        usage: { prompt_tokens: 21, completion_tokens: 13, total_tokens: 34 },
+      })
+    })
+    const client = directClient(baseUrl, {
+      storageRoot: await tempDir("chipmate-mermaid-repair-storage-"),
+      outputLines,
+      toolsEnabled: true,
+      tools: {
+        toolDefinitions: () => [{
+          type: "function",
+          function: {
+            name: "chipmate_read",
+            description: "Read a file",
+            parameters: { type: "object", properties: { path: { type: "string" } }, required: ["path"] },
+          },
+        }],
+        execute: async (): Promise<ToolRuntimeResult> => ({
+          title: "should not run",
+          output: "should not run",
+          approved: true,
+        }),
+      } as unknown as ToolRuntimeInstance,
+    })
+    const session = await client.createSession()
+    const [, originalAssistant] = await client.appendLocalMessages({
+      sessionID: session.id,
+      messages: [
+        { role: "user", text: "请画 Mermaid 架构图" },
+        { role: "assistant", text: `这里是图：\n\n\`\`\`mermaid\n${brokenSource}\n\`\`\`` },
+      ],
+    })
+
+    const assistant = await client.repairMermaidDiagram({
+      sessionID: session.id,
+      messageID: originalAssistant!.info.id,
+      sourceHash: "fixture-source",
+      source: brokenSource,
+      error: "Lexical error on line 119. Unrecognized text.",
+      language: "mermaid",
+    })
+
+    expect(requests).toHaveLength(1)
+    expect(requests[0]?.body).toMatchObject({
+      model: "chat-model",
+      stream: false,
+      temperature: 0,
+    })
+    expect(requests[0]?.body).not.toHaveProperty("tools")
+    expect(requests[0]?.body).not.toHaveProperty("tool_choice")
+    const promptPayload = JSON.stringify(requests[0]?.body.messages)
+    expect(promptPayload).toContain("Return exactly one fenced")
+    expect(promptPayload).toContain("Lexical error on line 119")
+    expect(promptPayload).toContain("stroke-dasharray=5 5")
+    expect(textPartsForTest(assistant)).toContain("我根据 Mermaid 渲染错误重画了一版")
+    expect(textPartsForTest(assistant)).toContain(repairedSource)
+
+    const messages = await client.getMessages(session.id)
+    const persisted = messages.at(-1)
+    expect(persisted?.info.mode).toBe("mermaid-repair")
+    expect(persisted?.info.usageKind).toBe("reported")
+    expect(textPartsForTest(persisted!)).toContain(repairedSource)
+    expect(outputLines.join("\n")).toContain("[mermaid-repair] request")
+    expect(outputLines.join("\n")).toContain("tools=disabled")
+  })
+
+  test("does not persist a Mermaid repair assistant message when the provider fails", async () => {
+    const baseUrl = await listen(async (request, response) => {
+      if (request.url !== "/v1/chat/completions") {
+        response.writeHead(404).end()
+        return
+      }
+      await collectJson(request)
+      response.writeHead(500, { "content-type": "text/plain" }).end("model unavailable")
+    })
+    const client = directClient(baseUrl, { storageRoot: await tempDir("chipmate-mermaid-repair-failed-storage-") })
+    const session = await client.createSession()
+    await client.appendLocalMessages({
+      sessionID: session.id,
+      messages: [
+        { role: "user", text: "请画 Mermaid 图" },
+        { role: "assistant", text: "```mermaid\ngraph TD\nA --> B\n```" },
+      ],
+    })
+
+    await expect(client.repairMermaidDiagram({
+      sessionID: session.id,
+      messageID: "assistant-original",
+      sourceHash: "fixture-source",
+      source: "graph TD\nA --> B",
+      error: "Mermaid render failed",
+      language: "mermaid",
+    })).rejects.toThrow(/Mermaid repair failed: 500/)
+
+    const messages = await client.getMessages(session.id)
+    expect(messages).toHaveLength(2)
+    expect(messages.some((message) => message.info.mode === "mermaid-repair")).toBe(false)
+  })
+
   test("persists local document-agent history messages without provider calls", async () => {
     const baseUrl = await listen((_request, response) => {
       response.writeHead(500).end("provider should not be called")
@@ -4588,10 +8604,11 @@ describe("DirectAgentClient", () => {
           text: "已生成团队规范：.chipmate/docs/team.docx",
           mode: "doc-agent-local",
           parts: [
-            { type: "text", text: "已生成团队规范：.chipmate/docs/team.docx" },
-            { type: "generatedDocument", path: ".chipmate/docs/team.docx", sourceCount: 2, warningCount: 1 },
-            { type: "docAgentTimeline", title: "本地 Word 生成完成", status: "completed", events: [{ type: "done", title: "完成", status: "completed" }] },
-          ],
+	            { type: "text", text: "已生成团队规范：.chipmate/docs/team.docx" },
+	            { type: "generatedDocument", path: ".chipmate/docs/team.docx", sourceCount: 2, warningCount: 1 },
+	            { type: "diagram", kind: "mermaid", title: "设计流程图", sourceText: "flowchart TD\n  start[Start] --> done[Done]", diagramId: "design-doc-code-flow-1" },
+	            { type: "docAgentTimeline", title: "本地 Word 生成完成", status: "completed", events: [{ type: "done", title: "完成", status: "completed" }] },
+	          ],
         },
       ],
     })
@@ -4599,10 +8616,11 @@ describe("DirectAgentClient", () => {
     const messages = await client.getMessages(session.id)
     expect(messages).toHaveLength(2)
     expect(messages[0]?.info.mode).toBe("doc-agent-local")
-    expect(messages[1]?.parts).toEqual(expect.arrayContaining([
-      expect.objectContaining({ type: "generatedDocument", path: ".chipmate/docs/team.docx" }),
-      expect.objectContaining({ type: "docAgentTimeline", status: "completed" }),
-    ]))
+	    expect(messages[1]?.parts).toEqual(expect.arrayContaining([
+	      expect.objectContaining({ type: "generatedDocument", path: ".chipmate/docs/team.docx" }),
+	      expect.objectContaining({ type: "diagram", kind: "mermaid", sourceText: expect.stringContaining("flowchart TD") }),
+	      expect.objectContaining({ type: "docAgentTimeline", status: "completed" }),
+	    ]))
   })
 
   test("generates and persists model display titles for plugin chat sessions", async () => {
@@ -4799,6 +8817,56 @@ function textPartsForTest(message: { parts: Array<{ type?: unknown; text?: unkno
     .join("")
 }
 
+function minimalWordDocSpecForTest(title = "Test Document") {
+  return {
+    metadata: {
+      title,
+      documentType: "technical-report",
+      language: "zh-CN",
+      generatedAt: "2026-06-28T00:00:00.000Z",
+    },
+    sources: [],
+    sections: [{
+      id: "overview",
+      level: 1,
+      title: "概览",
+      paragraphs: [
+        "这是一个用于测试 WordDocSpec 工具入口的最小文档，包含足够的正文内容以通过本地 DOCX 结构门禁。",
+        "测试重点是验证 create_word_document 能接受对象形式或字符串化 JSON 形式的 spec，并在参数错误时返回可修复诊断。",
+        "该文档不依赖外部资料，sources 可以为空；真实任务中模型仍应根据证据生成更完整的章节、假设和限制。",
+      ],
+    }],
+  }
+}
+
+function documentsSkillForTest(allowedTools: string[]) {
+  return {
+    id: "repo:documents",
+    name: "documents",
+    description: "Create, edit, review, and verify general Word `.docx` documents.",
+    path: "/repo/.agents/skills/documents/SKILL.md",
+    skillRoot: "/repo/.agents/skills/documents",
+    sourceRoot: "/repo/.agents/skills",
+    scope: "workspace",
+    sourceKind: "agents",
+    commandName: "documents",
+    visibility: "on",
+    enabled: true,
+    modelVisible: true,
+    userVisible: true,
+    invalid: false,
+    allowedTools,
+    disableModelInvocation: false,
+    userInvocable: true,
+    compatibility: "",
+    license: "",
+    metadata: { keywords: JSON.stringify(["word", "docx", "Word 文档", "生成*文档"]) },
+    resourceFiles: ["tasks/create_edit_v1.md"],
+    validationErrors: [],
+    validationWarnings: [],
+  }
+}
+
 function tinyPngDataUri() {
   return "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII="
 }
@@ -4986,6 +9054,14 @@ function json(response: http.ServerResponse, status: number, body: unknown) {
   response.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify(body))
 }
 
+function writeChatSse(response: http.ServerResponse, content: string) {
+  response.writeHead(200, { "content-type": "text/event-stream" })
+  response.end([
+    sse({ choices: [{ delta: { content } }] }),
+    "data: [DONE]\n\n",
+  ].join(""))
+}
+
 function sse(body: unknown) {
   return `data: ${JSON.stringify(body)}\n\n`
 }
@@ -4994,4 +9070,41 @@ async function tempDir(prefix: string) {
   const root = join(tmpdir(), `${prefix}${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`)
   await mkdir(root, { recursive: true })
   return root
+}
+
+function extensionContext(storageRoot: string) {
+  return {
+    globalStorageUri: UriShim.file(storageRoot),
+  } as never
+}
+
+async function expectRenderAttemptOrHonestFallback(
+  workspaceRoot: string,
+  payload: { gaps?: string[]; data: { renderCheckResult: { ok: boolean; attempted: boolean; pagePngPaths?: string[]; visualQaStatus?: string; skipReason?: string } } },
+) {
+  expect(payload.data.renderCheckResult.ok).toBe(true)
+  if (payload.data.renderCheckResult.attempted) {
+    expect(payload.data.renderCheckResult.pagePngPaths?.length).toBeGreaterThan(0)
+    for (const pagePngPath of payload.data.renderCheckResult.pagePngPaths ?? []) {
+      expect((await readFile(join(workspaceRoot, pagePngPath))).subarray(0, 8)).toEqual(tinyPngBytes().subarray(0, 8))
+    }
+    return
+  }
+  expect(payload.data.renderCheckResult.visualQaStatus).toBe("skipped")
+  expect(payload.data.renderCheckResult.skipReason).toBeTruthy()
+  expect((payload.gaps ?? []).join("\n")).toMatch(/remote Word render|Remote Word render|page-level visual QA was skipped/i)
+}
+
+function tinyPngBytes() {
+  return Uint8Array.from([
+    0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+    0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
+    0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
+    0x08, 0x06, 0x00, 0x00, 0x00, 0x1f, 0x15, 0xc4,
+    0x89, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x44, 0x41,
+    0x54, 0x78, 0x9c, 0x63, 0xf8, 0x0f, 0x04, 0x00,
+    0x09, 0xfb, 0x03, 0xfd, 0xa7, 0x98, 0x9d, 0xa6,
+    0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e, 0x44,
+    0xae, 0x42, 0x60, 0x82,
+  ])
 }

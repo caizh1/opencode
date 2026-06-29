@@ -324,14 +324,18 @@ describe("ChipMate skills", () => {
     const root = await tempDir("chipmate-skills-resources-")
     workspaceFolders = [{ name: "repo", uri: UriShim.file(root) }]
     await mkdir(join(root, ".agents", "skills", "docs", "references"), { recursive: true })
+    await mkdir(join(root, ".agents", "skills", "docs", "tasks"), { recursive: true })
+    await mkdir(join(root, ".agents", "skills", "docs", "scripts"), { recursive: true })
     await writeFile(join(root, ".agents", "skills", "docs", "references", "guide.md"), "Guide text\n")
+    await writeFile(join(root, ".agents", "skills", "docs", "tasks", "create.md"), "Create workflow\n")
+    await writeFile(join(root, ".agents", "skills", "docs", "scripts", "manifest.json"), JSON.stringify({ helpers: ["create_docx"] }))
     await writeFile(join(root, ".agents", "skills", "docs", "SKILL.md"), [
       "---",
       "name: docs",
       "description: Work with local docs",
       "allowed-tools: [chipmate_read_skill_resource]",
       "---",
-      "Read [the guide](references/guide.md) before answering.",
+      "Read [the guide](references/guide.md), tasks/create.md, and scripts/manifest.json before answering.",
     ].join("\n"))
     await mkdir(join(root, ".agents", "skills", "broken"), { recursive: true })
     await writeFile(join(root, ".agents", "skills", "broken", "SKILL.md"), [
@@ -346,7 +350,7 @@ describe("ChipMate skills", () => {
     const skills = await registry.listSkills()
     expect(skills.find((skill) => skill.name === "docs")).toMatchObject({
       invalid: false,
-      resourceFiles: ["references/guide.md"],
+      resourceFiles: ["references/guide.md", "scripts/manifest.json", "tasks/create.md"],
     })
     expect(skills.find((skill) => skill.name === "broken")).toMatchObject({
       invalid: true,
@@ -356,6 +360,79 @@ describe("ChipMate skills", () => {
     const loaded = await registry.loadSkill("docs")
     expect(renderSkillsForPrompt(loaded ? [loaded] : [], { toolsEnabled: true, exposedToolNames: ["chipmate_read_skill_resource"] })).toContain("chipmate_read_skill_resource")
     expect(renderSkillsForPrompt(loaded ? [loaded] : [], { toolsEnabled: true, exposedToolNames: ["chipmate_read_skill_resource"] })).toContain("references/guide.md")
+    expect(renderSkillsForPrompt(loaded ? [loaded] : [], { toolsEnabled: true, exposedToolNames: ["chipmate_read_skill_resource"] })).toContain("scripts/manifest.json")
+    expect(renderSkillsForPrompt(loaded ? [loaded] : [], { toolsEnabled: true, exposedToolNames: ["chipmate_read_skill_resource"] })).toContain("tasks/create.md")
+  })
+
+  test("uses skill metadata keywords to activate the documents skill for Chinese Word requests", async () => {
+    const root = await tempDir("chipmate-skills-documents-")
+    workspaceFolders = [{ name: "repo", uri: UriShim.file(root) }]
+    await mkdir(join(root, ".agents", "skills", "documents"), { recursive: true })
+    await writeFile(join(root, ".agents", "skills", "documents", "SKILL.md"), [
+      "---",
+      "name: documents",
+      "description: Create, edit, review, and verify general Word `.docx` documents.",
+      "allowed-tools: [create_word_document, inspect_word_document]",
+      "metadata:",
+      "  keywords:",
+      "    - word",
+      "    - docx",
+      "    - Word 文档",
+      "    - 生成文档",
+      "    - 生成*文档",
+      "    - 修改文档",
+      "    - 修改*文档",
+      "---",
+      "Use real Word structures.",
+      "",
+    ].join("\n"))
+
+    const registry = new SkillRegistry(() => ({
+      enabled: [],
+      overrides: {},
+      scanUserSkills: false,
+      scanClaudeSkills: false,
+      maxCatalogBytes: 8000,
+    }))
+    const skills = await registry.enabledSkills()
+
+    expect(selectActiveSkills("请生成一份年度经营分析文档，带目录和表格。", skills)).toEqual([
+      expect.objectContaining({
+        invocationMode: "implicit",
+        skill: expect.objectContaining({ name: "documents" }),
+      }),
+    ])
+    expect(selectActiveSkills("请把这份材料改成 Word 文档。", skills)).toHaveLength(1)
+    expect(selectActiveSkills("请解释 README 文档里写了什么。", skills)).toHaveLength(0)
+  })
+
+  test("activates chip-design-doc only for module-level detailed design requests", async () => {
+    const root = await tempDir("chipmate-skills-design-doc-")
+    workspaceFolders = [{ name: "repo", uri: UriShim.file(root) }]
+    await mkdir(join(root, ".agents", "skills", "chip-design-doc"), { recursive: true })
+    await writeFile(join(root, ".agents", "skills", "chip-design-doc", "SKILL.md"), await readFile(join(process.cwd(), ".agents", "skills", "chip-design-doc", "SKILL.md"), "utf8"))
+
+    const registry = new SkillRegistry(() => ({
+      enabled: [],
+      overrides: {},
+      scanUserSkills: false,
+      scanClaudeSkills: false,
+      maxCatalogBytes: 8000,
+    }))
+    const skills = await registry.enabledSkills()
+    const detailedDesign = selectActiveSkills("帮我生成当前插件 Word 创建流水线机制的详细设计文档。", skills)
+
+    expect(detailedDesign).toEqual([
+      expect.objectContaining({
+        invocationMode: "implicit",
+        skill: expect.objectContaining({
+          name: "chip-design-doc",
+          allowedTools: expect.arrayContaining(["chipmate_render_mermaid_diagram", "create_word_document", "render_word_document"]),
+        }),
+      }),
+    ])
+    expect(selectActiveSkills("解释一下当前函数的设计思路和实现机制。", skills)).toHaveLength(0)
+    expect(selectActiveSkills("这个 Word 文档应该怎么排版更好？", skills)).toHaveLength(0)
   })
 
   test("skill eval fixtures cover explicit, implicit, and non-trigger prompts", async () => {

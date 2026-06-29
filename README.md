@@ -48,7 +48,8 @@ API key 通过命令 `ChipMate: Set ChipMate Provider API Key` 或 ChipMate 设�
 - Tools / Permissions：`chipmate.tools.enabled=false` 时不向模型发送任何 tool schema；开启后按当前 permission mode 执行读、检索、graph、文档和受限文件编辑类工具。
 - Agent Terminal：在 VS Code terminal profile 中提供 ChipMate 终端，shell 命令直接执行，自然语言请求会先规划、展示、确认，再执行；失败后可尝试有限修复。
 - AI 注释：支持为选区、当前函数或工作区改动生成中文注释候选，带 review panel、accept/reject/clear、批量接受和 CodeLens/装饰。
-- Word / Diagram 辅助：支持 `read_docx` 语义读取、`create_word_document` 生成 `.docx` 报告，以及 draw.io / diagrams.net fenced block 的本地渲染和导出。
+- Word / Diagram 辅助：支持 `documents` skill 驱动的通用 Word `.docx` 创建/编辑工作流、`read_docx` 语义读取、`inspect_word_document`/`apply_word_document_edits` 受控编辑、`create_word_document` 生成 preset-aware `.docx` 文档、`chipmate_render_mermaid_diagram` 远端优先/本地兜底生成 Mermaid `.mmd`/`.png` artifact，以及 draw.io / diagrams.net fenced block 的本地渲染和导出。
+- 模块详细设计文档：通过通用 QA/agent flow + `chip-design-doc` skill + 通用 Word/Mermaid 工具完成；用户可以描述子模块、文件、选区、入口符号、机制或流水线，模型先定位范围并收集 CodeGraph/RAG evidence，再生成芯片级详细设计 DOCX。输出当前实现方案、功能清单、主/子业务流程、代码流程、状态机切换表、嵌入 Word 的 Mermaid PNG、Mermaid 图源和 evidence ledger；不会默认对整仓生成。
 - MCP：配置面板保留 Coming Soon 区块；当前版本不启动 MCP server、不安装 artifact、不暴露 MCP 工具。
 
 ## 常用命令
@@ -59,6 +60,7 @@ API key 通过命令 `ChipMate: Set ChipMate Provider API Key` 或 ChipMate 设�
 | `chipmate.newSession` | 新建聊天 session |
 | `chipmate.askSelection` | 对当前选区提问 |
 | `chipmate.askCurrentFile` | 对当前文件提问 |
+| `chipmate.designDoc.generate` | 基于当前文件/选区生成模块级详细设计文档 |
 | `chipmate.addSelectionToContext` | 把选区加入聊天上下文 |
 | `chipmate.addFileToContext` | 把当前文件加入聊天上下文 |
 | `chipmate.clearContext` | 清空手动上下文 |
@@ -223,8 +225,9 @@ Document RAG 使用同一 provider key 和 RAG embedding/rerank 设置。它会�
 开启后，当前可暴露给模型的工具按能力分组：
 
 - Workspace 读与检索：`chipmate_read`、`chipmate_search_text`、`chipmate_read_evidence`、`chipmate_read_skill_resource`。
+- Skill 资源与安全脚本：`chipmate_read_skill_resource`、`chipmate_run_skill_script`；脚本执行只允许 active skill 的 `scripts/manifest.json` 显式 `directExecution: true` 且声明 executable entrypoint 的 helper，并继续走命令权限审批。
 - Code evidence / graph：`chipmate_search_code`、`chipmate_graph_inspect_symbol`、`chipmate_graph_find_references`、`chipmate_graph_callers`、`chipmate_graph_callees`、`chipmate_graph_trace_call_chain`、`chipmate_graph_analyze_impact`、`chipmate_graph_map_module`、`chipmate_graph_find_state_machines`、`chipmate_graph_trace_state_path`。
-- Document / Word：`chipmate_search_documents`、`read_docx`、`create_word_document`。
+- Document / Word：`chipmate_search_documents`、`read_docx`、`inspect_word_document`、`apply_word_document_edits`、`audit_word_document_styles`、`normalize_word_document_styles`、`apply_word_template_styles`、`audit_word_document_fields`、`flatten_word_ref_fields`、`materialize_word_seq_fields`、`compare_word_documents`、`merge_word_documents`、`extract_xlsx_table`、`export_word_table_to_csv`、`chipmate_render_mermaid_diagram`、`create_word_document`。
 - Workspace 创建与精确编辑：`chipmate_create_file`、`chipmate_create_directory`、`chipmate_edit_file`。
 
 `chipmate.permissions.mode` 支持三档：
@@ -271,7 +274,7 @@ Read changed files first. If evidence is missing, use workspace tools when tools
 
 Skill 列表只展示元信息；启用后才把正文注入 prompt。`scripts/`、`references/`、`assets/` 是技能资源目录，动态 `!command` 只作为技能文本里的运行提示，实际执行仍要走工具和权限路径。
 
-显式调用可以在聊天里使用 `$firmware-review` 或 `/firmware-review`。active skill 的 `references/`、`assets/`、`scripts/` 文件不会一次性塞进 prompt；模型需要时只能通过 `chipmate_read_skill_resource` 读取，且脚本不会被自动执行。
+显式调用可以在聊天里使用 `$firmware-review` 或 `/firmware-review`。active skill 的 `references/`、`assets/`、`scripts/` 文件不会一次性塞进 prompt；模型需要时只能通过 `chipmate_read_skill_resource` 读取。脚本不会被自动执行；只有 active skill 的 `scripts/manifest.json` 显式允许 direct execution 并声明 executable entrypoint 时，模型才能通过 `chipmate_run_skill_script` 请求运行，且仍受普通命令权限审批和审计约束。
 
 ## Agent Terminal
 
@@ -303,7 +306,27 @@ AI 注释命令面向代码审阅和注释候选生成：
 文档工具包括：
 
 - `read_docx`：读取本地 `.docx` 的语义结构，返回 heading、段落、列表、表格、heading path 和 bounded previews。
-- `create_word_document`：当完整 `WordDocSpec` 已准备好时，在 workspace 下生成 `.docx` 报告，并返回生成路径、warnings 和渲染质量状态。
+- `inspect_word_document` / `apply_word_document_edits`：先检查现有 `.docx` 并返回可验证 locator，再执行受控编辑；支持新增章节（有序 blocks、段落、rich paragraph、真实 Word 列表、PNG figure/图注/bookmark、表格、callout、brief/key-facts card group、source evidence card group、quote/pull-quote block、code block、true footnote/endnote note runs）、段内精确文本替换、纯文本/rich paragraph 段落替换、段落替换为有序同级结构块（paragraph/rich paragraph/list/PNG figure/table/callout/brief/evidence/quote/code）、段落级纯文本和富文本真实 Word 修订红线、段内真实 Word 修订红线、表格单元格文本真实 Word 修订红线、接受/拒绝全部修订、heading level 修复、表格单元格更新、整表替换、真实合并单元格 `colSpan`/`rowSpan`、表格重复/header row 标记、列表项替换、section page setup 尺寸/方向/边距更新、图片 title/alt metadata 更新、本地 PNG 图片本体替换、Figure/Table caption 文本更新并保留 `SEQ` 字段/bookmark、hyperlink 显示文本/目标 URL/内部 anchor/tooltip 更新、REF/PAGEREF cross-reference 字段和 marker authoring、多段 footnote/endnote 文本更新、段落批注、多段批注正文更新、批注完成标记并同步 commentsExtended 元数据、plain-text/checkbox/dropdown/date SDT 表单字段检查/填充、rich/nested SDT 检查并以 `fillUnsupportedReason` fail closed、简单 VML 文本水印新增到所有已有 header part、检查 document/header/footer VML 文本水印、VML 图片背景和 DrawingML 图片背景并按 locator 移除对应 XML、现有 footnote/endnote 检查与报告、现有图片/图形 placement/关系/content type/replace 支持状态/alt text 检查、现有 Figure/Table caption 检查、现有 hyperlink 文本/目标检查、现有 Word 字段类型/指令/cached text 检查、现有 style catalog 和样式使用量检查、清理全部批注/commentsExtended/commentsIds 元数据、外发前元数据清理、精确可见文本脱敏，以及仅在 native operation 覆盖不了时使用的受控 `patchOoxmlPart` 低层 XML OOXML repair。
+- `audit_word_document_styles` / `normalize_word_document_styles`：审计 `.docx` 中 run-level direct formatting、paragraph spacing/indent 覆盖、字体使用和疑似 heading 未用 Heading style；可生成新的样式规范化副本，默认只清理 run-level 覆盖，paragraph cleanup 和 heading spacing enforcement 需显式选择。
+- `apply_word_template_styles`：把 `.dotx` 或模板 `.docx` 的 `styles.xml`、`theme1.xml`、`fontTable.xml`、`numbering.xml` 套用到目标 `.docx` 的新副本，保留目标正文，并执行结构和渲染检查；可用 `styleAllowlist` 只导入指定模板 style id 及其 basedOn/next/link 依赖。返回 `templateAudit` 报告 style/numbering 冲突、选择性导入策略、模板关系和媒体复制情况；被复制 style/numbering/theme 部件中引用的本地图片关系会连同 media 一起复制，非图片/外部/缺失关系会 fail closed。页数、分页和表格换行可能随模板变化。
+- `audit_word_document_fields` / `flatten_word_ref_fields` / `materialize_word_seq_fields`：审计 Word 字段类型和 stale-field 风险，包括 `TOC`、`PAGE`、`NUMPAGES`、`SEQ`、`REF`、`PAGEREF`；可生成把复杂 `REF` / `PAGEREF` 字段缓存显示文本展平成普通文本的新副本，也可生成保留 live `SEQ` 字段但重算 caption/table/figure 缓存可见编号的新副本，用于稳定 headless 渲染。不会刷新 `PAGE`、`NUMPAGES` 或 `TOC`。
+- `compare_word_documents`：比较两个本地 `.docx`，生成可比较文本 diff，复用 DOCX -> PDF -> page PNG 渲染链路检测变更页，并把 `text-diff.txt`、变更页 before/after PNG、像素高亮 diff PNG、changed-ratio、changed bbox、3x3 changed-region summary、visual severity、risk flags 写入 `.chipmate/docs/diff`；可选 `pixelThreshold` 用于更严格或更宽松地处理抗锯齿/渲染噪声。
+- `merge_word_documents`：把一个本地 `.docx` 的正文 OOXML append 到另一个 `.docx`，保留 base 文档包结构、页眉页脚和最终 section settings；默认拒绝 append 文档中的 drawings/images。显式 `allowDrawings` 时会合并 append body 引用的本地图片 relationship 和 `word/media/*` 部件；hyperlink relationship 会被重映射，style/numbering 使用 base-wins 策略并在 `mergeAudit`/warnings 中报告冲突或 append-only 引用，非图片嵌入对象 relationship 会 fail closed。
+- `extract_xlsx_table` / `export_word_table_to_csv`：`extract_xlsx_table` 从本地 `.xlsx` / `.xlsm` 的简单矩形工作表范围提取 `TableSpec`，供模型放入 `create_word_document` 或 `apply_word_document_edits` 的表格操作；不重算公式、不迁移电子表格样式或合并单元格语义。`export_word_table_to_csv` 按 `inspect_word_document` 返回的 `tableIndex` 把现有 Word 表格导出为 `.chipmate/docs/tables/*.csv` artifact。
+- `chipmate_render_mermaid_diagram`：当模型需要把 Mermaid 图嵌入 Word 或保留图表 artifact 时，先写出 `.chipmate/docs/diagrams/*.mmd`，再优先调用配置的远端 ChipMate render server `/render/mermaid` 生成 PNG；远端不可用或失败时会记录原因并尝试本地 Chrome/Edge fallback。成功时返回 `*.png` 路径、尺寸、FigureSpec-compatible image 字段、render provider/fallback 诊断和聊天内 Mermaid 预览 artifact；不调用在线 Mermaid 服务。
+- `create_word_document`：当完整 `WordDocSpec` 已准备好时，在 workspace 下生成 preset-aware `.docx` 文档，支持 PNG figure 或本地 PNG artifact path、带 cached `SEQ` 编号字段的 Word Caption 图注、figure/table caption bookmark、结构化 rich paragraph、brief/key-facts card group、source evidence card group、quote/pull-quote block、多级 bullet/numbered/checklist Word numbering、definition list、source list、带真实 `gridSpan`/`vMerge` 的合并单元格表格、外部/内部 hyperlink、REF/PAGEREF cross-reference 字段，以及 rich paragraph 文本中的 `{{ref:bookmark|visible text}}` / `{{pageref:bookmark|page text}}` authoring marker 到真实 Word 字段的转换、静态可点击 TOC / Top / Bottom / 返回目录内部导航、true footnote/endnote（`note.text` 换行会生成多段 note body）、plain-text/checkbox/dropdown/date SDT 表单字段和 Word documentProtection 设置；这些 SDT 字段之后可通过 `inspect_word_document` / `fillContentControl` 受控填充。工具会返回生成路径、设计 preset、warnings、结构/a11y/table overflow 检查和 DOCX -> PDF -> page PNG 渲染质量状态，并包含每页 PNG 的视觉摘要（尺寸、ink ratio、content bounds、edge ink）用于发现空白页、裁剪和溢出风险。
+- `inspect_word_document`：读取现有 `.docx` 的段落、表格、批注、plain-text/checkbox/dropdown/date content controls、rich/nested content control fill 支持状态、水印、脚注/尾注（保留多段 note body 换行）、图片、Figure/Table captions、hyperlinks、section/page setup、Word fields、styles，以及真实 Word numbering/list groups；summary 会返回 `trackedChangeTypeCounts` 和 `advancedTrackedChangeWarnings`，用于区分普通插入/删除、move revisions 和 formatting revisions；批注 inspection 会返回多段正文、anchor、`commentsExtended.xml` / `commentsIds.xml` thread metadata（`paraId`、`parentParaId`、`parentCommentId`、`durableId`、`resolvedSource`、`commentsExtendedDone`），列表 inspection 会返回 list kind、level、item count、段落 list membership 和只读 list locator，图片 inspection 会返回 inline/floating placement、embedded/external/missing relationship mode、media target/path/content type、media existence、size、title/alt 和 `replaceSupported` / `replaceUnsupportedReason`，caption inspection 会返回 caption kind、label、cached number、`SEQ` instruction、bookmark 和只读 caption locator。
+- `apply_word_document_edits`：基于 `inspect_word_document` 返回的 locator 生成新 `.docx`，支持按 `insertSection.blocks` 指定顺序插入段落/rich paragraph/真实 Word 列表/PNG figure/表格/callout/brief card group/source evidence card group/quote block/code block；rich paragraph 可写入粗体、斜体、外部 hyperlink、内部 anchor hyperlink、REF/PAGEREF 字段、cross-reference authoring marker 和 true footnote/endnote note runs，note 文本中的换行会写成多段 note body。也支持纯文本段落替换、rich paragraph 段落替换、段落替换为有序同级结构块、段内替换、整段纯文本 tracked change、整段 rich tracked change、跨 run 段内真实 tracked change、`updateTableWithTrackedChange` 表格单元格文本 tracked change、move revision 接受/拒绝、formatting revision fail-closed、`updateHeadingLevel` 标题层级修复、表格单元格更新、`replaceTable` 整表替换为 fixed-layout 表格并支持 `colSpan`/`rowSpan`、`updateTableHeaderRows` 表格重复/header row 标记、`updateList` 列表项替换、`updateSectionPageSetup` 页面尺寸/方向/边距更新、`updateImageAltText` 图片替代文本/标题更新、`replaceImage` 本地 PNG 图片本体替换（仅当 inspection image `replaceSupported` 为 true；外链图、缺失关系、无法解析 media target 或非 PNG media 会给出 unsupported reason）、`updateCaptionText` Figure/Table caption 文本更新并保留 `SEQ` 字段/bookmark、`updateHyperlinkText` hyperlink 显示文本更新、`updateHyperlinkTarget` hyperlink URL/内部 anchor/tooltip 更新、`updateNoteText` 脚注/尾注正文多段更新、批注新增、多段 `updateCommentText` 批注正文更新、`setCommentResolved` 同步 legacy comments 与 existing commentsExtended 状态、`fillSupported` content control 填充、rich/nested content control 拒绝填充并报告原因、水印、修订接受/拒绝、元数据清理、精确文本脱敏，以及 `patchOoxmlPart` 受控 OOXML XML part 补丁。`patchOoxmlPart` 只允许 `documentEnd` locator、XML package part allowlist、精确 `oldText`/`anchor`/`closeTag` 预条件和 `expectedOccurrences`，并禁止 external relationships、macro、OLE、ActiveX 和 embedded binary 引用；补丁后仍执行结构检查与渲染检查。
+
+`documents` skill 还包含 `scripts/manifest.json`，作为 Codex-style helper script catalog。它列出 Codex documents helper script 名称、ChipMate 对应工具或 backlog 项、执行边界和状态；当前 documents catalog 默认是只读 skill resource，模型可通过 `chipmate_read_skill_resource` 读取来选择正确工具。只有未来某个 helper 在 manifest 中显式 opt in direct execution 时，才可通过 `chipmate_run_skill_script` 在 W43 安全边界内执行。
+
+模块详细设计文档 flow 会在用户明确要求“详细设计文档 / 模块设计文档 / 芯片级设计文档”且给出子模块范围时触发。范围可以来自 Chat 中的 `@目录` / `@文件`，也可以来自命令 `ChipMate: Generate Module Detailed Design Document` 对当前文件或选区的上下文。生成结果包括：
+
+- `.docx` 正式文档，包含现有方案、功能详细设计、业务流程、代码流程、状态机迁移表、缺口和证据索引；架构图、业务流程图、代码流程图、状态机图会以 Mermaid 渲染后的 PNG 插入对应章节。
+- `.chipmate/docs/<run-id>/diagrams/*.mmd` Mermaid 图源文件，以及同目录 `*.png` 渲染图像 artifact；聊天界面仍会直接预览 Mermaid 图表。
+- `.chipmate/docs/<run-id>/run-summary.json` 与 `evidence-ledger.json`，用于复核证据覆盖、图表列表和缺失项。
+
+Word 正文不把 Mermaid 语法当作图表主体展示；`.mmd` 是可追溯源文件，`.png` 是 Word 正文使用和人工复核的渲染结果。如果远端 Mermaid render 和本地 Chrome/Edge fallback 都失败，详细设计文档生成会 fail closed，不会降级生成只有 Mermaid 语法的 Word。若远端失败但本地 PNG fallback 成功，最终回答会明确披露 fallback。
 
 这些工具不是通用文件写入器；普通文件创建/编辑应走 `chipmate_create_file`、`chipmate_create_directory`、`chipmate_edit_file` 的权限路径。
 
@@ -317,9 +340,11 @@ bun test
 bun run lint
 bun run compile
 bun run package
+bun run fixtures:docx -- --out /tmp/chipmate-docx-fixtures
 ```
 
 `bun run package` 是交付前必跑的验证入口，会执行 type checking、linting 和 TypeScript compilation。
+`bun run fixtures:docx` 会生成本地 Word/documents 回归 DOCX fixtures 和 `manifest.json`，用于水印、修订、字段/图注等 tricky OOXML smoke，不是普通用户交付物。
 
 补充验证：
 
@@ -403,6 +428,7 @@ bun run vsix -- --release 0.1.2 --build 1
 - `docs/qwen-autocomplete-non-streaming-parity.md`：qwen-direct 与 Continue/kilocode 的非 streaming parity 边界。
 - `docs/completion-qa-retrieval-alignment-report.md`：comment-guided completion 与 QA evidence retrieval 对齐报告。
 - `docs/completion-p1-verification-report.md`：P1 completion fixture 验证报告。
+- `docs/codex-word-parity-matrix.md`：Codex Word/Documents parity 开发计划和逐项打勾矩阵。
 - `docs/windows-offline-ui-test.md`：Windows offline UI runner bundle 的构建、运行、覆盖和报告格式。
 
 ## Git 与发布备注

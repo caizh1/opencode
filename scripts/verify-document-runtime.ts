@@ -47,9 +47,14 @@ const forbiddenPrefixes = [
   "extension/node_modules/canvas/node_modules/node-addon-api/",
   "extension/node_modules/canvas/util/",
 ]
+const forbiddenPackageExtraPatterns = [
+  /^extension\/node_modules\/@types\//,
+  /^extension\/node_modules\/.*\/(?:__mocks__|__tests__|benchmark|benchmarks|coverage|cypress|demo|demos|docs|example|examples|fixture|fixtures|sample|samples)\//,
+]
 const unexpected = [
   ...forbidden.filter((entry) => entries.has(entry)),
   ...Array.from(entries).filter((entry) => forbiddenPrefixes.some((prefix) => entry.startsWith(prefix))),
+  ...Array.from(entries).filter((entry) => forbiddenPackageExtraPatterns.some((pattern) => pattern.test(entry))),
 ]
 if (unexpected.length > 0) {
   console.error(`Document runtime verification failed: non-runtime package files were included: ${unexpected.slice(0, 20).join(", ")}`)

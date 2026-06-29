@@ -1,5 +1,5 @@
 import type { DrawioContainerSpec, DrawioDiagramSpec, DrawioEdgeSpec, DrawioNodeSpec, DrawioStyleInput } from "./drawio-diagram-generator"
-import type { DiagramIr } from "./diagram-ir"
+import type { DiagramIr, DiagramIrVisualPlan, DiagramIrVisualPlanBus, DiagramIrVisualPlanLegendItem } from "./diagram-ir"
 
 export type DiagramDesignProfile =
   | "flow"
@@ -32,6 +32,20 @@ export type VisualPlanEdge = {
   edgeKind: string
   pathRole: string
   labelPriority: "high" | "medium" | "low"
+  visibility?: "line" | "callout" | "legend"
+  rail?: "left" | "right" | "top" | "bottom"
+}
+
+export type VisualPlanMainBackbone = {
+  nodes: string[]
+  edges: string[]
+  direction?: string
+}
+
+export type VisualPlanLegend = {
+  position: "right" | "bottom"
+  title: string
+  items: DiagramIrVisualPlanLegendItem[]
 }
 
 export type VisualQualityGate = {
@@ -39,6 +53,10 @@ export type VisualQualityGate = {
   edgeLabelRepairs: number
   legendItems: number
   labelSanitizationRepairs: number
+  edgeVisibilityRepairs: number
+  visibleEdges: number
+  calloutEdges: number
+  legendEdges: number
   edgeOverlapRepairs: number
   edgePassThroughRepairs: number
   repairPasses: number
@@ -48,6 +66,11 @@ export type VisualQualityGate = {
 export type VisualPlan = {
   compilerVersion: "diagram-design-compiler/v1"
   profile: DiagramDesignProfile
+  layoutProfile?: string
+  styleHints?: Record<string, unknown>
+  mainBackbone?: VisualPlanMainBackbone
+  legend?: VisualPlanLegend
+  buses?: DiagramIrVisualPlanBus[]
   nodes: VisualPlanNode[]
   edges: VisualPlanEdge[]
   qualityGate: VisualQualityGate
@@ -68,11 +91,17 @@ type MutableSpec = DrawioDiagramSpec & {
 
 type DesignContext = {
   profile: DiagramDesignProfile
+  edgeVisibilityPolicy: "readability-first" | "show-all-edges"
   warnings: string[]
   notes: Array<{ id: string; label: string }>
+  explicitVisualPlan?: DiagramIrVisualPlan
   textOverflowRepairs: number
   edgeLabelRepairs: number
   labelSanitizationRepairs: number
+  edgeVisibilityRepairs: number
+  visibleEdges: number
+  calloutEdges: number
+  legendEdges: number
   nodeSerial: number
   edgeSerial: number
 }
@@ -117,14 +146,21 @@ export function compileDiagramDesign(input: {
 }): DiagramDesignCompilerResult {
   const warnings = input.warnings ?? []
   const spec = cloneSpec(input.spec) as MutableSpec
-  const profile = profileFor(spec, input.diagramIr)
+  const explicitVisualPlan = input.diagramIr?.visualPlan ?? spec.visualPlan
+  const profile = profileFor(spec, input.diagramIr, explicitVisualPlan)
   const context: DesignContext = {
     profile,
+    edgeVisibilityPolicy: edgeVisibilityPolicyFor(input.diagramIr),
     warnings,
     notes: [],
+    explicitVisualPlan,
     textOverflowRepairs: 0,
     edgeLabelRepairs: 0,
     labelSanitizationRepairs: 0,
+    edgeVisibilityRepairs: 0,
+    visibleEdges: 0,
+    calloutEdges: 0,
+    legendEdges: 0,
     nodeSerial: 0,
     edgeSerial: 0,
   }
@@ -137,14 +173,27 @@ export function compileDiagramDesign(input: {
   }
   spec.nodes = compileNodes(spec.nodes ?? [], context)
   spec.edges = compileEdges(spec.edges ?? [], context)
+  applyVisualPlanEdgeVisibility(spec, context)
+  applyVisualPlanNodeVisibility(spec, context)
   spec.containers = compileContainers(spec.containers ?? [], context)
   spec.groups = compileContainers(spec.groups ?? [], context)
   spec.swimlanes = compileContainers(spec.swimlanes ?? [], context)
-  attachDesignNotes(spec, context)
+  const legend = visualLegendFor(context)
 
   const visualPlan: VisualPlan = {
     compilerVersion: "diagram-design-compiler/v1",
     profile,
+    layoutProfile: explicitVisualPlan?.layoutProfile,
+    styleHints: explicitVisualPlan?.styleHints,
+    mainBackbone: explicitVisualPlan?.mainBackbone
+      ? {
+        nodes: explicitVisualPlan.mainBackbone.nodes ?? [],
+        edges: explicitVisualPlan.mainBackbone.edges ?? [],
+        direction: explicitVisualPlan.mainBackbone.direction,
+      }
+      : undefined,
+    legend,
+    buses: explicitVisualPlan?.buses,
     nodes: (spec.nodes ?? []).map((node) => ({
       id: stringValue(node.id) || stringValue(node.label) || "node",
       label: stringValue(node.label) || stringValue(node.text),
@@ -158,12 +207,18 @@ export function compileDiagramDesign(input: {
       edgeKind: stringValue((edge as Record<string, unknown>).edgeKind) || "control",
       pathRole: stringValue((edge as Record<string, unknown>).pathRole) || "primary",
       labelPriority: labelPriorityFor(edge, "medium"),
+      visibility: edgeVisibility(edge),
+      rail: railFor(edge),
     })),
     qualityGate: {
       textOverflowRepairs: context.textOverflowRepairs,
       edgeLabelRepairs: context.edgeLabelRepairs,
-      legendItems: context.notes.length,
+      legendItems: legend?.items.length ?? 0,
       labelSanitizationRepairs: context.labelSanitizationRepairs,
+      edgeVisibilityRepairs: context.edgeVisibilityRepairs,
+      visibleEdges: context.visibleEdges,
+      calloutEdges: context.calloutEdges,
+      legendEdges: context.legendEdges,
       edgeOverlapRepairs: 0,
       edgePassThroughRepairs: 0,
       repairPasses: 0,
@@ -174,7 +229,9 @@ export function compileDiagramDesign(input: {
   return { spec, visualPlan, warnings }
 }
 
-function profileFor(spec: DrawioDiagramSpec, diagramIr: DiagramIr | undefined): DiagramDesignProfile {
+function profileFor(spec: DrawioDiagramSpec, diagramIr: DiagramIr | undefined, explicitVisualPlan: DiagramIrVisualPlan | undefined): DiagramDesignProfile {
+  const explicitProfile = profileFromKey(stringValue(explicitVisualPlan?.layoutProfile))
+  if (explicitProfile) return explicitProfile
   const raw = normalizeKey(spec.diagramType || diagramIr?.diagramType || "")
   if (raw === "architecture" || raw === "arch") return "architecture"
   if (raw === "businessflow" || raw === "business-flow") return shouldUseEmbeddedFsmProfile(spec, diagramIr) ? "embedded-fsm-flow" : "business-flow"
@@ -185,6 +242,20 @@ function profileFor(spec: DrawioDiagramSpec, diagramIr: DiagramIr | undefined): 
   if ((spec.containers?.length ?? 0) > 0 || (spec.groups?.length ?? 0) > 0) return "architecture"
   if ((spec.swimlanes?.length ?? 0) > 0) return "business-flow"
   return "flow"
+}
+
+function profileFromKey(input: string): DiagramDesignProfile | undefined {
+  const key = normalizeKey(input)
+  if (!key) return undefined
+  if (key === "embeddedfsmflow" || key === "embedded-fsm-flow" || key === "statebackbone" || key === "state-backbone") return "embedded-fsm-flow"
+  if (key === "businessflow" || key === "business-flow") return "business-flow"
+  if (key === "codeflow" || key === "code-flow") return "code-flow"
+  if (key === "statemachine" || key === "state-machine") return "state-machine"
+  if (key === "architecture") return "architecture"
+  if (key === "socblock" || key === "soc-block") return "soc-block"
+  if (key === "sequence") return "sequence"
+  if (key === "flow" || key === "flowchart") return "flow"
+  return undefined
 }
 
 function ensureLayout(layout: DrawioDiagramSpec["layout"], profile: DiagramDesignProfile): DrawioDiagramSpec["layout"] {
@@ -215,6 +286,27 @@ function shouldUseEmbeddedFsmProfile(spec: DrawioDiagramSpec, diagramIr: Diagram
     signals.has("transition-edges") &&
     (signals.has("module-boundaries") || signals.has("module-nodes") || signals.has("state-machine-hint")) &&
     signals.size >= 3
+}
+
+function edgeVisibilityPolicyFor(diagramIr: DiagramIr | undefined): DesignContext["edgeVisibilityPolicy"] {
+  const hintRecords = [
+    diagramIr?.layoutHints,
+    diagramIr?.styleHints,
+    diagramIr?.semanticHints,
+  ]
+  for (const hints of hintRecords) {
+    const record = asRecord(hints)
+    if (!record) continue
+    if (truthyHint(record.showAllEdges) || truthyHint(record.fullEdges) || truthyHint(record.renderAllEdges)) return "show-all-edges"
+    const raw = stringValue(record.edgeVisibilityPolicy) ||
+      stringValue(record.edgeVisibility) ||
+      stringValue(record.edgeMode) ||
+      stringValue(record.lineMode)
+    const key = normalizeKey(raw)
+    if (key.includes("showall") || key.includes("alllines") || key.includes("fulledge") || key.includes("fulledge") || key.includes("exhaustive")) return "show-all-edges"
+    if (key.includes("readability") || key.includes("readable") || key.includes("callout") || key.includes("legend")) return "readability-first"
+  }
+  return "readability-first"
 }
 
 function promoteModuleNodesToContainers(spec: MutableSpec, context: DesignContext) {
@@ -293,49 +385,171 @@ function compileEdges(edges: DrawioEdgeSpec[], context: DesignContext): DrawioEd
     const pathRole = pathRoleFor(edge, edgeKind, index)
     const labelPriority = labelPriorityFor(edge, defaultLabelPriority(pathRole, edgeKind, context.profile))
     const shaped = shapeEdgeLabel(label, edge, labelPriority, context)
+    const presentation = edgePresentationFor(edge, context)
+    const presentationStyle = styleFromPresentation(presentation)
     return {
       ...edge,
-      label: shaped.label,
-      drawioStyle: mergeStyle(edgeStyle(edgeKind, pathRole, labelPriority, context.profile), edge.drawioStyle ?? edge.style),
+      label: presentation?.marker || shaped.label,
+      drawioStyle: mergeStyle(edgeStyle(edgeKind, pathRole, labelPriority, context.profile), presentationStyle, presentation?.drawioStyle ?? presentation?.style, edge.drawioStyle ?? edge.style),
       edgeKind,
       pathRole,
       labelPriority,
+      presentationMode: presentation ? presentationModeFor(presentation) : edge.presentationMode,
+      rail: presentation ? railForPresentation(presentation) : edge.rail,
+      marker: presentation?.marker,
+      visibility: presentationModeFor(presentation) === "legend" ? "legend" : "line",
     } as DrawioEdgeSpec
   })
 }
 
-function attachDesignNotes(spec: MutableSpec, context: DesignContext) {
-  if (!context.notes.length) return
-  const containerId = "visual-notes"
-  const existingContainers = spec.containers ?? []
-  spec.containers = [
-    ...existingContainers,
-    {
-      id: containerId,
-      label: "Legend / Details",
-      width: 300,
-      height: Math.max(100, 48 + context.notes.length * 42),
-      drawioStyle: "fillColor=#ffffff;strokeColor=#94a3b8;dashed=1;rounded=1;fontSize=12;",
-    },
+function edgePresentationFor(edge: DrawioEdgeSpec, context: DesignContext) {
+  const edgeId = stringValue(edge.id)
+  return edgeId ? context.explicitVisualPlan?.edgePresentation?.[edgeId] : undefined
+}
+
+function presentationModeFor(presentation: ReturnType<typeof edgePresentationFor>): "line" | "rail" | "legend" {
+  const mode = normalizeKey(stringValue(presentation?.mode))
+  if (mode === "rail") return "rail"
+  if (mode === "legend") return "legend"
+  return "line"
+}
+
+function railForPresentation(presentation: ReturnType<typeof edgePresentationFor>): "left" | "right" | "top" | "bottom" | undefined {
+  const rail = normalizeKey(stringValue(presentation?.rail))
+  if (rail === "left" || rail === "right" || rail === "top" || rail === "bottom") return rail
+  return undefined
+}
+
+function styleFromPresentation(presentation: ReturnType<typeof edgePresentationFor>): DrawioStyleInput | undefined {
+  const mode = presentationModeFor(presentation)
+  if (mode !== "rail") return undefined
+  return "dashed=1;strokeColor=#64748b;fontColor=#64748b;"
+}
+
+function addVisualPlanLegendItem(edge: DrawioEdgeSpec, context: DesignContext) {
+  const presentation = edgePresentationFor(edge, context)
+  const edgeId = stringValue(edge.id)
+  const marker = stringValue(presentation?.marker) || stringValue(edge.marker) || `[E${++context.edgeSerial}]`
+  const label = stringValue(presentation?.label) || stringValue(presentation?.detail) || sanitizeVisibleLabel(stringValue(edge.text) || stringValue(edge.label), context)
+  context.notes.push({
+    id: `visual-plan-edge-${edgeId || context.edgeSerial}`,
+    label: `${marker} ${label || edgeId || "relationship"}`,
+  })
+}
+
+function addVisualPlanNodeLegendItem(node: DrawioNodeSpec, context: DesignContext) {
+  const nodeId = stringValue(node.id)
+  const label = sanitizeVisibleLabel(stringValue(node.text) || stringValue(node.label) || nodeId, context)
+  context.notes.push({
+    id: `visual-plan-node-${nodeId || ++context.nodeSerial}`,
+    label: label || nodeId || "unconnected item",
+  })
+}
+
+function applyVisualPlanEdgeVisibility(spec: MutableSpec, context: DesignContext) {
+  const edges = spec.edges ?? []
+  context.visibleEdges = edges.length
+  if (!edges.length) return
+  if (context.explicitVisualPlan?.edgePresentation) {
+    const visible = edges.filter((edge) => edge.presentationMode !== "legend")
+    const hidden = edges.filter((edge) => edge.presentationMode === "legend")
+    if (!suppressAutoLegend(context)) {
+      for (const edge of hidden) addVisualPlanLegendItem(edge, context)
+    }
+    spec.edges = visible
+    context.visibleEdges = visible.length
+    context.legendEdges = hidden.length
+    context.calloutEdges = hidden.length
+    context.edgeVisibilityRepairs = hidden.length
+    if (hidden.length) {
+      warn(context, suppressAutoLegend(context)
+        ? `Design compiler omitted ${hidden.length} model-authored hidden edge(s) from the SoC canvas because visible legend generation was not requested.`
+        : `Design compiler rendered ${hidden.length} model-authored VisualPlan legend edge(s) in Legend / Evidence instead of drawing them as lines.`)
+    }
+    return
+  }
+  if (context.profile !== "embedded-fsm-flow") return
+  if (context.edgeVisibilityPolicy === "show-all-edges") {
+    warn(context, "Design compiler kept all embedded-FSM edges as visible lines because edgeVisibilityPolicy is show-all-edges.")
+    return
+  }
+  warn(context, "Design compiler did not infer embedded-FSM edge visibility because no VisualPlan edgePresentation was provided; model/skill should mark line, rail, or legend for dense diagrams.")
+}
+
+function suppressAutoLegend(context: DesignContext) {
+  const styleHints = asRecord(context.explicitVisualPlan?.styleHints)
+  return context.profile === "soc-block" || truthyHint(styleHints?.suppressAutoLegend)
+}
+
+function applyVisualPlanNodeVisibility(spec: MutableSpec, context: DesignContext) {
+  if (context.profile === "soc-block") return
+  if (!context.explicitVisualPlan?.edgePresentation) return
+  const nodes = spec.nodes ?? []
+  if (!nodes.length) return
+  const visibleNodeIds = new Set<string>()
+  for (const id of context.explicitVisualPlan.mainBackbone?.nodes ?? []) {
+    if (id) visibleNodeIds.add(id)
+  }
+  for (const edge of spec.edges ?? []) {
+    const source = stringValue(edge.source) || stringValue(edge.from)
+    const target = stringValue(edge.target) || stringValue(edge.to)
+    if (source) visibleNodeIds.add(source)
+    if (target) visibleNodeIds.add(target)
+  }
+  const kept: DrawioNodeSpec[] = []
+  let hidden = 0
+  for (const node of nodes) {
+    const nodeId = stringValue(node.id)
+    if (!nodeId || visibleNodeIds.has(nodeId) || shouldKeepIsolatedNodeVisible(node)) {
+      kept.push(node)
+      continue
+    }
+    addVisualPlanNodeLegendItem(node, context)
+    hidden += 1
+  }
+  if (!hidden) return
+  spec.nodes = kept
+  context.edgeVisibilityRepairs += hidden
+  warn(context, `Design compiler moved ${hidden} non-backbone node(s) with no visible incident edges into Legend / Evidence instead of rendering isolated boxes.`)
+}
+
+function shouldKeepIsolatedNodeVisible(node: DrawioNodeSpec) {
+  const record = node as Record<string, unknown>
+  if (truthyHint(record.keepVisible) || truthyHint(record.allowIsolated)) return true
+  const visibility = normalizeKey(stringValue(record.visibility) || stringValue(record.presentationMode))
+  if (visibility === "line" || visibility === "visible" || visibility === "callout") return true
+  const role = normalizeKey(stringValue(record.visualRole) || stringValue(record.role))
+  return role === "annotation" || role === "note" || role === "evidencenote" || role === "legendnote"
+}
+
+function edgeVisibility(edge: DrawioEdgeSpec): VisualPlanEdge["visibility"] {
+  const key = normalizeKey(stringValue((edge as Record<string, unknown>).visibility))
+  if (key === "callout") return "callout"
+  if (key === "legend") return "legend"
+  if (normalizeKey(stringValue(edge.presentationMode)) === "legend") return "legend"
+  return "line"
+}
+
+function railFor(edge: DrawioEdgeSpec): VisualPlanEdge["rail"] {
+  const rail = normalizeKey(stringValue(edge.rail))
+  if (rail === "left" || rail === "right" || rail === "top" || rail === "bottom") return rail
+  return undefined
+}
+
+function visualLegendFor(context: DesignContext): VisualPlanLegend | undefined {
+  const explicitLegend = context.explicitVisualPlan?.legend
+  const items: DiagramIrVisualPlanLegendItem[] = [
+    ...(explicitLegend?.items ?? []),
+    ...context.notes.map((note) => ({ id: note.id, label: note.label })),
   ]
-  spec.nodes = [
-    ...(spec.nodes ?? []),
-    ...context.notes.slice(0, 12).map((note, index) => ({
-      id: note.id,
-      label: shapeCompactLabel(note.label, 180, 30, 4),
-      shape: "note",
-      parent: containerId,
-      x: 20,
-      y: 44 + index * 42,
-      width: 250,
-      height: 34,
-      drawioStyle: "fillColor=#fefce8;strokeColor=#d97706;fontSize=10;spacing=6;",
-      visualRole: "legend-note",
-      importance: 0.2,
-      textParts: { title: note.label },
-    } as DrawioNodeSpec)),
-  ]
-  warn(context, `Design compiler moved ${context.notes.length} long label/detail item(s) into a legend to protect diagram readability.`)
+  if (!items.length) return undefined
+  if (context.notes.length) warn(context, `Design compiler rendered ${context.notes.length} model-authored VisualPlan legend edge(s) in Legend / Evidence.`)
+  const position = normalizeKey(stringValue(explicitLegend?.position)) === "bottom" ? "bottom" : "right"
+  return {
+    position,
+    title: stringValue(explicitLegend?.title) || "Legend / Evidence",
+    items,
+  }
 }
 
 function shapeNodeLabel(parts: VisualTextParts, context: DesignContext) {
@@ -345,11 +559,7 @@ function shapeNodeLabel(parts: VisualTextParts, context: DesignContext) {
   const label = [title, subtitle, meta].filter(Boolean).join("\n")
   if (parts.detail || weightedTextLength(parts.title) > 54 || weightedTextLength(parts.subtitle ?? "") > 44) {
     context.textOverflowRepairs += 1
-    if (context.notes.length < 12) {
-      const noteId = `visual-note-node-${++context.nodeSerial}`
-      context.notes.push({ id: noteId, label: `[N${context.nodeSerial}] ${[parts.title, parts.subtitle, parts.meta, parts.detail].filter(Boolean).join(" | ")}` })
-    }
-    return { label: `${label}\n[N${context.nodeSerial}]` }
+    return { label }
   }
   return { label }
 }
@@ -361,11 +571,6 @@ function shapeEdgeLabel(label: string, edge: DrawioEdgeSpec, priority: VisualPla
   if (weightedTextLength(clean) <= maxWeight) return { label: shapeCompactLabel(clean, 52, maxWeight, 1) }
   context.edgeLabelRepairs += 1
   const marker = `[E${++context.edgeSerial}]`
-  if (context.notes.length < 12) {
-    const source = stringValue(edge.source) || stringValue(edge.from)
-    const target = stringValue(edge.target) || stringValue(edge.to)
-    context.notes.push({ id: `visual-note-edge-${context.edgeSerial}`, label: `${marker} ${source}->${target}: ${clean}` })
-  }
   return { label: marker }
 }
 
@@ -593,10 +798,7 @@ function weightedTextLength(label: string) {
 
 function isStateLikeNode(node: Record<string, unknown>) {
   const role = normalizeKey(stringValue(node.visualRole) || stringValue(node.role) || stringValue(node.type) || stringValue(node.shape))
-  const label = normalizeKey(stringValue(node.label) || stringValue(node.title) || stringValue(node.text) || stringValue(node.id))
-  return role.includes("state") ||
-    role.includes("fsm") ||
-    /(?:^|[-_])(idle|wait|dispatch|complete|done|busy|error|ready|reclaim|flush|scan|folding|prepare|parity)(?:$|[-_])/.test(label)
+  return role.includes("state") || role.includes("fsm")
 }
 
 function isModuleLikeNode(node: Record<string, unknown>) {

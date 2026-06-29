@@ -11,6 +11,7 @@ import {
   generatedExampleContractMismatch,
   inferSemanticKindFromText,
 } from "./CCodingGuidelineSemanticRegistry"
+import { plainTableRows } from "./TableSpecUtils"
 
 export type CRuleSemanticKind =
   | "file-layout"
@@ -481,7 +482,7 @@ function sourceBlockText(block: SourceBackedBlock) {
     block.title ?? "",
     block.text ?? "",
     block.items?.join("\n") ?? "",
-    block.table ? [block.table.caption ?? "", block.table.headers.join(" | "), ...block.table.rows.map((row) => row.join(" | "))].join("\n") : "",
+    block.table ? [block.table.caption ?? "", block.table.headers.join(" | "), ...plainTableRows(block.table).map((row) => row.join(" | "))].join("\n") : "",
     block.codeBlock?.code ?? "",
   ].filter(Boolean).join("\n")
 }

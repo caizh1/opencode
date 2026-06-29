@@ -84,7 +84,7 @@ const AGENTS_SKILL_ROOT = ".agents/skills"
 const CLAUDE_SKILL_ROOT = ".claude/skills"
 const SKILL_FILE = "SKILL.md"
 const CATALOG_DEFAULT_MAX_BYTES = 8000
-const RESOURCE_DIRS = ["references", "assets", "scripts"] as const
+const RESOURCE_DIRS = ["references", "assets", "scripts", "tasks"] as const
 const VALID_TOOL_NAME = /^[A-Za-z0-9_.:-]+$/
 
 export const SKILL_FILE_NAME = SKILL_FILE
@@ -514,8 +514,61 @@ function matchesSkillID(skill: SkillMetadata, id: string) {
 function skillMatchesPrompt(skill: SkillMetadata, userText: string) {
   const text = userText.toLowerCase()
   if (text.includes(skill.name.toLowerCase()) || text.includes(skill.commandName.toLowerCase())) return true
+  const compactText = compactKeywordText(userText)
+  for (const keyword of skillMetadataKeywords(skill)) {
+    if (keywordMatchesText(compactText, keyword)) return true
+  }
   const tokens = [...new Set(`${skill.name} ${skill.description}`.toLowerCase().split(/[^a-z0-9_]+/).filter((token) => token.length >= 5))]
   return tokens.some((token) => text.includes(token))
+}
+
+function keywordMatchesText(compactText: string, keyword: string) {
+  const compactKeyword = compactKeywordText(keyword)
+  if (!compactKeyword.includes("*")) return compactText.includes(compactKeyword)
+  const segments = compactKeyword.split("*").filter(Boolean)
+  if (segments.length === 0) return false
+  let offset = 0
+  for (const segment of segments) {
+    const index = compactText.indexOf(segment, offset)
+    if (index < 0) return false
+    offset = index + segment.length
+  }
+  return true
+}
+
+function skillMetadataKeywords(skill: SkillMetadata) {
+  const rawValues = [
+    skill.metadata.keywords,
+    skill.metadata.keyword,
+    skill.metadata.triggers,
+    skill.metadata.triggerKeywords,
+  ].filter(Boolean)
+  const keywords = new Set<string>()
+  for (const raw of rawValues) {
+    for (const item of splitMetadataKeywords(raw)) {
+      const clean = item.trim()
+      if (clean.length >= 2) keywords.add(clean)
+    }
+  }
+  return [...keywords]
+}
+
+function splitMetadataKeywords(raw: string) {
+  const trimmed = raw.trim()
+  if (!trimmed) return []
+  if (trimmed.startsWith("[")) {
+    try {
+      const parsed = JSON.parse(trimmed)
+      if (Array.isArray(parsed)) return parsed.map((item) => String(item))
+    } catch {
+      // Fall through to delimiter-based parsing.
+    }
+  }
+  return trimmed.split(/[,;\n|]/)
+}
+
+function compactKeywordText(input: string) {
+  return input.toLowerCase().replace(/\s+/g, "")
 }
 
 function trimCatalog(lines: string[], maxBytes: number) {

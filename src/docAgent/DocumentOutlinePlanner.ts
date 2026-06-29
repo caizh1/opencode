@@ -132,7 +132,7 @@ function baseSections(input: { pack: EvidencePack; rules: RuleCardSpec[]; plan?:
         bullets: [
           "本报告基于用户提供的本地 Word 资料，不代表公开规范的完整授权文本。",
           "若外部资料为授权规范整理稿，应由团队确认其使用范围和版权边界。",
-          "目录页码需要用户在 Word 中更新域后生成。",
+          "Word-native 目录页码可通过 refresh_word_native_fields 或在 Word 中更新域。",
         ],
       },
       {

@@ -41,6 +41,7 @@ const REL_TYPES = {
   styles: "http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles",
   header: "http://schemas.openxmlformats.org/officeDocument/2006/relationships/header",
   footer: "http://schemas.openxmlformats.org/officeDocument/2006/relationships/footer",
+  numbering: "http://schemas.openxmlformats.org/officeDocument/2006/relationships/numbering",
 }
 
 export class DocxRenderQualityGate {
@@ -86,9 +87,10 @@ export class DocxRenderQualityGate {
     if (stylesXml && !/w:styleId="Heading3"[\s\S]*w:name w:val="heading 3"/.test(stylesXml)) issues.push(error("missing-heading3-style", "Generated DOCX is missing Heading 3 style."))
     if (documentXml && !documentXml.includes("<w:tbl>")) issues.push(warning("missing-tables", "Generated DOCX does not contain tables."))
     if (documentXml) issues.push(...checkTableGeometry(documentXml))
+    if (documentXml) issues.push(...checkAccessibility(documentXml))
     if (documentXml) issues.push(...checkDocumentXmlOrdering(documentXml))
     if (stylesXml) issues.push(...checkStylesXmlOrdering(stylesXml))
-    if (documentXml && !/(References|参考资料)/.test(documentXml)) issues.push(error("missing-references-section", "Generated DOCX does not contain a References section."))
+    if (documentXml && !/(References|参考资料)/.test(documentXml)) issues.push(warning("missing-references-section", "Generated DOCX does not contain a References section. This is acceptable for non-source-backed documents."))
     if (documentXml && strippedText(documentXml).length < 200) issues.push(error("empty-body", "Generated DOCX body is empty or too short."))
     return issues
   }
@@ -211,6 +213,7 @@ function checkDocumentRelationships(documentRelsXml: string, entryPaths: string[
   const styles = rels.find((rel) => rel.Type === REL_TYPES.styles)
   const header = rels.find((rel) => rel.Type === REL_TYPES.header)
   const footer = rels.find((rel) => rel.Type === REL_TYPES.footer)
+  const numbering = rels.find((rel) => rel.Type === REL_TYPES.numbering)
   if (!styles || resolveRelationshipTarget("word", styles.Target ?? "") !== "word/styles.xml") {
     issues.push(error("missing-styles-relationship", "Generated DOCX document relationships must point to word/styles.xml."))
   }
@@ -227,6 +230,9 @@ function checkDocumentRelationships(documentRelsXml: string, entryPaths: string[
       if (!relationshipIds.has(id)) {
         issues.push(error("missing-document-relationship-id", `Generated DOCX document XML references missing relationship id: ${id}.`))
       }
+    }
+    if (/<w:numPr\b/.test(documentXml) && (!numbering || resolveRelationshipTarget("word", numbering.Target ?? "") !== "word/numbering.xml")) {
+      issues.push(error("missing-numbering-relationship", "Generated DOCX uses real list numbering but document relationships do not point to word/numbering.xml."))
     }
   }
   return issues
@@ -333,6 +339,100 @@ function checkTableGeometry(documentXml: string) {
   if (missingCellWidths.length) {
     issues.push(error("missing-table-cell-widths", "Generated DOCX table cells must include DXA widths."))
   }
+  issues.push(...checkTableOverflowRisks(documentXml, tables))
+  return issues
+}
+
+function checkTableOverflowRisks(documentXml: string, tables: string[]) {
+  const issues: QualityIssue[] = []
+  const usableWidth = documentUsableWidthTwips(documentXml)
+  tables.forEach((table, index) => {
+    const tableNumber = index + 1
+    const tableWidth = dxaWidthFromTag(table.match(/<w:tblW\b[^>]*\/?>/)?.[0])
+    const gridWidths = [...table.matchAll(/<w:gridCol\b[^>]*\/?>/g)]
+      .map((match) => dxaWidthFromTag(match[0]))
+      .filter((width): width is number => width !== undefined)
+    const gridWidth = gridWidths.reduce((sum, width) => sum + width, 0)
+    const effectiveWidth = gridWidth || tableWidth
+    if (usableWidth && effectiveWidth && effectiveWidth > usableWidth + 80) {
+      issues.push(warning("table-overflow-risk", `Generated DOCX table ${tableNumber} width ${effectiveWidth} DXA exceeds usable page width ${usableWidth} DXA; reduce columns, adjust ratios, or split the table.`))
+    }
+    if (tableWidth && gridWidth && Math.abs(tableWidth - gridWidth) > 80) {
+      issues.push(warning("table-overflow-risk", `Generated DOCX table ${tableNumber} tblW (${tableWidth} DXA) does not match tblGrid total (${gridWidth} DXA); Word may reflow columns unpredictably.`))
+    }
+    if (gridWidths.length > 6) {
+      issues.push(warning("table-overflow-risk", `Generated DOCX table ${tableNumber} has ${gridWidths.length} columns; dense tables may compress in Word/PDF render output.`))
+    }
+    const longCells = tableCellTexts(table).filter((text) => text.length > 280 || text.split(/\r?\n/).length > 5)
+    if (longCells.length) {
+      issues.push(warning("table-overflow-risk", `Generated DOCX table ${tableNumber} contains long prose-heavy cells; use prose, bullets, callouts, or split rows when content is not comparable row/column data.`))
+    }
+  })
+  return issues
+}
+
+function documentUsableWidthTwips(documentXml: string) {
+  const sectionProperties = documentXml.match(/<w:sectPr\b[\s\S]*?<\/w:sectPr>/g)?.at(-1)
+  if (!sectionProperties) return undefined
+  const pageSize = parseXmlAttributes(sectionProperties.match(/<w:pgSz\b[^>]*\/?>/)?.[0] ?? "")
+  const margins = parseXmlAttributes(sectionProperties.match(/<w:pgMar\b[^>]*\/?>/)?.[0] ?? "")
+  const pageWidth = numberAttr(pageSize, "w")
+  if (!pageWidth) return undefined
+  const left = numberAttr(margins, "left") ?? 1440
+  const right = numberAttr(margins, "right") ?? 1440
+  const gutter = numberAttr(margins, "gutter") ?? 0
+  return Math.max(0, pageWidth - left - right - gutter)
+}
+
+function dxaWidthFromTag(tag: string | undefined) {
+  if (!tag) return undefined
+  const attrs = parseXmlAttributes(tag)
+  const type = attrs["w:type"] ?? attrs.type
+  if (type && type !== "dxa") return undefined
+  return numberAttr(attrs, "w")
+}
+
+function numberAttr(attrs: Record<string, string>, localName: string) {
+  const raw = attrs[`w:${localName}`] ?? attrs[localName]
+  if (!raw) return undefined
+  const parsed = Number(raw)
+  return Number.isFinite(parsed) ? parsed : undefined
+}
+
+function tableCellTexts(tableXml: string) {
+  return (tableXml.match(/<w:tc\b[\s\S]*?<\/w:tc>/g) ?? [])
+    .map((cell) => xmlTextFrom(cell).replace(/\s+/g, " ").trim())
+    .filter(Boolean)
+}
+
+function checkAccessibility(documentXml: string) {
+  const issues: QualityIssue[] = []
+  const imageDocPrs = documentXml.match(/<wp:docPr\b[^>]*\/>/g) ?? []
+  const missingAlt = imageDocPrs.filter((tag) => {
+    const attrs = parseXmlAttributes(tag)
+    return !attrs.descr?.trim()
+  })
+  if (missingAlt.length) issues.push(warning("a11y-missing-image-alt", "Generated DOCX contains images without non-empty alt text descriptions."))
+
+  const tables = documentXml.match(/<w:tbl>[\s\S]*?<\/w:tbl>/g) ?? []
+  const missingHeaderRows = tables.filter((table) => !/<w:tblHeader\b/.test(table))
+  if (missingHeaderRows.length) issues.push(warning("a11y-missing-table-header", "Generated DOCX contains tables without a repeated/header row flag."))
+
+  const headingLevels = [...documentXml.matchAll(/<w:p\b[\s\S]*?<\/w:p>/g)]
+    .map((match) => Number(match[0].match(/<w:pStyle\b[^>]*w:val="Heading([1-6])"/)?.[1]))
+    .filter((level) => Number.isInteger(level) && level > 0)
+  let previous = 0
+  for (const level of headingLevels) {
+    if (previous > 0 && level > previous + 1) {
+      issues.push(warning("a11y-heading-level-skip", "Generated DOCX heading hierarchy skips a level."))
+      break
+    }
+    previous = level
+  }
+
+  const hyperlinkTexts = (documentXml.match(/<w:hyperlink\b[\s\S]*?<\/w:hyperlink>/g) ?? []).map(xmlTextFrom)
+  const weakLinks = hyperlinkTexts.filter((text) => /^(?:click here|here|link|read more|点击这里|点此|链接)$/i.test(text.trim()) || /^https?:\/\//i.test(text.trim()))
+  if (weakLinks.length) issues.push(warning("a11y-nondescriptive-link-text", "Generated DOCX contains hyperlinks with non-descriptive text."))
   return issues
 }
 
@@ -382,6 +482,12 @@ function appearsBefore(text: string, earlier: string, later: string) {
 
 function strippedText(xml: string) {
   return xml.replace(/<[^>]+>/g, "").replace(/\s+/g, "")
+}
+
+function xmlTextFrom(xml: string) {
+  return (xml.match(/<w:t\b[^>]*>[\s\S]*?<\/w:t>/g) ?? [])
+    .map((tag) => decodeXmlAttribute(tag.replace(/^<w:t\b[^>]*>/, "").replace(/<\/w:t>$/, "")))
+    .join("")
 }
 
 type Relationship = {

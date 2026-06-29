@@ -18,7 +18,7 @@ export type RenderedChatMessageForMerge = {
 }
 
 export type PendingChatUserMessage<TMessage extends RenderedChatMessageForMerge = RenderedChatMessageForMerge> = {
-  sessionID: string
+  sessionID?: string
   fingerprint: string
   text: string
   createdAt: number

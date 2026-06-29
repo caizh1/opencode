@@ -225,6 +225,7 @@ function shouldRequestJsonMode(request: DocAgentModelRequest) {
     || request.purpose === "plan-rule-examples"
     || request.purpose === "compose-guideline-draft"
     || request.purpose === "review-guideline-draft"
+    || request.purpose === "resolve-design-doc-targets"
 }
 
 function hardTimeoutMsFor(request: DocAgentModelRequest, injectedTimeoutMs: number | undefined) {

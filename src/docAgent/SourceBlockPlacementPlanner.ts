@@ -1,5 +1,6 @@
 import { SOURCE_BLOCK_PLACEMENT_VERSION, stableHash, type SourceBlockPlacementCache } from "./SourceBlockPlacementCache"
 import { containsUntranslatedEnglishText } from "./RuleLanguage"
+import { plainTableRows } from "./TableSpecUtils"
 import type { DocAgentModelProvider, DocumentPlan, GeneratedExampleSpec, RuleCardSpec, SourceBackedBlock, SourceDerivedItemSpec } from "./types"
 
 type PlacementKind = "rule-explanation" | "recommended" | "discouraged" | "preserved-example" | "rationale" | "exception" | "checklist" | "unassigned"
@@ -856,7 +857,7 @@ function assignedBlockIdsFromRules(rules: RuleCardSpec[]) {
 }
 
 function blockText(block: SourceBackedBlock) {
-  const tableText = block.table ? [block.table.headers.join(" | "), ...block.table.rows.map((row) => row.join(" | "))].join("\n") : ""
+  const tableText = block.table ? [block.table.headers.join(" | "), ...plainTableRows(block.table).map((row) => row.join(" | "))].join("\n") : ""
   return [
     block.codeBlock?.code,
     block.items?.join("\n"),

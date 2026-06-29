@@ -2,7 +2,7 @@
   "name": "chipmate",
   "displayName": "ChipMate",
   "description": "Direct OpenAI-compatible coding agent with workspace skills for VS Code",
-  "version": "0.1.0-build.123",
+  "version": "0.1.0-build.274",
   "icon": "media/chipmate-icon.png",
   "publisher": "local",
   "license": "MIT",
@@ -23,6 +23,7 @@
     "onCommand:chipmate.newSession",
     "onCommand:chipmate.askSelection",
     "onCommand:chipmate.askCurrentFile",
+    "onCommand:chipmate.designDoc.generate",
     "onCommand:chipmate.addSelectionToContext",
     "onCommand:chipmate.addFileToContext",
     "onCommand:chipmate.clearContext",
@@ -77,6 +78,11 @@
       {
         "command": "chipmate.askCurrentFile",
         "title": "Ask ChipMate About Current File",
+        "category": "ChipMate"
+      },
+      {
+        "command": "chipmate.designDoc.generate",
+        "title": "ChipMate: Generate Module Detailed Design Document",
         "category": "ChipMate"
       },
       {
@@ -260,6 +266,11 @@
           "minimum": 0,
           "maximum": 1,
           "description": "Top-p nucleus sampling value for ChipMate chat responses."
+        },
+        "chipmate.wordRender.remoteEndpoint": {
+          "type": "string",
+          "default": "",
+          "description": "Remote ChipMate Word/Mermaid render server base URL or /render/word endpoint. Word visual QA uses /render/word; Mermaid PNG generation uses /render/mermaid first and falls back to local Chrome/Edge when possible. When empty or unreachable for Word, page-level Word visual QA is skipped instead of using local LibreOffice/Poppler/PDF.js."
         },
         "chipmate.context.maxFileBytes": {
           "type": "number",
@@ -1152,10 +1163,13 @@
     "test": "bun test",
     "eval:completion-quality": "bun scripts/completion-quality-eval.ts",
     "eval:completion-c-embedded": "bun scripts/completion-c-embedded-eval.ts",
+    "eval:drawio-visual": "bun scripts/drawio-visual-eval.ts",
     "ui:completion-c-embedded": "bun scripts/completion-c-embedded-ui.ts",
     "benchmark:completion-quality": "bun scripts/completion-quality-benchmark.ts",
     "benchmark:codegraph": "bun scripts/codegraph-benchmark.ts",
+    "fixtures:docx": "bun scripts/make-docx-fixtures.ts",
     "verify:document-runtime": "bun scripts/verify-document-runtime.ts",
+    "verify:chat-word-flow": "bun scripts/verify-chat-word-flow.ts",
     "verify:drawio-runtime": "bun scripts/verify-drawio-runtime.ts",
     "verify:drawio-webview": "bun scripts/verify-drawio-webview.ts",
     "verify:qwen-vsix": "bun scripts/verify-qwen-vsix.ts",
@@ -1176,7 +1190,6 @@
     "@vscode/vsce": "^3.2.2",
     "eslint": "^9.25.1",
     "lucide": "^1.17.0",
-    "mermaid": "^11.15.0",
     "typescript": "^5.8.3"
   },
   "dependencies": {
@@ -1189,6 +1202,7 @@
     "js-yaml": "^5.1.0",
     "jszip": "^3.10.1",
     "mammoth": "1.12.0",
+    "mermaid": "^11.15.0",
     "mkdirp": "0.5.6",
     "node-html-parser": "7.1.0",
     "pdfjs-dist": "4.8.69",

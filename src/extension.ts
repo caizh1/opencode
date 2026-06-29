@@ -36,6 +36,7 @@ const EXTENSION_UPDATE_RELOAD_ACCEPTED_KEY = "chipmate.updateReloadAccepted.vers
 const EXTENSION_UPDATE_LAST_ACTIVATED_KEY = "chipmate.updateLastActivated.version"
 const EXTENSION_UPDATE_RELOAD_RETRY_DELAYS_MS = [1000, 3000] as const
 const RELOAD_WINDOW_ACTION = "Reload Window"
+const CHAT_WORD_SMOKE_COMMAND = "chipmate.internal.chatWordSmoke"
 
 export async function activate(context: vscode.ExtensionContext) {
   const activationStartedAt = activationNow()
@@ -311,6 +312,24 @@ export async function activate(context: vscode.ExtensionContext) {
       if (!text) return
       await chatProvider.sendQuickQuestion(text, { includeCurrentFile: true })
     }),
+	    vscode.commands.registerCommand(CHIPMATE_COMMANDS.designDocGenerate, async () => {
+	      const text = await vscode.window.showInputBox({
+	        title: "Generate module detailed design document",
+	        prompt: "当前文件或选区会作为优先上下文；也可以直接在 Chat 里描述子模块、机制、流水线或入口符号让模型定位范围。",
+	        value: "请为当前上下文相关模块生成芯片级详细设计文档，覆盖主业务流程、子业务流程、代码流程、状态机切换流程和切换条件。",
+        ignoreFocusOut: true,
+      })
+      if (!text) return
+      const selection = await addTrackedSelectionToContext(contextStore, getSettings(), editorContextTracker.snapshot())
+      if (!selection) {
+        const file = await addTrackedFileToContext(contextStore, editorContextTracker.snapshot())
+	        if (!file) {
+	          vscode.window.showWarningMessage("没有当前文件或选区上下文；也可以在 ChipMate Chat 里直接描述子模块、机制、流水线或入口符号来生成详细设计文档。")
+	          return
+	        }
+      }
+      await chatProvider.sendQuickQuestion(text, { includeCurrentFile: false, includeSelection: false })
+    }),
     vscode.commands.registerCommand(CHIPMATE_COMMANDS.addFileToContext, async () => {
       const tracked = editorContextTracker.snapshot()
       const item = await addTrackedFileToContext(contextStore, tracked)
@@ -382,6 +401,20 @@ export async function activate(context: vscode.ExtensionContext) {
       await documentRag.showStatus()
     }),
   )
+  if (process.env.CHIPMATE_ENABLE_SMOKE_COMMANDS === "1") {
+    context.subscriptions.push(vscode.commands.registerCommand(CHAT_WORD_SMOKE_COMMAND, async (input?: { text?: string; timeoutMs?: number }) => {
+      const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri
+      if (!workspaceRoot) throw new Error("A workspace folder is required for the Chat Word smoke command.")
+      await refreshProviderState()
+      const before = await listGeneratedDocxNames(workspaceRoot)
+      const text = input?.text?.trim() || "请生成一份年度经营分析 Word，包含目录、表格和结论。"
+      await chatProvider.sendQuickQuestion(text, { includeCurrentFile: false, includeSelection: false })
+      const timeoutMs = Math.max(5_000, Math.min(120_000, Math.floor(input?.timeoutMs ?? 45_000)))
+      const generated = await waitForGeneratedDocx(workspaceRoot, before, timeoutMs)
+      output.appendLine(`[smoke] chat-word generated ${generated.path}`)
+      return generated
+    }))
+  }
 
   registerCompletionFormatCommand(context, output)
   updateStatus(status, "disconnected")
@@ -390,7 +423,11 @@ export async function activate(context: vscode.ExtensionContext) {
 
   phaseStartedAt = activationNow()
   try {
-    context.subscriptions.push(vscode.window.registerWebviewViewProvider(RemoteChatViewProvider.viewType, chatProvider))
+    context.subscriptions.push(vscode.window.registerWebviewViewProvider(RemoteChatViewProvider.viewType, chatProvider, {
+      webviewOptions: {
+        retainContextWhenHidden: true,
+      },
+    }))
   } catch (error) {
     reportActivationError(output, "Failed to register ChipMate chat view", error)
   }
@@ -446,6 +483,38 @@ function logPreActivationTiming(output: vscode.OutputChannel) {
 
 function formatActivationTimingMs(value: number | undefined) {
   return value === undefined ? "unknown" : String(value)
+}
+
+async function listGeneratedDocxNames(workspaceRoot: vscode.Uri) {
+  const docsUri = vscode.Uri.joinPath(workspaceRoot, ".chipmate", "docs")
+  try {
+    const entries = await vscode.workspace.fs.readDirectory(docsUri)
+    return new Set(entries.filter(([, type]) => type === vscode.FileType.File).map(([name]) => name).filter((name) => name.toLowerCase().endsWith(".docx")))
+  } catch {
+    return new Set<string>()
+  }
+}
+
+async function waitForGeneratedDocx(workspaceRoot: vscode.Uri, before: Set<string>, timeoutMs: number) {
+  const started = Date.now()
+  const docsUri = vscode.Uri.joinPath(workspaceRoot, ".chipmate", "docs")
+  while (Date.now() - started < timeoutMs) {
+    const names = await listGeneratedDocxNames(workspaceRoot)
+    const created = [...names].filter((name) => !before.has(name)).sort()
+    if (created.length > 0) {
+      const name = created[created.length - 1]
+      const uri = vscode.Uri.joinPath(docsUri, name)
+      const stat = await vscode.workspace.fs.stat(uri)
+      return {
+        ok: true,
+        path: `.chipmate/docs/${name}`,
+        absolutePath: uri.fsPath,
+        bytes: stat.size,
+      }
+    }
+    await new Promise((resolve) => setTimeout(resolve, 250))
+  }
+  throw new Error(`Timed out waiting ${timeoutMs}ms for Chat Word smoke .docx artifact.`)
 }
 
 function registerExtensionUpdateReloadPrompt(context: vscode.ExtensionContext, output: vscode.OutputChannel, activationStartedAt: number) {
