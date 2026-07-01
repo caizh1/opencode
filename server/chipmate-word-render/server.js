@@ -7,6 +7,7 @@ const os = require("node:os");
 const path = require("node:path");
 const { spawn, spawnSync } = require("node:child_process");
 const { pathToFileURL } = require("node:url");
+const { PNG } = require("pngjs");
 
 const PORT = Number(process.env.PORT || 6001);
 const PACKAGE_ROOT = process.env.PACKAGE_ROOT || "/packages";
@@ -103,13 +104,14 @@ async function handleRenderWord(request, response) {
       const pngBytes = await fsp.readFile(absolute);
       if (pngBytes.length > MAX_RESPONSE_PAGE_BYTES) throw new Error(`${file} exceeds ${MAX_RESPONSE_PAGE_BYTES} bytes`);
       const dimensions = pngDimensions(pngBytes);
+      const page = pageIndex(file);
       pages.push({
-        page: pageIndex(file),
+        page,
         contentType: "image/png",
         base64: pngBytes.toString("base64"),
         width: dimensions.width,
         height: dimensions.height,
-        visualSummary: minimalVisualSummary(pageIndex(file), dimensions.width, dimensions.height),
+        visualSummary: pngVisualSummary(page, pngBytes, dimensions.width, dimensions.height),
       });
     }
 
@@ -144,6 +146,7 @@ async function handleRenderMermaid(request, response) {
     if (!source.trim()) throw renderError("mermaid-source-empty", "source is required");
     if (sourceBytes > MAX_MERMAID_SOURCE_BYTES) throw renderError("mermaid-source-too-large", `source exceeds ${MAX_MERMAID_SOURCE_BYTES} bytes`);
     const requestedTimeoutMs = clampNumber(payload.timeoutMs, 5000, RENDER_TIMEOUT_MS, timeoutMs);
+    const scale = clampNumber(payload.scale, 1, 4, 2);
     tempRoot = await fsp.mkdtemp(path.join(os.tmpdir(), "chipmate-mermaid-render-"));
     const pagePath = path.join(tempRoot, `${safeFilename(payload.filename || "diagram")}.html`);
     const userDataDir = path.join(tempRoot, "chromium-profile");
@@ -157,6 +160,7 @@ async function handleRenderMermaid(request, response) {
       pageUrl: pathToFileHref(pagePath),
       userDataDir,
       timeoutMs: requestedTimeoutMs,
+      scale,
     });
     assertPng(rendered.bytes);
     sendJson(response, 200, {
@@ -167,13 +171,22 @@ async function handleRenderMermaid(request, response) {
       },
       width: rendered.width,
       height: rendered.height,
-      issues: [],
+      pixelWidth: rendered.pixelWidth,
+      pixelHeight: rendered.pixelHeight,
+      scale: rendered.scale,
+      contentBounds: rendered.contentBounds,
+      cropBounds: rendered.cropBounds,
+      padding: rendered.padding,
+      contentCropRatio: rendered.contentCropRatio,
+      issues: rendered.issues,
       elapsedMs: Date.now() - startedAt,
       renderer: {
         kind: "remote-opencode",
         diagramToPng: "mermaid-chromium",
         chromiumPath: browserPath,
         mermaidRuntime: "mermaid",
+        scale: rendered.scale,
+        crop: "svg-content-bounds",
       },
     });
   } catch (error) {
@@ -229,10 +242,20 @@ function healthPayload() {
       pdftoppm: commandVersion("pdftoppm"),
       pdfinfo: commandVersion("pdfinfo"),
     },
+    capabilities: {
+      mermaid: {
+        endpoint: "/render/mermaid",
+        scale: { min: 1, max: 4, default: 2 },
+        cssSizeFields: ["width", "height"],
+        pixelSizeFields: ["pixelWidth", "pixelHeight"],
+        crop: { mode: "svg-content-bounds", padding: 32, fields: ["contentBounds", "cropBounds"] },
+      },
+    },
   };
 }
 
 async function runChromiumMermaidRender(input) {
+  const scale = clampNumber(input.scale, 1, 4, 2);
   await fsp.mkdir(input.userDataDir, { recursive: true });
   const child = spawn(input.browserPath, [
     "--headless=new",
@@ -272,19 +295,43 @@ async function runChromiumMermaidRender(input) {
         const status = await evaluateString(cdp, sessionId, "document.body ? (document.body.getAttribute('data-status') || 'pending') : 'pending'");
         const text = await evaluateString(cdp, sessionId, "document.body ? (document.body.textContent || '') : ''");
         if (status === "ok") {
-          const width = Math.min(12000, Math.max(64, await evaluateNumber(cdp, sessionId, "Math.ceil(document.documentElement.scrollWidth || document.body.scrollWidth || 800)")));
-          const height = Math.min(12000, Math.max(64, await evaluateNumber(cdp, sessionId, "Math.ceil(document.documentElement.scrollHeight || document.body.scrollHeight || 600)")));
-          await cdp.send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 2, mobile: false }, sessionId);
+          let bounds = await mermaidScreenshotBounds(cdp, sessionId);
+          let viewportWidth = Math.min(12000, Math.max(64, Math.ceil(bounds.cropBounds.x + bounds.cropBounds.width + 4)));
+          let viewportHeight = Math.min(12000, Math.max(64, Math.ceil(bounds.cropBounds.y + bounds.cropBounds.height + 4)));
+          await cdp.send("Emulation.setDeviceMetricsOverride", { width: viewportWidth, height: viewportHeight, deviceScaleFactor: scale, mobile: false }, sessionId);
           await sleep(100);
+          bounds = await mermaidScreenshotBounds(cdp, sessionId);
+          viewportWidth = Math.min(12000, Math.max(64, Math.ceil(bounds.cropBounds.x + bounds.cropBounds.width + 4)));
+          viewportHeight = Math.min(12000, Math.max(64, Math.ceil(bounds.cropBounds.y + bounds.cropBounds.height + 4)));
+          await cdp.send("Emulation.setDeviceMetricsOverride", { width: viewportWidth, height: viewportHeight, deviceScaleFactor: scale, mobile: false }, sessionId);
+          await sleep(50);
           const screenshot = await cdp.send("Page.captureScreenshot", {
             format: "png",
             fromSurface: true,
-            clip: { x: 0, y: 0, width, height, scale: 1 },
+            clip: { x: bounds.cropBounds.x, y: bounds.cropBounds.y, width: bounds.cropBounds.width, height: bounds.cropBounds.height, scale: 1 },
           }, sessionId);
+          const bytes = Buffer.from(screenshot.data, "base64");
+          const dimensions = pngDimensions(bytes);
+          const issues = [];
+          if (bounds.contentCropRatio < 0.2) {
+            issues.push({
+              severity: "warning",
+              code: "mermaid-render-content-bounds-suspicious",
+              message: `Mermaid rendered content only occupies ${(bounds.contentCropRatio * 100).toFixed(1)}% of the cropped PNG bounds.`,
+            });
+          }
           return {
-            bytes: Buffer.from(screenshot.data, "base64"),
-            width,
-            height,
+            bytes,
+            width: bounds.cropBounds.width,
+            height: bounds.cropBounds.height,
+            pixelWidth: dimensions.width,
+            pixelHeight: dimensions.height,
+            scale,
+            contentBounds: bounds.contentBounds,
+            cropBounds: bounds.cropBounds,
+            padding: bounds.padding,
+            contentCropRatio: bounds.contentCropRatio,
+            issues,
           };
         }
         if (status === "error") throw renderError("mermaid-render-failed", bounded(text));
@@ -298,6 +345,112 @@ async function runChromiumMermaidRender(input) {
   } finally {
     await terminateProcess(child);
   }
+}
+
+async function mermaidScreenshotBounds(cdp, sessionId) {
+  const value = await evaluateJson(cdp, sessionId, mermaidBoundsExpression(32));
+  if (!value || value.ok !== true || !value.cropBounds || !value.contentBounds) {
+    const reason = value && value.reason ? value.reason : "Mermaid SVG bounds could not be measured.";
+    throw renderError("mermaid-render-failed", bounded(reason));
+  }
+  return {
+    padding: value.padding,
+    contentBounds: normalizeBounds(value.contentBounds),
+    cropBounds: normalizeBounds(value.cropBounds),
+    contentCropRatio: Number.isFinite(value.contentCropRatio) ? value.contentCropRatio : 1,
+  };
+}
+
+function mermaidBoundsExpression(padding) {
+  return `(() => {
+    const pad = ${Number(padding) || 32};
+    const finite = (value) => Number.isFinite(value) && value > 0;
+    const bounds = (x, y, width, height) => ({
+      x: Math.round(x),
+      y: Math.round(y),
+      width: Math.max(1, Math.round(width)),
+      height: Math.max(1, Math.round(height))
+    });
+    const numericAttr = (value) => {
+      const match = String(value || "").match(/^-?\\d+(?:\\.\\d+)?/);
+      return match ? Number(match[0]) : 0;
+    };
+    const host = document.getElementById("host");
+    const svg = host && host.querySelector("svg");
+    if (!svg) return { ok: false, reason: "Mermaid SVG was not found." };
+    svg.style.maxWidth = "none";
+    const viewBox = svg.viewBox && svg.viewBox.baseVal && finite(svg.viewBox.baseVal.width) && finite(svg.viewBox.baseVal.height)
+      ? svg.viewBox.baseVal
+      : undefined;
+    const intrinsicWidth = viewBox ? viewBox.width : numericAttr(svg.getAttribute("width"));
+    const intrinsicHeight = viewBox ? viewBox.height : numericAttr(svg.getAttribute("height"));
+    if (finite(intrinsicWidth) && finite(intrinsicHeight)) {
+      svg.setAttribute("width", String(Math.ceil(intrinsicWidth)));
+      svg.setAttribute("height", String(Math.ceil(intrinsicHeight)));
+      svg.style.width = Math.ceil(intrinsicWidth) + "px";
+      svg.style.height = Math.ceil(intrinsicHeight) + "px";
+    }
+    if (host) {
+      host.style.display = "inline-block";
+      host.style.width = "max-content";
+      host.style.height = "max-content";
+    }
+    document.documentElement.style.width = "max-content";
+    document.documentElement.style.height = "max-content";
+    document.body.style.display = "inline-block";
+    document.body.style.width = "max-content";
+    document.body.style.height = "max-content";
+    const rect = svg.getBoundingClientRect();
+    if (!finite(rect.width) || !finite(rect.height)) return { ok: false, reason: "Mermaid SVG has empty layout bounds." };
+    let content = {
+      x: rect.left + window.scrollX,
+      y: rect.top + window.scrollY,
+      width: rect.width,
+      height: rect.height
+    };
+    try {
+      const bbox = svg.getBBox();
+      const currentViewBox = svg.viewBox && svg.viewBox.baseVal && finite(svg.viewBox.baseVal.width) && finite(svg.viewBox.baseVal.height)
+        ? svg.viewBox.baseVal
+        : undefined;
+      if (finite(bbox.width) && finite(bbox.height) && currentViewBox) {
+        const sx = rect.width / currentViewBox.width;
+        const sy = rect.height / currentViewBox.height;
+        content = {
+          x: rect.left + window.scrollX + ((bbox.x - currentViewBox.x) * sx),
+          y: rect.top + window.scrollY + ((bbox.y - currentViewBox.y) * sy),
+          width: bbox.width * sx,
+          height: bbox.height * sy
+        };
+      }
+    } catch {
+      // Fall back to the SVG layout rectangle when getBBox is unavailable.
+    }
+    const cropLeft = Math.max(0, Math.floor(content.x - pad));
+    const cropTop = Math.max(0, Math.floor(content.y - pad));
+    const cropRight = Math.ceil(content.x + content.width + pad);
+    const cropBottom = Math.ceil(content.y + content.height + pad);
+    const crop = bounds(cropLeft, cropTop, Math.min(12000, Math.max(64, cropRight - cropLeft)), Math.min(12000, Math.max(64, cropBottom - cropTop)));
+    const normalizedContent = bounds(content.x, content.y, content.width, content.height);
+    const contentArea = normalizedContent.width * normalizedContent.height;
+    const cropArea = crop.width * crop.height;
+    return {
+      ok: true,
+      padding: pad,
+      contentBounds: normalizedContent,
+      cropBounds: crop,
+      contentCropRatio: cropArea > 0 ? contentArea / cropArea : 1
+    };
+  })()`;
+}
+
+function normalizeBounds(value) {
+  return {
+    x: Math.max(0, Math.round(Number(value.x) || 0)),
+    y: Math.max(0, Math.round(Number(value.y) || 0)),
+    width: Math.max(1, Math.round(Number(value.width) || 1)),
+    height: Math.max(1, Math.round(Number(value.height) || 1)),
+  };
 }
 
 async function waitForDevtoolsWsUrl(child, output, processError, timeoutMs) {
@@ -322,6 +475,11 @@ async function evaluateString(cdp, sessionId, expression) {
 async function evaluateNumber(cdp, sessionId, expression) {
   const value = Number(await evaluateString(cdp, sessionId, expression));
   return Number.isFinite(value) ? value : 0;
+}
+
+async function evaluateJson(cdp, sessionId, expression) {
+  const result = await cdp.send("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: false }, sessionId);
+  return result.result && result.result.value;
 }
 
 class ChromeCdpConnection {
@@ -470,6 +628,65 @@ function minimalVisualSummary(page, width, height) {
     inkRatio: 0,
     edgeInk: { top: false, right: false, bottom: false, left: false },
   };
+}
+
+function pngVisualSummary(page, bytes, fallbackWidth, fallbackHeight) {
+  try {
+    const png = PNG.sync.read(bytes);
+    return pixelInkSummary(page, png.width || fallbackWidth, png.height || fallbackHeight, png.data);
+  } catch (error) {
+    return {
+      ...minimalVisualSummary(page, fallbackWidth, fallbackHeight),
+      summaryError: formatError(error),
+    };
+  }
+}
+
+function pixelInkSummary(page, width, height, rgba) {
+  const totalPixels = Math.max(0, width * height);
+  let inkPixels = 0;
+  let left = width;
+  let top = height;
+  let right = -1;
+  let bottom = -1;
+  const edgeSize = Math.max(2, Math.ceil(Math.min(width, height) * 0.02));
+  const edgeInk = { top: false, right: false, bottom: false, left: false };
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const offset = (y * width + x) * 4;
+      if (!isInkPixel(rgba[offset], rgba[offset + 1], rgba[offset + 2], rgba[offset + 3])) continue;
+      inkPixels += 1;
+      if (x < left) left = x;
+      if (x > right) right = x;
+      if (y < top) top = y;
+      if (y > bottom) bottom = y;
+      if (y < edgeSize) edgeInk.top = true;
+      if (y >= height - edgeSize) edgeInk.bottom = true;
+      if (x < edgeSize) edgeInk.left = true;
+      if (x >= width - edgeSize) edgeInk.right = true;
+    }
+  }
+  const contentBounds = inkPixels > 0
+    ? { left, top, right, bottom, width: right - left + 1, height: bottom - top + 1 }
+    : undefined;
+  return {
+    page,
+    width,
+    height,
+    totalPixels,
+    inkPixels,
+    inkRatio: totalPixels > 0 ? inkPixels / totalPixels : 0,
+    contentBounds,
+    edgeInk,
+  };
+}
+
+function isInkPixel(r, g, b, a) {
+  if ((a ?? 255) <= 16) return false;
+  const red = r ?? 255;
+  const green = g ?? 255;
+  const blue = b ?? 255;
+  return !(red >= 246 && green >= 246 && blue >= 246);
 }
 
 function commandPath(command) {

@@ -2,7 +2,7 @@
   "name": "chipmate",
   "displayName": "ChipMate",
   "description": "Direct OpenAI-compatible coding agent with workspace skills for VS Code",
-  "version": "0.1.0-build.274",
+  "version": "0.2.0-build.7",
   "icon": "media/chipmate-icon.png",
   "publisher": "local",
   "license": "MIT",
@@ -270,7 +270,7 @@
         "chipmate.wordRender.remoteEndpoint": {
           "type": "string",
           "default": "",
-          "description": "Remote ChipMate Word/Mermaid render server base URL or /render/word endpoint. Word visual QA uses /render/word; Mermaid PNG generation uses /render/mermaid first and falls back to local Chrome/Edge when possible. When empty or unreachable for Word, page-level Word visual QA is skipped instead of using local LibreOffice/Poppler/PDF.js."
+          "description": "Remote ChipMate Word/Mermaid render server base URL or /render/word endpoint. Word visual QA uses /render/word; Mermaid PNG generation uses /render/mermaid. The VSIX client does not use local LibreOffice, Poppler, PDF.js/canvas, or local Chrome/Edge fallbacks; when the remote service is empty or unreachable, page-level visual QA is skipped and Mermaid PNG figures are unavailable."
         },
         "chipmate.context.maxFileBytes": {
           "type": "number",
@@ -371,7 +371,7 @@
           "items": {
             "type": "string"
           },
-          "description": "Enabled workspace skills discovered from .agents/skills/*/SKILL.md."
+          "description": "Enabled skills discovered from ChipMate-compatible skill roots such as .agents/skills, .opencode/skills, .claude/skills, and user skill folders."
         },
         "chipmate.skills.overrides": {
           "type": "object",
@@ -390,12 +390,22 @@
         "chipmate.skills.scanUserSkills": {
           "type": "boolean",
           "default": true,
-          "description": "Discover user-level skills from ~/.agents/skills and, when Claude-compatible scanning is enabled, ~/.claude/skills. Workspace skills are always discovered."
+          "description": "Discover user-level skills from ~/.agents/skills and enabled compatible user skill roots. Workspace skills are always discovered."
+        },
+        "chipmate.skills.scanOpenCodeSkills": {
+          "type": "boolean",
+          "default": true,
+          "description": "Discover OpenCode-compatible skills from .opencode/skills in the workspace/parents and ~/.opencode/skills for user-level skills."
         },
         "chipmate.skills.scanClaudeSkills": {
           "type": "boolean",
           "default": true,
           "description": "Also discover Claude-compatible .claude/skills folders in the workspace."
+        },
+        "chipmate.skills.scanCodexSkills": {
+          "type": "boolean",
+          "default": true,
+          "description": "Discover Codex-compatible user-level skills from ~/.codex/skills. Project-level .codex folders are not scanned."
         },
         "chipmate.skills.maxCatalogBytes": {
           "type": "number",

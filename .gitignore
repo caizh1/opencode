@@ -1,6 +1,8 @@
 dist/
 node_modules/
 *.vsix
+*.docker.tar.gz
+*.docker.tar.gz.sha256
 *.log
 out/
 .vscode-test/

@@ -1,11 +1,46 @@
 import { describe, expect, test } from "bun:test"
 import { parseCFile } from "../src/codegraph-c-parser"
 import { RagHttpError } from "../src/rag-provider"
+import { ragEmbeddingProbeRetryDecision } from "../src/rag-probe-retry"
 import { buildRagChunks, buildRagVectorIndex, createRagSerializedManifest, decodeRagShardVectors, encodeRagShardVectors, RagIndexAbortError, ragManifestStaleReason, searchRagVectorIndex, splitRagVectorIndex, validateRagCrossVersionPartialResume } from "../src/rag-index"
 import type { CodeGraphIndex } from "../src/codegraph-types"
 import type { EmbeddingProvider } from "../src/rag-types"
 
 describe("local RAG vector index", () => {
+  test("classifies completed-index embedding probe failures for lightweight retry", () => {
+    const settings = { resumeDelayMs: 60_000, retryBackoffMs: 1_000 }
+
+    expect(ragEmbeddingProbeRetryDecision(
+      new RagHttpError("429 Too Many Requests", 429, "Too Many Requests", "slow down", 2500),
+      settings,
+    )).toEqual({ retry: true, status: 429, delayMs: 2500 })
+
+    expect(ragEmbeddingProbeRetryDecision(
+      new RagHttpError("429 Too Many Requests", 429, "Too Many Requests", "slow down"),
+      settings,
+    )).toEqual({ retry: true, status: 429, delayMs: 60_000 })
+
+    expect(ragEmbeddingProbeRetryDecision(
+      new RagHttpError("408 Request Timeout", 408, "Request Timeout", "timeout"),
+      { resumeDelayMs: 0, retryBackoffMs: 750 },
+    )).toEqual({ retry: true, status: 408, delayMs: 750 })
+
+    expect(ragEmbeddingProbeRetryDecision(
+      new RagHttpError("503 Service Unavailable", 503, "Service Unavailable", "overloaded"),
+      settings,
+    )).toEqual({ retry: true, status: 503, delayMs: 60_000 })
+
+    expect(ragEmbeddingProbeRetryDecision(
+      new RagHttpError("403 Forbidden", 403, "Forbidden", "denied"),
+      settings,
+    )).toEqual({ retry: false })
+
+    expect(ragEmbeddingProbeRetryDecision(
+      new Error("embedding provider returned 1536 dimension(s), expected 4096"),
+      settings,
+    )).toEqual({ retry: false })
+  })
+
   test("builds chunks, embeds vectors, searches, and serializes shard vectors", async () => {
     const index = sampleIndex()
     const chunks = buildRagChunks(index)

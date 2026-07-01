@@ -167,7 +167,9 @@ export function readRemoteSettings(): RemoteSettings {
       enabled: readStringArray(config.get<unknown>("skills.enabled", [])),
       overrides: readSkillOverrides(config.get<unknown>("skills.overrides", {})),
       scanUserSkills: config.get<boolean>("skills.scanUserSkills", true),
+      scanOpenCodeSkills: config.get<boolean>("skills.scanOpenCodeSkills", true),
       scanClaudeSkills: config.get<boolean>("skills.scanClaudeSkills", true),
+      scanCodexSkills: config.get<boolean>("skills.scanCodexSkills", true),
       maxCatalogBytes: clampInteger(config.get<number>("skills.maxCatalogBytes", 8000), 1000, 64000, 8000),
     },
     mcp: {

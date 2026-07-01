@@ -83,7 +83,7 @@ export async function activate(context: vscode.ExtensionContext) {
   phaseStartedAt = activationNow()
   const getSettings = () => readRemoteSettings()
   const audit = new AuditLog(context)
-  const skills = new SkillRegistry(() => getSettings().skills, output)
+  const skills = new SkillRegistry(() => getSettings().skills, output, vscode.Uri.joinPath(context.extensionUri, ".agents", "skills").fsPath)
   const tools = new ToolRuntime(audit, output)
   const directClient = new DirectAgentClient({
     context,

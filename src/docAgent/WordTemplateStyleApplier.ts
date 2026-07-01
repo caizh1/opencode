@@ -97,6 +97,7 @@ export class WordTemplateStyleApplier {
     styleAllowlist?: string[]
     signal?: AbortSignal
     log?: (message: string) => void
+    remoteEndpoint?: string
   }): Promise<WordTemplateStyleApplyResult> {
     input.signal?.throwIfAborted()
     const applied = await applyTemplateStylesToDocxBytes(input)
@@ -118,6 +119,7 @@ export class WordTemplateStyleApplier {
       timeoutMs: 60_000,
       signal: input.signal,
       log: input.log,
+      remoteEndpoint: input.remoteEndpoint,
     })
     const warnings = [
       ...applied.warnings,

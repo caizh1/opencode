@@ -284,6 +284,13 @@ type RenderedPart = {
   absolutePngPath?: string
   width?: number
   height?: number
+  pixelWidth?: number
+  pixelHeight?: number
+  scale?: number
+  contentBounds?: { x: number; y: number; width: number; height: number }
+  cropBounds?: { x: number; y: number; width: number; height: number }
+  padding?: number
+  contentCropRatio?: number
   renderProvider?: string
   fallbackUsed?: boolean
   path?: string
@@ -4373,6 +4380,13 @@ function renderPart(part: ChipMatePart): RenderedPart {
       absolutePngPath: stringFromPart(record.absolutePngPath),
       width: numberFromPart(record.width),
       height: numberFromPart(record.height),
+      pixelWidth: numberFromPart(record.pixelWidth),
+      pixelHeight: numberFromPart(record.pixelHeight),
+      scale: numberFromPart(record.scale),
+      contentBounds: boundsFromPart(record.contentBounds),
+      cropBounds: boundsFromPart(record.cropBounds),
+      padding: numberFromPart(record.padding),
+      contentCropRatio: numberFromPart(record.contentCropRatio),
       renderProvider: stringFromPart(record.renderProvider),
       fallbackUsed: booleanFromPart(record.fallbackUsed),
     }
@@ -4474,6 +4488,19 @@ function numberFromPart(value: unknown) {
 
 function booleanFromPart(value: unknown) {
   return typeof value === "boolean" ? value : undefined
+}
+
+function boundsFromPart(value: unknown) {
+  const record = recordFromPart(value)
+  const width = numberFromPart(record.width)
+  const height = numberFromPart(record.height)
+  if (!width || !height) return undefined
+  return {
+    x: numberFromPart(record.x) ?? 0,
+    y: numberFromPart(record.y) ?? 0,
+    width,
+    height,
+  }
 }
 
 function arrayFromPart(value: unknown) {
@@ -4848,6 +4875,7 @@ function displayToolName(tool: string) {
   if (tool === "chipmate_read" || tool === "chipmate_read_file") return "Read file"
   if (tool === "chipmate_read_evidence") return "Read evidence"
   if (tool === "chipmate_read_skill_resource") return "Read skill resource"
+  if (tool === "chipmate_run_command") return "Run command"
   if (tool === "chipmate_create_file") return "Create file"
   if (tool === "chipmate_create_directory") return "Create folder"
   if (tool === "chipmate_edit_file") return "Edit file"
@@ -4921,7 +4949,7 @@ function ragStatusMessage(rag: RagStatus | undefined, fallback: string) {
   if (rag.availability === "partial") return `RAG partial: ${rag.embeddedChunks}/${rag.chunks} chunk(s), ${rag.pendingChunkCount ?? Math.max(0, rag.chunks - rag.embeddedChunks)} pending${ragElapsedMessage(rag)}${ragWorkerMessage(rag)}${ragResumeScheduleMessage(rag)}.`
   if (rag.availability === "paused") return `RAG indexing paused: ${rag.fallbackReason ?? ragPausedReasonMessage(rag.indexPausedReason, rag.lastError)}${ragElapsedMessage(rag)}${ragWorkerMessage(rag)}${ragResumeScheduleMessage(rag)}`
   if (rag.availability === "not-indexed") return `RAG not indexed: ${rag.fallbackReason || "rebuild the local code graph to enable vector retrieval"}`
-  if (rag.availability === "unavailable") return `RAG unavailable: ${rag.fallbackReason || rag.lastError || "endpoint test failed"}`
+  if (rag.availability === "unavailable") return `RAG unavailable: ${rag.fallbackReason || rag.lastError || "endpoint test failed"}${ragResumeScheduleMessage(rag)}`
   return "RAG not configured. Add an embedding endpoint to enable vector retrieval."
 }
 
@@ -5018,7 +5046,7 @@ function ragPausedReasonMessage(reason?: RagStatus["indexPausedReason"], detail?
 function ragResumeScheduleMessage(rag: RagStatus) {
   if (!rag.resumeScheduledAt || !rag.resumeReason) return ""
   const remainingMs = Math.max(0, rag.resumeScheduledAt - Date.now())
-  const label = rag.resumeReason === "rate-limit" ? "retry scheduled" : "resume scheduled"
+  const label = rag.resumeReason === "rate-limit" || rag.resumeReason === "probe" ? "retry scheduled" : "resume scheduled"
   return `; ${label} in ${Math.ceil(remainingMs / 1000)}s`
 }
 

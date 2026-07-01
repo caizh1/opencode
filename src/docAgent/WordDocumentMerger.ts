@@ -64,6 +64,7 @@ export type WordDocumentMergeInput = {
   timeoutMs?: number
   signal?: AbortSignal
   log?: (message: string) => void
+  remoteEndpoint?: string
 }
 
 export type WordDocumentMergeResult = {
@@ -103,6 +104,7 @@ export class WordDocumentMerger {
       timeoutMs: input.timeoutMs ?? 60_000,
       signal: input.signal,
       log: input.log,
+      remoteEndpoint: input.remoteEndpoint,
     })
     const warnings = [
       ...mergeResult.warnings,

@@ -26,9 +26,6 @@ const required = [
   "extension/node_modules/pdfjs-dist/package.json",
   "extension/node_modules/pdfjs-dist/legacy/build/pdf.mjs",
   "extension/node_modules/pdfjs-dist/legacy/build/pdf.worker.mjs",
-  "extension/node_modules/canvas/package.json",
-  "extension/node_modules/canvas/index.js",
-  "extension/node_modules/canvas/build/Release/canvas.node",
   "extension/node_modules/elkjs/lib/elk-worker.min.js",
 ]
 const missing = required.filter((entry) => !entries.has(entry))
@@ -38,14 +35,12 @@ if (missing.length > 0) {
 }
 
 const forbidden = [
-  "extension/node_modules/canvas/binding.gyp",
-  "extension/node_modules/canvas/build/config.gypi",
   "extension/node_modules/elkjs/lib/elk-worker.js",
 ]
 const forbiddenPrefixes = [
-  "extension/node_modules/canvas/src/",
-  "extension/node_modules/canvas/node_modules/node-addon-api/",
-  "extension/node_modules/canvas/util/",
+  "extension/node_modules/canvas/",
+  "extension/node_modules/path2d/",
+  "extension/node_modules/prebuild-install/",
 ]
 const forbiddenPackageExtraPatterns = [
   /^extension\/node_modules\/@types\//,
@@ -58,15 +53,6 @@ const unexpected = [
 ]
 if (unexpected.length > 0) {
   console.error(`Document runtime verification failed: non-runtime package files were included: ${unexpected.slice(0, 20).join(", ")}`)
-  process.exit(1)
-}
-
-const canvasNativeLibrary = Array.from(entries).find((entry) => (
-  entry.startsWith("extension/node_modules/canvas/build/Release/") &&
-  /\.(?:dylib|so(?:\.\d+)*|dll)$/i.test(entry)
-))
-if (!canvasNativeLibrary) {
-  console.error("Document runtime verification failed: missing canvas native shared libraries for future PDF page rendering.")
   process.exit(1)
 }
 

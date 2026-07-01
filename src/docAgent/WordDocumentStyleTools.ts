@@ -79,6 +79,7 @@ export class WordDocumentStyleNormalizer {
     options?: WordStyleNormalizeOptions
     signal?: AbortSignal
     log?: (message: string) => void
+    remoteEndpoint?: string
   }): Promise<WordStyleNormalizeResult> {
     input.signal?.throwIfAborted()
     const normalized = await normalizeWordDocumentStyleBytes(input.bytes, input.path, input.options)
@@ -100,6 +101,7 @@ export class WordDocumentStyleNormalizer {
       timeoutMs: 60_000,
       signal: input.signal,
       log: input.log,
+      remoteEndpoint: input.remoteEndpoint,
     })
     const warnings = [
       ...structureIssues.filter((item) => item.severity === "warning").map((item) => item.message),

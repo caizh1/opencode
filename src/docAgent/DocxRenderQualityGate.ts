@@ -90,7 +90,6 @@ export class DocxRenderQualityGate {
     if (documentXml) issues.push(...checkAccessibility(documentXml))
     if (documentXml) issues.push(...checkDocumentXmlOrdering(documentXml))
     if (stylesXml) issues.push(...checkStylesXmlOrdering(stylesXml))
-    if (documentXml && !/(References|参考资料)/.test(documentXml)) issues.push(warning("missing-references-section", "Generated DOCX does not contain a References section. This is acceptable for non-source-backed documents."))
     if (documentXml && strippedText(documentXml).length < 200) issues.push(error("empty-body", "Generated DOCX body is empty or too short."))
     return issues
   }

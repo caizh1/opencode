@@ -10,7 +10,7 @@ export type RagEndpointKind = "disabled" | "localhost" | "private-lan" | "approv
 export type RagAvailability = "not-configured" | "not-indexed" | "checking" | "indexing" | "ready" | "partial" | "paused" | "unavailable"
 export type RagIndexAvailability = "none" | "partial" | "ready" | "paused"
 export type RagIndexPausedReason = "request-budget" | "rate-limit" | "provider-error" | "manual"
-export type RagResumeReason = "request-budget" | "rate-limit"
+export type RagResumeReason = "request-budget" | "rate-limit" | "probe"
 export type RagEmbeddingCheckpointMode = "off" | "interval" | "safe"
 export type RagEmbeddingEncodingFormat = "float" | "base64" | "auto"
 
@@ -239,7 +239,9 @@ export type RemoteSettings = {
     enabled: string[]
     overrides: Record<string, "on" | "name-only" | "user-invocable-only" | "off">
     scanUserSkills: boolean
+    scanOpenCodeSkills: boolean
     scanClaudeSkills: boolean
+    scanCodexSkills: boolean
     maxCatalogBytes: number
   }
   mcp: {
@@ -428,6 +430,8 @@ export type RunProgressItem = {
   phase?: string
   path?: string
   artifactPath?: string
+  requestedPath?: string
+  targetPath?: string
   provider?: string
   fallbackUsed?: boolean
   startedAt?: number
@@ -548,6 +552,13 @@ export type ChipMatePart =
 	      absolutePngPath?: string
 	      width?: number
 	      height?: number
+	      pixelWidth?: number
+	      pixelHeight?: number
+	      scale?: number
+	      contentBounds?: { x: number; y: number; width: number; height: number }
+	      cropBounds?: { x: number; y: number; width: number; height: number }
+	      padding?: number
+	      contentCropRatio?: number
 	      renderProvider?: string
 	      fallbackUsed?: boolean
 	    }
@@ -586,6 +597,17 @@ export type ChipMatePart =
         batchCount?: number
         mode?: string
       }
+      toolCallID?: string
+    }
+  | {
+      type: "generatedDocument"
+      title?: string
+      path?: string
+      absolutePath?: string
+      sourceCount?: number
+      warningCount?: number
+      warnings?: string[]
+      runSummaryPath?: string
       toolCallID?: string
     }
   | {

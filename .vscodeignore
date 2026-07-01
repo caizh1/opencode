@@ -19,6 +19,8 @@ server/**
 .chipmate/**
 tmp-drawio-*.png
 *.vsix
+*.docker.tar.gz
+*.docker.tar.gz.sha256
 chipmate-ui-test-windows-*.zip
 chipmate-ui-test-windows-with-vscode-*.zip
 chipmate-ui-test-windows-*.zip.sha256
@@ -157,15 +159,9 @@ node_modules/mermaid/dist/mermaid.esm.mjs
 node_modules/mermaid/dist/mermaid.js
 node_modules/mermaid/dist/mermaid.min.js
 
-node_modules/canvas/binding.gyp
-node_modules/canvas/build/*.mk
-node_modules/canvas/build/*Makefile
-node_modules/canvas/build/config.gypi
-node_modules/canvas/build/gyp-mac-tool
-node_modules/canvas/index.d.ts
-node_modules/canvas/src/**
-node_modules/canvas/node_modules/node-addon-api/**
-node_modules/canvas/util/**
+node_modules/canvas/**
+node_modules/path2d/**
+node_modules/prebuild-install/**
 
 node_modules/elkjs/lib/elk-worker.js
 

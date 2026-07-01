@@ -5,7 +5,7 @@ import { moduleKey } from "../codegraph-index"
 import type { CodeGraphContextProvider } from "../codegraph-types"
 import { createWordDocument } from "../tools/createWordDocumentTool"
 import type { DocAgentModelProvider, DocAgentTimelineEvent, DocumentSection, FigureSpec, GeneratedDocumentResult, SourceRef, WordDocSpec } from "../docAgent/types"
-import { renderMermaidToPng, type MermaidPngRenderResult } from "../mermaid-png-renderer"
+import type { MermaidPngRenderResult } from "../mermaid-png-renderer"
 
 export type DesignDocTargetKind = "file" | "folder" | "selection"
 
@@ -548,7 +548,9 @@ async function renderDesignDocDiagramPngs(
   renderer: DesignDocAgentInput["renderMermaid"],
   log?: (message: string) => void,
 ) {
-  const render: NonNullable<DesignDocAgentInput["renderMermaid"]> = renderer ?? ((diagram) => renderMermaidToPng({ source: diagram.source }))
+  const render: NonNullable<DesignDocAgentInput["renderMermaid"]> = renderer ?? (() => {
+    throw new Error("DesignDocAgentFlow requires an injected remote Mermaid renderer; local Mermaid PNG fallback is disabled.")
+  })
   const rendered: DesignDocDiagramArtifact[] = []
   for (const diagram of diagrams) {
     log?.(`[design-doc] render mermaid png id=${diagram.id}`)

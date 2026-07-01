@@ -51,9 +51,9 @@
     {
       "name": "word_runtime_field_refresh_report",
       "category": "diagnostics",
-      "chipmateEquivalent": ["refresh_word_native_fields", "chipmate_run_skill_script"],
+      "chipmateEquivalent": ["chipmate_run_skill_script"],
       "status": "executable",
-      "description": "Read-only diagnostic helper that reports local LibreOffice/native field refresh readiness and writes a bounded JSON artifact. Use native refresh_word_native_fields for actual DOCX refresh.",
+      "description": "Read-only legacy diagnostic helper. Native TOC/PAGE/NUMPAGES refresh is unavailable in the remote-render-only VSIX build; prefer static TOC/page text or manual Word field update.",
       "execution": {
         "directExecution": true,
         "runtime": "node",
@@ -77,7 +77,7 @@
             "contentType": "application/json",
             "path": "word-runtime-field-refresh-report.json",
             "required": true,
-            "description": "Local Word native field refresh readiness report."
+            "description": "Word native field refresh limitation report."
           }
         ],
         "timeoutMs": 5000,

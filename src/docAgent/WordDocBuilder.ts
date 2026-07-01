@@ -241,7 +241,7 @@ function documentXml(spec: WordDocSpec, theme: ReportTheme, context: WordBuildCo
     } else {
       body.push(heading("目录", 1, theme))
       body.push(tocField(theme))
-      body.push(paragraph("提示：已写入 Word-native 目录域；交付前可用 refresh_word_native_fields 或在 Word 中更新域。", theme.styles.muted, "Muted"))
+      body.push(paragraph("提示：已写入 Word-native 目录域；当前远端渲染可检查缓存显示效果，真实目录页码刷新需在 Word 中更新域。", theme.styles.muted, "Muted"))
     }
     body.push(pageBreak())
   }

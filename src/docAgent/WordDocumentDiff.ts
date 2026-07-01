@@ -15,6 +15,7 @@ export type WordDocumentDiffInput = {
   timeoutMs?: number
   signal?: AbortSignal
   log?: (message: string) => void
+  remoteEndpoint?: string
 }
 
 export type WordDocumentDiffSide = {
@@ -126,6 +127,7 @@ export async function compareWordDocuments(input: WordDocumentDiffInput): Promis
         timeoutMs: input.timeoutMs ?? 60_000,
         signal: input.signal,
         log: input.log,
+        remoteEndpoint: input.remoteEndpoint,
       })
       afterRender = await renderWordDocument({
         docxPath: afterDocxPath,
@@ -135,6 +137,7 @@ export async function compareWordDocuments(input: WordDocumentDiffInput): Promis
         timeoutMs: input.timeoutMs ?? 60_000,
         signal: input.signal,
         log: input.log,
+        remoteEndpoint: input.remoteEndpoint,
       })
       issues.push(...beforeRender.issues, ...afterRender.issues)
       if (artifactDir) {
@@ -143,7 +146,6 @@ export async function compareWordDocuments(input: WordDocumentDiffInput): Promis
         afterPages: afterRender.absolutePagePngPaths ?? [],
         artifactDir,
         workspaceRoot: input.workspaceRoot,
-        pixelThreshold: normalizePixelThreshold(input.pixelThreshold),
       })
         changedPages.push(...collected.changedPages)
         issues.push(...collected.issues)
@@ -223,7 +225,6 @@ async function collectChangedPageArtifacts(input: {
   afterPages: string[]
   artifactDir: { absolute: string; relative: string }
   workspaceRoot: string
-  pixelThreshold: number
 }) {
   const changedPages: WordDocumentChangedPage[] = []
   const issues: QualityIssue[] = []
@@ -241,198 +242,20 @@ async function collectChangedPageArtifacts(input: {
     const beforeHash = await fileSha256(beforePath)
     const afterHash = await fileSha256(afterPath)
     if (beforeHash !== afterHash) {
-      const pixelDiff = await renderPagePixelDiff({
-        beforePath,
-        afterPath,
-        targetPath: path.join(input.artifactDir.absolute, `diff-page-${index + 1}.png`),
-        workspaceRoot: input.workspaceRoot,
-        threshold: input.pixelThreshold,
-      }).catch((error) => {
-        issues.push(issue("warning", "word-pixel-diff-failed", `Rendered page ${index + 1} changed, but pixel diff PNG could not be generated: ${formatError(error)}`))
-        return undefined
-      })
+      issues.push(issue(
+        "warning",
+        "word-pixel-diff-skipped",
+        `Rendered page ${index + 1} changed, but pixel diff PNG generation is skipped because the VSIX client no longer bundles local canvas. Remote pixel diff is not implemented yet.`,
+      ))
       changedPages.push({
         page: index + 1,
         byteChanged: true,
         ...await copyPageArtifact(beforePath, input.artifactDir.absolute, input.workspaceRoot, `before-page-${index + 1}.png`, "before"),
         ...await copyPageArtifact(afterPath, input.artifactDir.absolute, input.workspaceRoot, `after-page-${index + 1}.png`, "after"),
-        ...(pixelDiff ?? {}),
       })
     }
   }
   return { changedPages, issues }
-}
-
-async function renderPagePixelDiff(input: {
-  beforePath: string
-  afterPath: string
-  targetPath: string
-  workspaceRoot: string
-  threshold: number
-}) {
-  const canvasModule = await import("canvas")
-  const beforeImage = await canvasModule.loadImage(input.beforePath)
-  const afterImage = await canvasModule.loadImage(input.afterPath)
-  const width = Math.max(1, beforeImage.width, afterImage.width)
-  const height = Math.max(1, beforeImage.height, afterImage.height)
-  const beforeCanvas = canvasModule.createCanvas(width, height)
-  const afterCanvas = canvasModule.createCanvas(width, height)
-  const diffCanvas = canvasModule.createCanvas(width, height)
-  const beforeContext = beforeCanvas.getContext("2d")
-  const afterContext = afterCanvas.getContext("2d")
-  const diffContext = diffCanvas.getContext("2d")
-  for (const context of [beforeContext, afterContext, diffContext]) {
-    context.fillStyle = "#ffffff"
-    context.fillRect(0, 0, width, height)
-  }
-  beforeContext.drawImage(beforeImage, 0, 0)
-  afterContext.drawImage(afterImage, 0, 0)
-  diffContext.drawImage(afterCanvas, 0, 0)
-  const beforeData = beforeContext.getImageData(0, 0, width, height)
-  const afterData = afterContext.getImageData(0, 0, width, height)
-  const diffData = diffContext.getImageData(0, 0, width, height)
-  let changedPixels = 0
-  const changedMask = new Uint8Array(width * height)
-  let left = width
-  let top = height
-  let right = -1
-  let bottom = -1
-  for (let offset = 0; offset < beforeData.data.length; offset += 4) {
-    const delta = Math.max(
-      Math.abs(beforeData.data[offset]! - afterData.data[offset]!),
-      Math.abs(beforeData.data[offset + 1]! - afterData.data[offset + 1]!),
-      Math.abs(beforeData.data[offset + 2]! - afterData.data[offset + 2]!),
-      Math.abs(beforeData.data[offset + 3]! - afterData.data[offset + 3]!),
-    )
-    if (delta > input.threshold) {
-      const pixel = offset / 4
-      const x = pixel % width
-      const y = Math.floor(pixel / width)
-      changedPixels += 1
-      changedMask[pixel] = 1
-      left = Math.min(left, x)
-      top = Math.min(top, y)
-      right = Math.max(right, x)
-      bottom = Math.max(bottom, y)
-      diffData.data[offset] = 220
-      diffData.data[offset + 1] = 38
-      diffData.data[offset + 2] = 38
-      diffData.data[offset + 3] = 220
-    }
-  }
-  diffContext.putImageData(diffData, 0, 0)
-  await writeFile(input.targetPath, diffCanvas.toBuffer("image/png"))
-  const totalPixels = width * height
-  const changedRatio = totalPixels ? changedPixels / totalPixels : 0
-  const changeBounds = changedPixels > 0
-    ? { left, top, right, bottom, width: right - left + 1, height: bottom - top + 1 }
-    : undefined
-  const changedRegions = summarizeDiffRegions(changedMask, width, height)
-  const dominantChangedRegions = changedRegions
-    .filter((region) => region.changedPixels > 0)
-    .sort((left, right) => right.changedPixels - left.changedPixels)
-    .slice(0, 3)
-    .map((region) => region.id)
-  const riskFlags = diffRiskFlags({
-    changedRatio,
-    changeBounds,
-    changedRegions,
-    dimensionChanged: beforeImage.width !== afterImage.width || beforeImage.height !== afterImage.height,
-  })
-  return {
-    diffPngPath: posixRelative(input.workspaceRoot, input.targetPath),
-    absoluteDiffPngPath: input.targetPath,
-    changedPixels,
-    totalPixels,
-    changedRatio,
-    beforeWidth: beforeImage.width,
-    beforeHeight: beforeImage.height,
-    afterWidth: afterImage.width,
-    afterHeight: afterImage.height,
-    diffWidth: width,
-    diffHeight: height,
-    pixelThreshold: input.threshold,
-    dimensionChanged: beforeImage.width !== afterImage.width || beforeImage.height !== afterImage.height,
-    changeBounds,
-    changedRegions,
-    dominantChangedRegions,
-    visualSeverity: visualSeverity(changedRatio),
-    visualSummary: visualDiffSummary({ changedPixels, totalPixels, changedRatio, changeBounds, dominantChangedRegions, riskFlags }),
-    riskFlags,
-  }
-}
-
-function summarizeDiffRegions(mask: Uint8Array, width: number, height: number): WordDocumentDiffRegionSummary[] {
-  const rows = ["top", "middle", "bottom"] as const
-  const columns = ["left", "center", "right"] as const
-  const regions: WordDocumentDiffRegionSummary[] = []
-  for (let rowIndex = 0; rowIndex < rows.length; rowIndex += 1) {
-    const top = Math.floor((height * rowIndex) / rows.length)
-    const bottom = Math.max(top, Math.floor((height * (rowIndex + 1)) / rows.length) - 1)
-    for (let columnIndex = 0; columnIndex < columns.length; columnIndex += 1) {
-      const left = Math.floor((width * columnIndex) / columns.length)
-      const right = Math.max(left, Math.floor((width * (columnIndex + 1)) / columns.length) - 1)
-      let changedPixels = 0
-      for (let y = top; y <= bottom; y += 1) {
-        for (let x = left; x <= right; x += 1) {
-          changedPixels += mask[y * width + x] ?? 0
-        }
-      }
-      const totalPixels = Math.max(1, (right - left + 1) * (bottom - top + 1))
-      regions.push({
-        id: `${rows[rowIndex]}-${columns[columnIndex]}`,
-        row: rows[rowIndex],
-        column: columns[columnIndex],
-        bounds: { left, top, right, bottom, width: right - left + 1, height: bottom - top + 1 },
-        changedPixels,
-        changedRatio: changedPixels / totalPixels,
-      })
-    }
-  }
-  return regions
-}
-
-function diffRiskFlags(input: {
-  changedRatio: number
-  changeBounds?: WordDocumentDiffBounds
-  changedRegions: WordDocumentDiffRegionSummary[]
-  dimensionChanged: boolean
-}) {
-  const flags: string[] = []
-  if (input.dimensionChanged) flags.push("page-dimension-change")
-  if (input.changedRatio > 0 && input.changedRatio < 0.001) flags.push("tiny-pixel-change")
-  if (input.changedRatio >= 0.15) flags.push("broad-page-change")
-  const changedRegionCount = input.changedRegions.filter((region) => region.changedPixels > 0).length
-  if (changedRegionCount >= 6) flags.push("multi-region-change")
-  if (changedRegionCount <= 2 && input.changedRatio > 0) flags.push("localized-change")
-  if (input.changeBounds) {
-    const boundsAreaRatio = (input.changeBounds.width * input.changeBounds.height) / Math.max(1, input.changedRegions.reduce((max, region) => Math.max(max, region.bounds.right + 1), 0) * input.changedRegions.reduce((max, region) => Math.max(max, region.bounds.bottom + 1), 0))
-    if (boundsAreaRatio > 0.5 && input.changedRatio < 0.05) flags.push("possible-reflow-or-antialias")
-  }
-  return flags
-}
-
-function visualSeverity(changedRatio: number): WordDocumentChangedPage["visualSeverity"] {
-  if (changedRatio <= 0) return "none"
-  if (changedRatio < 0.005) return "minor"
-  if (changedRatio < 0.05) return "moderate"
-  return "major"
-}
-
-function visualDiffSummary(input: {
-  changedPixels: number
-  totalPixels: number
-  changedRatio: number
-  changeBounds?: WordDocumentDiffBounds
-  dominantChangedRegions: string[]
-  riskFlags: string[]
-}) {
-  if (!input.changedPixels) return "No changed pixels above threshold."
-  const ratio = `${(input.changedRatio * 100).toFixed(2)}%`
-  const bounds = input.changeBounds ? `bbox ${input.changeBounds.left},${input.changeBounds.top}-${input.changeBounds.right},${input.changeBounds.bottom}` : "no bbox"
-  const regions = input.dominantChangedRegions.length ? `dominant regions ${input.dominantChangedRegions.join(", ")}` : "no dominant region"
-  const flags = input.riskFlags.length ? `; flags ${input.riskFlags.join(", ")}` : ""
-  return `${input.changedPixels}/${input.totalPixels} pixels changed (${ratio}), ${bounds}, ${regions}${flags}.`
 }
 
 async function copyPageArtifact(source: string, artifactDir: string, workspaceRoot: string, filename: string, side: "before" | "after") {
@@ -550,13 +373,4 @@ function uniqueIssues(items: QualityIssue[]) {
 
 function issue(severity: "error" | "warning", code: string, message: string): QualityIssue {
   return { severity, code, message }
-}
-
-function formatError(errorValue: unknown) {
-  return errorValue instanceof Error ? errorValue.message : String(errorValue)
-}
-
-function normalizePixelThreshold(input: number | undefined) {
-  if (typeof input !== "number" || !Number.isFinite(input)) return 12
-  return Math.max(0, Math.min(255, Math.trunc(input)))
 }

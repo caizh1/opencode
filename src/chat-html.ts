@@ -7,6 +7,7 @@ const liquidIconNames: LiquidIconName[] = [
   "chat",
   "sparkle",
   "add",
+  "compose",
   "history",
   "sync",
   "settings",
@@ -501,18 +502,59 @@ ${codiconFontFace}    .codicon {
     }
     .skillItem {
       display: grid;
-      grid-template-columns: auto minmax(0, 1fr);
       gap: 8px;
-      align-items: start;
       min-width: 0;
       padding: 8px;
       border: 1px solid var(--oc-border);
       border-radius: var(--oc-radius-lg);
       background: var(--oc-soft-bg);
     }
-    .skillItem input { margin-top: 2px; }
+    .skillItem.is-expanded {
+      border-color: color-mix(in srgb, var(--vscode-focusBorder) 34%, var(--oc-border));
+      background:
+        linear-gradient(180deg, color-mix(in srgb, white 6%, transparent), transparent 56%),
+        color-mix(in srgb, var(--vscode-focusBorder) 7%, var(--oc-soft-bg));
+      box-shadow: inset 0 1px 0 color-mix(in srgb, white 16%, transparent);
+    }
+    .skillSummaryRow {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 8px;
+      align-items: start;
+      min-width: 0;
+    }
+    .skillToggle {
+      display: grid;
+      grid-template-columns: auto minmax(0, 1fr);
+      gap: 8px;
+      align-items: start;
+      min-width: 0;
+    }
+    .skillToggle input { margin-top: 2px; }
     .skillMain { min-width: 0; display: grid; gap: 3px; }
     .skillName { min-width: 0; font-size: 12px; font-weight: 650; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .skillDetailToggle {
+      align-self: start;
+      min-width: 56px;
+      min-height: 28px;
+      padding: 0 10px;
+      font-size: 11px;
+      font-weight: 600;
+      white-space: nowrap;
+    }
+    .skillDetailPanel {
+      display: grid;
+      gap: 6px;
+      min-width: 0;
+      padding: 10px;
+      border: 1px solid color-mix(in srgb, var(--oc-border) 86%, transparent);
+      border-radius: calc(var(--oc-radius-lg) - 2px);
+      background:
+        linear-gradient(180deg, color-mix(in srgb, white 5%, transparent), transparent 58%),
+        color-mix(in srgb, var(--oc-muted-bg) 72%, transparent);
+      box-shadow: inset 0 1px 0 color-mix(in srgb, white 12%, transparent);
+    }
+    .skillDetailPanel[hidden] { display: none; }
     .skillDescription,
     .skillMeta,
     .comingSoonText {
@@ -522,6 +564,8 @@ ${codiconFontFace}    .codicon {
       line-height: 1.35;
       overflow-wrap: anywhere;
     }
+    .skillMetaError { color: var(--vscode-errorForeground, #f48771); }
+    .skillMetaWarning { color: var(--vscode-editorWarning-foreground, var(--vscode-descriptionForeground)); }
     .permissionModeList {
       display: grid;
       gap: 4px;
@@ -2330,6 +2374,185 @@ ${codiconFontFace}    .codicon {
       font-weight: 650;
     }
     .toolCard.reasoning pre { color: var(--vscode-descriptionForeground); }
+    .turnProcessStrip {
+      margin: 8px 0;
+      border: 1px solid color-mix(in srgb, var(--vscode-focusBorder) 28%, var(--vscode-panel-border));
+      border-radius: 8px;
+      background: color-mix(in srgb, var(--vscode-sideBar-background) 78%, var(--vscode-focusBorder) 7%);
+      box-shadow: 0 10px 24px color-mix(in srgb, black 10%, transparent), inset 0 1px 0 color-mix(in srgb, white 10%, transparent);
+      overflow: hidden;
+    }
+    .turnProcessStrip.has-warning {
+      border-color: color-mix(in srgb, var(--vscode-inputValidation-warningBorder, #d7ba7d) 60%, var(--vscode-panel-border));
+      background: color-mix(in srgb, var(--vscode-inputValidation-warningBackground, transparent) 28%, var(--vscode-sideBar-background));
+    }
+    .turnProcessStrip.has-error {
+      border-color: color-mix(in srgb, var(--vscode-inputValidation-errorBorder, #f14c4c) 68%, var(--vscode-panel-border));
+      background: color-mix(in srgb, var(--vscode-inputValidation-errorBackground, transparent) 24%, var(--vscode-sideBar-background));
+    }
+    .turnProcessSummary {
+      min-height: 34px;
+      display: grid;
+      grid-template-columns: 20px minmax(0, 1fr) minmax(0, auto) auto;
+      grid-template-areas:
+        "marker label meta actions"
+        ". path path actions";
+      align-items: center;
+      gap: 8px;
+      min-width: 0;
+      padding: 6px 8px;
+      cursor: pointer;
+      list-style: none;
+    }
+    .turnProcessSummary::-webkit-details-marker {
+      display: none;
+    }
+    .turnProcessMarker {
+      grid-area: marker;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      flex: 0 0 20px;
+      width: 20px;
+      height: 20px;
+      border-radius: 999px;
+      border: 1px solid color-mix(in srgb, var(--vscode-focusBorder) 36%, var(--vscode-panel-border));
+      color: var(--vscode-foreground);
+      background: color-mix(in srgb, var(--vscode-editor-background) 76%, transparent);
+      font-size: 11px;
+      line-height: 1;
+    }
+    .turnProcessStrip.is-running .turnProcessMarker {
+      animation: chipmatePulse 1.25s ease-in-out infinite;
+    }
+    @keyframes chipmatePulse {
+      0%, 100% { opacity: .58; transform: scale(.96); }
+      50% { opacity: 1; transform: scale(1); }
+    }
+    .turnProcessLabel {
+      grid-area: label;
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      color: var(--vscode-foreground);
+      font-size: 12px;
+      font-weight: 700;
+      line-height: 1.35;
+    }
+    .turnProcessPath {
+      grid-area: path;
+      min-width: 0;
+      max-width: 100%;
+      color: var(--vscode-descriptionForeground);
+      font-family: var(--vscode-editor-font-family, monospace);
+      font-size: 10.5px;
+      line-height: 1.35;
+      overflow-wrap: anywhere;
+      word-break: break-word;
+    }
+    .turnProcessMeta,
+    .turnProcessActions {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      flex-wrap: wrap;
+      min-width: 0;
+      max-width: 100%;
+    }
+    .turnProcessMeta {
+      grid-area: meta;
+      justify-content: flex-end;
+    }
+    .turnProcessActions {
+      grid-area: actions;
+      justify-content: flex-end;
+    }
+    .turnProcessMetaItem,
+    .turnProcessDetailHint {
+      flex: 0 0 auto;
+      max-width: 100%;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      padding: 2px 6px;
+      border: 1px solid color-mix(in srgb, var(--vscode-panel-border) 84%, transparent);
+      border-radius: 999px;
+      color: var(--vscode-descriptionForeground);
+      background: color-mix(in srgb, var(--vscode-editor-background) 72%, transparent);
+      font-size: 10px;
+      line-height: 1.25;
+    }
+    .turnProcessDetailHint {
+      color: var(--vscode-foreground);
+    }
+    .turnProcessAction {
+      min-height: 24px;
+      padding: 3px 8px;
+      font-size: 11px;
+      line-height: 1.2;
+    }
+    @media (max-width: 560px) {
+      .turnProcessSummary {
+        grid-template-columns: 20px minmax(0, 1fr);
+        grid-template-areas:
+          "marker label"
+          "path path"
+          "meta meta"
+          "actions actions";
+        align-items: start;
+        gap: 6px 8px;
+      }
+      .turnProcessMeta,
+      .turnProcessActions {
+        justify-content: flex-start;
+      }
+      .turnProcessAction {
+        min-height: 22px;
+        padding: 2px 7px;
+      }
+    }
+    .turnProcessBody {
+      display: grid;
+      gap: 8px;
+      padding: 8px;
+      border-top: 1px solid color-mix(in srgb, var(--vscode-panel-border) 80%, transparent);
+    }
+    .turnProcessSection {
+      display: grid;
+      gap: 5px;
+      min-width: 0;
+    }
+    .turnProcessSectionTitle {
+      color: var(--vscode-foreground);
+      font-size: 11px;
+      font-weight: 750;
+      line-height: 1.3;
+    }
+    .turnProcessSteps,
+    .turnProcessArtifacts,
+    .turnProcessWarnings,
+    .turnProcessText {
+      margin: 0;
+      padding: 7px;
+      border: 1px solid color-mix(in srgb, var(--vscode-panel-border) 82%, transparent);
+      border-radius: 7px;
+      color: var(--vscode-descriptionForeground);
+      background: color-mix(in srgb, var(--vscode-input-background) 68%, transparent);
+      font-size: 10px;
+      line-height: 1.35;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+    }
+    .turnProcessWarnings {
+      border-color: color-mix(in srgb, var(--vscode-inputValidation-warningBorder, #d7ba7d) 64%, var(--vscode-panel-border));
+      background: color-mix(in srgb, var(--vscode-inputValidation-warningBackground, transparent) 42%, transparent);
+    }
+    .turnProcessDetailCards {
+      display: grid;
+      gap: 8px;
+      min-width: 0;
+    }
     .docAgentTimelineCard,
     .runProgressCard,
     .mermaidArtifactCard,
@@ -2730,10 +2953,26 @@ ${codiconFontFace}    .codicon {
       font-size: 11px;
       line-height: 1.35;
     }
-    .composerStatusPopover.open { display: grid; gap: 7px; }
-    .statusPopoverHeader { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-weight: 700; }
-    .statusPopoverMeta { color: var(--vscode-descriptionForeground); overflow-wrap: anywhere; }
-    .statusPopoverRows { display: grid; gap: 5px; }
+	    .composerStatusPopover.open { display: grid; gap: 7px; }
+	    .composerStatusPopover.goalPopover {
+	      min-width: 0;
+	      overflow-x: hidden;
+	    }
+	    .composerStatusPopover.goalPopover .statusPopoverHeader {
+	      display: grid;
+	      grid-template-columns: minmax(0, 1fr);
+	      align-items: start;
+	      justify-content: stretch;
+	    }
+	    .composerStatusPopover.goalPopover .statusPopoverHeader > *,
+	    .composerStatusPopover.goalPopover .statusPopoverMeta {
+	      min-width: 0;
+	      white-space: normal;
+	      overflow-wrap: anywhere;
+	    }
+	    .statusPopoverHeader { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-weight: 700; }
+	    .statusPopoverMeta { color: var(--vscode-descriptionForeground); overflow-wrap: anywhere; }
+	    .statusPopoverRows { display: grid; gap: 5px; }
     .statusPopoverRow {
       display: flex;
       align-items: center;
@@ -2747,17 +2986,18 @@ ${codiconFontFace}    .codicon {
     }
     .statusPopoverLabel { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 	    .statusPopoverActions { display: flex; align-items: center; gap: 5px; flex-wrap: wrap; }
-	    .goalActions {
-	      display: flex;
-	      align-items: center;
-	      gap: 6px;
-	      flex-wrap: wrap;
-	      min-width: 0;
-	    }
-	    .goalActionButton.oc-liquid-btn {
-	      width: auto;
-	      min-width: 0;
-	      max-width: 100%;
+		    .goalActions {
+		      display: grid;
+		      grid-template-columns: repeat(auto-fit, minmax(86px, 1fr));
+		      align-items: stretch;
+		      gap: 6px;
+		      width: 100%;
+		      min-width: 0;
+		    }
+		    .goalActionButton.oc-liquid-btn {
+		      width: 100%;
+		      min-width: 0;
+		      max-width: 100%;
 	      height: 28px;
 	      min-height: 28px;
 	      display: inline-flex;
@@ -2775,11 +3015,12 @@ ${codiconFontFace}    .codicon {
 	      justify-content: center;
 	      flex: 0 0 auto;
 	    }
-	    .goalActionLabel {
-	      min-width: 0;
-	      overflow: hidden;
-	      text-overflow: ellipsis;
-	    }
+		    .goalActionLabel {
+		      min-width: 0;
+		      overflow: hidden;
+		      text-overflow: ellipsis;
+		      white-space: nowrap;
+		    }
 	    .statusActionButton,
 	    .contextRemoveButton {
 	      min-height: 22px;
@@ -4777,19 +5018,24 @@ ${codiconFontFace}    .codicon {
       color: var(--vscode-foreground);
       white-space: nowrap;
     }
-    .goalSummaryObjective {
-      min-width: 0;
-      overflow: hidden;
-      display: block;
-      color: var(--vscode-descriptionForeground);
-      text-overflow: ellipsis;
-      white-space: nowrap;
-      overflow-wrap: anywhere;
-    }
-    .goalSummaryMeta {
-      min-width: 0;
-      color: var(--vscode-descriptionForeground);
-      font-size: 11px;
+	    .goalSummaryObjective {
+	      min-width: 0;
+	      overflow: hidden;
+	      display: -webkit-box;
+	      -webkit-box-orient: vertical;
+	      -webkit-line-clamp: 2;
+	      line-clamp: 2;
+	      color: var(--vscode-descriptionForeground);
+	      text-overflow: ellipsis;
+	      white-space: normal;
+	      overflow-wrap: anywhere;
+	    }
+	    .goalSummaryMeta {
+	      min-width: 0;
+	      overflow: hidden;
+	      text-overflow: ellipsis;
+	      color: var(--vscode-descriptionForeground);
+	      font-size: 11px;
       line-height: 1.2;
       white-space: nowrap;
     }
@@ -4811,10 +5057,11 @@ ${codiconFontFace}    .codicon {
 	      font-weight: 800;
 	      line-height: 1;
 	    }
-	    .goalResumePrompt {
-	      display: flex;
-	      align-items: center;
-	      gap: 8px;
+		    .goalResumePrompt {
+		      display: grid;
+		      grid-template-columns: auto minmax(0, 1fr) auto;
+		      align-items: center;
+		      gap: 8px;
 	      width: calc(100% - 12px);
 	      min-width: 0;
 	      margin: 5px 6px 0;
@@ -4835,15 +5082,20 @@ ${codiconFontFace}    .codicon {
 	        linear-gradient(135deg, color-mix(in srgb, var(--vscode-errorForeground, #f48771) 11%, transparent), transparent 72%),
 	        color-mix(in srgb, var(--vscode-editorWidget-background, var(--vscode-input-background)) 86%, transparent);
 	    }
-	    .goalResumeCopy {
-	      display: flex;
-	      flex-direction: column;
+		    .goalResumeCopy {
+		      display: flex;
+		      flex-direction: column;
 	      gap: 2px;
 	      flex: 1 1 auto;
 	      min-width: 0;
-	      line-height: 1.22;
-	    }
-	    .goalResumeTitle {
+		      line-height: 1.22;
+		    }
+		    .goalResumePrompt .goalSummaryIcon {
+		      grid-column: auto;
+		      grid-row: auto;
+		      align-self: center;
+		    }
+		    .goalResumeTitle {
 	      font-size: 12px;
 	      font-weight: 800;
 	      color: var(--vscode-foreground);
@@ -4854,23 +5106,44 @@ ${codiconFontFace}    .codicon {
 	      text-overflow: ellipsis;
 	      white-space: nowrap;
 	    }
-	    .goalResumeActions {
-	      display: inline-flex;
-	      align-items: center;
-	      justify-content: flex-end;
-	      gap: 6px;
-	      flex: 0 0 auto;
-	    }
-	    .goalResumeAction {
-	      display: inline-flex;
+		    .goalResumeActions {
+		      display: grid;
+		      grid-template-columns: repeat(2, minmax(0, 1fr));
+		      align-items: center;
+		      gap: 6px;
+		      justify-self: end;
+		      width: min(164px, 100%);
+		      min-width: 0;
+		    }
+		    .goalResumeAction {
+		      display: inline-flex;
 	      align-items: center;
 	      justify-content: center;
-	      gap: 5px;
-	      min-height: 28px;
-	      padding: 0 9px;
-	      border-radius: var(--oc-radius-sm);
-	      font-weight: 700;
-	    }
+		      gap: 5px;
+		      min-width: 0;
+		      max-width: 100%;
+		      min-height: 28px;
+		      padding: 0 9px;
+		      border-radius: var(--oc-radius-sm);
+		      font-weight: 700;
+		      overflow: hidden;
+		      text-overflow: ellipsis;
+		      white-space: nowrap;
+		    }
+		    @container composer (max-width: 360px) {
+		      .goalResumePrompt {
+		        grid-template-columns: auto minmax(0, 1fr);
+		        align-items: start;
+		      }
+		      .goalResumePrompt .goalSummaryIcon {
+		        align-self: start;
+		      }
+		      .goalResumeActions {
+		        grid-column: 1 / -1;
+		        justify-self: stretch;
+		        width: 100%;
+		      }
+		    }
 	    .composer textarea {
       min-height: 62px;
       max-height: 172px;
@@ -5574,7 +5847,7 @@ ${codiconFontFace}    .codicon {
       <div class="iconbar">
         <button id="openAgentTerminal" class="oc-icon-btn oc-liquid-btn" type="button" title="Open ChipMate Agent Terminal" aria-label="Open ChipMate Agent Terminal">${liquidIcons.terminal}<span class="srOnly">Open ChipMate Agent Terminal</span></button>
         <button id="historyToggle" class="oc-icon-btn oc-liquid-btn headerHistoryAction" type="button" title="History" aria-label="History">${liquidIcons.history}<span class="srOnly">History</span></button>
-        <button id="newSession" class="oc-icon-btn oc-liquid-btn" type="button" title="New session" aria-label="New session">${liquidIcons.add}<span class="srOnly">New session</span></button>
+        <button id="newSession" class="oc-icon-btn oc-liquid-btn" type="button" title="New session" aria-label="New session">${liquidIcons.compose}<span class="srOnly">New session</span></button>
         <button id="syncState" class="oc-icon-btn oc-liquid-btn" type="button" title="Refresh chat state" aria-label="Refresh chat state">${liquidIcons.refresh}<span class="srOnly">Refresh chat state</span></button>
         <button id="settingsToggle" class="oc-icon-btn oc-liquid-btn" type="button" title="ChipMate settings" aria-label="ChipMate settings">${liquidIcons.settings}<span class="srOnly">ChipMate settings</span></button>
       </div>
@@ -6009,6 +6282,7 @@ ${codiconFontFace}    .codicon {
     let mentionTruncated = false;
     let mentionError = "";
     let mentionSearched = false;
+    let expandedSkillDetailId = "";
     let promptHistorySessionID = "";
     let promptHistoryEntries = [];
     let promptHistorySignature = "";
@@ -8514,6 +8788,44 @@ ${codiconFontFace}    .codicon {
 	      detail.textContent = message || "";
 	    }
 
+      function skillDetailKey(skill, index) {
+        const raw = String((skill && (skill.id || skill.name || skill.commandName)) || "skill-" + index).trim().toLowerCase();
+        const normalized = raw.replace(/[^a-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "");
+        return normalized ? normalized + "-" + index : "skill-" + index;
+      }
+
+      function skillDetailDomId(detailKey) {
+        return "skill-detail-" + detailKey;
+      }
+
+      function toggleSkillDetail(detailKey) {
+        expandedSkillDetailId = expandedSkillDetailId === detailKey ? "" : detailKey;
+        syncSkillDetailExpansion();
+      }
+
+      function syncSkillDetailExpansion(root) {
+        const container = root && root.querySelectorAll ? root : el("skillsList");
+        if (!container || !container.querySelectorAll) return;
+        let matched = false;
+        const items = Array.from(container.querySelectorAll("[data-skill-detail-key]"));
+        for (const item of items) {
+          const detailKey = item.getAttribute("data-skill-detail-key") || "";
+          const open = Boolean(expandedSkillDetailId) && detailKey === expandedSkillDetailId;
+          if (open) matched = true;
+          item.classList.toggle("is-expanded", open);
+          const button = item.querySelector("[data-skill-detail-toggle]");
+          if (button) {
+            button.classList.toggle("is-active", open);
+            button.setAttribute("aria-expanded", open ? "true" : "false");
+            button.textContent = open ? "收起" : "详情";
+            button.title = open ? "收起 skill 详情" : "展开 skill 详情";
+          }
+          const panel = item.querySelector("[data-skill-detail-panel]");
+          if (panel) panel.hidden = !open;
+        }
+        if (expandedSkillDetailId && !matched) expandedSkillDetailId = "";
+      }
+
       function renderSkillsSettings() {
         const skills = Array.isArray(state.skills && state.skills.available) ? state.skills.available : [];
         const enabled = new Set(Array.isArray(state.skills && state.skills.enabled) ? state.skills.enabled : []);
@@ -8523,15 +8835,24 @@ ${codiconFontFace}    .codicon {
         const invalidCount = skills.filter((skill) => skill && skill.invalid).length;
         el("skillsSettingsStatus").textContent = skills.length ? enabledCount + "/" + skills.length + " enabled" + (invalidCount ? " · " + invalidCount + " invalid" : "") : "No skills";
         if (!skills.length) {
+          expandedSkillDetailId = "";
           const empty = document.createElement("div");
           empty.className = "comingSoonText";
           empty.textContent = "No skills found. Import SKILL.md files or add them under ~/.agents/skills/<name>/, workspace .agents/skills/<name>/, or .claude/skills/<name>/.";
           list.appendChild(empty);
           return;
         }
-        for (const skill of skills) {
+        skills.forEach((skill, index) => {
+          const detailKey = skillDetailKey(skill, index);
+          const detailId = skillDetailDomId(detailKey);
+          const open = detailKey === expandedSkillDetailId;
+          const item = document.createElement("div");
+          item.className = "skillItem" + (open ? " is-expanded" : "");
+          item.setAttribute("data-skill-detail-key", detailKey);
+          const summary = document.createElement("div");
+          summary.className = "skillSummaryRow";
           const label = document.createElement("label");
-          label.className = "skillItem";
+          label.className = "skillToggle";
           const checkbox = document.createElement("input");
           checkbox.type = "checkbox";
           checkbox.checked = Boolean(skill.enabled || enabled.has(skill.id) || enabled.has(skill.name) || enabled.has(skill.commandName));
@@ -8542,20 +8863,55 @@ ${codiconFontFace}    .codicon {
           const name = document.createElement("span");
           name.className = "skillName";
           name.textContent = skill.name || skill.id || "Skill";
+          const source = [skill.scope, skill.sourceKind, skill.visibility].filter(Boolean).join("/");
+          main.append(name);
+          label.append(checkbox, main);
+          const button = document.createElement("button");
+          button.type = "button";
+          button.className = "skillDetailToggle oc-liquid-btn" + (open ? " is-active" : "");
+          button.textContent = open ? "收起" : "详情";
+          button.title = open ? "收起 skill 详情" : "展开 skill 详情";
+          button.setAttribute("data-skill-detail-toggle", detailKey);
+          button.setAttribute("aria-controls", detailId);
+          button.setAttribute("aria-expanded", open ? "true" : "false");
+          button.addEventListener("click", () => toggleSkillDetail(detailKey));
+          summary.append(label, button);
+          item.appendChild(summary);
+          const panel = document.createElement("div");
+          panel.id = detailId;
+          panel.className = "skillDetailPanel";
+          panel.hidden = !open;
+          panel.setAttribute("data-skill-detail-panel", "true");
           const description = document.createElement("span");
           description.className = "skillDescription";
           description.textContent = skill.description || "No description.";
+          panel.appendChild(description);
           const meta = document.createElement("span");
           meta.className = "skillMeta";
-          const tools = Array.isArray(skill.allowedTools) && skill.allowedTools.length ? " · allowed-tools: " + skill.allowedTools.join(", ") : "";
-          const source = [skill.scope, skill.sourceKind, skill.visibility].filter(Boolean).join("/");
-          const errors = Array.isArray(skill.validationErrors) && skill.validationErrors.length ? " · invalid: " + skill.validationErrors.join("; ") : "";
-          const warnings = Array.isArray(skill.validationWarnings) && skill.validationWarnings.length ? " · warnings: " + skill.validationWarnings.join("; ") : "";
-          meta.textContent = (skill.path || ".agents/skills") + (source ? " · " + source : "") + tools + errors + warnings;
-          main.append(name, description, meta);
-          label.append(checkbox, main);
-          list.appendChild(label);
-        }
+          meta.textContent = (skill.path || ".agents/skills") + (source ? " · " + source : "");
+          panel.appendChild(meta);
+          if (Array.isArray(skill.allowedTools) && skill.allowedTools.length) {
+            const tools = document.createElement("span");
+            tools.className = "skillMeta";
+            tools.textContent = "allowed-tools: " + skill.allowedTools.join(", ");
+            panel.appendChild(tools);
+          }
+          if (Array.isArray(skill.validationErrors) && skill.validationErrors.length) {
+            const errors = document.createElement("span");
+            errors.className = "skillMeta skillMetaError";
+            errors.textContent = "invalid: " + skill.validationErrors.join("; ");
+            panel.appendChild(errors);
+          }
+          if (Array.isArray(skill.validationWarnings) && skill.validationWarnings.length) {
+            const warnings = document.createElement("span");
+            warnings.className = "skillMeta skillMetaWarning";
+            warnings.textContent = "warnings: " + skill.validationWarnings.join("; ");
+            panel.appendChild(warnings);
+          }
+          item.appendChild(panel);
+          list.appendChild(item);
+        });
+        syncSkillDetailExpansion(list);
       }
 
       function renderSkillsStatus(message, status) {
@@ -11388,6 +11744,8 @@ ${codiconFontFace}    .codicon {
       const clarificationParts = parts.filter((part) => part.type === "clarification");
       const runProgressParts = parts.filter((part) => part.type === "runProgress");
       const diagramParts = parts.filter((part) => part.type === "diagram");
+      const processDiagramParts = diagramParts.filter(isProcessDiagramPart);
+      const inlineDiagramParts = diagramParts.filter((part) => !isProcessDiagramPart(part));
       const toolParts = parts.filter((part) => part.type === "tool");
       const liveToolActivity = toolLiveActivityStatus(options && options.liveToolActivity, toolParts);
       const warningParts = parts.filter((part) => part.type === "serverToolWarning");
@@ -11401,32 +11759,24 @@ ${codiconFontFace}    .codicon {
       for (const part of clarificationParts) {
         root.appendChild(clarificationCard(part));
       }
-      for (const part of runProgressParts) {
-        root.appendChild(runProgressCard(part));
-      }
-      if (liveToolActivity) {
-        root.appendChild(toolLiveActivityRow(liveToolActivity));
-      }
-      if (toolParts.length > 0) {
-        root.appendChild(toolGroupCard(toolParts));
-      }
-      for (const part of diagramParts) {
+      const processStrip = turnProcessStrip({
+        runProgressParts,
+        toolParts,
+        liveToolActivity,
+        diagramParts: processDiagramParts,
+        docTimelineParts,
+        generatedParts,
+        wordRenderParts,
+      });
+      if (processStrip) root.appendChild(processStrip);
+      for (const part of inlineDiagramParts) {
         root.appendChild(diagramPartCard(part));
       }
       for (const part of warningParts) {
         root.appendChild(partCard(part, "Warning: workspace filesystem tool used", "serverWarning"));
       }
-      for (const part of docTimelineParts) {
-        root.appendChild(docAgentTimelineCard(part));
-      }
       for (const part of docConflictParts) {
         root.appendChild(docAgentConflictCard(part));
-      }
-      for (const part of generatedParts) {
-        root.appendChild(generatedDocumentCard(part));
-      }
-      for (const part of wordRenderParts) {
-        root.appendChild(wordRenderCard(part));
       }
     }
 
@@ -11512,6 +11862,412 @@ ${codiconFontFace}    .codicon {
       return node;
     }
 
+    function isProcessDiagramPart(part) {
+      if (!part || part.type !== "diagram") return false;
+      const kind = String(part.kind || "").toLowerCase();
+      if (part.source === "tool") return true;
+      return kind === "mermaid" && part.displayMode === "artifact";
+    }
+
+    function turnProcessStrip(input) {
+      const model = turnProcessModel(input);
+      if (!model.shouldRender) return undefined;
+      const details = document.createElement("details");
+      details.className = "turnProcessStrip"
+        + (model.running ? " is-running" : "")
+        + (model.warningCount > 0 || model.fallbackCount > 0 || (model.failedCount > 0 && !model.blockingFailed) ? " has-warning" : "")
+        + (model.blockingFailed ? " has-error" : "");
+      if (model.hasPendingApproval) details.open = true;
+      const summary = document.createElement("summary");
+      summary.className = "turnProcessSummary";
+      const marker = document.createElement("span");
+      marker.className = "turnProcessMarker";
+      marker.textContent = model.running ? "▸" : model.blockingFailed ? "!" : "✓";
+      const label = document.createElement("span");
+      label.className = "turnProcessLabel";
+      label.textContent = model.summary;
+      label.title = model.summary;
+      summary.append(marker, label);
+      if (model.primaryDocumentPath) {
+        const path = document.createElement("span");
+        path.className = "turnProcessPath";
+        path.textContent = "生成位置: " + model.primaryDocumentPath;
+        path.title = model.primaryDocumentPath;
+        summary.appendChild(path);
+      }
+      const meta = document.createElement("span");
+      meta.className = "turnProcessMeta";
+      if (model.progressText) appendTurnProcessMeta(meta, model.progressText);
+      if (model.mermaidPngCount) appendTurnProcessMeta(meta, "Mermaid PNG " + String(model.mermaidPngCount) + " 张");
+      if (model.elapsedText) appendTurnProcessMeta(meta, model.elapsedText);
+      if (model.warningCount) appendTurnProcessMeta(meta, "Warning " + String(model.warningCount));
+      if (model.fallbackCount) appendTurnProcessMeta(meta, "Fallback " + String(model.fallbackCount));
+      if (meta.childElementCount) summary.appendChild(meta);
+      const actions = document.createElement("span");
+      actions.className = "turnProcessActions";
+      if (model.primaryDocumentPath) actions.appendChild(turnProcessArtifactButton(model.primaryDocumentPath, "打开", "external", true));
+      if (model.primaryDocumentPath) actions.appendChild(turnProcessArtifactButton(model.primaryDocumentPath, "显示", "reveal", false));
+      const detailHint = document.createElement("span");
+      detailHint.className = "turnProcessDetailHint";
+      detailHint.textContent = "详情";
+      actions.appendChild(detailHint);
+      summary.appendChild(actions);
+      const body = document.createElement("div");
+      body.className = "turnProcessBody";
+      const warnings = turnProcessWarningList(input);
+      if (warnings.length) body.appendChild(turnProcessTextBlock("提示", warnings.slice(0, 10).join("\\n"), "turnProcessWarnings"));
+      const steps = turnProcessStepLines(input);
+      if (steps.length) body.appendChild(turnProcessTextBlock("执行步骤", steps.slice(-48).join("\\n"), "turnProcessSteps"));
+      const artifacts = turnProcessArtifactLines(input);
+      if (artifacts.length) body.appendChild(turnProcessTextBlock("Artifacts", artifacts.slice(0, 80).join("\\n"), "turnProcessArtifacts"));
+      body.appendChild(turnProcessDetailCards(input));
+      details.append(summary, body);
+      return details;
+    }
+
+    function turnProcessModel(input) {
+      const runProgressParts = input.runProgressParts || [];
+      const toolParts = input.toolParts || [];
+      const diagramParts = input.diagramParts || [];
+      const docTimelineParts = input.docTimelineParts || [];
+      const generatedParts = input.generatedParts || [];
+      const wordRenderParts = input.wordRenderParts || [];
+      const running = Boolean(input.liveToolActivity)
+        || runProgressParts.some((part) => isRunningStatus(part.status))
+        || toolParts.some((part) => isRunningStatus(part.status))
+        || docTimelineParts.some((part) => isRunningStatus(part.status));
+      const hasPendingApproval = toolParts.some(isPendingToolApproval);
+      const failedCount = toolParts.filter((part) => isFailedStatus(part.status)).length
+        + runProgressParts.filter((part) => isFailedStatus(part.status)).length
+        + docTimelineParts.filter((part) => isFailedStatus(part.status)).length
+        + wordRenderParts.filter((part) => part.ok === false).length;
+      const warningCount = turnProcessWarningList(input).length;
+      const mermaidPngCount = diagramParts.filter((part) => String(part.kind || "").toLowerCase() === "mermaid" && part.pngPath).length;
+      const primaryDocument = generatedParts.find((part) => part.path) || wordRenderParts.find((part) => part.path);
+      const progressArtifacts = turnProcessProgressArtifactPaths(input);
+      const primaryDocumentPath = primaryDocument ? primaryDocument.path : "";
+      const fallbackCount = diagramParts.filter((part) => part.fallbackUsed).length
+        + (primaryDocumentPath ? 0 : runProgressParts.reduce((sum, part) => sum + Number(part.fallbackCount || 0), 0))
+        + (primaryDocumentPath ? 0 : docTimelineParts.reduce((sum, part) => sum + Number(part.fallbackCount || 0), 0));
+      const requestedDocumentPath = primaryDocumentPath ? "" : turnProcessRequestedDocumentPath(input);
+      const progressSource = latestProgressPart(runProgressParts) || latestProgressPart(docTimelineParts);
+      const progressText = progressSource && progressSource.total ? String(progressSource.current || 0) + "/" + String(progressSource.total) + " 步" : "";
+      const elapsedSource = progressSource && progressSource.startedAt ? progressSource : runProgressParts.find((part) => part.startedAt) || docTimelineParts.find((part) => part.startedAt);
+      const elapsedText = elapsedSource && elapsedSource.startedAt && (running || elapsedSource.status !== "completed") ? elapsedLabel(elapsedSource.startedAt) : "";
+      const hasProcessParts = runProgressParts.length || toolParts.length || diagramParts.length || docTimelineParts.length || generatedParts.length || wordRenderParts.length || input.liveToolActivity;
+      const hasImportantArtifact = Boolean(primaryDocumentPath)
+        || diagramParts.some((part) => part.pngPath || part.mmdPath)
+        || wordRenderParts.some((part) => part.pdfArtifactPath || (Array.isArray(part.pagePngPaths) && part.pagePngPaths.length));
+      const shouldRender = Boolean(hasProcessParts && (running || hasPendingApproval || failedCount > 0 || warningCount > 0 || fallbackCount > 0 || hasImportantArtifact));
+      const blockingFailed = failedCount > 0 && !primaryDocumentPath;
+      return {
+        shouldRender,
+        running,
+        hasPendingApproval,
+        failedCount,
+        blockingFailed,
+        warningCount,
+        fallbackCount,
+        mermaidPngCount,
+        progressText,
+        elapsedText,
+        primaryDocumentPath,
+        requestedDocumentPath,
+        summary: turnProcessSummaryText({
+          running,
+          failedCount,
+          warningCount,
+          fallbackCount,
+          primaryDocumentPath,
+          requestedDocumentPath,
+          generatedParts,
+          diagramParts,
+          wordRenderParts,
+          currentStep: turnProcessCurrentStep(input),
+        }),
+      };
+    }
+
+    function turnProcessSummaryText(model) {
+      const important = [];
+      const skipped = model.wordRenderParts.find((part) => part.visualQaStatus === "skipped" || part.attempted === false);
+      if (skipped) important.push("视觉 QA 已跳过：" + wordRenderSkipReasonText(skipped.skipReason));
+      if (model.fallbackCount) important.push("Mermaid 使用 fallback");
+      if (model.failedCount) important.push(model.primaryDocumentPath ? "有重试失败" : "存在失败步骤");
+      if (model.primaryDocumentPath) {
+        return ["Word 文档已生成", basenameForDisplay(model.primaryDocumentPath), ...important].filter(Boolean).join(" · ");
+      }
+      if (model.failedCount && model.requestedDocumentPath) {
+        return ["Word 生成失败", basenameForDisplay(model.requestedDocumentPath), ...important.filter((item) => item !== "存在失败步骤")].filter(Boolean).join(" · ");
+      }
+      if (model.diagramParts.length) {
+        const label = model.running ? "正在生成图表" : "图表已生成";
+        return [label, ...important].filter(Boolean).join(" · ");
+      }
+      if (model.wordRenderParts.length) {
+        const label = model.running ? "正在进行 Word 视觉 QA" : skipped ? "Word 视觉 QA 已跳过" : "Word 视觉 QA 已完成";
+        return [label, ...important.filter((item) => !item.startsWith("视觉 QA"))].filter(Boolean).join(" · ");
+      }
+      if (model.running) return ["正在处理", model.currentStep].filter(Boolean).join(" · ");
+      if (model.failedCount) return "执行过程存在失败";
+      if (model.warningCount || model.fallbackCount) return "执行完成但有提示";
+      return "执行过程";
+    }
+
+    function basenameForDisplay(path) {
+      const text = String(path || "");
+      const parts = text.split(/[\\/]/).filter(Boolean);
+      return parts[parts.length - 1] || text;
+    }
+
+    function latestProgressPart(parts) {
+      return (parts || []).slice().sort((a, b) => Number(b.updatedAt || b.startedAt || 0) - Number(a.updatedAt || a.startedAt || 0))[0];
+    }
+
+    function isRunningStatus(status) {
+      const value = String(status || "");
+      return value === "running" || value === "waiting" || value === "user-input-required" || value === "approval-required";
+    }
+
+    function isFailedStatus(status) {
+      const value = String(status || "");
+      return value === "failed" || value === "error" || value === "blocked";
+    }
+
+    function turnProcessCurrentStep(input) {
+      if (input.liveToolActivity) return assistantActivityLabel(input.liveToolActivity);
+      const progress = latestProgressPart(input.runProgressParts || []);
+      const items = progress && Array.isArray(progress.items) ? progress.items : [];
+      const runningItem = items.slice().reverse().find((item) => item && isRunningStatus(item.status));
+      if (runningItem) return runningItem.title || runningItem.tool || "";
+      const latestItem = items[items.length - 1];
+      if (latestItem) return latestItem.title || latestItem.tool || "";
+      const tool = (input.toolParts || []).slice().reverse().find(Boolean);
+      return tool ? tool.title || "" : "";
+    }
+
+    function appendTurnProcessMeta(root, text) {
+      const item = document.createElement("span");
+      item.className = "turnProcessMetaItem";
+      item.textContent = text;
+      root.appendChild(item);
+    }
+
+    function turnProcessArtifactButton(path, label, mode, primary) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "statusActionButton turnProcessAction" + (primary ? " primary" : "");
+      button.textContent = label;
+      button.title = label + ": " + path;
+      button.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        vscode.postMessage({ type: "openGeneratedDocument", path, mode: mode || "external" });
+      });
+      return button;
+    }
+
+    function turnProcessWarningList(input) {
+      const warnings = [];
+      const deliveredDocumentPath = turnProcessDeliveredDocumentPath(input);
+      for (const part of input.generatedParts || []) {
+        const filteredWarnings = filteredGeneratedDocumentWarnings(input, part);
+        if (filteredWarnings.length) warnings.push("Word 文档 warning " + String(filteredWarnings.length) + " 条");
+        for (const item of filteredWarnings) warnings.push(String(item));
+      }
+      for (const part of input.diagramParts || []) {
+        if (part.fallbackUsed) warnings.push((part.title || "Mermaid 图表") + " 使用 fallback renderer");
+        if (String(part.kind || "").toLowerCase() === "mermaid" && !part.pngPath) warnings.push((part.title || "Mermaid 图表") + " 未生成 PNG");
+        for (const item of part.warnings || []) warnings.push(String(item));
+      }
+      for (const part of input.wordRenderParts || []) {
+        if (isStaleWordRenderPart(input, part)) continue;
+        if (part.visualQaStatus === "skipped" || part.attempted === false) warnings.push("页面级视觉 QA 已跳过：" + wordRenderSkipReasonText(part.skipReason));
+        if (part.ok === false) warnings.push("Word render QA 返回风险状态");
+        for (const item of part.warnings || []) warnings.push(String(item));
+      }
+      for (const part of input.runProgressParts || []) {
+        if (deliveredDocumentPath) continue;
+        if (part.warningCount) warnings.push("执行进度 warning " + String(part.warningCount) + " 条");
+        if (part.fallbackCount) warnings.push("执行进度 fallback " + String(part.fallbackCount) + " 次");
+      }
+      for (const part of input.docTimelineParts || []) {
+        if (deliveredDocumentPath) continue;
+        if (part.warningCount) warnings.push("文档生成 warning " + String(part.warningCount) + " 条");
+        if (part.fallbackCount) warnings.push("文档生成 fallback " + String(part.fallbackCount) + " 次");
+      }
+      for (const part of input.toolParts || []) {
+        if (deliveredDocumentPath) continue;
+        if (isFailedStatus(part.status)) warnings.push(toolSummaryLabel(part));
+      }
+      return uniqueStrings(warnings).filter(Boolean);
+    }
+
+    function turnProcessDeliveredDocumentPath(input) {
+      const generated = (input.generatedParts || []).find((part) => part.path);
+      if (generated) return generated.path || "";
+      const rendered = (input.wordRenderParts || []).find((part) => part.path);
+      return rendered ? rendered.path || "" : "";
+    }
+
+    function filteredGeneratedDocumentWarnings(input, part) {
+      const items = Array.isArray(part.warnings) ? part.warnings : [];
+      if (!items.length) return [];
+      return items.map((item) => String(item || "").trim()).filter((item) => {
+        if (!item) return false;
+        return !isStaleGeneratedDocumentWarning(input, part, item);
+      });
+    }
+
+    function isStaleGeneratedDocumentWarning(input, part, warning) {
+      if (!hasCompletedWordRenderForPath(input, part.path)) return false;
+      return /remote-word-render-unconfigured/i.test(warning)
+        || /Remote Word render server is not configured/i.test(warning)
+        || /page-level visual QA was skipped/i.test(warning);
+    }
+
+    function isStaleWordRenderPart(input, part) {
+      if (!(part.visualQaStatus === "skipped" || part.attempted === false || part.ok === false)) return false;
+      return hasCompletedWordRenderForPath(input, part.path);
+    }
+
+    function hasCompletedWordRenderForPath(input, path) {
+      const target = comparableArtifactPath(path);
+      if (!target) return false;
+      return (input.wordRenderParts || []).some((part) => {
+        if (part === undefined || comparableArtifactPath(part.path) !== target) return false;
+        if (part.visualQaStatus === "skipped" || part.attempted === false || part.ok === false) return false;
+        const pages = Array.isArray(part.pagePngPaths) ? part.pagePngPaths : [];
+        return part.visualQaStatus === "completed" || Boolean(part.pdfArtifactPath) || pages.length > 0;
+      });
+    }
+
+    function comparableArtifactPath(path) {
+      const text = String(path || "").split(String.fromCharCode(92)).join("/");
+      return text.startsWith("./") ? text.slice(2) : text;
+    }
+
+    function uniqueStrings(items) {
+      const seen = new Set();
+      const result = [];
+      for (const item of items) {
+        const text = String(item || "").trim();
+        if (!text || seen.has(text)) continue;
+        seen.add(text);
+        result.push(text);
+      }
+      return result;
+    }
+
+    function turnProcessStepLines(input) {
+      const lines = [];
+      for (const part of input.runProgressParts || []) {
+        const items = Array.isArray(part.items) ? part.items : [];
+        if (items.length) {
+          for (const item of items) lines.push(turnProcessStepLine(item.title || item.tool || "step", runProgressStatusLabel(item.status), item.detail || item.artifactPath || item.path || item.targetPath || item.requestedPath || item.provider || ""));
+        } else {
+          lines.push(turnProcessStepLine(part.title || "执行进度", runProgressStatusLabel(part.status), part.total ? String(part.current || 0) + "/" + String(part.total) : ""));
+        }
+      }
+      for (const part of input.docTimelineParts || []) {
+        const events = Array.isArray(part.events) ? part.events : [];
+        if (events.length) {
+          for (const event of events) lines.push(turnProcessStepLine(event.title || event.type || "step", event.stateLabel || docAgentStatusLabel(event.status), event.detail || event.warning || ""));
+        } else {
+          lines.push(turnProcessStepLine(part.title || "文档生成过程", docAgentStatusLabel(part.status), part.path || ""));
+        }
+      }
+      if (!lines.length) {
+        for (const part of input.toolParts || []) lines.push(turnProcessStepLine(part.title || "tool", part.status || "called", ""));
+      }
+      return lines;
+    }
+
+    function turnProcessStepLine(title, status, detail) {
+      return [title, status, detail].filter(Boolean).join(" · ");
+    }
+
+    function turnProcessArtifactLines(input) {
+      const lines = [];
+      for (const part of input.generatedParts || []) {
+        if (part.path) lines.push("DOCX: " + part.path);
+        if (part.runSummaryPath) lines.push("Run summary: " + part.runSummaryPath);
+      }
+      for (const part of input.diagramParts || []) {
+        if (part.pngPath) lines.push((String(part.kind || "").toUpperCase() || "Diagram") + " PNG: " + part.pngPath);
+        if (part.mmdPath) lines.push("Mermaid source: " + part.mmdPath);
+      }
+      for (const part of input.wordRenderParts || []) {
+        if (part.pdfArtifactPath) lines.push("PDF: " + part.pdfArtifactPath);
+        const pages = Array.isArray(part.pagePngPaths) ? part.pagePngPaths : [];
+        for (const [index, path] of pages.slice(0, 12).entries()) lines.push("Page PNG " + String(index + 1) + ": " + path);
+        if (pages.length > 12) lines.push("Page PNG: ..." + String(pages.length - 12) + " more");
+      }
+      for (const path of turnProcessProgressArtifactPaths(input)) {
+        if (/\.docx$/i.test(path)) lines.push("DOCX: " + path);
+        else if (/\.png$/i.test(path)) lines.push("PNG: " + path);
+        else lines.push("Artifact: " + path);
+      }
+      return uniqueStrings(lines);
+    }
+
+    function turnProcessProgressArtifactPaths(input) {
+      const paths = [];
+      for (const part of [...(input.runProgressParts || []), ...(input.docTimelineParts || [])]) {
+        const items = Array.isArray(part.items) ? part.items : Array.isArray(part.events) ? part.events : [];
+        for (const item of items) {
+          if (!item || typeof item !== "object") continue;
+          const artifactPath = typeof item.artifactPath === "string" ? item.artifactPath : "";
+          if (isFailedStatus(item.status)) continue;
+          const path = typeof item.path === "string" ? item.path : "";
+          if (artifactPath) paths.push(artifactPath);
+          if (path) paths.push(path);
+        }
+        if (!isFailedStatus(part.status) && typeof part.path === "string") paths.push(part.path);
+      }
+      return uniqueStrings(paths).filter((path) => /\.(?:docx|pdf|png|mmd)$/i.test(path));
+    }
+
+    function turnProcessRequestedDocumentPath(input) {
+      const paths = [];
+      for (const part of [...(input.runProgressParts || []), ...(input.docTimelineParts || [])]) {
+        const items = Array.isArray(part.items) ? part.items : Array.isArray(part.events) ? part.events : [];
+        for (const item of items) {
+          if (!item || typeof item !== "object") continue;
+          const targetPath = typeof item.targetPath === "string" ? item.targetPath : "";
+          const requestedPath = typeof item.requestedPath === "string" ? item.requestedPath : "";
+          if (/\.docx$/i.test(targetPath)) paths.push(targetPath);
+          if (/\.docx$/i.test(requestedPath)) paths.push(requestedPath);
+        }
+      }
+      return uniqueStrings(paths)[0] || "";
+    }
+
+    function turnProcessTextBlock(title, text, className) {
+      const section = document.createElement("section");
+      section.className = "turnProcessSection";
+      const head = document.createElement("div");
+      head.className = "turnProcessSectionTitle";
+      head.textContent = title;
+      const body = document.createElement("pre");
+      body.className = className || "turnProcessText";
+      body.textContent = text;
+      section.append(head, body);
+      return section;
+    }
+
+    function turnProcessDetailCards(input) {
+      const group = document.createElement("div");
+      group.className = "turnProcessDetailCards";
+      if ((input.toolParts || []).length) group.appendChild(toolGroupCard(input.toolParts || []));
+      for (const part of input.runProgressParts || []) group.appendChild(runProgressCard(part));
+      for (const part of input.docTimelineParts || []) group.appendChild(docAgentTimelineCard(part));
+      for (const part of input.generatedParts || []) group.appendChild(generatedDocumentCard(part, input));
+      for (const part of input.diagramParts || []) group.appendChild(diagramPartCard(part));
+      for (const part of input.wordRenderParts || []) group.appendChild(wordRenderCard(part));
+      return group;
+    }
+
 	    function diagramPartCard(part) {
 	      if (String(part.kind || "").toLowerCase() === "mermaid") {
 	        if (part.displayMode === "artifact" || part.source === "tool") return mermaidArtifactCard(part);
@@ -11555,7 +12311,11 @@ ${codiconFontFace}    .codicon {
       appendMermaidArtifactStat(meta, "PNG", part.pngPath ? "已生成" : "未生成");
       if (part.renderProvider) appendMermaidArtifactStat(meta, "Renderer", part.renderProvider);
       if (part.fallbackUsed) appendMermaidArtifactStat(meta, "Fallback", "已使用");
-      if (part.width || part.height) appendMermaidArtifactStat(meta, "Size", String(part.width || "?") + "x" + String(part.height || "?"));
+      if (part.scale) appendMermaidArtifactStat(meta, "Scale", String(part.scale));
+      if (part.width || part.height) appendMermaidArtifactStat(meta, "CSS size", String(part.width || "?") + "x" + String(part.height || "?"));
+      if (part.pixelWidth || part.pixelHeight) appendMermaidArtifactStat(meta, "PNG pixels", String(part.pixelWidth || "?") + "x" + String(part.pixelHeight || "?"));
+      if (part.cropBounds) appendMermaidArtifactStat(meta, "Crop", formatBoundsStat(part.cropBounds));
+      if (part.contentBounds) appendMermaidArtifactStat(meta, "Content", formatBoundsStat(part.contentBounds));
       if (meta.childElementCount) body.appendChild(meta);
       const paths = [part.mmdPath ? "Source: " + part.mmdPath : "", part.pngPath ? "PNG: " + part.pngPath : ""].filter(Boolean).join("\\n");
       if (paths) {
@@ -11611,6 +12371,11 @@ ${codiconFontFace}    .codicon {
       item.className = "mermaidArtifactStat";
       item.textContent = label + ": " + value;
       root.appendChild(item);
+    }
+
+    function formatBoundsStat(bounds) {
+      if (!bounds) return "";
+      return String(bounds.width || "?") + "x" + String(bounds.height || "?") + " @ " + String(bounds.x || 0) + "," + String(bounds.y || 0);
     }
 
     function openGeneratedArtifactButton(path, label, mode) {
@@ -11950,6 +12715,8 @@ ${codiconFontFace}    .codicon {
         item.detail || "",
         item.artifactPath ? "artifact: " + item.artifactPath : "",
         item.path && item.path !== item.artifactPath ? "path: " + item.path : "",
+        item.targetPath ? "target: " + item.targetPath : "",
+        item.requestedPath ? "requested: " + item.requestedPath : "",
         item.provider ? "provider: " + item.provider : "",
         item.fallbackUsed ? "fallback: true" : "",
       ].filter(Boolean).join("\\n");
@@ -12169,7 +12936,7 @@ ${codiconFontFace}    .codicon {
       return String(Math.round(elapsed / 1000)) + "s";
     }
 
-    function generatedDocumentCard(part) {
+    function generatedDocumentCard(part, input) {
       const card = document.createElement("div");
       card.className = "toolCard generatedDocumentCard";
       const title = document.createElement("div");
@@ -12177,7 +12944,8 @@ ${codiconFontFace}    .codicon {
       title.textContent = "Word 文档已生成";
       const meta = document.createElement("div");
       meta.className = "generatedDocumentMeta";
-      meta.textContent = (part.path || "") + " · 来源 " + (part.sourceCount || 0) + " 份 · Warning " + (part.warningCount || 0) + " 条";
+      const warningsForDisplay = filteredGeneratedDocumentWarnings(input || {}, part);
+      meta.textContent = (part.path || "") + " · 来源 " + (part.sourceCount || 0) + " 份 · Warning " + warningsForDisplay.length + " 条";
       const actions = document.createElement("div");
       actions.className = "generatedDocumentActions";
       const open = document.createElement("button");
@@ -12194,10 +12962,10 @@ ${codiconFontFace}    .codicon {
       reveal.addEventListener("click", () => vscode.postMessage({ type: "openGeneratedDocument", path: part.path, mode: "reveal" }));
       actions.append(open, reveal);
       card.append(title, meta, actions);
-      if (Array.isArray(part.warnings) && part.warnings.length) {
+      if (warningsForDisplay.length) {
         const warnings = document.createElement("pre");
         warnings.className = "generatedDocumentWarnings";
-        warnings.textContent = part.warnings.slice(0, 8).join("\\n");
+        warnings.textContent = warningsForDisplay.slice(0, 8).join("\\n");
         card.appendChild(warnings);
       }
       return card;
@@ -14928,7 +15696,7 @@ ${codiconFontFace}    .codicon {
 	      if (rag.availability === "partial") return "RAG partial: " + formatCount(rag.embeddedChunks || 0) + "/" + formatCount(rag.chunks || 0) + " chunks" + ragElapsedMeta(rag) + ragWorkerMeta(rag) + ragResumeScheduleMeta(rag) + rerank;
 	      if (rag.availability === "paused") return "RAG indexing paused: " + ragPausedReasonMeta(rag) + ragElapsedMeta(rag) + ragWorkerMeta(rag) + ragResumeScheduleMeta(rag) + rerank;
       if (rag.availability === "not-indexed") return "RAG not indexed" + (rag.fallbackReason ? ": " + rag.fallbackReason : "") + rerank;
-      if (rag.availability === "unavailable") return "RAG unavailable" + (rag.fallbackReason ? ": " + rag.fallbackReason : "") + rerank;
+	      if (rag.availability === "unavailable") return "RAG unavailable" + (rag.fallbackReason ? ": " + rag.fallbackReason : "") + ragResumeScheduleMeta(rag) + rerank;
       return "RAG not configured" + rerank;
     }
 
@@ -14975,7 +15743,7 @@ ${codiconFontFace}    .codicon {
     function ragResumeScheduleMeta(rag) {
       if (!rag.resumeScheduledAt || !rag.resumeReason) return "";
       const remainingMs = Math.max(0, rag.resumeScheduledAt - Date.now());
-      const label = rag.resumeReason === "rate-limit" ? "retry scheduled" : "resume scheduled";
+	      const label = rag.resumeReason === "rate-limit" || rag.resumeReason === "probe" ? "retry scheduled" : "resume scheduled";
       return "; " + label + " in " + Math.ceil(remainingMs / 1000) + "s";
     }
 

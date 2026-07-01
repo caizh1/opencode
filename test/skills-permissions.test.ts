@@ -164,7 +164,7 @@ describe("ChipMate skills", () => {
     expect(renderSkillsForPrompt([skill], { toolsEnabled: true })).toContain("Allowed tools requested by skill metadata: chipmate_read, chipmate_run_command")
     expect(renderSkillsForPrompt([skill], { toolsEnabled: false })).not.toContain("Allowed tools requested by skill metadata")
     expect(renderSkillsForPrompt([skill], { toolsEnabled: true, exposedToolNames: ["chipmate_read"] })).toContain("Allowed tools requested by skill metadata: chipmate_read")
-    expect(renderSkillsForPrompt([skill], { toolsEnabled: true, exposedToolNames: ["chipmate_read"] })).not.toContain("chipmate_run_command")
+    expect(renderSkillsForPrompt([skill], { toolsEnabled: true, exposedToolNames: ["chipmate_read"] })).not.toContain("Allowed tools requested by skill metadata: chipmate_read, chipmate_run_command")
   })
 
   test("discovers only workspace .agents/skills/*/SKILL.md entries and marks configured skills enabled", async () => {
@@ -194,7 +194,9 @@ describe("ChipMate skills", () => {
       enabled: ["review"],
       overrides: {},
       scanUserSkills: false,
+      scanOpenCodeSkills: true,
       scanClaudeSkills: true,
+      scanCodexSkills: true,
       maxCatalogBytes: 8000,
     }))
     const skills = await registry.listSkills()
@@ -220,8 +222,11 @@ describe("ChipMate skills", () => {
     await mkdir(join(repo, ".git"), { recursive: true })
     await mkdir(join(repo, ".agents", "skills", "review"), { recursive: true })
     await mkdir(join(service, ".agents", "skills", "review"), { recursive: true })
+    await mkdir(join(service, ".opencode", "skills", "iar-to-gcc-migration-gated", "references"), { recursive: true })
     await mkdir(join(service, ".claude", "skills", "deploy"), { recursive: true })
     await mkdir(join(userHome, ".agents", "skills", "personal"), { recursive: true })
+    await mkdir(join(userHome, ".opencode", "skills", "opersonal"), { recursive: true })
+    await mkdir(join(userHome, ".codex", "skills", "codex-personal"), { recursive: true })
     await writeFile(join(repo, ".agents", "skills", "review", "SKILL.md"), [
       "---",
       "name: review",
@@ -247,6 +252,14 @@ describe("ChipMate skills", () => {
       "---",
       "Deploy body.",
     ].join("\n"))
+    await writeFile(join(service, ".opencode", "skills", "iar-to-gcc-migration-gated", "references", "migration-reference.md"), "Migration reference.\n")
+    await writeFile(join(service, ".opencode", "skills", "iar-to-gcc-migration-gated", "SKILL.md"), [
+      "---",
+      "name: iar-to-gcc-migration-gated",
+      "description: Migrate IAR projects to GCC with gates",
+      "---",
+      "Read references/migration-reference.md and run scripts with chipmate_run_command.",
+    ].join("\n"))
     await writeFile(join(userHome, ".agents", "skills", "personal", "SKILL.md"), [
       "---",
       "name: personal",
@@ -254,18 +267,35 @@ describe("ChipMate skills", () => {
       "---",
       "Personal body.",
     ].join("\n"))
+    await writeFile(join(userHome, ".opencode", "skills", "opersonal", "SKILL.md"), [
+      "---",
+      "name: opersonal",
+      "description: OpenCode personal workflow",
+      "---",
+      "OpenCode personal body.",
+    ].join("\n"))
+    await writeFile(join(userHome, ".codex", "skills", "codex-personal", "SKILL.md"), [
+      "---",
+      "name: codex-personal",
+      "description: Codex personal workflow",
+      "---",
+      "Codex personal body.",
+    ].join("\n"))
 
     const outputLines: string[] = []
     const registry = new SkillRegistry(() => ({
       enabled: [],
       overrides: {},
+      scanUserSkills: true,
+      scanOpenCodeSkills: true,
       scanClaudeSkills: true,
+      scanCodexSkills: true,
       maxCatalogBytes: 8000,
       userHome,
     } as never), { appendLine: (line: string) => outputLines.push(line) } as never)
     const skills = await registry.listSkills()
 
-    expect(skills.map((skill) => skill.name).sort()).toEqual(["deploy", "personal", "review"])
+    expect(skills.map((skill) => skill.name).sort()).toEqual(["codex-personal", "deploy", "iar-to-gcc-migration-gated", "opersonal", "personal", "review"])
     expect(skills.find((skill) => skill.name === "review")).toMatchObject({
       description: "Workspace review skill",
       scope: "workspace",
@@ -280,10 +310,134 @@ describe("ChipMate skills", () => {
       modelVisible: true,
       validationWarnings: expect.arrayContaining([expect.stringContaining("name missing")]),
     })
+    expect(skills.find((skill) => skill.name === "iar-to-gcc-migration-gated")).toMatchObject({
+      scope: "workspace",
+      sourceKind: "opencode",
+      resourceFiles: ["references/migration-reference.md"],
+    })
+    expect(skills.find((skill) => skill.name === "opersonal")).toMatchObject({
+      scope: "user",
+      sourceKind: "opencode",
+    })
+    expect(skills.find((skill) => skill.name === "codex-personal")).toMatchObject({
+      scope: "user",
+      sourceKind: "codex",
+    })
     expect(skills.find((skill) => skill.name === "personal")).toMatchObject({
       scope: "user",
     })
     expect(outputLines.join("\n")).toContain("shadowed")
+  })
+
+  test("can disable OpenCode and Codex-compatible skill scanning", async () => {
+    const root = await tempDir("chipmate-skills-disable-opencode-")
+    const userHome = await tempDir("chipmate-skills-disable-codex-home-")
+    workspaceFolders = [{ name: "repo", uri: UriShim.file(root) }]
+    await mkdir(join(root, ".agents", "skills", "workspace"), { recursive: true })
+    await mkdir(join(root, ".opencode", "skills", "opencode"), { recursive: true })
+    await mkdir(join(userHome, ".codex", "skills", "codex"), { recursive: true })
+    await writeFile(join(root, ".agents", "skills", "workspace", "SKILL.md"), [
+      "---",
+      "name: workspace",
+      "description: Workspace workflow",
+      "---",
+      "Workspace body.",
+    ].join("\n"))
+    await writeFile(join(root, ".opencode", "skills", "opencode", "SKILL.md"), [
+      "---",
+      "name: opencode",
+      "description: OpenCode workflow",
+      "---",
+      "OpenCode body.",
+    ].join("\n"))
+    await writeFile(join(userHome, ".codex", "skills", "codex", "SKILL.md"), [
+      "---",
+      "name: codex",
+      "description: Codex workflow",
+      "---",
+      "Codex body.",
+    ].join("\n"))
+
+    const registry = new SkillRegistry(() => ({
+      enabled: [],
+      overrides: {},
+      scanUserSkills: true,
+      scanOpenCodeSkills: false,
+      scanClaudeSkills: true,
+      scanCodexSkills: false,
+      maxCatalogBytes: 8000,
+      userHome,
+    } as never))
+    const skills = await registry.listSkills()
+
+    expect(skills.map((skill) => skill.name)).toEqual(["workspace"])
+  })
+
+  test("discovers bundled builtin skills and lets workspace skills shadow them", async () => {
+    const root = await tempDir("chipmate-skills-builtin-workspace-")
+    const builtinRoot = await tempDir("chipmate-skills-builtin-")
+    await mkdir(join(builtinRoot, "documents"), { recursive: true })
+    await writeFile(join(builtinRoot, "documents", "SKILL.md"), [
+      "---",
+      "name: documents",
+      "description: Builtin documents workflow",
+      "allowed-tools: [create_word_document, render_word_document]",
+      "metadata:",
+      "  keywords:",
+      "    - Word 文档",
+      "    - 生成*文档",
+      "---",
+      "Builtin documents body.",
+    ].join("\n"))
+    workspaceFolders = []
+    const builtinOnly = new SkillRegistry(() => ({
+      enabled: [],
+      overrides: {},
+      scanUserSkills: false,
+      scanOpenCodeSkills: true,
+      scanClaudeSkills: false,
+      scanCodexSkills: true,
+      maxCatalogBytes: 8000,
+    }), undefined, builtinRoot)
+    expect(await builtinOnly.listSkills()).toEqual([
+      expect.objectContaining({
+        name: "documents",
+        scope: "builtin",
+        allowedTools: ["create_word_document", "render_word_document"],
+      }),
+    ])
+
+    workspaceFolders = [{ name: "repo", uri: UriShim.file(root) }]
+    await mkdir(join(root, ".agents", "skills", "documents"), { recursive: true })
+    await writeFile(join(root, ".agents", "skills", "documents", "SKILL.md"), [
+      "---",
+      "name: documents",
+      "description: Workspace documents workflow",
+      "allowed-tools: [create_word_document]",
+      "---",
+      "Workspace documents body.",
+    ].join("\n"))
+
+    const outputLines: string[] = []
+    const registry = new SkillRegistry(() => ({
+      enabled: [],
+      overrides: {},
+      scanUserSkills: false,
+      scanOpenCodeSkills: true,
+      scanClaudeSkills: false,
+      scanCodexSkills: true,
+      maxCatalogBytes: 8000,
+    }), { appendLine: (line: string) => outputLines.push(line) } as never, builtinRoot)
+    const skills = await registry.listSkills()
+
+    expect(skills).toHaveLength(1)
+    expect(skills[0]).toMatchObject({
+      name: "documents",
+      scope: "workspace",
+      description: "Workspace documents workflow",
+    })
+    expect(outputLines.join("\n")).toContain("scope=builtin")
+    expect(outputLines.join("\n")).toContain("shadowed name=documents")
   })
 
   test("does not discover user skills when user scanning is explicitly disabled", async () => {
@@ -311,7 +465,9 @@ describe("ChipMate skills", () => {
       enabled: [],
       overrides: {},
       scanUserSkills: false,
+      scanOpenCodeSkills: true,
       scanClaudeSkills: true,
+      scanCodexSkills: true,
       maxCatalogBytes: 8000,
       userHome,
     }))
@@ -346,7 +502,7 @@ describe("ChipMate skills", () => {
       "See [missing](references/missing.md).",
     ].join("\n"))
 
-    const registry = new SkillRegistry(() => ({ enabled: [], overrides: {}, scanUserSkills: false, scanClaudeSkills: true, maxCatalogBytes: 8000 }))
+    const registry = new SkillRegistry(() => ({ enabled: [], overrides: {}, scanUserSkills: false, scanOpenCodeSkills: true, scanClaudeSkills: true, scanCodexSkills: true, maxCatalogBytes: 8000 }))
     const skills = await registry.listSkills()
     expect(skills.find((skill) => skill.name === "docs")).toMatchObject({
       invalid: false,
@@ -362,6 +518,7 @@ describe("ChipMate skills", () => {
     expect(renderSkillsForPrompt(loaded ? [loaded] : [], { toolsEnabled: true, exposedToolNames: ["chipmate_read_skill_resource"] })).toContain("references/guide.md")
     expect(renderSkillsForPrompt(loaded ? [loaded] : [], { toolsEnabled: true, exposedToolNames: ["chipmate_read_skill_resource"] })).toContain("scripts/manifest.json")
     expect(renderSkillsForPrompt(loaded ? [loaded] : [], { toolsEnabled: true, exposedToolNames: ["chipmate_read_skill_resource"] })).toContain("tasks/create.md")
+    expect(renderSkillsForPrompt(loaded ? [loaded] : [], { toolsEnabled: true, exposedToolNames: ["chipmate_read_skill_resource"] })).toContain("chipmate_run_command")
   })
 
   test("uses skill metadata keywords to activate the documents skill for Chinese Word requests", async () => {
@@ -391,7 +548,9 @@ describe("ChipMate skills", () => {
       enabled: [],
       overrides: {},
       scanUserSkills: false,
+      scanOpenCodeSkills: true,
       scanClaudeSkills: false,
+      scanCodexSkills: true,
       maxCatalogBytes: 8000,
     }))
     const skills = await registry.enabledSkills()
@@ -416,7 +575,9 @@ describe("ChipMate skills", () => {
       enabled: [],
       overrides: {},
       scanUserSkills: false,
+      scanOpenCodeSkills: true,
       scanClaudeSkills: false,
+      scanCodexSkills: true,
       maxCatalogBytes: 8000,
     }))
     const skills = await registry.enabledSkills()

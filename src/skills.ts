@@ -4,8 +4,8 @@ import * as vscode from "vscode"
 import { load as loadYaml } from "js-yaml"
 import type { RemoteSettings } from "./types"
 
-export type SkillScope = "workspace" | "parent" | "user"
-export type SkillSourceKind = "agents" | "claude"
+export type SkillScope = "workspace" | "parent" | "user" | "builtin"
+export type SkillSourceKind = "agents" | "opencode" | "claude" | "codex"
 export type SkillVisibility = "on" | "name-only" | "user-invocable-only" | "off"
 export type SkillInvocationMode = "explicit" | "implicit"
 
@@ -45,6 +45,7 @@ export type ActiveSkillPolicy = {
   name: string
   path: string
   skillRoot: string
+  sourceKind?: SkillSourceKind
   allowedTools: string[]
   invocationMode: SkillInvocationMode
 }
@@ -66,6 +67,7 @@ type SkillFrontmatter = {
 
 type SkillRegistrySettings = RemoteSettings["skills"] & {
   userHome?: string
+  builtinSkillRoot?: string
 }
 
 type SkillSource = {
@@ -81,7 +83,9 @@ type SkillCandidate = SkillMetadata & {
 }
 
 const AGENTS_SKILL_ROOT = ".agents/skills"
+const OPENCODE_SKILL_ROOT = ".opencode/skills"
 const CLAUDE_SKILL_ROOT = ".claude/skills"
+const CODEX_SKILL_ROOT = ".codex/skills"
 const SKILL_FILE = "SKILL.md"
 const CATALOG_DEFAULT_MAX_BYTES = 8000
 const RESOURCE_DIRS = ["references", "assets", "scripts", "tasks"] as const
@@ -97,6 +101,7 @@ export class SkillRegistry {
   constructor(
     private readonly skillSettings: () => string[] | SkillRegistrySettings,
     private readonly output?: vscode.OutputChannel,
+    private readonly builtinSkillRoot?: string,
   ) {}
 
   invalidate() {
@@ -208,6 +213,15 @@ export class SkillRegistry {
           workspaceName: folder.name,
           priority: priority + index,
         })
+        if (settings.scanOpenCodeSkills) {
+          addSource({
+            sourceRoot: nodePath.join(parents[index], OPENCODE_SKILL_ROOT),
+            scope: index === 0 ? "workspace" : "parent",
+            sourceKind: "opencode",
+            workspaceName: folder.name,
+            priority: priority + 50 + index,
+          })
+        }
       }
       if (settings.scanClaudeSkills) {
         addSource({
@@ -229,6 +243,15 @@ export class SkillRegistry {
         workspaceName: "user",
         priority: 10_000,
       })
+      if (settings.scanOpenCodeSkills) {
+        addSource({
+          sourceRoot: nodePath.join(home, OPENCODE_SKILL_ROOT),
+          scope: "user",
+          sourceKind: "opencode",
+          workspaceName: "user",
+          priority: 10_050,
+        })
+      }
       if (settings.scanClaudeSkills) {
         addSource({
           sourceRoot: nodePath.join(home, CLAUDE_SKILL_ROOT),
@@ -238,6 +261,25 @@ export class SkillRegistry {
           priority: 10_100,
         })
       }
+      if (settings.scanCodexSkills) {
+        addSource({
+          sourceRoot: nodePath.join(home, CODEX_SKILL_ROOT),
+          scope: "user",
+          sourceKind: "codex",
+          workspaceName: "user",
+          priority: 10_150,
+        })
+      }
+    }
+    const builtinSkillRoot = settings.builtinSkillRoot ?? this.builtinSkillRoot
+    if (builtinSkillRoot) {
+      addSource({
+        sourceRoot: builtinSkillRoot,
+        scope: "builtin",
+        sourceKind: "agents",
+        workspaceName: "builtin",
+        priority: 20_000,
+      })
     }
     return sources
   }
@@ -260,7 +302,7 @@ export function renderSkillsForPrompt(skills: LoadedSkill[], options: { toolsEna
   const exposedToolNames = options.exposedToolNames ? new Set(options.exposedToolNames) : undefined
   return [
     "Enabled ChipMate skills:",
-    "When a skill lists resource files, read them with chipmate_read_skill_resource only after the skill is active. Do not execute scripts directly; script use still requires the normal ChipMate tool permission path.",
+    "When a skill lists references/, assets/, scripts/, or tasks/ resources, read them with chipmate_read_skill_resource only after the skill is active. When a skill instruction asks you to run local commands, scripts, builds, tests, scans, or gate checks, use chipmate_run_command with the normal ChipMate permission mode. Third-party Claude/Codex/OpenCode skills do not need a ChipMate scripts/manifest.json. Use chipmate_run_skill_script only for ChipMate helper scripts that explicitly opt into that manifest-based boundary.",
     ...skills.map((skill) => {
       const allowedTools = exposedToolNames
         ? skill.allowedTools.filter((tool) => exposedToolNames.has(tool))
@@ -314,6 +356,7 @@ export function activeSkillPolicies(skills: LoadedSkill[]): ActiveSkillPolicy[] 
     name: skill.name,
     path: skill.path,
     skillRoot: skill.skillRoot,
+    sourceKind: skill.sourceKind,
     allowedTools: skill.allowedTools,
     invocationMode: skill.invocationMode ?? "implicit",
   }))
@@ -325,7 +368,9 @@ function normalizeSkillSettings(input: string[] | SkillRegistrySettings): SkillR
       enabled: input,
       overrides: {},
       scanUserSkills: true,
+      scanOpenCodeSkills: true,
       scanClaudeSkills: true,
+      scanCodexSkills: true,
       maxCatalogBytes: CATALOG_DEFAULT_MAX_BYTES,
     }
   }
@@ -333,7 +378,9 @@ function normalizeSkillSettings(input: string[] | SkillRegistrySettings): SkillR
     enabled: Array.isArray(input.enabled) ? input.enabled : [],
     overrides: input.overrides && typeof input.overrides === "object" ? input.overrides : {},
     scanUserSkills: input.scanUserSkills !== false,
+    scanOpenCodeSkills: input.scanOpenCodeSkills !== false,
     scanClaudeSkills: input.scanClaudeSkills !== false,
+    scanCodexSkills: input.scanCodexSkills !== false,
     maxCatalogBytes: Number.isFinite(input.maxCatalogBytes) ? input.maxCatalogBytes : CATALOG_DEFAULT_MAX_BYTES,
     userHome: input.userHome,
   }

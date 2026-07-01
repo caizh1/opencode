@@ -1,8 +1,5 @@
 import { createRequire } from "node:module"
-import { spawn } from "node:child_process"
-import { tmpdir } from "node:os"
 import * as path from "node:path"
-import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises"
 import { DocxFileStore } from "./DocxFileStore"
 import { DocxRenderQualityGate } from "./DocxRenderQualityGate"
 import { xmlTextFrom } from "./WordDocumentInspector"
@@ -80,7 +77,6 @@ export type WordNativeFieldRefreshResult = {
 
 const FIELD_UPDATE_SENSITIVE_TYPES = new Set(["TOC", "REF", "PAGEREF", "NUMPAGES", "PAGE", "SEQ"])
 const UNSUPPORTED_HEADLESS_TYPES = new Set(["TOC", "NUMPAGES", "PAGE"])
-const WORD_NATIVE_REFRESH_TYPES = new Set(["TOC", "PAGE", "NUMPAGES"])
 
 export class WordRefFieldFlattener {
   constructor(private readonly workspaceRoot = process.cwd()) {}
@@ -91,6 +87,7 @@ export class WordRefFieldFlattener {
     outputFilenameBase?: string
     signal?: AbortSignal
     log?: (message: string) => void
+    remoteEndpoint?: string
   }): Promise<WordRefFieldFlattenResult> {
     input.signal?.throwIfAborted()
     const flattened = await flattenRefFieldsInDocxBytes(input.bytes, input.path)
@@ -112,6 +109,7 @@ export class WordRefFieldFlattener {
       timeoutMs: 60_000,
       signal: input.signal,
       log: input.log,
+      remoteEndpoint: input.remoteEndpoint,
     })
     const warnings = [
       ...flattened.warnings,
@@ -143,6 +141,7 @@ export class WordSeqFieldMaterializer {
     outputFilenameBase?: string
     signal?: AbortSignal
     log?: (message: string) => void
+    remoteEndpoint?: string
   }): Promise<WordSeqFieldMaterializeResult> {
     input.signal?.throwIfAborted()
     const materialized = await materializeSeqFieldsInDocxBytes(input.bytes, input.path)
@@ -164,6 +163,7 @@ export class WordSeqFieldMaterializer {
       timeoutMs: 60_000,
       signal: input.signal,
       log: input.log,
+      remoteEndpoint: input.remoteEndpoint,
     })
     const warnings = [
       ...materialized.warnings,
@@ -199,74 +199,8 @@ export class WordNativeFieldRefresher {
     log?: (message: string) => void
   }): Promise<WordNativeFieldRefreshResult> {
     input.signal?.throwIfAborted()
-    const prepared = await prepareNativeFieldRefreshInDocxBytes(input.bytes, input.path)
-    const libreOfficeBytes = await refreshDocxWithLibreOffice({
-      bytes: prepared.bytes,
-      filename: path.basename(input.path) || "word-native-fields.docx",
-      timeoutMs: input.timeoutMs ?? 90_000,
-      signal: input.signal,
-      log: input.log,
-    })
-    const libreOfficeReport = await auditWordDocumentFields({ path: input.path, bytes: libreOfficeBytes })
-    const expectedNativeFieldTypes = Object.keys(prepared.preparedReport.fieldTypeCounts)
-      .filter((type) => WORD_NATIVE_REFRESH_TYPES.has(type))
-      .sort()
-    const strippedNativeFieldTypes = expectedNativeFieldTypes.filter((type) =>
-      (libreOfficeReport.fieldTypeCounts[type] ?? 0) < (prepared.preparedReport.fieldTypeCounts[type] ?? 0))
-    const refreshMode: WordNativeFieldRefreshResult["refreshMode"] = strippedNativeFieldTypes.length
-      ? "preserved-live-fields-render-verified"
-      : "libreoffice-saved-docx"
-    const outputBytes = refreshMode === "libreoffice-saved-docx" ? libreOfficeBytes : prepared.bytes
-    const afterReport = refreshMode === "libreoffice-saved-docx" ? libreOfficeReport : prepared.preparedReport
-    const structureIssues = await new DocxRenderQualityGate().check(outputBytes)
-    const errors = structureIssues.filter((item) => item.severity === "error")
-    if (errors.length) {
-      throw new Error(`Word-native-field-refreshed DOCX failed structural validation: ${errors.map((item) => item.message).join("; ")}`)
-    }
-    const stored = await new DocxFileStore(this.workspaceRoot).write({
-      filename: input.outputFilenameBase || `${path.basename(input.path, ".docx")}-native-fields-refreshed`,
-      bytes: outputBytes,
-    })
-    const renderCheckResult = await renderWordDocument({
-      docxPath: stored.absolutePath,
-      bytes: outputBytes,
-      workspaceRoot: this.workspaceRoot,
-      artifactNameBase: input.outputFilenameBase || path.basename(stored.absolutePath, ".docx"),
-      structureIssues,
-      timeoutMs: input.timeoutMs ?? 90_000,
-      signal: input.signal,
-      log: input.log,
-    })
-    const refreshedFieldTypes = Object.keys(prepared.beforeReport.fieldTypeCounts)
-      .filter((type) => WORD_NATIVE_REFRESH_TYPES.has(type))
-      .sort()
-    const warnings = [
-      ...prepared.warnings,
-      ...(refreshedFieldTypes.length ? [] : ["No TOC/PAGE/NUMPAGES fields were found for Word-native refresh."]),
-      ...(strippedNativeFieldTypes.length
-        ? [`LibreOffice saved DOCX removed live native field(s) ${strippedNativeFieldTypes.join(", ")}; kept the preserved live-field DOCX with updateFields enabled and render verification evidence instead.`]
-        : []),
-      ...structureIssues.filter((item) => item.severity === "warning").map((item) => item.message),
-      ...renderCheckResult.issues.filter((item) => item.severity === "warning").map((item) => item.message),
-    ]
-    if (!renderCheckResult.attempted || !(renderCheckResult.pagePngPaths?.length)) {
-      warnings.push("Word-native field refresh created a DOCX copy, but render verification did not produce page PNG evidence.")
-    }
-    return {
-      path: stored.path,
-      absolutePath: stored.absolutePath,
-      sourcePath: input.path,
-      refreshMode,
-      beforeReport: prepared.beforeReport,
-      preparedReport: prepared.preparedReport,
-      afterReport,
-      refreshedFieldTypes,
-      touchedParts: prepared.touchedParts,
-      structureCheckResult: { ok: true, issues: structureIssues },
-      renderCheckResult,
-      warnings: [...new Set(warnings)],
-      errors: [],
-    }
+    input.log?.("[word-fields] Word-native field refresh skipped: local LibreOffice refresh is disabled and remote field refresh is not implemented.")
+    throw new Error("Word-native TOC/PAGE/NUMPAGES refresh is unavailable in this remote-render-only build. The VSIX client does not run local LibreOffice/soffice; use static TOC/page text, deterministic REF/PAGEREF flattening or SEQ materialization where applicable, or update fields manually in Word.")
   }
 }
 
@@ -294,11 +228,11 @@ export async function auditWordDocumentFields(input: { path: string; bytes: Uint
   const fieldCount = [...fieldTypeCounts.values()].reduce((sum, value) => sum + value, 0)
   const presentTypes = new Set(fieldTypeCounts.keys())
   const staleFieldHints = [...presentTypes].some((type) => FIELD_UPDATE_SENSITIVE_TYPES.has(type))
-    ? ["Document contains fields that can render stale in DOCX->PDF/PNG flows. Use refresh_word_native_fields for TOC/PAGE/NUMPAGES, flatten REF/PAGEREF cached results when deterministic screenshots are enough, or materialize SEQ cached numbers for captions."]
+    ? ["Document contains fields that can render stale in DOCX->PDF/PNG flows. Remote page rendering can show cached field output, but Word-native TOC/PAGE/NUMPAGES refresh is not available in the VSIX client; use static TOC/page text, update fields manually in Word, flatten REF/PAGEREF cached results when deterministic screenshots are enough, or materialize SEQ cached numbers for captions."]
     : []
   const unsupportedMaterialization = [...presentTypes]
     .filter((type) => UNSUPPORTED_HEADLESS_TYPES.has(type))
-    .map((type) => `${type} requires Word-native layout/TOC recalculation; use refresh_word_native_fields with local LibreOffice rather than REF/SEQ materialization.`)
+    .map((type) => `${type} requires Word-native layout/TOC recalculation; remote native field refresh is not implemented, and the VSIX client does not run local LibreOffice/soffice.`)
 
   return {
     inputPath: input.path,
@@ -585,116 +519,6 @@ function nextRelationshipId(xml: string, preferred: string) {
   if (!new RegExp(`Id="${preferred.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}"`).test(xml)) return preferred
   const ids = [...xml.matchAll(/Id="rId(\d+)"/g)].map((match) => Number(match[1])).filter((value) => Number.isFinite(value))
   return `rId${Math.max(1, ...ids) + 1}`
-}
-
-async function refreshDocxWithLibreOffice(input: {
-  bytes: Uint8Array
-  filename: string
-  timeoutMs: number
-  signal?: AbortSignal
-  log?: (message: string) => void
-}) {
-  const safeFilename = input.filename.toLowerCase().endsWith(".docx") ? input.filename : `${input.filename}.docx`
-  const errors: string[] = []
-  for (const command of sofficeCandidates()) {
-    input.signal?.throwIfAborted()
-    const tempRoot = await mkdtemp(path.join(tmpdir(), "chipmate-word-field-refresh-"))
-    const inDir = path.join(tempRoot, "in")
-    const outDir = path.join(tempRoot, "out")
-    const profileDir = path.join(tempRoot, "lo-profile")
-    const homeDir = path.join(tempRoot, "home")
-    try {
-      await mkdir(inDir, { recursive: true })
-      await mkdir(outDir, { recursive: true })
-      await mkdir(profileDir, { recursive: true })
-      await mkdir(homeDir, { recursive: true })
-      const inputPath = path.join(inDir, safeFilename)
-      await writeFile(inputPath, Buffer.from(input.bytes))
-      const result = await runSofficeDocxRefresh(command, inputPath, outDir, profileDir, homeDir, input.timeoutMs, input.signal)
-      if (!result.ok) {
-        errors.push(`${command}: ${result.message}`)
-        await rm(tempRoot, { recursive: true, force: true }).catch(() => undefined)
-        continue
-      }
-      const outputPath = path.join(outDir, safeFilename)
-      const outputStat = await stat(outputPath).catch(() => undefined)
-      if (!outputStat || outputStat.size <= 0) {
-        errors.push(`${command}: converted DOCX was not produced`)
-        await rm(tempRoot, { recursive: true, force: true }).catch(() => undefined)
-        continue
-      }
-      const bytes = await readFile(outputPath)
-      await rm(tempRoot, { recursive: true, force: true }).catch(() => undefined)
-      input.log?.(`[word-fields] refreshed native fields through ${command}`)
-      return bytes
-    } catch (error) {
-      await rm(tempRoot, { recursive: true, force: true }).catch(() => undefined)
-      if (input.signal?.aborted) throw error
-      errors.push(`${command}: ${formatError(error)}`)
-    }
-  }
-  throw new Error(`LibreOffice native field refresh failed or is unavailable: ${errors.length ? errors.join(" | ") : "no soffice candidate succeeded"}`)
-}
-
-function sofficeCandidates() {
-  const bundledSoffice = process.env.HOME
-    ? path.join(process.env.HOME, ".cache", "codex-runtimes", "codex-primary-runtime", "dependencies", "bin", "soffice")
-    : undefined
-  return unique([
-    process.env.CHIPMATE_SOFFICE_PATH,
-    bundledSoffice,
-    "/Applications/LibreOffice.app/Contents/MacOS/soffice",
-    "soffice",
-    "libreoffice",
-  ].filter((item): item is string => Boolean(item)))
-}
-
-async function runSofficeDocxRefresh(command: string, docxPath: string, outDir: string, profileDir: string, homeDir: string, timeoutMs: number, signal?: AbortSignal) {
-  return await runCommand(command, [
-    "--headless",
-    "--nologo",
-    "--nofirststartwizard",
-    `-env:UserInstallation=file://${profileDir}`,
-    "--convert-to",
-    "docx",
-    "--outdir",
-    outDir,
-    docxPath,
-  ], timeoutMs, signal, { HOME: homeDir })
-}
-
-async function runCommand(command: string, args: string[], timeoutMs: number, signal?: AbortSignal, env?: Record<string, string>) {
-  return await new Promise<{ ok: boolean; message: string }>((resolve, reject) => {
-    const child = spawn(command, args, { stdio: ["ignore", "pipe", "pipe"], env: env ? { ...process.env, ...env } : process.env })
-    let stdout = ""
-    let stderr = ""
-    const timer = setTimeout(() => {
-      child.kill("SIGKILL")
-      resolve({ ok: false, message: `timed out after ${timeoutMs}ms` })
-    }, timeoutMs)
-    const abort = () => {
-      clearTimeout(timer)
-      child.kill("SIGKILL")
-      reject(new Error("refresh_word_native_fields aborted"))
-    }
-    signal?.addEventListener("abort", abort, { once: true })
-    child.stdout.on("data", (chunk) => { stdout += String(chunk) })
-    child.stderr.on("data", (chunk) => { stderr += String(chunk) })
-    child.on("error", (error) => {
-      clearTimeout(timer)
-      signal?.removeEventListener("abort", abort)
-      resolve({ ok: false, message: error.message })
-    })
-    child.on("close", (code) => {
-      clearTimeout(timer)
-      signal?.removeEventListener("abort", abort)
-      resolve({ ok: code === 0, message: [stdout.trim(), stderr.trim()].filter(Boolean).join("\n") || `exit ${code}` })
-    })
-  })
-}
-
-function formatError(error: unknown) {
-  return error instanceof Error ? error.message : String(error)
 }
 
 function seqLabel(instruction: string) {

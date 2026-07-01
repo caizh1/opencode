@@ -28,7 +28,7 @@ describe("extension manifest", () => {
       expect(typeof manifest.dependencies?.[dependency]).toBe("string")
       expect(manifest.devDependencies?.[dependency]).toBeUndefined()
     }
-    expect(manifest.version).toMatch(/^0\.1\.0-build\.\d+$/)
+    expect(manifest.version).toMatch(/^\d+\.\d+\.\d+-build\.\d+$/)
     expect(manifest.scripts?.vsix).toBe("bun scripts/package-vsix.ts")
     expect(manifest.scripts?.["verify:qwen-vsix"]).toBe("bun scripts/verify-qwen-vsix.ts")
     const vscodeIgnore = readFileSync(join(import.meta.dir, "..", ".vscodeignore"), "utf8")
@@ -51,7 +51,6 @@ describe("extension manifest", () => {
       "node_modules/elkjs/**",
       "node_modules/mermaid/**",
       "node_modules/pdfjs-dist/**",
-      "node_modules/canvas/**",
       "node_modules/web-tree-sitter/**",
       "node_modules/js-tiktoken/**",
     ]) {
@@ -87,8 +86,23 @@ describe("extension manifest", () => {
     expect(vscodeIgnore).toMatch(/^node_modules\/mermaid\/dist\/mermaid\.esm\.mjs$/m)
   })
 
-  test("keeps PDF canvas rendering runtime while trimming non-runtime package files", () => {
-    const canvasPackage = JSON.parse(readFileSync(join(import.meta.dir, "..", "node_modules", "canvas", "package.json"), "utf8"))
+  test("render server supports high-DPI Mermaid PNG scale metadata", () => {
+    const serverSource = readFileSync(join(import.meta.dir, "..", "server", "chipmate-word-render", "server.js"), "utf8")
+    const serverManifest = JSON.parse(readFileSync(join(import.meta.dir, "..", "server", "chipmate-word-render", "package.json"), "utf8")) as { version?: string }
+
+    expect(serverManifest.version).toBe("0.1.2")
+    expect(serverSource).toContain("const scale = clampNumber(payload.scale, 1, 4, 2)")
+    expect(serverSource).toContain("deviceScaleFactor: scale")
+    expect(serverSource).toContain("pixelWidth: rendered.pixelWidth")
+    expect(serverSource).toContain("pixelHeight: rendered.pixelHeight")
+    expect(serverSource).toContain("scale: { min: 1, max: 4, default: 2 }")
+    expect(serverSource).toContain("crop: { mode: \"svg-content-bounds\"")
+    expect(serverSource).toContain("mermaidScreenshotBounds(cdp, sessionId)")
+    expect(serverSource).toContain("contentBounds: rendered.contentBounds")
+    expect(serverSource).not.toContain("Math.ceil(document.documentElement.scrollWidth || document.body.scrollWidth || 800)")
+  })
+
+  test("keeps PDF.js parser runtime while excluding local canvas fallback", () => {
     const vscodeIgnore = readFileSync(join(import.meta.dir, "..", ".vscodeignore"), "utf8")
 
     expect(typeof manifest.dependencies?.["pdfjs-dist"]).toBe("string")
@@ -105,16 +119,9 @@ describe("extension manifest", () => {
     expect(vscodeIgnore).not.toMatch(/^node_modules\/\*\*\/doc\/\*\*$/m)
     expect(vscodeIgnore).not.toMatch(/^node_modules\/pdfjs-dist\/legacy\/build\/pdf\.worker\.mjs$/m)
     expect(vscodeIgnore).toMatch(/^node_modules\/pdfjs-dist\/legacy\/build\/pdf\.worker\.min\.mjs$/m)
-    expect(canvasPackage.name).toBe("canvas")
-    expect(existsSync(join(import.meta.dir, "..", "node_modules", "canvas", "build", "Release", "canvas.node"))).toBe(true)
-    expect(vscodeIgnore).not.toMatch(/^node_modules\/canvas\/\*\*$/m)
-    expect(vscodeIgnore).not.toMatch(/^node_modules\/canvas\/package\.json$/m)
-    expect(vscodeIgnore).not.toMatch(/^node_modules\/canvas\/index\.js$/m)
-    expect(vscodeIgnore).not.toMatch(/^node_modules\/canvas\/lib\/\*\*$/m)
-    expect(vscodeIgnore).not.toMatch(/^node_modules\/canvas\/build\/Release\/\*\*$/m)
-    expect(vscodeIgnore).toMatch(/^node_modules\/canvas\/src\/\*\*$/m)
-    expect(vscodeIgnore).toMatch(/^node_modules\/canvas\/node_modules\/node-addon-api\/\*\*$/m)
-    expect(vscodeIgnore).toMatch(/^node_modules\/canvas\/binding\.gyp$/m)
+    expect(vscodeIgnore).toMatch(/^node_modules\/canvas\/\*\*$/m)
+    expect(vscodeIgnore).toMatch(/^node_modules\/path2d\/\*\*$/m)
+    expect(vscodeIgnore).toMatch(/^node_modules\/prebuild-install\/\*\*$/m)
   })
 
   test("vendors the offline draw.io runtime for chat rendering", () => {
@@ -150,6 +157,7 @@ describe("extension manifest", () => {
   test("packages the documents helper script catalog as skill resources", () => {
     const skillRoot = join(import.meta.dir, "..", ".agents", "skills", "documents")
     const skillMarkdown = readFileSync(join(skillRoot, "SKILL.md"), "utf8")
+    const chipDesignSkillMarkdown = readFileSync(join(import.meta.dir, "..", ".agents", "skills", "chip-design-doc", "SKILL.md"), "utf8")
     const scriptsReadme = readFileSync(join(skillRoot, "scripts", "README.md"), "utf8")
     const helperManifest = JSON.parse(readFileSync(join(skillRoot, "scripts", "manifest.json"), "utf8")) as {
       schemaVersion?: number
@@ -174,6 +182,12 @@ describe("extension manifest", () => {
     const vscodeIgnore = readFileSync(join(import.meta.dir, "..", ".vscodeignore"), "utf8")
 
     expect(skillMarkdown).toContain("scripts/manifest.json")
+    expect(skillMarkdown).toContain("Do not pass `JSON.stringify(spec)`")
+    expect(skillMarkdown).toContain("spec` to be a JSON object")
+    expect(skillMarkdown).toContain("use `scale: 3` for Word figures")
+    expect(chipDesignSkillMarkdown).toContain("Do not call it with `JSON.stringify(spec)`")
+    expect(chipDesignSkillMarkdown).toContain("object-shaped detailed-design `WordDocSpec`")
+    expect(chipDesignSkillMarkdown).toContain("call `chipmate_render_mermaid_diagram` with `scale: 3`")
     expect(scriptsReadme).toContain("Do not execute files from this directory")
     expect(scriptsReadme).toContain("directly. Script execution")
     expect(helperManifest.schemaVersion).toBe(2)
@@ -191,7 +205,7 @@ describe("extension manifest", () => {
     })
     expect(wordRuntimeReport).toMatchObject({
       status: "executable",
-      chipmateEquivalent: ["refresh_word_native_fields", "chipmate_run_skill_script"],
+      chipmateEquivalent: ["chipmate_run_skill_script"],
       execution: expect.objectContaining({
         directExecution: true,
         runtime: "node",

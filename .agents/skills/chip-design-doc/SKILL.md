@@ -60,9 +60,11 @@ The generated document should cover:
 
 ## Diagram Rule
 
-Use Mermaid for the formal detailed design flow so the artifacts are lightweight, readable, and render directly in Chat. Generate Mermaid sources for architecture, main business flow, code flow, and state-machine diagrams when enough evidence exists, call `chipmate_render_mermaid_diagram` for each diagram, and insert the returned PNG images into the matching Word sections through `create_word_document`. The Mermaid tool prefers the configured remote render server and falls back to local Chrome/Edge when possible; disclose `fallbackUsed=true` in the final answer because it means remote rendering failed but a local PNG was generated. Keep `.mmd` files as traceable source artifacts rather than the Word body display format.
+Use Mermaid for the formal detailed design flow so the artifacts are lightweight, readable, and render directly in Chat. Generate Mermaid sources for architecture, main business flow, code flow, and state-machine diagrams when enough evidence exists, call `chipmate_render_mermaid_diagram` with `scale: 3` for each diagram that will be inserted into Word, and insert the returned PNG images into the matching Word sections through `create_word_document`. The Mermaid tool uses the configured remote render server and does not run a local Chrome/Edge fallback. Keep `.mmd` files as traceable source artifacts rather than the Word body display format.
 
-If Mermaid-to-PNG rendering fails on both remote and local providers, fail closed and report the render failure. Do not generate a Word document that silently substitutes Mermaid syntax or source summaries for the required diagram images.
+If Mermaid-to-PNG rendering fails remotely, report the render failure. Do not generate a Word document that silently substitutes Mermaid syntax or source summaries for the required diagram images; if a partial Word document is acceptable, omit the failed figure and disclose that the remote Mermaid PNG was unavailable.
+
+When a Mermaid render succeeds, copy the complete PNG-backed figure shape into the matching `WordDocSpec.sections[].figures[]`: `title`, `caption`, `altText`, optional stable `bookmark`, and `image.contentType`, `image.path`/`artifactPath`, `image.width`, and `image.height`. Keep `image.width`/`height` from the returned CSS layout size; do not replace them with `pixelWidth`/`pixelHeight`, which are diagnostic fields showing the high-DPI PNG density. Missing figure fields should be fixed before calling `create_word_document`, not after another broad evidence search.
 
 The skill or agent must decide diagram semantics from code evidence, not from renderer heuristics. Do not infer main flow, exception path, importance, or business meaning from labels, function names, Chinese words, or domain terms without supporting evidence.
 
@@ -73,6 +75,8 @@ Every design claim should be tied to code evidence when possible. Cite file path
 Converge when the collected evidence is enough to produce a reviewable detailed design document. Do not exhaust the tool budget trying to prove every branch before creating the `.docx`; put uncertain or partially covered areas into assumptions, gaps, risks, and owner-review items.
 
 After evidence is sufficient, create a minimal complete valid `WordDocSpec` and call `create_word_document`. If `create_word_document` returns argument or validation errors, repair the `WordDocSpec` and retry before resuming broad evidence search.
+
+`create_word_document` requires `spec` to be a JSON object in the tool arguments, not a string. Do not call it with `JSON.stringify(spec)`, quoted JSON, Markdown, or prose as `spec`. If the failure is `word-doc-spec-string-disallowed`, `word-doc-spec-json-parse-failed`, or `tool-arguments-invalid-json`, immediately retry with the smallest complete object-shaped detailed-design `WordDocSpec`; move lower-confidence or uncovered details into assumptions, gaps, risks, and owner-review items instead of resubmitting the same long/stringified spec.
 
 ## Word Output Rule
 

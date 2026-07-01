@@ -66,6 +66,8 @@ export type ToolRuntimeProgressEvent = {
   tool?: string
   path?: string
   artifactPath?: string
+  requestedPath?: string
+  targetPath?: string
   provider?: string
   fallbackUsed?: boolean
 }
@@ -160,10 +162,16 @@ export type MermaidDiagramArtifactPayload = {
   absolutePngPath: string
   width: number
   height: number
-  renderProvider?: "remote-opencode" | "local-chrome"
+  pixelWidth?: number
+  pixelHeight?: number
+  scale?: number
+  contentBounds?: { x: number; y: number; width: number; height: number }
+  cropBounds?: { x: number; y: number; width: number; height: number }
+  padding?: number
+  contentCropRatio?: number
+  renderProvider?: "remote-opencode"
   fallbackUsed?: boolean
   remoteFailure?: MermaidPngRenderDiagnostic
-  localFailure?: MermaidPngRenderDiagnostic
   warnings: string[]
 }
 
@@ -197,9 +205,11 @@ const MAX_READ_TEXT_BYTES = 48 * 1024
 const MAX_CREATE_FILE_BYTES = 256 * 1024
 const MAX_EDIT_FILE_BYTES = 512 * 1024
 const MAX_EDIT_TEXT_BYTES = 64 * 1024
+const MAX_COMMAND_OUTPUT_BYTES = 64 * 1024
+const DEFAULT_COMMAND_TIMEOUT_MS = 30_000
+const MAX_COMMAND_TIMEOUT_MS = 120_000
 const MAX_SKILL_SCRIPT_OUTPUT_BYTES = 64 * 1024
 const MAX_SKILL_SCRIPT_ARTIFACT_BYTES = 2 * 1024 * 1024
-const MAX_WORD_DOC_SPEC_STRING_BYTES = 2 * 1024 * 1024
 const MAX_WORD_DOC_SPEC_DIAGNOSTIC_BYTES = 900
 const DEFAULT_SESSION_ID = "__default__"
 const SENSITIVE_CREATE_FILE_NAMES = new Set([".env", ".env.local", ".npmrc", ".pypirc", "id_rsa", "id_ed25519"])
@@ -614,6 +624,20 @@ export class ToolRuntime {
       {
         type: "function",
         function: {
+          name: "chipmate_run_command",
+          description: "Use when an active skill or user request requires running a local workspace command, script, build, test, scan, compiler, or gate check such as python3, cmake, gcc, make, or bun test. Do not use for network downloads, non-workspace destructive operations, ordinary file reads/edits, or commands whose cwd would leave the current workspace. Runs in the VS Code Extension Host environment; in VS Code Remote this is the remote server and uses its PATH/toolchain. Permission mode controls approval and audit; third-party skills do not need scripts/manifest.json for this tool. Returns bounded stdout/stderr, exit status, timeout/truncation flags, cwd, execution host, and audit context.",
+          parameters: objectSchema({
+            command: { type: "string", description: "Required shell command to run in the workspace Extension Host environment." },
+            cwd: { type: "string", description: "Optional absolute or workspace-relative working directory. Defaults to the workspace root and must remain inside the workspace." },
+            timeoutMs: { type: "number", description: `Optional timeout in milliseconds. Defaults to ${DEFAULT_COMMAND_TIMEOUT_MS} and is capped at ${MAX_COMMAND_TIMEOUT_MS}.` },
+            maxOutputBytes: { type: "number", description: `Optional combined stdout/stderr output cap in bytes. Defaults to ${MAX_COMMAND_OUTPUT_BYTES}.` },
+            reason: { type: "string", description: "Optional short reason shown in audit and approval UI, especially when an active skill requested this command." },
+          }, ["command"]),
+        },
+      },
+      {
+        type: "function",
+        function: {
           name: "read_docx",
           description: "Use when a local DOCX file must be read as semantic document structure. Do not use for PDF, legacy DOC, web pages, or style/template inheritance. Returns headings, paragraphs, lists, tables, heading paths, source locations, and bounded previews.",
           parameters: objectSchema({
@@ -658,7 +682,7 @@ export class ToolRuntime {
         type: "function",
         function: {
           name: "compare_word_documents",
-          description: "Use when the user asks to compare, diff, review changes between, or verify visual/text differences for two local .docx files. The model chooses the two files and interprets the result; the tool extracts document text, renders both DOCX files to page PNGs when possible, computes per-page pixel diff PNGs for changed rendered pages, and writes a .chipmate/docs/diff evidence bundle. Do not use for non-DOCX files, as a generic reader, or to infer business meaning from pixels. Returns text diff status, changed page numbers, render status, changedRatio, visual severity, changed bounding boxes, 3x3 changed-region summaries, reflow/noise risk flags, and evidence artifact paths.",
+          description: "Use when the user asks to compare, diff, review changes between, or verify visual/text differences for two local .docx files. The model chooses the two files and interprets the result; the tool extracts document text, renders both DOCX files through the remote render service when possible, detects changed rendered pages by bytes, copies before/after page PNG artifacts, and writes a .chipmate/docs/diff evidence bundle. The VSIX client no longer computes local canvas pixel-diff PNGs; until a remote pixel-diff provider exists, changed pages include an explicit skipped-pixel-diff warning. Do not use for non-DOCX files, as a generic reader, or to infer business meaning from pixels. Returns text diff status, changed page numbers, render status, skipped pixel-diff warnings, and evidence artifact paths.",
           parameters: objectSchema({
             beforePath: { type: "string", description: "Absolute or workspace-relative path to the baseline/before .docx file." },
             afterPath: { type: "string", description: "Absolute or workspace-relative path to the revised/after .docx file." },
@@ -751,7 +775,7 @@ export class ToolRuntime {
         type: "function",
         function: {
           name: "audit_word_document_fields",
-          description: "Use when the user asks why Word fields, page numbers, TOC, captions, or cross-references look stale or before rendering field-heavy .docx documents. The tool scans document/header/footer/note parts for Word field instructions such as TOC, PAGE, NUMPAGES, SEQ, REF, and PAGEREF. Do not use for non-DOCX files or document mutation. For TOC/PAGE/NUMPAGES refresh, follow with refresh_word_native_fields when needed. Returns field type counts, examples, per-part field inventory, stale-field hints, and field workflow notes.",
+          description: "Use when the user asks why Word fields, page numbers, TOC, captions, or cross-references look stale or before rendering field-heavy .docx documents. The tool scans document/header/footer/note parts for Word field instructions such as TOC, PAGE, NUMPAGES, SEQ, REF, and PAGEREF. Do not use for non-DOCX files or document mutation. Word-native TOC/PAGE/NUMPAGES refresh is not available in the VSIX client; use static TOC/page text, manual Word refresh, REF/PAGEREF flattening, or SEQ materialization where applicable. Returns field type counts, examples, per-part field inventory, stale-field hints, and field workflow notes.",
           parameters: objectSchema({
             path: { type: "string", description: "Absolute or workspace-relative path to the .docx file to audit for Word fields." },
           }, ["path"]),
@@ -783,7 +807,7 @@ export class ToolRuntime {
         type: "function",
         function: {
           name: "refresh_word_native_fields",
-          description: "Use when a local DOCX needs Word-native TOC, PAGE, or NUMPAGES fields refreshed and render-verified. The tool preserves live fields, enables updateFields, uses local LibreOffice/soffice to save a refreshed DOCX copy, and renders PDF/page PNG evidence. Do not use for non-DOCX files, REF/PAGEREF flattening, SEQ numbering, semantic TOC rewriting, or when local LibreOffice is unavailable. Returns the refreshed .docx path, before/prepared/after field reports, refreshed field types, warnings, and render-quality status.",
+          description: "Use when the user explicitly asks to refresh Word-native TOC, PAGE, or NUMPAGES fields and you need to confirm that native field refresh is unavailable in this remote-render-only build. Do not use for ordinary rendering, REF/PAGEREF flattening, SEQ caption materialization, or local LibreOffice/soffice execution. Returns a structured failure explaining the unavailable provider and safer alternatives.",
           parameters: objectSchema({
             path: { type: "string", description: "Absolute or workspace-relative source .docx file." },
             outputFilenameBase: { type: "string", description: "Optional safe filename base for the refreshed DOCX artifact under .chipmate/docs." },
@@ -861,12 +885,13 @@ export class ToolRuntime {
 	        type: "function",
 	        function: {
 	          name: "chipmate_render_mermaid_diagram",
-	          description: "Use when a Mermaid diagram source must become local artifacts or a PNG figure for a Word document. Do not use for draw.io/diagrams.net XML or before the model/active skill has authored valid Mermaid source. The tool uses the configured remote render server first when available, then local Chrome/Edge fallback; Word figures must use the returned PNG artifact, never raw Mermaid source. Returns .mmd and .png artifact paths, PNG dimensions, render provider/fallback diagnostics, a FigureSpec-compatible image path for create_word_document/apply_word_document_edits, and a Mermaid chat preview artifact.",
+	          description: "Use when a Mermaid diagram source must become local artifacts or a PNG figure for a Word document. Do not use for draw.io/diagrams.net XML or before the model/active skill has authored valid Mermaid source. The tool uses only the configured remote render server; it does not fall back to local Chrome/Edge. Word figures must use the returned PNG artifact, never raw Mermaid source. Returns .mmd/.png artifact paths, render provider metadata, warnings, and failure diagnostics when rendering is unavailable.",
 	          parameters: objectSchema({
 	            source: { type: "string", description: "Complete Mermaid source, such as flowchart TD, sequenceDiagram, or stateDiagram-v2." },
 	            title: { type: "string", description: "Short human-readable diagram title." },
 	            diagramId: { type: "string", description: "Optional stable diagram id for chat preview and artifact naming." },
 	            artifactNameBase: { type: "string", description: "Optional safe filename base for .chipmate/docs/diagrams artifacts." },
+	            scale: { type: "number", minimum: 1, maximum: 4, description: "Optional remote PNG render scale from 1 to 4. Use scale 3 for Mermaid PNG figures that will be inserted into Word documents; keep the returned width/height as the Word display size." },
 	          }, ["source", "title"]),
 	        },
 	      },
@@ -902,11 +927,8 @@ export class ToolRuntime {
         type: "function",
         function: {
           name: "create_word_document",
-          description: "Use when a complete generic WordDocSpec is ready and a .docx document should be generated. Do not use as a generic file writer, for non-docx output, or before the model/active documents skill has chosen content structure, design preset, heading ladder, section form factors, list/table/figure intent, link/reference/note intent, navigation/TOC intent, and form/protection intent. Supports fixed-layout Word tables including real merged cells via TableSpec colSpan/rowSpan, rich paragraph REF/PAGEREF cross-reference fields, {{ref:bookmark|text}}/{{pageref:bookmark|page}} authoring markers, Word-native field TOC intent, and PAGE/NUMPAGES footer fields for field-toc documents. Returns the generated .docx path, design preset, source count, structural/a11y warnings, and render-quality status.",
-          parameters: objectSchema({
-            filename: { type: "string", description: "Suggested output filename; it will be sanitized and written under .chipmate/docs." },
-            spec: { type: "object", description: "Generic WordDocSpec. Minimum required shape: metadata.title, metadata.documentType, metadata.language, metadata.generatedAt, sources: [], and sections: [{ id, level, title, paragraphs/bullets/lists/tables/figures/etc. }]. Optional fields include layout preset/page/navigation/form-factor guidance, references, figures, structured lists, tables, and rule cards." },
-          }, ["spec"]),
+          description: "Use when a complete generic WordDocSpec is ready and a .docx document should be generated. Do not use as a generic file writer, for non-docx output, or before the model/active documents skill has chosen content structure, design preset, heading ladder, section form factors, list/table/figure intent, link/reference/note intent, navigation/TOC intent, and form/protection intent. Always pass spec as a JSON object with metadata, sources, and sections; never pass JSON.stringify(spec), a quoted JSON string, or prose in spec. sources must be an array even when empty, and sections[].paragraphs/bullets/numberedItems must be arrays of strings, not objects like {text:'...'}. Put TOC intent in layout.navigation.mode, not a top-level navigation object. Minimum valid shape: {metadata:{title,documentType,language,generatedAt},sources:[],sections:[{id,level,title,paragraphs:['body text']}]}. Supports fixed-layout Word tables including real merged cells via TableSpec colSpan/rowSpan, rich paragraph REF/PAGEREF cross-reference fields, {{ref:bookmark|text}}/{{pageref:bookmark|page}} authoring markers, Word-native field TOC intent, and PAGE/NUMPAGES footer fields for field-toc documents. Returns the generated .docx path, design preset, source count, structural/a11y warnings, render-quality status, and a nextAction to run render_word_document for page-level visual QA.",
+          parameters: createWordDocumentToolParameters(),
         },
       },
       {
@@ -1716,6 +1738,8 @@ export class ToolRuntime {
       if (!validation.ok || !validation.plan) {
         return failed("Apply Word document edits", `DocumentEditPlan validation failed: ${validation.errors.join("; ")}`, validation.errors.join("; "), decision.risk)
       }
+      const remoteEndpoint = configuredWordRenderRemoteEndpoint()
+      this.output?.appendLine(`[word-edit] internal render endpoint ${remoteEndpoint ? "configured" : "unconfigured"}`)
       const result = await new WordDocumentEditor().apply({
         sourcePath,
         bytes,
@@ -1723,6 +1747,7 @@ export class ToolRuntime {
         plan: validation.plan,
         signal: input.signal,
         log: (message) => this.output?.appendLine(message),
+        remoteEndpoint,
       })
       return {
         title: `Applied Word edits: ${result.path}`,
@@ -1787,6 +1812,8 @@ export class ToolRuntime {
         path: workspaceRelativePath(target),
       })
       const bytes = await vscode.workspace.fs.readFile(vscode.Uri.file(target))
+      const remoteEndpoint = configuredWordRenderRemoteEndpoint()
+      this.output?.appendLine(`[word-render] remote endpoint ${remoteEndpoint ? "configured" : "unconfigured"}`)
       const result = await renderWordDocument({
         docxPath: target,
         bytes,
@@ -1795,6 +1822,7 @@ export class ToolRuntime {
         artifactNameBase,
         signal: input.signal,
         log: (message) => this.output?.appendLine(message),
+        remoteEndpoint,
       })
       const issueMessages = wordRenderIssueMessages(result.issues)
       const payload = wordRenderArtifactPayload({
@@ -1885,6 +1913,8 @@ export class ToolRuntime {
       }
       const beforeBytes = await vscode.workspace.fs.readFile(vscode.Uri.file(beforeTarget))
       const afterBytes = await vscode.workspace.fs.readFile(vscode.Uri.file(afterTarget))
+      const remoteEndpoint = configuredWordRenderRemoteEndpoint()
+      this.output?.appendLine(`[word-diff] internal render endpoint ${remoteEndpoint ? "configured" : "unconfigured"}`)
       const result = await compareWordDocuments({
         before: { path: workspaceRelativePath(beforeTarget), bytes: beforeBytes },
         after: { path: workspaceRelativePath(afterTarget), bytes: afterBytes },
@@ -1894,6 +1924,7 @@ export class ToolRuntime {
         timeoutMs: 60_000,
         signal: input.signal,
         log: (message) => this.output?.appendLine(message),
+        remoteEndpoint,
       })
       const warningMessages = result.issues.filter((issue) => issue.severity === "warning").map((issue) => issue.message)
       return {
@@ -1970,6 +2001,8 @@ export class ToolRuntime {
       }
       const baseBytes = await vscode.workspace.fs.readFile(vscode.Uri.file(baseTarget))
       const appendBytes = await vscode.workspace.fs.readFile(vscode.Uri.file(appendTarget))
+      const remoteEndpoint = configuredWordRenderRemoteEndpoint()
+      this.output?.appendLine(`[word-merge] internal render endpoint ${remoteEndpoint ? "configured" : "unconfigured"}`)
       const result = await new WordDocumentMerger(workspaceRoot()).merge({
         base: { path: workspaceRelativePath(baseTarget), bytes: baseBytes },
         append: { path: workspaceRelativePath(appendTarget), bytes: appendBytes },
@@ -1979,6 +2012,7 @@ export class ToolRuntime {
         timeoutMs: 60_000,
         signal: input.signal,
         log: (message) => this.output?.appendLine(message),
+        remoteEndpoint,
       })
       return {
         title: `Merged Word documents: ${result.path}`,
@@ -2184,6 +2218,8 @@ export class ToolRuntime {
         return failed("Normalize Word document styles", `normalize_word_document_styles only supports .docx files: ${target}`, `Unsupported file extension: ${target}`, decision.risk)
       }
       const bytes = await vscode.workspace.fs.readFile(vscode.Uri.file(target))
+      const remoteEndpoint = configuredWordRenderRemoteEndpoint()
+      this.output?.appendLine(`[word-style] internal render endpoint ${remoteEndpoint ? "configured" : "unconfigured"}`)
       const result = await new WordDocumentStyleNormalizer(workspaceRoot()).normalize({
         path: workspaceRelativePath(target),
         bytes,
@@ -2197,6 +2233,7 @@ export class ToolRuntime {
         },
         signal: input.signal,
         log: (message) => this.output?.appendLine(message),
+        remoteEndpoint,
       })
       return {
         title: `Normalized Word styles: ${result.path}`,
@@ -2248,6 +2285,8 @@ export class ToolRuntime {
       }
       const targetBytes = await vscode.workspace.fs.readFile(vscode.Uri.file(target))
       const templateBytes = await vscode.workspace.fs.readFile(vscode.Uri.file(template))
+      const remoteEndpoint = configuredWordRenderRemoteEndpoint()
+      this.output?.appendLine(`[word-template] internal render endpoint ${remoteEndpoint ? "configured" : "unconfigured"}`)
       const result = await new WordTemplateStyleApplier(workspaceRoot()).apply({
         target: { path: workspaceRelativePath(target), bytes: targetBytes },
         template: { path: workspaceRelativePath(template), bytes: templateBytes },
@@ -2255,6 +2294,7 @@ export class ToolRuntime {
         styleAllowlist,
         signal: input.signal,
         log: (message) => this.output?.appendLine(message),
+        remoteEndpoint,
       })
       return {
         title: `Applied Word template styles: ${result.path}`,
@@ -2312,7 +2352,7 @@ export class ToolRuntime {
               ? [{ tool: "materialize_word_seq_fields", reason: "Create a deterministic-rendering copy by recalculating cached SEQ caption/table/figure numbers while preserving live SEQ fields.", args: { path: workspaceRelativePath(target) } }]
               : []),
             ...(nativeRefreshCount > 0
-              ? [{ tool: "refresh_word_native_fields", reason: "Create a Word-native-field-refreshed copy for TOC/PAGE/NUMPAGES and render-verify it with local LibreOffice.", args: { path: workspaceRelativePath(target) } }]
+              ? [{ action: "Use static TOC/page text or update TOC/PAGE/NUMPAGES manually in Word.", reason: "Remote native field refresh is not implemented, and the VSIX client does not run local LibreOffice/soffice." }]
               : []),
           ],
           truncated: false,
@@ -2351,12 +2391,15 @@ export class ToolRuntime {
         return failed("Flatten Word REF fields", `flatten_word_ref_fields only supports .docx files: ${target}`, `Unsupported file extension: ${target}`, decision.risk)
       }
       const bytes = await vscode.workspace.fs.readFile(vscode.Uri.file(target))
+      const remoteEndpoint = configuredWordRenderRemoteEndpoint()
+      this.output?.appendLine(`[word-fields] internal render endpoint ${remoteEndpoint ? "configured" : "unconfigured"}`)
       const result = await new WordRefFieldFlattener(workspaceRoot()).flatten({
         path: workspaceRelativePath(target),
         bytes,
         outputFilenameBase: outputFilenameBase || undefined,
         signal: input.signal,
         log: (message) => this.output?.appendLine(message),
+        remoteEndpoint,
       })
       return {
         title: `Flattened Word REF fields: ${result.path}`,
@@ -2401,12 +2444,15 @@ export class ToolRuntime {
         return failed("Materialize Word SEQ fields", `materialize_word_seq_fields only supports .docx files: ${target}`, `Unsupported file extension: ${target}`, decision.risk)
       }
       const bytes = await vscode.workspace.fs.readFile(vscode.Uri.file(target))
+      const remoteEndpoint = configuredWordRenderRemoteEndpoint()
+      this.output?.appendLine(`[word-fields] internal render endpoint ${remoteEndpoint ? "configured" : "unconfigured"}`)
       const result = await new WordSeqFieldMaterializer(workspaceRoot()).materialize({
         path: workspaceRelativePath(target),
         bytes,
         outputFilenameBase: outputFilenameBase || undefined,
         signal: input.signal,
         log: (message) => this.output?.appendLine(message),
+        remoteEndpoint,
       })
       return {
         title: `Materialized Word SEQ fields: ${result.path}`,
@@ -2553,6 +2599,7 @@ export class ToolRuntime {
 	    const title = requiredString(input.arguments, "title")
 	    const diagramId = stringArg(input.arguments.diagramId).trim() || `mermaid-${randomId()}`
 	    const artifactNameBase = sanitizeArtifactName(stringArg(input.arguments.artifactNameBase) || diagramId || title)
+	    const scale = mermaidRenderScaleArg(input.arguments.scale)
 	    const artifactDir = resolveWorkspacePath(".chipmate/docs/diagrams")
 	    const stamp = new Date().toISOString().replace(/[-:]/g, "").replace(/\..+$/, "").replace("T", "-")
 	    const base = `${artifactNameBase}-${stamp}-${Math.random().toString(36).slice(2, 6)}`
@@ -2602,7 +2649,7 @@ export class ToolRuntime {
 	        id: "mermaid-render",
 	        phase: "mermaid-render",
 	        title: "渲染 Mermaid PNG",
-	        detail: remoteEndpoint ? "优先远端 render server，失败后本地 fallback" : "使用本地 Chrome/Edge renderer",
+	        detail: remoteEndpoint ? "调用远端 render server" : "远端 render server 未配置",
 	        status: "running",
 	        tool: input.name,
 	        artifactPath: workspaceRelativePath(pngPath),
@@ -2613,9 +2660,22 @@ export class ToolRuntime {
 	        filename: `${base}.mmd`,
 	        remoteEndpoint,
 	        timeoutMs: 60000,
+	        scale,
 	        signal: input.signal,
 	        log: (message) => this.output?.appendLine(message),
 	      })
+	      const warnings: string[] = []
+	      if (rendered.scaleMetadataMissing) {
+	        warnings.push("mermaid-render-scale-metadata-missing: remote render server did not return scale or pixel dimensions; PNG pixel dimensions were inferred from the file header.")
+	      }
+	      if (rendered.cropMetadataMissing) {
+	        warnings.push("mermaid-render-crop-metadata-missing: remote render server did not return crop/content bounds; upgrade the render server if Mermaid PNGs still contain large whitespace.")
+	      }
+	      for (const issue of rendered.issues ?? []) {
+	        const code = issue.code ? `${issue.code}: ` : ""
+	        const message = issue.message || issue.severity || "Remote Mermaid render warning."
+	        warnings.push(`${code}${message}`)
+	      }
 	      const payload: MermaidDiagramArtifactPayload = {
 	        kind: "mermaid",
 	        title,
@@ -2627,34 +2687,36 @@ export class ToolRuntime {
 	        absolutePngPath: pngPath,
 	        width: rendered.width,
 	        height: rendered.height,
-	        renderProvider: rendered.renderProvider ?? "local-chrome",
-	        fallbackUsed: rendered.fallbackUsed === true,
+	        pixelWidth: rendered.pixelWidth,
+	        pixelHeight: rendered.pixelHeight,
+	        scale: rendered.scale ?? scale,
+	        contentBounds: rendered.contentBounds,
+	        cropBounds: rendered.cropBounds,
+	        padding: rendered.padding,
+	        contentCropRatio: rendered.contentCropRatio,
+	        renderProvider: rendered.renderProvider ?? "remote-opencode",
+	        fallbackUsed: false,
 	        remoteFailure: rendered.remoteFailure,
-	        localFailure: rendered.localFailure,
-	        warnings: [],
+	        warnings,
 	      }
 	      input.progress?.({
 	        id: "mermaid-render",
 	        phase: "mermaid-render",
 	        title: "渲染 Mermaid PNG",
-	        detail: payload.fallbackUsed
-	          ? `远端失败，已用本地 fallback 生成 ${payload.pngPath}`
-	          : `已生成 ${payload.pngPath}`,
-	        status: payload.fallbackUsed ? "warning" : "completed",
+	        detail: `已生成 ${payload.pngPath}${payload.scale ? ` · scale ${payload.scale}` : ""}`,
+	        status: "completed",
 	        tool: input.name,
 	        artifactPath: payload.pngPath,
 	        provider: payload.renderProvider,
 	        fallbackUsed: payload.fallbackUsed,
 	      })
-	      this.output?.appendLine(`[mermaid-render] completed title=${title} diagramId=${diagramId} provider=${payload.renderProvider} fallback=${payload.fallbackUsed ? "true" : "false"} mmd=${payload.mmdPath} png=${payload.pngPath} size=${payload.width}x${payload.height}`)
+	      this.output?.appendLine(`[mermaid-render] completed title=${title} diagramId=${diagramId} provider=${payload.renderProvider} mmd=${payload.mmdPath} png=${payload.pngPath} scale=${payload.scale ?? "unknown"} cssSize=${payload.width}x${payload.height} pixelSize=${payload.pixelWidth ?? "?"}x${payload.pixelHeight ?? "?"} crop=${payload.cropBounds ? `${payload.cropBounds.width}x${payload.cropBounds.height}@${payload.cropBounds.x},${payload.cropBounds.y}` : "missing"}`)
 	      return {
 	        title: `Rendered Mermaid diagram: ${title}`,
 	        output: truncateBytes(JSON.stringify({
-	          answerSummary: payload.fallbackUsed
-	            ? `Rendered Mermaid diagram "${title}" to ${payload.pngPath} using local fallback after remote render failed.`
-	            : `Rendered Mermaid diagram "${title}" to ${payload.pngPath}.`,
+	          answerSummary: `Rendered Mermaid diagram "${title}" to ${payload.pngPath}.`,
 	          evidence: [],
-	          gaps: payload.fallbackUsed && payload.remoteFailure ? [`Remote Mermaid render failed before local fallback succeeded: ${payload.remoteFailure.message}`] : [],
+	          gaps: [],
 	          nextActions: [{ tool: "create_word_document", reason: "Insert the returned PNG artifact path into the matching WordDocSpec section as a FigureSpec.", args: {} }],
 	          truncated: false,
 	          coverage: "complete",
@@ -2684,9 +2746,6 @@ export class ToolRuntime {
 	      const diagnostic = mermaidRenderDiagnosticFromError(error)
 	      const message = diagnostic.message || formatErrorMessage(error)
 	      this.output?.appendLine(`[mermaid-render] failed code=${diagnostic.errorCode} mmd=${mmdWritten ? workspaceRelativePath(mmdPath) : "(not-written)"} png=${workspaceRelativePath(pngPath)} message=${message}`)
-	      if (diagnostic.checkedChromeCandidates?.length) {
-	        this.output?.appendLine(`[mermaid-render] chrome candidates: ${diagnostic.checkedChromeCandidates.join("; ")}`)
-	      }
 	      if (diagnostic.stderrSnippet) this.output?.appendLine(`[mermaid-render] stderr: ${diagnostic.stderrSnippet}`)
 	      if (diagnostic.stdoutSnippet) this.output?.appendLine(`[mermaid-render] stdout: ${diagnostic.stdoutSnippet}`)
 	      input.progress?.({
@@ -2732,14 +2791,17 @@ export class ToolRuntime {
   }
 
   private wordDocSpecArgumentDiagnostic(args: Record<string, unknown>, parsedSpec?: WordDocSpec) {
-    const fragments = [`argumentKeys=${Object.keys(args).sort().join(",") || "none"}`]
+    const fragments = [
+      `argumentKeys=${Object.keys(args).sort().join(",") || "none"}`,
+      `argumentBytes=${jsonByteLength(args)}`,
+    ]
     if (!Object.prototype.hasOwnProperty.call(args, "spec")) return fragments.join(" ")
     const raw = args.spec
     if (typeof raw === "string") {
-      fragments.push(`specType=string`, `specStringBytes=${Buffer.byteLength(raw, "utf8")}`)
+      fragments.push(`specType=string`, `legacyStringSpec=true`, `specStringBytes=${Buffer.byteLength(raw, "utf8")}`)
       fragments.push(`specHead="${this.quoteLogValue(this.textHeadByBytesForLog(raw, MAX_WORD_DOC_SPEC_DIAGNOSTIC_BYTES))}"`)
       fragments.push(`specTail="${this.quoteLogValue(this.textTailByBytesForLog(raw, MAX_WORD_DOC_SPEC_DIAGNOSTIC_BYTES))}"`)
-      if (parsedSpec) fragments.push(this.wordDocSpecObjectDiagnostic(parsedSpec as unknown as Record<string, unknown>))
+      if (parsedSpec) fragments.push("parsed=true", this.wordDocSpecObjectDiagnostic(parsedSpec as unknown as Record<string, unknown>))
       return fragments.join(" ")
     }
     if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
@@ -2755,12 +2817,17 @@ export class ToolRuntime {
       ? spec.metadata as Record<string, unknown>
       : {}
     const title = typeof metadata.title === "string" ? metadata.title : ""
+    const counts = wordDocSpecShapeCounts(spec)
     return [
       `specKeys=${Object.keys(spec).sort().join(",") || "none"}`,
+      `specTopLevelKeys=${Object.keys(spec).sort().join(",") || "none"}`,
+      `specShapeHash=${wordDocSpecShapeHash(spec)}`,
       title ? `title="${this.quoteLogValue(title)}"` : "",
       `sections=${Array.isArray(spec.sections) ? spec.sections.length : "non-array"}`,
       `appendices=${Array.isArray(spec.appendices) ? spec.appendices.length : 0}`,
       `sources=${Array.isArray(spec.sources) ? spec.sources.length : 0}`,
+      `figures=${counts.figures}`,
+      `tables=${counts.tables}`,
     ].filter(Boolean).join(" ")
   }
 
@@ -2801,7 +2868,7 @@ export class ToolRuntime {
       detail: filename,
       status: "running",
       tool: input.name,
-      path: workspaceRelativePath(target),
+      targetPath: workspaceRelativePath(target),
     })
     const normalizedSpec = normalizeWordDocSpecArgument(input.arguments)
     if (!normalizedSpec.ok) {
@@ -2813,34 +2880,37 @@ export class ToolRuntime {
         detail: normalizedSpec.errorMessage,
         status: "failed",
         tool: input.name,
-        path: workspaceRelativePath(target),
+        targetPath: workspaceRelativePath(target),
       })
       return wordDocSpecFailureResult({
         errorCode: normalizedSpec.errorCode,
         errorMessage: normalizedSpec.errorMessage,
         risk: decision.risk,
         receivedArgumentKeys: Object.keys(input.arguments).sort(),
+        diagnostics: wordDocSpecFailureDiagnostics(input.arguments),
       })
     }
     const validationIssues = new WordDocSpecValidator().validate(normalizedSpec.spec)
     const validationErrors = validationIssues.filter((issue) => issue.severity === "error").map((issue) => issue.message)
     if (validationErrors.length > 0) {
+      const limitedValidationErrors = validationErrors.slice(0, 20)
       this.output?.appendLine(`[word-doc-spec] validation failed errors=${validationErrors.length} firstError="${this.quoteLogValue(validationErrors[0] ?? "")}" ${this.wordDocSpecArgumentDiagnostic(input.arguments, normalizedSpec.spec)}`)
       input.progress?.({
         id: "word-spec",
         phase: "word-spec",
         title: "校验 WordDocSpec",
-        detail: validationErrors.slice(0, 3).join("; "),
+        detail: limitedValidationErrors.slice(0, 3).join("; "),
         status: "failed",
         tool: input.name,
-        path: workspaceRelativePath(target),
+        targetPath: workspaceRelativePath(target),
       })
       return wordDocSpecFailureResult({
         errorCode: "word-doc-spec-validation-failed",
-        errorMessage: `WordDocSpec validation failed: ${validationErrors.join("; ")}`,
+        errorMessage: `WordDocSpec validation failed: ${limitedValidationErrors.join("; ")}`,
         risk: decision.risk,
         receivedArgumentKeys: Object.keys(input.arguments).sort(),
-        validationErrors,
+        validationErrors: limitedValidationErrors,
+        diagnostics: wordDocSpecFailureDiagnostics(input.arguments, normalizedSpec.spec),
       })
     }
     try {
@@ -2851,7 +2921,7 @@ export class ToolRuntime {
         detail: "规格校验通过",
         status: "completed",
         tool: input.name,
-        path: workspaceRelativePath(target),
+        targetPath: workspaceRelativePath(target),
       })
       input.progress?.({
         id: "word-build",
@@ -2860,11 +2930,14 @@ export class ToolRuntime {
         detail: workspaceRelativePath(target),
         status: "running",
         tool: input.name,
-        path: workspaceRelativePath(target),
+        targetPath: workspaceRelativePath(target),
       })
+      const remoteEndpoint = configuredWordRenderRemoteEndpoint()
+      this.output?.appendLine(`[word-doc] internal render endpoint ${remoteEndpoint ? "configured" : "unconfigured"}`)
       const result = await createWordDocument({
         spec: normalizedSpec.spec,
         filename,
+        remoteEndpoint,
       })
       input.progress?.({
         id: "word-build",
@@ -2882,7 +2955,7 @@ export class ToolRuntime {
           answerSummary: `Created Word document: ${result.path}`,
           evidence: [],
           gaps: result.warnings,
-          nextActions: [],
+          nextActions: [{ tool: "render_word_document", reason: "Run page-level visual QA for the generated DOCX.", args: { path: result.path } }],
           truncated: false,
           coverage: "complete",
           data: result,
@@ -2901,17 +2974,33 @@ export class ToolRuntime {
         detail: message,
         status: "failed",
         tool: input.name,
-        path: workspaceRelativePath(target),
+        targetPath: workspaceRelativePath(target),
       })
       const validationErrors = wordDocSpecValidationErrorsFromMessage(message)
       if (validationErrors.length > 0) {
+        const limitedValidationErrors = validationErrors.slice(0, 20)
         this.output?.appendLine(`[word-doc-spec] builder validation failed errors=${validationErrors.length} firstError="${this.quoteLogValue(validationErrors[0] ?? "")}" ${this.wordDocSpecArgumentDiagnostic(input.arguments, normalizedSpec.spec)}`)
         return wordDocSpecFailureResult({
           errorCode: "word-doc-spec-validation-failed",
           errorMessage: message,
           risk: decision.risk,
           receivedArgumentKeys: Object.keys(input.arguments).sort(),
-          validationErrors,
+          validationErrors: limitedValidationErrors,
+          diagnostics: wordDocSpecFailureDiagnostics(input.arguments, normalizedSpec.spec),
+        })
+      }
+      const structuralValidationErrors = wordDocSpecStructuralValidationErrorsFromMessage(message)
+      if (structuralValidationErrors.length > 0) {
+        const builderContext = wordDocSpecBuilderFailureContext(normalizedSpec.spec, error)
+        this.output?.appendLine(`[word-doc-spec] builder structural failure firstError="${this.quoteLogValue(structuralValidationErrors[0] ?? "")}" rawError="${this.quoteLogValue(message)}" builderPhase=${builderContext.builderPhase || "unknown"} fieldPath=${builderContext.fieldPath || "unknown"} ${this.wordDocSpecArgumentDiagnostic(input.arguments, normalizedSpec.spec)}`)
+        return wordDocSpecFailureResult({
+          errorCode: "word-doc-spec-builder-structural-failure",
+          errorMessage: `WordDocSpec validation failed: ${structuralValidationErrors.join("; ")}`,
+          risk: decision.risk,
+          receivedArgumentKeys: Object.keys(input.arguments).sort(),
+          validationErrors: structuralValidationErrors,
+          diagnostics: wordDocSpecFailureDiagnostics(input.arguments, normalizedSpec.spec),
+          builderContext,
         })
       }
       return failed("Create Word document", `Create Word document failed: ${message}`, message, decision.risk)
@@ -3120,8 +3209,15 @@ export class ToolRuntime {
   }
 
   private async runCommand(input: ToolRuntimeInput): Promise<ToolRuntimeResult> {
-    const command = stringArg(input.arguments.command)
+    const command = requiredString(input.arguments, "command")
     const cwd = resolveWorkspacePath(stringArg(input.arguments.cwd) || workspaceRoot())
+    if (!isWithinWorkspace(cwd)) {
+      return failed("Run command", `Command cwd is outside the current workspace: ${cwd}`, "Command cwd is outside workspace")
+    }
+    const timeoutMs = boundedCommandTimeout(numberFromArg(input.arguments.timeoutMs))
+    const maxOutputBytes = boundedCommandOutputBytes(numberFromArg(input.arguments.maxOutputBytes))
+    const reason = stringArg(input.arguments.reason).trim()
+    const executionHost = vscode.env.remoteName ? `remote:${vscode.env.remoteName}` : "local"
     const request: ToolRequest = {
       id: randomId(),
       kind: "command",
@@ -3130,14 +3226,55 @@ export class ToolRuntime {
       command,
       cwd,
     }
-    const decision = await this.resolvePermission(input, request, { command, cwd, tool: input.name })
+    const decision = await this.resolvePermission(input, request, {
+      command,
+      cwd,
+      workspaceCwd: workspaceRelativePath(cwd),
+      timeoutMs,
+      maxOutputBytes,
+      reason: reason || undefined,
+      executionHost,
+      tool: input.name,
+    })
     if (!decision.approved) return blocked("Run command", decision)
-    const output = await runShell(command, cwd, input.signal)
+    const result = await runShell(command, {
+      cwd,
+      signal: input.signal,
+      timeoutMs,
+      maxOutputBytes,
+    })
+    const succeeded = result.exitCode === 0 && !result.timedOut
+    const payload: ToolPayload = {
+      answerSummary: succeeded
+        ? `Command completed: ${command}`
+        : result.timedOut
+          ? `Command timed out after ${timeoutMs}ms: ${command}`
+          : `Command exited with code ${result.exitCode}: ${command}`,
+      evidence: [],
+      gaps: succeeded ? [] : [result.timedOut ? "Command timed out before completion." : `Command exited with non-zero status ${result.exitCode}.`],
+      nextActions: [],
+      truncated: result.truncated,
+      coverage: result.truncated ? "partial" : "complete",
+      data: {
+        command,
+        cwd: workspaceRelativePath(cwd),
+        absoluteCwd: cwd,
+        executionHost,
+        timeoutMs,
+        maxOutputBytes,
+        exitCode: result.exitCode,
+        timedOut: result.timedOut,
+        truncated: result.truncated,
+        stdout: result.stdout,
+        stderr: result.stderr,
+        reason: reason || undefined,
+      },
+    }
     return {
       title: `Command: ${command}`,
-      output: truncateBytes(output, MAX_OUTPUT_BYTES),
+      output: truncateBytes(JSON.stringify(payload, null, 2), MAX_OUTPUT_BYTES),
       approved: true,
-      status: "completed",
+      status: succeeded ? "completed" : "failed",
       risk: decision.risk,
     }
   }
@@ -3301,6 +3438,7 @@ export class ToolRuntime {
 
   private async resolvePermission(input: ToolRuntimeInput, request: ToolRequest, detail: unknown): Promise<PermissionDecision> {
     let decision = decidePermission({ mode: input.mode, request })
+    const auditDetail = skillAuditDetail(input, detail)
     if (!decision.approved && decision.requiresApproval) {
       if (!input.approve) {
         decision = {
@@ -3320,14 +3458,13 @@ export class ToolRuntime {
           reason: decision.reason,
           request,
           arguments: input.arguments,
-          detail,
+          detail: auditDetail,
         })
         decision = approval.approved
           ? { ...decision, approved: true, requiresApproval: false, reason: approval.reason ? `user approved once: ${approval.reason}; ${decision.reason}` : `user approved once; ${decision.reason}` }
           : { ...decision, approved: false, reason: approval.reason ? `user denied approval: ${approval.reason}; ${decision.reason}` : `user denied approval; ${decision.reason}` }
       }
     }
-    const auditDetail = skillAuditDetail(input, detail)
     if (input.activeSkills?.length) {
       this.output?.appendLine(`[skills] tool name=${input.name} active=${input.activeSkills.map((skill) => skill.name).join(",")} allowedBySkill=${auditDetail.toolAllowedBySkill === true}`)
     }
@@ -3357,6 +3494,146 @@ function objectSchema(properties: Record<string, unknown>, required: string[]) {
     properties,
     required,
     additionalProperties: false,
+  }
+}
+
+function createWordDocumentToolParameters() {
+  return objectSchema({
+    filename: { type: "string", description: "Suggested output filename; it will be sanitized and written under .chipmate/docs." },
+    spec: wordDocSpecToolSchema(),
+  }, ["spec"])
+}
+
+function wordDocSpecToolSchema() {
+  return {
+    type: "object",
+    description: "Generic WordDocSpec object. Required: metadata, sources, sections. Do not pass this field as a JSON string or JSON.stringify(spec). sources must be an array even when empty. sections[].paragraphs, bullets, and numberedItems must be string arrays; for rich text use richParagraphs.",
+    required: ["metadata", "sources", "sections"],
+    additionalProperties: true,
+    properties: {
+      metadata: {
+        type: "object",
+        required: ["title", "documentType", "language", "generatedAt"],
+        additionalProperties: true,
+        properties: {
+          title: { type: "string", description: "Document title." },
+          subtitle: { type: "string" },
+          documentType: { type: "string", description: "Document type such as technical-report or technical-design." },
+          language: { type: "string", description: "Document language, for example zh-CN or en-US." },
+          generatedAt: { type: "string", description: "ISO-8601 timestamp." },
+          author: { type: "string" },
+          sourceSummary: { type: "string" },
+        },
+      },
+      sources: {
+        type: "array",
+        description: "Global source inventory. Pass [] when no source records are available; do not omit this field.",
+        items: {
+          type: "object",
+          required: ["id", "title"],
+          additionalProperties: true,
+          properties: {
+            id: { type: "string" },
+            title: { type: "string" },
+            path: { type: "string" },
+            role: { type: "string" },
+            origin: { type: "string" },
+          },
+        },
+      },
+      layout: {
+        type: "object",
+        description: "Optional Word layout options. Put TOC intent in layout.navigation.mode.",
+        additionalProperties: true,
+        properties: {
+          preset: { type: "string" },
+          presetAlias: { type: "string" },
+          headerPattern: { type: "string" },
+          page: { type: "object", additionalProperties: true },
+          navigation: {
+            type: "object",
+            additionalProperties: true,
+            properties: {
+              mode: { type: "string", enum: ["field-toc", "static-toc", "none"], description: "Use field-toc for Word-native TOC fields, static-toc for rendered links, or none." },
+              includeTopBottomLinks: { type: "boolean" },
+              includeBackToTocLinks: { type: "boolean" },
+            },
+          },
+        },
+      },
+      executiveSummary: {
+        type: "object",
+        additionalProperties: true,
+        properties: {
+          paragraphs: { type: "array", items: { type: "string" } },
+          highlights: { type: "array", items: { type: "string" } },
+        },
+      },
+      sections: {
+        type: "array",
+        minItems: 1,
+        items: wordDocSectionToolSchema(),
+      },
+      appendices: {
+        type: "array",
+        items: wordDocSectionToolSchema(),
+      },
+      references: {
+        type: "array",
+        items: {
+          type: "object",
+          required: ["sourceId", "title"],
+          additionalProperties: true,
+          properties: {
+            sourceId: { type: "string" },
+            title: { type: "string" },
+            path: { type: "string" },
+            note: { type: "string" },
+          },
+        },
+      },
+    },
+  }
+}
+
+function wordDocSectionToolSchema() {
+  return {
+    type: "object",
+    required: ["id", "level", "title"],
+    additionalProperties: true,
+    properties: {
+      id: { type: "string" },
+      level: { type: "number", enum: [1, 2, 3] },
+      title: { type: "string" },
+      bookmark: { type: "string" },
+      formFactor: { type: "string" },
+      paragraphs: {
+        type: "array",
+        description: "Plain body paragraphs as strings. Do not pass objects like {text:'...'} here.",
+        items: { type: "string" },
+      },
+      richParagraphs: {
+        type: "array",
+        description: "Rich paragraphs with runs for bold/italic/hyperlink/reference/note content.",
+        items: { type: "object", additionalProperties: true },
+      },
+      bullets: { type: "array", description: "Bullet items as strings.", items: { type: "string" } },
+      numberedItems: { type: "array", description: "Numbered items as strings.", items: { type: "string" } },
+      lists: { type: "array", items: { type: "object", additionalProperties: true } },
+      definitionList: { type: "array", items: { type: "object", additionalProperties: true } },
+      sourceList: { type: "array", items: { type: "object", additionalProperties: true } },
+      figures: { type: "array", items: { type: "object", additionalProperties: true } },
+      tables: { type: "array", items: { type: "object", additionalProperties: true } },
+      codeBlocks: { type: "array", items: { type: "object", additionalProperties: true } },
+      callouts: { type: "array", items: { type: "object", additionalProperties: true } },
+      briefCards: { type: "array", items: { type: "object", additionalProperties: true } },
+      evidenceCards: { type: "array", items: { type: "object", additionalProperties: true } },
+      quoteBlocks: { type: "array", items: { type: "object", additionalProperties: true } },
+      formFields: { type: "array", items: { type: "object", additionalProperties: true } },
+      ruleCards: { type: "array", items: { type: "object", additionalProperties: true } },
+      sourceBackedBlocks: { type: "array", items: { type: "object", additionalProperties: true } },
+      sourceRefs: { type: "array", items: { type: "string" } },
+    },
   }
 }
 
@@ -3581,33 +3858,14 @@ function normalizeWordDocSpecArgument(args: Record<string, unknown>): { ok: true
       return {
         ok: false,
         errorCode: "word-doc-spec-empty-string",
-        errorMessage: "WordDocSpec argument spec was an empty string. Pass a JSON object, not prose.",
+        errorMessage: "WordDocSpec argument spec was an empty string. Pass spec as a JSON object, not prose or a stringified JSON value.",
       }
     }
     const byteLength = Buffer.byteLength(text, "utf8")
-    if (byteLength > MAX_WORD_DOC_SPEC_STRING_BYTES) {
-      return {
-        ok: false,
-        errorCode: "word-doc-spec-string-too-large",
-        errorMessage: `WordDocSpec string is too large: ${byteLength} byte(s), maximum ${MAX_WORD_DOC_SPEC_STRING_BYTES}.`,
-      }
-    }
-    try {
-      const parsed = JSON.parse(text) as unknown
-      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-        return {
-          ok: false,
-          errorCode: "word-doc-spec-json-not-object",
-          errorMessage: "WordDocSpec string parsed successfully but did not contain a JSON object.",
-        }
-      }
-      return { ok: true, spec: parsed as WordDocSpec }
-    } catch (error) {
-      return {
-        ok: false,
-        errorCode: "word-doc-spec-json-parse-failed",
-        errorMessage: `WordDocSpec string could not be parsed as JSON: ${formatErrorMessage(error)}`,
-      }
+    return {
+      ok: false,
+      errorCode: "word-doc-spec-string-disallowed",
+      errorMessage: `WordDocSpec argument spec was a string (${byteLength} byte(s)). Pass spec as a JSON object in the tool arguments, not JSON.stringify(spec) or a stringified JSON value.`,
     }
   }
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
@@ -3617,7 +3875,219 @@ function normalizeWordDocSpecArgument(args: Record<string, unknown>): { ok: true
       errorMessage: `WordDocSpec argument spec must be a JSON object. Received ${Array.isArray(raw) ? "array" : typeof raw}.`,
     }
   }
-  return { ok: true, spec: raw as WordDocSpec }
+  return { ok: true, spec: normalizeWordDocSpecObjectForTool(raw as Record<string, unknown>) }
+}
+
+function normalizeWordDocSpecObjectForTool(raw: Record<string, unknown>): WordDocSpec {
+  const normalized: Record<string, unknown> = {
+    ...raw,
+  }
+  if (!Object.prototype.hasOwnProperty.call(raw, "sources")) normalized.sources = []
+  const layout = normalizeWordDocSpecLayoutForTool(raw)
+  if (layout) normalized.layout = layout
+  if (Array.isArray(raw.sections)) normalized.sections = normalizeWordDocSectionsForTool(raw.sections)
+  if (Array.isArray(raw.appendices)) normalized.appendices = normalizeWordDocSectionsForTool(raw.appendices)
+  const executiveSummary = normalizeWordDocExecutiveSummaryForTool(raw.executiveSummary)
+  if (executiveSummary) normalized.executiveSummary = executiveSummary
+  return normalized as unknown as WordDocSpec
+}
+
+function normalizeWordDocSpecLayoutForTool(raw: Record<string, unknown>): Record<string, unknown> | undefined {
+  const layout = objectRecord(raw.layout)
+  const currentNavigation = objectRecord(layout?.navigation)
+  if (currentNavigation) return layout
+  const topLevelNavigation = objectRecord(raw.navigation)
+  const mode = topLevelNavigation ? wordNavigationModeFromLegacyShape(topLevelNavigation) : undefined
+  if (!mode) return layout
+  return {
+    ...(layout ?? {}),
+    navigation: { mode },
+  }
+}
+
+function wordNavigationModeFromLegacyShape(navigation: Record<string, unknown>): "field-toc" | "static-toc" | "none" | undefined {
+  if (navigation.mode === "field-toc" || navigation.mode === "static-toc" || navigation.mode === "none") return navigation.mode
+  if (navigation.toc === true) return "field-toc"
+  if (navigation.toc === false) return "none"
+  return undefined
+}
+
+function normalizeWordDocSectionsForTool(sections: unknown[]): unknown[] {
+  return sections.map((section) => {
+    const record = objectRecord(section)
+    if (!record) return section
+    return {
+      ...record,
+      paragraphs: normalizeStringArrayLikeForTool(record.paragraphs),
+      bullets: normalizeStringArrayLikeForTool(record.bullets),
+      numberedItems: normalizeStringArrayLikeForTool(record.numberedItems),
+    }
+  })
+}
+
+function normalizeWordDocExecutiveSummaryForTool(raw: unknown): Record<string, unknown> | undefined {
+  const summary = objectRecord(raw)
+  if (!summary) return undefined
+  return {
+    ...summary,
+    paragraphs: normalizeStringArrayLikeForTool(summary.paragraphs),
+    highlights: normalizeStringArrayLikeForTool(summary.highlights),
+  }
+}
+
+function normalizeStringArrayLikeForTool(raw: unknown): unknown {
+  if (!Array.isArray(raw)) return raw
+  let changed = false
+  const normalized = raw.map((item) => {
+    if (typeof item === "string") return item
+    const record = objectRecord(item)
+    if (typeof record?.text === "string") {
+      changed = true
+      return record.text
+    }
+    return item
+  })
+  return changed ? normalized : raw
+}
+
+function objectRecord(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined
+}
+
+function arrayRecords(value: unknown): Record<string, unknown>[] {
+  return Array.isArray(value) ? value.map((item) => objectRecord(item)).filter((item): item is Record<string, unknown> => Boolean(item)) : []
+}
+
+function jsonByteLength(value: unknown) {
+  try {
+    return Buffer.byteLength(JSON.stringify(value), "utf8")
+  } catch {
+    return -1
+  }
+}
+
+function wordDocSpecFailureDiagnostics(args: Record<string, unknown>, spec?: WordDocSpec) {
+  const rawSpec = Object.prototype.hasOwnProperty.call(args, "spec") ? args.spec : undefined
+  const specRecord = spec ? spec as unknown as Record<string, unknown> : objectRecord(rawSpec)
+  return {
+    specType: typeof rawSpec === "string" ? "string" : Array.isArray(rawSpec) ? "array" : rawSpec === null ? "null" : typeof rawSpec,
+    legacyStringSpec: typeof rawSpec === "string",
+    argumentBytes: jsonByteLength(args),
+    receivedArgumentKeys: Object.keys(args).sort(),
+    specTopLevelKeys: specRecord ? Object.keys(specRecord).sort() : [],
+    specShapeHash: specRecord ? wordDocSpecShapeHash(specRecord) : undefined,
+    ...wordDocSpecShapeCounts(specRecord),
+  }
+}
+
+function wordDocSpecShapeCounts(spec?: Record<string, unknown>) {
+  const rawSections = spec?.sections
+  const rawAppendices = spec?.appendices
+  const rawSources = spec?.sources
+  const sections = arrayRecords(rawSections)
+  const appendices = arrayRecords(rawAppendices)
+  const allSections = [...sections, ...appendices]
+  return {
+    sections: Array.isArray(rawSections) ? rawSections.length : 0,
+    appendices: Array.isArray(rawAppendices) ? rawAppendices.length : 0,
+    sources: Array.isArray(rawSources) ? rawSources.length : 0,
+    figures: allSections.reduce((sum, section) => sum + (Array.isArray(section.figures) ? section.figures.length : 0), 0),
+    tables: allSections.reduce((sum, section) => sum + (Array.isArray(section.tables) ? section.tables.length : 0), 0),
+  }
+}
+
+function wordDocSpecShapeHash(spec: Record<string, unknown>) {
+  const signature = structuralSignature(spec)
+  let hash = 2166136261
+  for (let index = 0; index < signature.length; index += 1) {
+    hash ^= signature.charCodeAt(index)
+    hash = Math.imul(hash, 16777619)
+  }
+  return (hash >>> 0).toString(16).padStart(8, "0")
+}
+
+function structuralSignature(value: unknown, depth = 0): string {
+  if (depth > 5) return "..."
+  if (value === null) return "null"
+  if (value === undefined) return "undefined"
+  if (typeof value === "string") return `string:${lengthBucket(value.length)}`
+  if (typeof value === "number") return Number.isFinite(value) ? "number" : "number:nonfinite"
+  if (typeof value === "boolean") return "boolean"
+  if (value instanceof Uint8Array) return `uint8:${lengthBucket(value.length)}`
+  if (Array.isArray(value)) {
+    const preview = value.slice(0, 8).map((item) => structuralSignature(item, depth + 1)).join(",")
+    return `array:${value.length}[${preview}]`
+  }
+  if (typeof value === "object") {
+    const record = value as Record<string, unknown>
+    return `object{${Object.keys(record).sort().slice(0, 40).map((key) => `${key}:${structuralSignature(record[key], depth + 1)}`).join(",")}}`
+  }
+  return typeof value
+}
+
+function lengthBucket(length: number) {
+  if (length <= 0) return "0"
+  if (length <= 16) return "1-16"
+  if (length <= 64) return "17-64"
+  if (length <= 256) return "65-256"
+  if (length <= 1024) return "257-1024"
+  return "1025+"
+}
+
+function wordDocSpecBuilderFailureContext(spec: WordDocSpec, error: unknown) {
+  const issue = firstWordDocSpecShapeIssue(spec)
+  const stack = error instanceof Error && error.stack ? error.stack.split(/\r?\n/).slice(0, 5).join(" | ") : ""
+  return {
+    builderPhase: issue?.builderPhase ?? "build",
+    sectionIndex: issue?.sectionIndex,
+    sectionId: issue?.sectionId,
+    sectionTitle: issue?.sectionTitle,
+    blockKind: issue?.blockKind,
+    fieldPath: issue?.fieldPath ?? "",
+    rawError: formatErrorMessage(error),
+    stackSnippet: stack ? truncateString(stack.replace(/\s+/g, " "), 700) : undefined,
+  }
+}
+
+function firstWordDocSpecShapeIssue(spec: WordDocSpec) {
+  const sections = [...arrayRecords(spec.sections), ...arrayRecords(spec.appendices)]
+  for (const [sectionIndex, section] of sections.entries()) {
+    const sectionMeta = {
+      sectionIndex,
+      sectionId: typeof section.id === "string" ? section.id : undefined,
+      sectionTitle: typeof section.title === "string" ? section.title : undefined,
+    }
+    for (const field of ["paragraphs", "bullets", "numberedItems"] as const) {
+      const value = section[field]
+      if (value !== undefined && !Array.isArray(value)) return { ...sectionMeta, builderPhase: "sectionElements", blockKind: field, fieldPath: `sections[${sectionIndex}].${field}` }
+      if (Array.isArray(value)) {
+        const itemIndex = value.findIndex((item) => typeof item !== "string")
+        if (itemIndex >= 0) return { ...sectionMeta, builderPhase: "sectionElements", blockKind: field, fieldPath: `sections[${sectionIndex}].${field}[${itemIndex}]` }
+      }
+    }
+    const figures = section.figures
+    if (figures !== undefined && !Array.isArray(figures)) return { ...sectionMeta, builderPhase: "buildContext", blockKind: "figures", fieldPath: `sections[${sectionIndex}].figures` }
+    if (Array.isArray(figures)) {
+      for (const [figureIndex, figure] of figures.entries()) {
+        const figureRecord = objectRecord(figure)
+        if (!figureRecord) return { ...sectionMeta, builderPhase: "buildContext", blockKind: "figure", fieldPath: `sections[${sectionIndex}].figures[${figureIndex}]` }
+        const image = objectRecord(figureRecord.image)
+        if (!image) return { ...sectionMeta, builderPhase: "buildContext", blockKind: "figure", fieldPath: `sections[${sectionIndex}].figures[${figureIndex}].image` }
+        if (image.contentType !== "image/png") return { ...sectionMeta, builderPhase: "buildContext", blockKind: "figure", fieldPath: `sections[${sectionIndex}].figures[${figureIndex}].image.contentType` }
+      }
+    }
+    const tables = section.tables
+    if (tables !== undefined && !Array.isArray(tables)) return { ...sectionMeta, builderPhase: "sectionElements", blockKind: "tables", fieldPath: `sections[${sectionIndex}].tables` }
+    if (Array.isArray(tables)) {
+      for (const [tableIndex, table] of tables.entries()) {
+        const tableRecord = objectRecord(table)
+        if (!tableRecord) return { ...sectionMeta, builderPhase: "sectionElements", blockKind: "table", fieldPath: `sections[${sectionIndex}].tables[${tableIndex}]` }
+        if (!Array.isArray(tableRecord.headers)) return { ...sectionMeta, builderPhase: "table", blockKind: "table", fieldPath: `sections[${sectionIndex}].tables[${tableIndex}].headers` }
+        if (!Array.isArray(tableRecord.rows)) return { ...sectionMeta, builderPhase: "table", blockKind: "table", fieldPath: `sections[${sectionIndex}].tables[${tableIndex}].rows` }
+      }
+    }
+  }
+  return undefined
 }
 
 function wordDocSpecFailureResult(input: {
@@ -3626,15 +4096,18 @@ function wordDocSpecFailureResult(input: {
   risk?: string
   receivedArgumentKeys: string[]
   validationErrors?: string[]
+  diagnostics?: Record<string, unknown>
+  builderContext?: Record<string, unknown>
 }): ToolRuntimeResult {
-  const gaps = input.validationErrors?.length ? input.validationErrors : [input.errorMessage]
+  const validationErrors = (input.validationErrors ?? []).slice(0, 20)
+  const gaps = validationErrors.length ? validationErrors : [input.errorMessage]
   const payload = {
     answerSummary: `Create Word document failed: ${input.errorMessage}`,
     evidence: [],
     gaps,
     nextActions: [{
       tool: "create_word_document",
-      reason: "Repair the WordDocSpec and retry with arguments shaped as { filename?: string, spec: WordDocSpec }.",
+      reason: "Repair the WordDocSpec and retry with arguments shaped as { filename?: string, spec: WordDocSpec }. The spec value must be a JSON object, not a stringified JSON value.",
       args: {},
     }],
     truncated: false,
@@ -3642,9 +4115,11 @@ function wordDocSpecFailureResult(input: {
     data: {
       errorCode: input.errorCode,
       errorMessage: input.errorMessage,
-      validationErrors: input.validationErrors ?? [],
+      validationErrors,
       receivedArgumentKeys: input.receivedArgumentKeys,
       expectedShape: minimalWordDocSpecShape(),
+      diagnostic: input.diagnostics,
+      builderContext: input.builderContext,
     },
   }
   return {
@@ -3681,6 +4156,13 @@ function wordDocSpecValidationErrorsFromMessage(message: string) {
   return message.slice(prefix.length).split(";").map((item) => item.trim()).filter(Boolean)
 }
 
+function wordDocSpecStructuralValidationErrorsFromMessage(message: string) {
+  if (!/trim is not a function|replace is not a function|is not iterable|Cannot read properties of undefined/i.test(message)) return []
+  return [
+    "WordDocSpec contains a value with the wrong shape for Word rendering. Check sections[].paragraphs, sections[].bullets, sections[].numberedItems, executiveSummary.paragraphs, and executiveSummary.highlights; these fields must be arrays of strings.",
+  ]
+}
+
 function failed(title: string, output: string, error: string, risk?: string): ToolRuntimeResult {
   return {
     title,
@@ -3704,6 +4186,10 @@ function mermaidRenderDiagnosticFromError(error: unknown): MermaidPngRenderDiagn
 }
 
 function configuredMermaidRemoteEndpoint() {
+  return configuredWordRenderRemoteEndpoint()
+}
+
+function configuredWordRenderRemoteEndpoint() {
   const fromEnv = process.env.CHIPMATE_WORD_RENDER_REMOTE_ENDPOINT?.trim()
   if (fromEnv) return fromEnv
   try {
@@ -3731,6 +4217,7 @@ function mermaidRenderFailureResult(input: {
     gaps: [
       "PNG artifact was not generated.",
       mermaidRenderUserMessage(input.diagnostic),
+      input.diagnostic.message,
     ],
     nextActions: mermaidRenderNextActions(input.diagnostic),
     truncated: false,
@@ -3748,7 +4235,6 @@ function mermaidRenderFailureResult(input: {
       mustNotEmbedSourceAsFigure: true,
       diagnostic: input.diagnostic,
       remoteFailure: input.diagnostic.remoteFailure,
-      localFailure: input.diagnostic.localFailure,
       sourceTextPreview: truncateString(input.sourceText, 1200),
     },
   }
@@ -3764,28 +4250,24 @@ function mermaidRenderFailureResult(input: {
 
 function mermaidRenderUserMessage(diagnostic: MermaidPngRenderDiagnostic) {
   switch (diagnostic.errorCode) {
-    case "chrome-not-found":
-      return "No local Chrome/Edge executable was found for headless Mermaid PNG rendering; install Chrome/Edge or set CHROME_PATH."
-    case "chrome-startup-failed":
-    case "chrome-devtools-failed":
-      return "Chrome/Edge was found but could not be started or controlled through DevTools for headless rendering."
     case "mermaid-runtime-missing":
       return "The packaged Mermaid runtime file is missing from the extension."
     case "mermaid-render-timeout":
       return "Mermaid rendering timed out before a PNG could be captured."
     case "mermaid-render-failed":
       return "Mermaid failed to parse or render the provided source."
+    case "remote-render-failed":
+      return "Remote Mermaid render server reached Mermaid parsing/rendering but rejected the provided source; fix the Mermaid source and retry rendering."
     case "png-invalid":
       return "The renderer did not return a valid PNG image."
     case "artifact-write-failed":
       return "The PNG was rendered but could not be written to the workspace artifact path."
     case "remote-unavailable":
+    case "remote-unconfigured":
     case "remote-timeout":
-      return "Remote Mermaid render server was unavailable or timed out; local fallback was attempted when possible."
+      return "Remote Mermaid render server was unavailable or timed out; no local fallback is attempted."
     case "remote-invalid-response":
-      return "Remote Mermaid render server returned an invalid response; local fallback was attempted when possible."
-    case "remote-render-failed":
-      return "Remote Mermaid render server could not render the diagram; local fallback was attempted when possible."
+      return "Remote Mermaid render server returned an invalid response; no local fallback is attempted."
     default:
       return "Mermaid PNG rendering failed."
   }
@@ -3793,21 +4275,11 @@ function mermaidRenderUserMessage(diagnostic: MermaidPngRenderDiagnostic) {
 
 function mermaidRenderNextActions(diagnostic: MermaidPngRenderDiagnostic) {
   switch (diagnostic.errorCode) {
-    case "chrome-not-found":
-      return [
-        { action: "Install Chrome or Edge on this machine, or set CHROME_PATH to the browser executable path.", reason: "Mermaid PNG rendering currently uses local headless Chrome/Edge." },
-        { action: "Check the ChipMate Output channel for the full Chrome discovery candidates.", reason: "It records every checked browser location." },
-      ]
-    case "chrome-startup-failed":
-    case "chrome-devtools-failed":
-      return [
-        { action: "Verify the configured Chrome/Edge executable can run in headless mode from the VS Code extension host environment.", reason: "The browser was found but did not expose a usable DevTools endpoint." },
-        { action: "Check the ChipMate Output channel stderr/stdout snippets.", reason: "They usually include policy, sandbox, or permission failures." },
-      ]
     case "mermaid-render-failed":
+    case "remote-render-failed":
     case "mermaid-render-timeout":
       return [
-        { action: "Validate or simplify the Mermaid source and retry rendering.", reason: "The Mermaid runtime failed before PNG capture." },
+        { action: "Fix the Mermaid source syntax and retry chipmate_render_mermaid_diagram.", reason: "The Mermaid runtime failed before PNG capture; do not continue to create_word_document without a successful PNG artifact." },
         { action: "Use the returned .mmd artifact path to reproduce the render failure.", reason: "The source artifact is preserved when it was written successfully." },
       ]
     case "mermaid-runtime-missing":
@@ -3815,12 +4287,12 @@ function mermaidRenderNextActions(diagnostic: MermaidPngRenderDiagnostic) {
         { action: "Repackage the VSIX and confirm node_modules/mermaid/dist/mermaid.esm.min.mjs is included.", reason: "The renderer requires the local Mermaid ESM runtime." },
       ]
     case "remote-unavailable":
+    case "remote-unconfigured":
     case "remote-timeout":
     case "remote-invalid-response":
-    case "remote-render-failed":
       return [
-        { action: "Check the remote render server /health and /render/mermaid endpoint.", reason: "Remote Mermaid PNG rendering is the first-priority provider." },
-        { action: "If local fallback also failed, fix either the remote render server or the local Chrome/Edge renderer before creating a Word figure.", reason: "Word figures require PNG artifacts; Mermaid source text must not be used as a substitute." },
+        { action: "Check the remote render server /health and /render/mermaid endpoint.", reason: "Remote Mermaid PNG rendering is the only client-side provider path." },
+        { action: "Generate the Word document without this diagram image when a partial document is acceptable.", reason: "Word figures require PNG artifacts; Mermaid source text must not be used as a substitute." },
       ]
     default:
       return [
@@ -4381,6 +4853,7 @@ function skillAuditDetail(input: ToolRuntimeInput, detail: unknown): Record<stri
     ...base,
     skillId: skill.id,
     skillName: skill.name,
+    skillSourceKind: skill.sourceKind,
     invocationMode: skill.invocationMode,
     toolAllowedBySkill: Boolean(allowed),
   }
@@ -4722,29 +5195,69 @@ function hashText(input = "") {
   return (hash >>> 0).toString(16).padStart(8, "0")
 }
 
-function runShell(command: string, cwd: string, signal?: AbortSignal) {
-  return new Promise<string>((resolve, reject) => {
+function runShell(command: string, input: {
+  cwd: string
+  timeoutMs: number
+  maxOutputBytes: number
+  signal?: AbortSignal
+}) {
+  return new Promise<{ stdout: string; stderr: string; exitCode: number; timedOut: boolean; truncated: boolean }>((resolve, reject) => {
     const shell = process.platform === "win32" ? "powershell.exe" : process.env.SHELL || "/bin/sh"
     const args = process.platform === "win32"
       ? ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", command]
       : ["-lc", command]
-    const child = spawn(shell, args, { cwd, shell: false })
-    let output = ""
+    const child = spawn(shell, args, { cwd: input.cwd, shell: false })
+    let stdout = ""
+    let stderr = ""
+    let truncated = false
+    let timedOut = false
+    let totalBytes = 0
+    const append = (current: string, chunk: Buffer) => {
+      if (totalBytes >= input.maxOutputBytes) {
+        truncated = true
+        return current
+      }
+      const available = input.maxOutputBytes - totalBytes
+      const text = chunk.length <= available
+        ? chunk.toString()
+        : chunk.subarray(0, Math.max(0, available)).toString()
+      totalBytes += Buffer.byteLength(text, "utf8")
+      if (chunk.length > available) truncated = true
+      return current + text
+    }
+    const cleanup = () => {
+      clearTimeout(timer)
+      input.signal?.removeEventListener("abort", onAbort)
+    }
     const onAbort = () => {
       child.kill()
+      cleanup()
       reject(new Error("Command aborted."))
     }
-    signal?.addEventListener("abort", onAbort, { once: true })
+    const timer = setTimeout(() => {
+      timedOut = true
+      child.kill()
+    }, input.timeoutMs)
+    input.signal?.addEventListener("abort", onAbort, { once: true })
     child.stdout.on("data", (chunk) => {
-      output += chunk.toString()
+      stdout = append(stdout, chunk)
     })
     child.stderr.on("data", (chunk) => {
-      output += chunk.toString()
+      stderr = append(stderr, chunk)
     })
-    child.on("error", reject)
+    child.on("error", (error) => {
+      cleanup()
+      reject(error)
+    })
     child.on("close", (code) => {
-      signal?.removeEventListener("abort", onAbort)
-      resolve(`${output}${code === 0 ? "" : `\n[exit code ${code ?? "unknown"}]`}`)
+      cleanup()
+      resolve({
+        stdout,
+        stderr,
+        exitCode: timedOut ? 124 : code ?? 0,
+        timedOut,
+        truncated,
+      })
     })
   })
 }
@@ -4837,6 +5350,22 @@ function numberFromArg(input: unknown) {
     if (Number.isFinite(value)) return value
   }
   return undefined
+}
+
+function mermaidRenderScaleArg(input: unknown) {
+  const value = numberFromArg(input)
+  if (value === undefined) return undefined
+  return Math.max(1, Math.min(4, Math.floor(value)))
+}
+
+function boundedCommandTimeout(input: number | undefined) {
+  if (input === undefined) return DEFAULT_COMMAND_TIMEOUT_MS
+  return Math.max(1, Math.min(Math.floor(input), MAX_COMMAND_TIMEOUT_MS))
+}
+
+function boundedCommandOutputBytes(input: number | undefined) {
+  if (input === undefined) return MAX_COMMAND_OUTPUT_BYTES
+  return Math.max(1, Math.min(Math.floor(input), MAX_COMMAND_OUTPUT_BYTES))
 }
 
 function tableIndexFromLocator(input: unknown) {

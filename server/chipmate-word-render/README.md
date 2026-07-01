@@ -43,10 +43,10 @@ PORT=6001 SERVICE_NAME=chipmate-word-render PACKAGE_ROOT_ON_HOST=/opt/chipmate/p
 curl -fsS http://127.0.0.1:6001/health
 curl -fsS -X POST http://127.0.0.1:6001/render/mermaid \
   -H 'content-type: application/json' \
-  --data '{"source":"flowchart TD\nA[Start] --> B[Done]","filename":"smoke.mmd"}'
+  --data '{"source":"flowchart TD\nA[Start] --> B[Done]","filename":"smoke.mmd","scale":3}'
 ```
 
-`/render/word` accepts JSON with `filename`, `docxBase64`, and optional `timeoutMs`.
+`/render/mermaid` returns cropped CSS `width`/`height` for Word display sizing plus actual PNG `pixelWidth`/`pixelHeight`, the applied `scale`, and `contentBounds`/`cropBounds` diagnostics. `/render/word` accepts JSON with `filename`, `docxBase64`, and optional `timeoutMs`.
 
 ## Package File Service
 

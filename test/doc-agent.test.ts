@@ -3539,8 +3539,8 @@ describe("word edit agent", () => {
       expect(existsSync(join(root, result.pagePngPaths![0]!))).toBe(true)
       expect(result.pageVisualSummaries).toHaveLength(1)
       expect(result.pageVisualSummaries![0]!.path).toBe(result.pagePngPaths![0])
-      expect(result.pageVisualSummaries![0]!.width).toBe(32)
-      expect(result.pageVisualSummaries![0]!.height).toBe(32)
+      expect(result.pageVisualSummaries![0]!.width).toBe(1)
+      expect(result.pageVisualSummaries![0]!.height).toBe(1)
       expect(result.pageVisualSummaries![0]!.inkPixels).toBeGreaterThan(0)
       expect(result.pageVisualSummaries![0]!.inkRatio).toBeGreaterThan(0)
       expect(result.pageVisualSummaries![0]!.contentBounds?.width).toBeGreaterThan(0)
@@ -3711,35 +3711,26 @@ describe("word edit agent", () => {
       expect(result.textDiff).toContain("-所有团队规则都应包含清晰的适用范围、来源依据和落地建议。")
       expect(result.textDiff).toContain("+更新后的团队规则应明确评审责任、状态切换条件和例外处理路径。")
       expect(result.visualDiffComplete).toBe(true)
-      expect(result.pixelDiffComplete).toBe(true)
       expect(result.beforeRender?.pageVisualSummaries?.[0]?.inkPixels).toBeGreaterThan(0)
       expect(result.afterRender?.pageVisualSummaries?.[0]?.contentBounds?.height).toBeGreaterThan(0)
       expect(result.afterRender?.pageVisualSummaries?.[0]?.visualRegions).toHaveLength(9)
       expect(result.afterRender?.pageVisualSummaries?.[0]?.inkComponents?.[0]?.inkPixels).toBeGreaterThan(0)
+      expect(result.pixelDiffComplete).toBe(false)
       expect(result.changedPages).toHaveLength(1)
       expect(result.changedPages[0]!.beforePngPath).toMatch(/before-page-1\.png$/)
       expect(result.changedPages[0]!.afterPngPath).toMatch(/after-page-1\.png$/)
-      expect(result.changedPages[0]!.diffPngPath).toMatch(/diff-page-1\.png$/)
-      expect(result.changedPages[0]!.changedPixels).toBeGreaterThan(0)
-      expect(result.changedPages[0]!.totalPixels).toBeGreaterThan(0)
-      expect(result.changedPages[0]!.changedRatio).toBeGreaterThan(0)
-      expect(result.changedPages[0]!.changeBounds).toEqual({ left: 0, top: 0, right: 31, bottom: 31, width: 32, height: 32 })
-      expect(result.changedPages[0]!.changedRegions).toHaveLength(9)
-      expect(result.changedPages[0]!.dominantChangedRegions?.length).toBeGreaterThan(0)
-      expect(result.changedPages[0]!.visualSeverity).toBe("major")
-      expect(result.changedPages[0]!.visualSummary).toContain("pixels changed")
-      expect(result.changedPages[0]!.riskFlags).toContain("broad-page-change")
+      expect(result.changedPages[0]!.diffPngPath).toBeUndefined()
+      expect(result.changedPages[0]!.byteChanged).toBe(true)
+      expect(result.issues.some((item) => item.code === "word-pixel-diff-skipped")).toBe(true)
       expect(existsSync(join(root, result.changedPages[0]!.beforePngPath!))).toBe(true)
       expect(existsSync(join(root, result.changedPages[0]!.afterPngPath!))).toBe(true)
-      const diffPng = await readFile(join(root, result.changedPages[0]!.diffPngPath!))
-      expect([...diffPng.slice(0, 8)]).toEqual([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
       expect(await readFile(join(root, result.textDiffPath!), "utf8")).toContain("@@")
     } finally {
       restoreRenderTools()
     }
   })
 
-  test("compare_word_documents honors custom pixel threshold for render-noise review", async () => {
+  test("compare_word_documents skips local pixel diff even when a pixel threshold is provided", async () => {
     const root = await tempDir("chipmate-word-diff-threshold-")
     const beforeBytes = await new WordDocBuilder().build(minimalRenderableWordDocSpec())
     const afterSpec = minimalRenderableWordDocSpec()
@@ -3759,18 +3750,12 @@ describe("word edit agent", () => {
       expect(result.ok).toBe(true)
       expect(result.textChanged).toBe(true)
       expect(result.visualDiffComplete).toBe(true)
-      expect(result.pixelDiffComplete).toBe(true)
+      expect(result.pixelDiffComplete).toBe(false)
       expect(result.changedPages).toHaveLength(1)
       expect(result.changedPages[0]!.byteChanged).toBe(true)
-      expect(result.changedPages[0]!.pixelThreshold).toBe(255)
-      expect(result.changedPages[0]!.changedPixels).toBe(0)
-      expect(result.changedPages[0]!.changedRatio).toBe(0)
-      expect(result.changedPages[0]!.changeBounds).toBeUndefined()
-      expect(result.changedPages[0]!.changedRegions).toHaveLength(9)
-      expect(result.changedPages[0]!.dominantChangedRegions).toEqual([])
-      expect(result.changedPages[0]!.visualSeverity).toBe("none")
-      expect(result.changedPages[0]!.visualSummary).toBe("No changed pixels above threshold.")
-      expect(result.changedPages[0]!.riskFlags).toEqual([])
+      expect(result.changedPages[0]!.pixelThreshold).toBeUndefined()
+      expect(result.changedPages[0]!.diffPngPath).toBeUndefined()
+      expect(result.issues.some((item) => item.code === "word-pixel-diff-skipped")).toBe(true)
     } finally {
       restoreRenderTools()
     }
@@ -4443,7 +4428,7 @@ describe("word edit agent", () => {
     expect(existsSync(join(root, result.path))).toBe(true)
   })
 
-  test("refresh_word_native_fields preserves TOC PAGE NUMPAGES fields and render-verifies a refreshed copy", async () => {
+  test("Word native field audit reports TOC PAGE NUMPAGES while refresh is remote-only unavailable", async () => {
     const root = await tempDir("chipmate-word-native-field-refresh-")
     workspaceFolders = [{ name: "repo", uri: UriShim.file(root) }]
     const spec = minimalRenderableWordDocSpec()
@@ -4478,38 +4463,22 @@ describe("word edit agent", () => {
     expect(report.fieldTypeCounts.TOC).toBe(1)
     expect(report.fieldTypeCounts.PAGE).toBe(1)
     expect(report.fieldTypeCounts.NUMPAGES).toBe(1)
-    expect(report.unsupportedMaterialization.join("\n")).toContain("refresh_word_native_fields")
+    expect(report.unsupportedMaterialization.join("\n")).toContain("remote native field refresh is not implemented")
 
     const prepared = await prepareNativeFieldRefreshInDocxBytes(bytes, "docs/native-fields.docx")
     expect(prepared.preparedReport.fieldTypeCounts.TOC).toBe(1)
     expect(prepared.preparedReport.fieldTypeCounts.PAGE).toBe(1)
     expect(prepared.preparedReport.fieldTypeCounts.NUMPAGES).toBe(1)
 
-    const restoreRenderTools = await installFakeWordRenderTools(root)
-    try {
-      const result = await new WordNativeFieldRefresher(root).refresh({
-        path: "docs/native-fields.docx",
-        bytes,
-        outputFilenameBase: "native-fields-refreshed",
-        timeoutMs: 90_000,
-      })
-      expect(result.path).toMatch(/^\.chipmate\/docs\/native-fields-refreshed-.+\.docx$/)
-      expect(existsSync(join(root, result.path))).toBe(true)
-      expect(["libreoffice-saved-docx", "preserved-live-fields-render-verified"]).toContain(result.refreshMode)
-      expect(result.refreshedFieldTypes).toEqual(["NUMPAGES", "PAGE", "TOC"])
-      expect(result.afterReport.fieldTypeCounts.TOC).toBe(1)
-      expect(result.afterReport.fieldTypeCounts.PAGE).toBe(1)
-      expect(result.afterReport.fieldTypeCounts.NUMPAGES).toBe(1)
-      expect(result.structureCheckResult.ok).toBe(true)
-      expect(result.renderCheckResult.attempted).toBe(true)
-      expect(result.renderCheckResult.visualQaStatus).toBe("completed")
-      expect(result.renderCheckResult.pageCount ?? 0).toBeGreaterThan(0)
-    } finally {
-      restoreRenderTools()
-    }
+    await expect(new WordNativeFieldRefresher(root).refresh({
+      path: "docs/native-fields.docx",
+      bytes,
+      outputFilenameBase: "native-fields-refreshed",
+      timeoutMs: 90_000,
+    })).rejects.toThrow(/remote-render-only build/)
   }, 120_000)
 
-  test("refresh_word_native_fields fails closed when LibreOffice is unavailable", async () => {
+  test("refresh_word_native_fields fails closed without probing local LibreOffice", async () => {
     const root = await tempDir("chipmate-word-native-field-refresh-unavailable-")
     workspaceFolders = [{ name: "repo", uri: UriShim.file(root) }]
     const spec = minimalRenderableWordDocSpec()
@@ -4518,27 +4487,12 @@ describe("word edit agent", () => {
       navigation: { mode: "field-toc" },
     }
     const bytes = await new WordDocBuilder().build(spec)
-    const previousSoffice = process.env.CHIPMATE_SOFFICE_PATH
-    const previousHome = process.env.HOME
-    const previousPath = process.env.PATH
-    process.env.CHIPMATE_SOFFICE_PATH = join(root, "missing-soffice")
-    process.env.HOME = join(root, "missing-home")
-    process.env.PATH = join(root, "missing-bin")
-    try {
-      await expect(new WordNativeFieldRefresher(root).refresh({
-        path: "docs/native-fields.docx",
-        bytes,
-        outputFilenameBase: "native-fields-refreshed",
-        timeoutMs: 1_000,
-      })).rejects.toThrow(/LibreOffice native field refresh failed or is unavailable/)
-    } finally {
-      if (previousSoffice === undefined) delete process.env.CHIPMATE_SOFFICE_PATH
-      else process.env.CHIPMATE_SOFFICE_PATH = previousSoffice
-      if (previousHome === undefined) delete process.env.HOME
-      else process.env.HOME = previousHome
-      if (previousPath === undefined) delete process.env.PATH
-      else process.env.PATH = previousPath
-    }
+    await expect(new WordNativeFieldRefresher(root).refresh({
+      path: "docs/native-fields.docx",
+      bytes,
+      outputFilenameBase: "native-fields-refreshed",
+      timeoutMs: 1_000,
+    })).rejects.toThrow(/does not run local LibreOffice\/soffice/)
     expect(existsSync(join(root, ".chipmate", "docs"))).toBe(false)
   })
 })
@@ -6229,6 +6183,32 @@ describe("doc agent merge/spec/render", () => {
 	    expect(await docxPartPaths(bytes)).toContain("word/media/image1.png")
 	    expect((await readDocxBinaryPart(bytes, "word/media/image1.png")).subarray(0, 8)).toEqual(tinyPngBytes().subarray(0, 8))
 	    expect(await readDocxPart(bytes, "word/document.xml")).toContain('r:embed="rIdImage1"')
+	  })
+
+	  test("create_word_document keeps high-DPI Mermaid PNG pixels without changing Word display size", async () => {
+	    const spec = minimalRenderableWordDocSpec()
+	    spec.sections[0] = {
+	      ...spec.sections[0]!,
+	      figures: [{
+	        title: "高清 Mermaid 渲染图",
+	        caption: "该图片使用 scale 3 渲染，但 Word 显示尺寸保持 CSS layout size。",
+	        altText: "高清 Mermaid 渲染图 PNG",
+	        image: {
+	          contentType: "image/png",
+	          bytes: pngBytesWithHeaderDimensions(960, 540),
+	          width: 320,
+	          height: 180,
+	        },
+	      }],
+	    }
+
+	    const result = await createWordDocument({ spec, filename: "figure-high-dpi.docx" })
+	    const bytes = await readFile(result.absolutePath!)
+	    const media = await readDocxBinaryPart(bytes, "word/media/image1.png")
+	    const documentXml = await readDocxPart(bytes, "word/document.xml")
+
+	    expect(pngHeaderDimensions(media)).toEqual({ width: 960, height: 540 })
+	    expect(documentXml).toContain('<wp:extent cx="3048000" cy="1714500"/>')
 	  })
 
 	  test("inspect_word_document reports floating external and non-PNG image boundaries", async () => {
@@ -9714,12 +9694,27 @@ function tinyPngBytes() {
   ])
 }
 
+function pngBytesWithHeaderDimensions(width: number, height: number) {
+  const bytes = Buffer.from(tinyPngBytes())
+  bytes.writeUInt32BE(width, 16)
+  bytes.writeUInt32BE(height, 20)
+  return Uint8Array.from(bytes)
+}
+
+function pngHeaderDimensions(bytes: Uint8Array) {
+  const buffer = Buffer.from(bytes)
+  return {
+    width: buffer.readUInt32BE(16),
+    height: buffer.readUInt32BE(20),
+  }
+}
+
 function alternateTinyPngBytes() {
   return Uint8Array.from(Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=", "base64"))
 }
 
 async function installFakeWordRenderTools(_root: string, options?: { remote?: "ok" | "fail" | "invalid-json" }) {
-  const canvasModule = await import("canvas")
+  const pngByDocHash = new Map<string, Buffer>()
   const server = createServer(async (request, response) => {
     if (request.method !== "POST" || request.url !== "/render/word") {
       response.writeHead(404, { "content-type": "application/json" })
@@ -9740,15 +9735,11 @@ async function installFakeWordRenderTools(_root: string, options?: { remote?: "o
     const payload = JSON.parse(body) as { docxBase64?: string }
     const docxBytes = Buffer.from(payload.docxBase64 ?? "", "base64")
     const hash = createHash("sha256").update(docxBytes).digest()
-    const canvas = canvasModule.createCanvas(32, 32)
-    const ctx = canvas.getContext("2d")
-    ctx.fillStyle = "#ffffff"
-    ctx.fillRect(0, 0, 32, 32)
-    ctx.fillStyle = `rgb(${hash[0]}, ${hash[1]}, ${hash[2]})`
-    ctx.fillRect(0, 0, 32, 32)
-    ctx.fillStyle = "rgba(0, 0, 0, 0.35)"
-    ctx.fillRect(hash[3]! % 24, hash[4]! % 24, 8, 8)
-    const png = canvas.toBuffer("image/png")
+    const hashKey = hash.toString("hex")
+    if (!pngByDocHash.has(hashKey)) {
+      pngByDocHash.set(hashKey, Buffer.from(pngByDocHash.size % 2 === 0 ? tinyPngBytes() : alternateTinyPngBytes()))
+    }
+    const png = pngByDocHash.get(hashKey)!
     response.writeHead(200, { "content-type": "application/json" })
     response.end(JSON.stringify({
       ok: true,
@@ -9758,8 +9749,8 @@ async function installFakeWordRenderTools(_root: string, options?: { remote?: "o
         page: 1,
         contentType: "image/png",
         base64: png.toString("base64"),
-        width: 32,
-        height: 32,
+        width: 1,
+        height: 1,
         visualSummary: fakeRemoteVisualSummary(),
       }],
       issues: [],

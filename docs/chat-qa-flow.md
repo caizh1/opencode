@@ -11,7 +11,7 @@
 | `src/context.ts` | 构造 QA prompt、本地文件上下文、diagnostics、git diff、code graph 和 analysis evidence。 |
 | `src/direct-agent-client.ts` | 本地 agent loop、OpenAI-compatible SSE streaming、工具熔断、session JSONL。 |
 | `src/tool-runtime.ts` | workspace-host file/command/network 工具执行、审批和审计。 |
-| `src/skills.ts` | 发现 `.agents/skills/*/SKILL.md` 并按需把 enabled skills 注入 prompt。 |
+| `src/skills.ts` | 发现 `.agents/.opencode/.claude` 与用户级兼容 skill 根里的 `SKILL.md`，并按需把 enabled skills 注入 prompt。 |
 
 ## 总体链路
 
@@ -38,7 +38,7 @@ EditorContextTracker
 - 选择当前聊天模型。
 - 等待 code graph 到达可用于聊天的状态。
 - 收集当前 selection、current file、mentions、attachments、diagnostics、git diff 和 repository evidence。
-- 加载 workspace `.agents/skills/*/SKILL.md` 中已启用的 skills。
+- 加载 workspace/parent `.agents/skills`、workspace/parent `.opencode/skills`、workspace `.claude/skills`，以及启用的用户级 skill 根中已启用的 skills。
 - 使用 `chipmate.tools.enabled` 决定是否向模型暴露 workspace tools；工具开启后再用当前 `chipmate.permissions.mode` 决定是否需要逐次审批。
 
 ## Prompt 组成
@@ -69,14 +69,15 @@ Enabled ChipMate skills:
 
 ## Skills
 
-ChipMate 自动发现 workspace 内的 `.agents/skills/*/SKILL.md` 和兼容 `.claude/skills/*/SKILL.md`，并沿 workspace 父目录向上寻找 `.agents/skills`。用户级 `~/.agents/skills` 默认开启；在 `chipmate.skills.scanClaudeSkills=true` 时也会扫描 `~/.claude/skills`，可用 `chipmate.skills.scanUserSkills=false` 关闭用户级扫描。解析范围覆盖 Agent Skills、Codex skills 与 Claude Code skills 的核心交集：
+ChipMate 自动发现 workspace/parent 内的 `.agents/skills/*/SKILL.md` 和 `.opencode/skills/*/SKILL.md`，也兼容 workspace `.claude/skills/*/SKILL.md`。用户级 `~/.agents/skills`、`~/.opencode/skills` 默认开启；在 `chipmate.skills.scanClaudeSkills=true` 时扫描 `~/.claude/skills`，在 `chipmate.skills.scanCodexSkills=true` 时扫描 `~/.codex/skills`。项目内不要求存在 `.codex`，第三方 skill 包也不需要自带 `.agents`、`.claude`、`.codex` 或 `.opencode` 宿主目录。可用 `chipmate.skills.scanUserSkills=false` 关闭用户级扫描。解析范围覆盖裸 skill 包、Agent Skills、OpenCode skills、Codex skills 与 Claude Code skills 的核心交集：
 
 - `name` / `description` frontmatter。
 - `allowed-tools` 在 `chipmate.tools.enabled=true` 时作为提示、active skill policy 和审计信息，不绕过用户权限模式；direct chat 渲染 prompt 时还会按本轮实际暴露工具过滤。
 - 渐进加载：初始 catalog 只展示元信息；显式 `$skill`/`/skill` 调用或隐式匹配后，才把该 skill 正文注入 prompt。
-- 保留并索引 `scripts/`、`references/`、`assets/` 目录结构；active skill 资源通过 `chipmate_read_skill_resource` 读取，脚本不会自动执行。
-- 动态 `!command` 只作为 skill 文本中的运行提示，实际执行仍进入 command tool 权限判断。
-- Skills 设置页可通过 `Import Skill...` 或导入区拖拽导入 skill 目录、父目录或 `SKILL.md`；导入前会校验当前支持的 `SKILL.md` 格式，有效项统一落到用户级 `~/.agents/skills/<commandName>`。
+- 保留并索引 `scripts/`、`references/`、`assets/`、`tasks/` 目录结构；active skill 资源通过 `chipmate_read_skill_resource` 读取。
+- skill 指令中的本地命令、脚本、构建、测试、扫描和 gate check 通过 `chipmate_run_command` 执行，仍进入 ChipMate 权限判断和审计；第三方 skill 不需要提供 ChipMate `scripts/manifest.json`。
+- `chipmate_run_skill_script` 仍保留给 ChipMate 自有 helper 的可选 manifest 安全边界，不是 Claude/Codex/OpenCode skill 兼容要求。
+- Skills 设置页可通过 `Import Skill...` 或导入区拖拽导入裸 skill 目录、父目录、单个 `SKILL.md`，或包含 `.opencode/skills/*`、`.claude/skills/*` 等宿主安装结构的目录；导入前会校验当前支持的 `SKILL.md` 格式，有效项统一落到用户级 `~/.agents/skills/<commandName>`。
 
 ## Tools 与权限
 
@@ -88,12 +89,13 @@ QA 默认 evidence 先行：首轮请求仍由 `buildChatPrompt()` 发送本地�
 - CodeGraph：`chipmate_graph_inspect_symbol`、`chipmate_graph_find_references`、`chipmate_graph_callers`、`chipmate_graph_callees`、`chipmate_graph_trace_call_chain`、`chipmate_graph_analyze_impact`、`chipmate_graph_map_module`、`chipmate_graph_find_state_machines`、`chipmate_graph_trace_state_path`。
 - Document/Word：`chipmate_search_documents`、`read_docx`、`create_word_document`。
 - Workspace 创建/编辑：`chipmate_create_directory`、`chipmate_create_file`、`chipmate_edit_file`。
+- Command runtime：`chipmate_run_command`，用于 active skill 或用户明确要求的本地 workspace 命令、脚本、构建、测试、扫描、编译器和 gate check；Remote SSH 下在远端 Extension Host 执行，使用远端 `PATH` 和工具链。
 
-任意全文件覆盖、删除、重命名、移动、shell 命令和 HTTP 请求不会作为 chat tool definition 发给模型。`chipmate.tools.enabled` 默认 `false`。关闭时，模型请求不包含 `tools` 和 `tool_choice`，即使 provider 返回 `tool_calls` 也不会执行、不会追加 `role: "tool"` 消息、不会进入下一轮工具循环。如果 provider 返回未暴露的工具调用，direct chat 会返回 blocked tool result，不进入真实执行。
+任意全文件覆盖、删除、重命名、移动和 HTTP 请求不会作为 chat tool definition 发给模型。除 `chipmate_run_command` 之外没有裸 shell/network 工具；`chipmate_run_command` 的 `cwd` 必须在当前 workspace 内，并受 timeout、output cap、权限审批和审计约束。`chipmate.tools.enabled` 默认 `false`。关闭时，模型请求不包含 `tools` 和 `tool_choice`，即使 provider 返回 `tool_calls` 也不会执行、不会追加 `role: "tool"` 消息、不会进入下一轮工具循环。如果 provider 返回未暴露的工具调用，direct chat 会返回 blocked tool result，不进入真实执行。
 
 权限模式：
 
-- `请求批准`：当前暴露的低风险 workspace 读文件自动放行；未暴露的写文件、命令、网络不会从 direct chat 进入真实执行。
+- `请求批准`：当前暴露的低风险 workspace 读文件自动放行；命令、写入和网络类请求需要逐次审批。
 - `替我审批`：低风险操作自动放行，高风险操作仍逐次审批。
 - `完全访问权限`：不拦截、不询问，只写审计日志。
 

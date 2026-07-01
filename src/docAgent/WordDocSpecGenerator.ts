@@ -127,7 +127,7 @@ function deterministicSpec(input: {
       ],
       limitations: [
         "首版不联网搜索，不读取 PDF/OCR，不继承输入 Word 的视觉样式。",
-        "Word-native 目录页码可通过 refresh_word_native_fields 或在 Word 中更新域。",
+        "Word-native 目录页码需在 Word 中更新域；当前 VSIX 不运行本地字段刷新。",
       ],
       missingInputs: [],
       risks: [

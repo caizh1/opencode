@@ -12,6 +12,7 @@ import * as vscode from "vscode"
 export async function createWordDocument(input: {
   spec: WordDocSpec
   filename?: string
+  remoteEndpoint?: string
 }): Promise<GeneratedDocumentResult> {
   const specIssues = new WordDocSpecValidator().validate(input.spec)
   const specErrors = specIssues.filter((issue) => issue.severity === "error").map((issue) => issue.message)
@@ -38,12 +39,13 @@ export async function createWordDocument(input: {
     artifactNameBase: input.filename || spec.metadata.title || "generated-document",
     structureIssues,
     timeoutMs: 60_000,
+    remoteEndpoint: input.remoteEndpoint,
   })
-  const allWarnings = [
+  const allWarnings = normalizeCreateWordDocumentWarnings([
     ...specIssues.filter((issue) => issue.severity === "warning").map((issue) => issue.message),
     ...warnings,
     ...renderCheckResult.issues.filter((issue) => issue.severity === "warning").map((issue) => issue.message),
-  ]
+  ], spec)
   const uniqueWarnings = [...new Set(allWarnings)]
   return {
     ...stored,
@@ -56,6 +58,20 @@ export async function createWordDocument(input: {
     structureIssues: [...specIssues, ...structureIssues],
     renderCheckResult,
   }
+}
+
+function normalizeCreateWordDocumentWarnings(warnings: string[], spec: WordDocSpec) {
+  const sourceBacked = Array.isArray(spec.sources) && spec.sources.length > 0
+  return warnings.filter((message) => {
+    if (!message) return false
+    if (!sourceBacked && isReferencesWarning(message)) return false
+    if (sourceBacked && /acceptable for non-source-backed documents/i.test(message)) return false
+    return true
+  })
+}
+
+function isReferencesWarning(message: string) {
+  return /References section/i.test(message) || /参考资料/.test(message)
 }
 
 function workspaceRootFromStoredPath(absolutePath: string) {

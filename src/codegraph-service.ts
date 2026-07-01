@@ -46,6 +46,7 @@ import { shouldIndexPath } from "./indexing-path-policy"
 import type { AnalysisToolName, AnalysisToolResult, CodeIntelligenceSnapshot, QueryEvidenceResult } from "./analysis-types"
 import { extractStateMachines } from "./state-machine-extractor"
 import { checkRagEndpoint, createHttpEmbeddingProvider, createHttpRerankProvider, probeRagRerankProvider, type RagHttpDiagnosticEvent, type RagHttpDiagnostics } from "./rag-provider"
+import { ragEmbeddingProbeRetryDecision } from "./rag-probe-retry"
 import {
   buildRagChunks,
   buildRagVectorIndex,
@@ -160,6 +161,8 @@ export class LocalCodeGraphService implements vscode.Disposable {
   private pendingRagWorkTimer?: ReturnType<typeof setTimeout>
   private ragResumeTimer?: ReturnType<typeof setTimeout>
   private ragResumeInFlight?: Promise<void>
+  private ragProbeRetryTimer?: ReturnType<typeof setTimeout>
+  private ragProbeRetryInFlight?: Promise<void>
   private ragManualPauseSequence = 0
   private lastRagElapsedMs: number | undefined
   private ragStatusValue = disabledRagStatus()
@@ -186,6 +189,7 @@ export class LocalCodeGraphService implements vscode.Disposable {
     if (this.changeTimer) clearTimeout(this.changeTimer)
     if (this.pendingRagWorkTimer) clearTimeout(this.pendingRagWorkTimer)
     this.clearRagIndexResume()
+    this.clearRagEmbeddingProbeRetry()
     this.abortRagIndex("service disposed")
     this.watcher?.dispose()
     this.workerPool.dispose()
@@ -2084,6 +2088,7 @@ export class LocalCodeGraphService implements vscode.Disposable {
     if (this.ragResumeTimer) clearTimeout(this.ragResumeTimer)
     this.ragResumeTimer = undefined
     this.pendingRagResumeTrigger = undefined
+    this.clearRagEmbeddingProbeRetry()
     if (this.ragIndex?.nextResumeAt || this.ragIndex?.resumeReason || this.ragIndex?.resumeDelayMs) {
       this.ragIndex = {
         ...this.ragIndex,
@@ -2097,6 +2102,167 @@ export class LocalCodeGraphService implements vscode.Disposable {
         resumeReason: undefined,
         resumeDelayMs: undefined,
       } : this.ragStatusValue)
+    }
+  }
+
+  private clearRagEmbeddingProbeRetry() {
+    if (this.ragProbeRetryTimer) clearTimeout(this.ragProbeRetryTimer)
+    this.ragProbeRetryTimer = undefined
+    if (this.ragStatusValue.resumeReason === "probe") {
+      this.setRagStatus({
+        ...this.ragStatusValue,
+        resumeScheduledAt: undefined,
+        resumeReason: undefined,
+        resumeDelayMs: undefined,
+      })
+    }
+  }
+
+  private scheduleRagEmbeddingProbeRetry(input: {
+    trigger: string
+    error: unknown
+    endpointKind: RagStatus["endpointKind"]
+    rerankProbe: RerankProbeStatus
+    index: RagVectorIndex
+    fallbackReasonPrefix: string
+  }) {
+    const message = input.error instanceof Error ? input.error.message : String(input.error)
+    const totalChunks = input.index.totalChunks ?? input.index.chunks.length
+    const pendingChunkCount = Math.max(0, input.index.pendingChunkCount ?? totalChunks - input.index.chunks.length)
+    const completedIndex = pendingChunkCount === 0
+      && input.index.completed !== false
+      && input.index.state !== "stale"
+      && !input.index.staleReason
+      && !input.index.indexPausedReason
+    const baseStatus: RagStatus = {
+      ...this.ragStatusForIndex(input.endpointKind, input.rerankProbe, input.index),
+      enabled: false,
+      availability: "unavailable",
+      embeddingEnabled: false,
+      indexProgress: undefined,
+      lastError: message,
+      fallbackReason: `${input.fallbackReasonPrefix}: ${message}`,
+      resumeScheduledAt: undefined,
+      resumeDelayMs: undefined,
+      resumeReason: undefined,
+    }
+    const retry = ragEmbeddingProbeRetryDecision(input.error, this.getSettings().rag.embedding)
+    if (!completedIndex || !retry.retry) {
+      this.clearRagEmbeddingProbeRetry()
+      this.setRagStatus(baseStatus)
+      return false
+    }
+
+    if (this.ragProbeRetryTimer) clearTimeout(this.ragProbeRetryTimer)
+    const nextRetryAt = Date.now() + retry.delayMs
+    this.setRagStatus({
+      ...baseStatus,
+      resumeScheduledAt: nextRetryAt,
+      resumeDelayMs: retry.delayMs,
+      resumeReason: "probe",
+    })
+    this.output.appendLine(`[rag-index] embedding probe retry scheduled trigger=${input.trigger} status=${retry.status} delayMs=${retry.delayMs} chunks=${input.index.vectors.length}/${input.index.totalChunks ?? input.index.chunks.length}`)
+    const scheduledIndexUpdatedAt = input.index.updatedAt
+    this.ragProbeRetryTimer = setTimeout(() => {
+      this.ragProbeRetryTimer = undefined
+      this.ragProbeRetryInFlight = this.runRagEmbeddingProbeRetry(input.trigger, scheduledIndexUpdatedAt)
+        .catch((error) => {
+          const retryMessage = error instanceof Error ? error.message : String(error)
+          this.output.appendLine(`[rag-index] embedding probe retry failed unexpectedly: ${retryMessage}`)
+        })
+        .finally(() => {
+          this.ragProbeRetryInFlight = undefined
+        })
+    }, retry.delayMs)
+    return true
+  }
+
+  private async runRagEmbeddingProbeRetry(trigger: string, scheduledIndexUpdatedAt: number) {
+    if (this.disposed || this.paused || this.ragIndexInFlight) return
+    await this.refreshProviderApiKey()
+    const settings = this.getSettings().rag
+    const index = this.ragIndex
+    if (!index || index.updatedAt !== scheduledIndexUpdatedAt) return
+    if (settings.embedding.configError) {
+      this.clearRagEmbeddingProbeRetry()
+      this.ragIndex = undefined
+      this.setRagStatus(await this.ragEmbeddingConfigErrorStatus(settings))
+      return
+    }
+    if (!settings.embedding.endpoint) {
+      this.clearRagEmbeddingProbeRetry()
+      this.ragIndex = undefined
+      this.configureRagProviders()
+      this.setRagStatus(disabledRagStatus("embedding endpoint not configured; BM25/graph/state-machine fallback active"))
+      return
+    }
+    const policy = checkRagEndpoint(settings.embedding.endpoint, settings.allowedHosts)
+    if (!policy.ok) {
+      this.clearRagEmbeddingProbeRetry()
+      this.ragIndex = undefined
+      this.configureRagProviders()
+      this.setRagStatus({
+        ...disabledRagStatus(policy.reason),
+        availability: "unavailable",
+        endpointKind: policy.kind,
+        fallbackReason: policy.reason,
+      })
+      return
+    }
+
+    this.configureRagProviders()
+    const rerankProbe = this.currentRerankProbeStatus()
+    if (!this.ragEmbeddingProvider || !this.currentRagIndexMatchesProvider()) {
+      this.clearRagEmbeddingProbeRetry()
+      this.setRagStatus({
+        ...this.ragStatusForIndex(policy.kind, rerankProbe, index),
+        enabled: false,
+        availability: "not-indexed",
+        embeddingEnabled: false,
+        fallbackReason: "embedding endpoint is reachable, but no matching RAG vector index is built; rebuild the local code graph to enable vector retrieval",
+      })
+      return
+    }
+
+    this.output.appendLine(`[rag-index] embedding probe retry starting trigger=${trigger}`)
+    this.setRagStatus({
+      ...this.ragStatusForIndex(policy.kind, rerankProbe, index),
+      enabled: false,
+      availability: "checking",
+      embeddingEnabled: false,
+      fallbackReason: "retrying embedding endpoint probe",
+      lastError: undefined,
+      resumeScheduledAt: undefined,
+      resumeDelayMs: undefined,
+      resumeReason: undefined,
+    })
+
+    try {
+      await this.probeRagEmbeddingProvider(index.dimension)
+    } catch (error) {
+      this.output.appendLine(`[rag-index] embedding probe retry failed: ${error instanceof Error ? error.message : String(error)}`)
+      this.scheduleRagEmbeddingProbeRetry({
+        trigger: "probe-retry",
+        error,
+        endpointKind: policy.kind,
+        rerankProbe,
+        index,
+        fallbackReasonPrefix: "Loaded existing RAG vector index, but embedding endpoint probe failed",
+      })
+      return
+    }
+
+    this.clearRagEmbeddingProbeRetry()
+    this.queryCache.clear()
+    this.setRagStatus(this.readyRagStatus(policy.kind, rerankProbe, index))
+    this.output.appendLine(`[rag-index] embedding probe recovered trigger=${trigger} chunks=${index.vectors.length}/${index.totalChunks ?? index.chunks.length}`)
+  }
+
+  private currentRerankProbeStatus(): RerankProbeStatus {
+    return {
+      enabled: this.ragStatusValue.rerankEnabled,
+      provider: this.ragStatusValue.rerankProvider,
+      lastError: this.ragStatusValue.rerankLastError,
     }
   }
 
@@ -2629,13 +2795,13 @@ export class LocalCodeGraphService implements vscode.Disposable {
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error)
         this.output.appendLine(`[rag-index] loaded existing vector index but embedding probe failed: ${message}`)
-        this.setRagStatus({
-          ...this.ragStatusForIndex(policy.kind, rerankProbe, this.ragIndex),
-          enabled: false,
-          availability: "unavailable",
-          embeddingEnabled: false,
-          lastError: message,
-          fallbackReason: `Loaded existing RAG vector index, but embedding endpoint probe failed: ${message}`,
+        this.scheduleRagEmbeddingProbeRetry({
+          trigger: "index-load",
+          error,
+          endpointKind: policy.kind,
+          rerankProbe,
+          index: this.ragIndex,
+          fallbackReasonPrefix: "Loaded existing RAG vector index, but embedding endpoint probe failed",
         })
         return
       }
@@ -3270,7 +3436,7 @@ function formatRagStatus(status?: RagStatus) {
     return ` RAG: not indexed${status.fallbackReason ? `, ${status.fallbackReason}` : ""}; BM25/graph/state-machine fallback active.${rerank}`
   }
   if (status.availability === "unavailable") {
-    return ` RAG: unavailable${status.fallbackReason ? `, ${status.fallbackReason}` : ""}; BM25/graph/state-machine fallback active.${rerank}`
+    return ` RAG: unavailable${status.fallbackReason ? `, ${status.fallbackReason}` : ""}${ragResumeScheduleMessage(status)}; BM25/graph/state-machine fallback active.${rerank}`
   }
   return ` RAG: not configured; BM25/graph/state-machine fallback active.${rerank}`
 }
@@ -3457,7 +3623,7 @@ function ragResumeScheduleMessage(status: RagStatus) {
   if (!status.resumeScheduledAt || !status.resumeReason) return ""
   const remainingMs = Math.max(0, status.resumeScheduledAt - Date.now())
   const seconds = Math.ceil(remainingMs / 1000)
-  const label = status.resumeReason === "rate-limit" ? "retry scheduled" : "resume scheduled"
+  const label = status.resumeReason === "rate-limit" || status.resumeReason === "probe" ? "retry scheduled" : "resume scheduled"
   return `; ${label} in ${seconds}s`
 }
 

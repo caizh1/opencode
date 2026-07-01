@@ -267,6 +267,7 @@ type DeliveryProducerFailure = {
   reason: string
   errorCode?: string
   validationErrors: string[]
+  specShapeHash?: string
 }
 
 type DeliveryDisciplineState = {
@@ -278,6 +279,7 @@ type DeliveryDisciplineState = {
   convergencePromptInserted: boolean
   missingDeliverablePromptInserted: boolean
   producerFailureRepairPromptInserted: boolean
+  wordRenderCheckpointInserted: boolean
 }
 
 type ToolExecutionSummary = {
@@ -1483,21 +1485,42 @@ export class DirectAgentClient {
         role: "user",
         content: producerFailureRepairPrompt(deliveryDiscipline),
       })
-      this.deps.output.appendLine(`[tool-loop] producer failure repair checkpoint inserted tools=${deliveryDiscipline.producerFailures.slice(-3).map((item) => item.tool).join(",")}`)
+      const lastFailure = deliveryDiscipline.producerFailures.at(-1)
+      const missing = missingDeliveryExpectations(deliveryDiscipline).map((item) => item.kind).join(",") || "none"
+      const repeated = Boolean(lastFailure?.specShapeHash && deliveryDiscipline.producerFailures.slice(0, -1).some((item) => item.tool === lastFailure.tool && item.specShapeHash === lastFailure.specShapeHash))
+      this.deps.output.appendLine(`[tool-loop] producer failure repair checkpoint inserted tools=${deliveryDiscipline.producerFailures.slice(-3).map((item) => item.tool).join(",")} failureCount=${deliveryDiscipline.producerFailures.length} lastErrorCode=${lastFailure?.errorCode || "none"} missing=${missing} specShapeHash=${lastFailure?.specShapeHash || "none"} repeatedInvalidSpec=${repeated} documentSkillActive=${activeSkills.some((skill) => skill.name === "documents" || skill.name === "chip-design-doc")}`)
+      return true
+    }
+
+    const enqueueWordRenderCheckpoint = () => {
+      if (!settings.tools.enabled || !exposedToolNames.has("render_word_document")) return false
+      if (!shouldInsertWordRenderCheckpoint(deliveryDiscipline)) return false
+      deliveryDiscipline.wordRenderCheckpointInserted = true
+      messages.push({
+        role: "user",
+        content: wordRenderCheckpointPrompt(deliveryDiscipline),
+      })
+      this.deps.output.appendLine(`[tool-loop] word-render checkpoint inserted generated=${latestGeneratedDocxPath(deliveryDiscipline) || "none"} renderAttempted=${deliveryDiscipline.completedTools.includes("render_word_document")} documentSkillActive=${activeSkills.some((skill) => skill.name === "documents" || skill.name === "chip-design-doc")}`)
       return true
     }
 
     const executeToolCallsForStep = async (calls: ChatToolCall[]) => {
       totalToolCallCount += calls.length
+      const parsedCalls = calls.map((call) => ({
+        call,
+        parsedArgs: parseToolArguments(call.function.arguments, call[TOOL_ARGUMENT_STATE]),
+      }))
       messages.push({
         role: "assistant",
         content: assistantText,
-        tool_calls: calls,
+        tool_calls: parsedCalls.map(({ call, parsedArgs }) => toolCallForProviderHistory(call, parsedArgs)),
       })
-      for (const call of calls) {
-        const parsedArgs = parseToolArguments(call.function.arguments, call[TOOL_ARGUMENT_STATE])
+      for (const { call, parsedArgs } of parsedCalls) {
         if (!parsedArgs.ok || call.function.name === "create_word_document") {
           this.deps.output.appendLine(toolArgumentDiagnosticLogLine(call.function.name, call.function.arguments, call[TOOL_ARGUMENT_STATE], parsedArgs))
+          if (!parsedArgs.ok) {
+            this.deps.output.appendLine(`[tool-args] ${call.function.name} toolArgumentsSanitized=true errorCode=${parsedArgs.errorCode}`)
+          }
         }
         const args = parsedArgs.ok ? parsedArgs.args : {}
         const isExposedTool = exposedToolNames.has(call.function.name)
@@ -1521,7 +1544,7 @@ export class DirectAgentClient {
           },
         })
         const toolResult = !parsedArgs.ok
-          ? failedToolArgumentParsing(call.function.name, parsedArgs)
+          ? failedToolArgumentParsing(call.function.name, parsedArgs, call.function.arguments, call[TOOL_ARGUMENT_STATE])
           : isExposedTool
           ? await this.executeToolCall({
               sessionID,
@@ -1569,7 +1592,7 @@ export class DirectAgentClient {
           },
         })
         this.deps.output.appendLine(toolResultLogLine(call.function.name, toolResult, status))
-        recordDeliveryToolResult(deliveryDiscipline, call.function.name, args, toolResult)
+        recordDeliveryToolResult(deliveryDiscipline, call.function.name, args, toolResult, this.deps.output)
         if (call.function.name !== "update_goal") {
           const accountedGoal = await this.goalRuntime.accountProgress(sessionID)
           if (accountedGoal) await this.emitGoalUpdated(sessionID, accountedGoal)
@@ -1708,6 +1731,18 @@ export class DirectAgentClient {
 	          assistant.parts = upsertPart(assistant.parts, diagramPart)
 	          this.emit("message.part.updated", { part: diagramPart })
 	        }
+        const generatedDocumentExtraction = generatedDocumentPartsFromToolResult({
+          sessionID,
+          messageID: assistant.info.id,
+          toolCallID: call.id,
+          tool: call.function.name,
+          result: toolResult,
+        })
+        logGeneratedDocumentExtraction(this.deps.output, call.function.name, toolResult, generatedDocumentExtraction)
+        for (const generatedDocumentPart of generatedDocumentExtraction.parts) {
+          assistant.parts = upsertPart(assistant.parts, generatedDocumentPart)
+          this.emit("message.part.updated", { part: generatedDocumentPart })
+        }
 	        const wordRenderExtraction = wordRenderPartsFromToolResult({
           sessionID,
           messageID: assistant.info.id,
@@ -1784,6 +1819,16 @@ export class DirectAgentClient {
             enqueueMissingDeliverablePrompt()
             continue
           }
+          if (settings.tools.enabled && shouldInsertWordRenderCheckpoint(deliveryDiscipline) && exposedToolNames.has("render_word_document")) {
+            if (assistantText) {
+              messages.push({ role: "assistant", content: assistantText })
+              replaceAssistantText(assistant, sessionID, "")
+              this.emitAssistantTextPart(sessionID, assistant, "")
+            }
+            assistantText = ""
+            enqueueWordRenderCheckpoint()
+            continue
+          }
           break
         }
         if (!settings.tools.enabled) {
@@ -1807,8 +1852,9 @@ export class DirectAgentClient {
         await executeToolCallsForStep(toolCalls)
         const queuedWordQa = enqueueWordVisualQaPrompt()
         const queuedProducerRepair = !queuedWordQa && enqueueProducerFailureRepairPrompt()
+        const queuedWordRender = !queuedWordQa && !queuedProducerRepair && enqueueWordRenderCheckpoint()
         flushGoalSteering()
-        if (!queuedWordQa && !queuedProducerRepair) enqueueEvidenceConvergencePrompt()
+        if (!queuedWordQa && !queuedProducerRepair && !queuedWordRender) enqueueEvidenceConvergencePrompt()
         if (step === maxAgentSteps - 1) reachedToolLoopLimit = true
       }
       if (reachedToolLoopLimit && toolCalls.length > 0 && settings.tools.enabled) {
@@ -1857,6 +1903,18 @@ export class DirectAgentClient {
         assistantText = replaceAssistantText(assistant, sessionID, enforcedMissingDeliverableText)
         this.emitAssistantTextPart(sessionID, assistant, assistantText)
         this.deps.output.appendLine(`[tool-loop] enforced missing deliverable final answer expected=${missingDeliveryExpectations(deliveryDiscipline).map((item) => item.kind).join(",")}`)
+      }
+      const generatedDocumentLocation = generatedDocumentFinalLocationText(deliveryDiscipline, assistantText)
+      if (generatedDocumentLocation) {
+        assistantText = appendAssistantText(assistant, sessionID, `${assistantText.trim() ? "\n\n" : ""}${generatedDocumentLocation}`)
+        this.emitAssistantTextPart(sessionID, assistant, assistantText)
+        this.deps.output.appendLine(`[tool-loop] enforced generated document location path=${latestGeneratedDocxPath(deliveryDiscipline) || "none"}`)
+      }
+      const wordRenderDisclosure = wordRenderQaFinalDisclosureText(deliveryDiscipline, assistantText)
+      if (wordRenderDisclosure) {
+        assistantText = appendAssistantText(assistant, sessionID, `${assistantText.trim() ? "\n\n" : ""}${wordRenderDisclosure}`)
+        this.emitAssistantTextPart(sessionID, assistant, assistantText)
+        this.deps.output.appendLine(`[tool-loop] enforced word render QA disclosure generated=${latestGeneratedDocxPath(deliveryDiscipline) || "none"}`)
       }
     } catch (error) {
       if (!signal?.aborted) {
@@ -2384,6 +2442,8 @@ export class DirectAgentClient {
       phase: input.event.phase || stringValue(prior.phase),
       path: input.event.path || stringValue(prior.path),
       artifactPath: input.event.artifactPath || stringValue(prior.artifactPath),
+      requestedPath: input.event.requestedPath || stringValue(prior.requestedPath),
+      targetPath: input.event.targetPath || stringValue(prior.targetPath),
       provider: input.event.provider || stringValue(prior.provider),
       fallbackUsed: input.event.fallbackUsed ?? booleanValue(prior.fallbackUsed),
       startedAt: numberValue(prior.startedAt) || now,
@@ -2401,6 +2461,8 @@ export class DirectAgentClient {
       phase: stringValue(entry.phase),
       path: stringValue(entry.path),
       artifactPath: stringValue(entry.artifactPath),
+      requestedPath: stringValue(entry.requestedPath),
+      targetPath: stringValue(entry.targetPath),
       provider: stringValue(entry.provider),
       fallbackUsed: booleanValue(entry.fallbackUsed),
       startedAt: numberValue(entry.startedAt),
@@ -2899,6 +2961,7 @@ function createDeliveryDisciplineState(userText: string, activeSkills: ActiveSki
     convergencePromptInserted: false,
     missingDeliverablePromptInserted: false,
     producerFailureRepairPromptInserted: false,
+    wordRenderCheckpointInserted: false,
   }
 }
 
@@ -2931,7 +2994,7 @@ function deliveryExpectationsFromTurn(userText: string, activeSkills: ActiveSkil
   return []
 }
 
-function recordDeliveryToolResult(state: DeliveryDisciplineState, tool: string, args: Record<string, unknown>, result: ToolRuntimeResult) {
+function recordDeliveryToolResult(state: DeliveryDisciplineState, tool: string, args: Record<string, unknown>, result: ToolRuntimeResult, output?: vscode.OutputChannel) {
   state.completedTools.push(tool)
   for (const artifact of deliveryArtifactsFromToolResult(tool, result)) {
     const key = `${artifact.kind}:${artifact.path}`
@@ -2946,11 +3009,17 @@ function recordDeliveryToolResult(state: DeliveryDisciplineState, tool: string, 
     if (!exists) state.pendingNextActions.push(action)
   }
   const producerFailure = deliveryProducerFailureFromToolResult(tool, result)
-  if (producerFailure) state.producerFailures.push(producerFailure)
+  if (producerFailure) {
+    state.producerFailures.push(producerFailure)
+    const missing = missingDeliveryExpectations(state).map((item) => item.kind).join(",") || "none"
+    const repeated = Boolean(producerFailure.specShapeHash && state.producerFailures.slice(0, -1).some((item) => item.tool === producerFailure.tool && item.specShapeHash === producerFailure.specShapeHash))
+    output?.appendLine(`[tool-loop] producer failure recorded tool=${tool} count=${state.producerFailures.length} errorCode=${producerFailure.errorCode || "none"} missing=${missing} specShapeHash=${producerFailure.specShapeHash || "none"} repeatedInvalidSpec=${repeated}`)
+  }
   const requestedOutput = requestedArtifactPathFromArgs(args)
   if (requestedOutput && isDeliverableProducerTool(tool) && toolStatusFromResult(result) === "completed" && result.approved) {
     const kind = artifactKindFromPath(requestedOutput)
-    if (kind) state.producedArtifacts.push({ kind, path: requestedOutput, tool })
+    const hasSameKindFromTool = kind && state.producedArtifacts.some((artifact) => artifact.tool === tool && artifact.kind === kind)
+    if (kind && !hasSameKindFromTool) state.producedArtifacts.push({ kind, path: requestedOutput, tool })
   }
 }
 
@@ -3048,6 +3117,7 @@ function deliveryProducerFailureFromToolResult(tool: string, result: ToolRuntime
     ...stringArrayValue(data.validationErrors),
     ...stringArrayValue(output.gaps),
   ].map((item) => truncateString(compactSummaryText(item), MAX_TOOL_EXECUTION_FIELD_CHARS)).filter(Boolean)
+  const diagnostic = recordValue(data.diagnostic)
   const reason = truncateString(compactSummaryText(
     stringValue(data.errorMessage) ||
     stringValue(output.answerSummary) ||
@@ -3059,8 +3129,9 @@ function deliveryProducerFailureFromToolResult(tool: string, result: ToolRuntime
   return {
     tool,
     reason: reason || validationErrors[0] || "Producer tool failed.",
-    errorCode: stringValue(data.errorCode) || undefined,
+    errorCode: stringValue(data.errorCode) || stringValue(output.errorCode) || undefined,
     validationErrors: [...new Set(validationErrors)].slice(0, 8),
+    specShapeHash: stringValue(diagnostic.specShapeHash) || undefined,
   }
 }
 
@@ -3093,9 +3164,39 @@ function shouldInsertMissingDeliverablePrompt(state: DeliveryDisciplineState) {
 }
 
 function shouldInsertProducerFailureRepairPrompt(state: DeliveryDisciplineState) {
+  const createWordFailedWithoutDocx = state.producerFailures.some((failure) => failure.tool === "create_word_document") &&
+    !state.producedArtifacts.some((artifact) => artifact.kind === "docx")
   return !state.producerFailureRepairPromptInserted &&
-    missingDeliveryExpectations(state).length > 0 &&
+    (missingDeliveryExpectations(state).length > 0 || createWordFailedWithoutDocx) &&
     state.producerFailures.length > 0
+}
+
+function shouldInsertWordRenderCheckpoint(state: DeliveryDisciplineState) {
+  if (state.wordRenderCheckpointInserted) return false
+  if (!hasDocxDeliveryExpectation(state)) return false
+  if (!latestGeneratedDocxPath(state)) return false
+  return !state.completedTools.includes("render_word_document")
+}
+
+function hasDocxDeliveryExpectation(state: DeliveryDisciplineState) {
+  return state.expectations.some((expectation) => expectation.kind === "docx")
+}
+
+function latestGeneratedDocxPath(state: DeliveryDisciplineState) {
+  return [...state.producedArtifacts].reverse().find((artifact) =>
+    artifact.kind === "docx" && isGeneratedDocxProducerTool(artifact.tool)
+  )?.path ?? ""
+}
+
+function isGeneratedDocxProducerTool(tool: string) {
+  return tool === "create_word_document" ||
+    tool === "apply_word_document_edits" ||
+    tool === "merge_word_documents" ||
+    tool === "normalize_word_document_styles" ||
+    tool === "apply_word_template_styles" ||
+    tool === "flatten_word_ref_fields" ||
+    tool === "materialize_word_seq_fields" ||
+    tool === "refresh_word_native_fields"
 }
 
 function evidenceConvergenceCheckpointPrompt(input: {
@@ -3123,11 +3224,46 @@ function missingDeliverableSteeringPrompt(state: DeliveryDisciplineState) {
 }
 
 function producerFailureRepairPrompt(state: DeliveryDisciplineState) {
+  const wordSpecRepair = wordSpecProducerFailureRepairText(state)
   return [
     "ChipMate producer failure repair checkpoint.",
     "A final artifact producer tool failed while the requested local deliverable is still missing.",
     "Do not resume broad search/read loops. Use the tool error below to repair the producer arguments/spec and retry the same final producer tool when the current evidence is sufficient. Put unresolved content coverage into assumptions, limitations, gaps, or owner-review notes.",
+    wordSpecRepair,
     "If the producer arguments cannot be repaired, explicitly state that the requested local deliverable was not generated and cite the exact tool failure.",
+    deliveryDisciplineSummary(state),
+  ].filter(Boolean).join("\n\n")
+}
+
+function wordSpecProducerFailureRepairText(state: DeliveryDisciplineState) {
+  const latestWordFailure = [...state.producerFailures].reverse().find((failure) =>
+    failure.tool === "create_word_document" && (
+      failure.errorCode === "word-doc-spec-string-disallowed" ||
+      failure.errorCode === "word-doc-spec-json-parse-failed" ||
+      failure.errorCode === "tool-arguments-invalid-json"
+    )
+  )
+  if (!latestWordFailure) return ""
+  return [
+    "create_word_document argument repair rule:",
+    "The next create_word_document call MUST use one valid top-level JSON object shaped exactly like {\"filename\":\"target.docx\",\"spec\":{...}}.",
+    "Do not pass spec as a quoted string. Do not use JSON.stringify(spec). Do not return a Markdown document as a substitute for the missing .docx.",
+    "Use this minimal object shape if the prior spec was long or malformed:",
+    "{\"filename\":\"目标文件名.docx\",\"spec\":{\"metadata\":{\"title\":\"文档标题\",\"documentType\":\"technical-design\",\"language\":\"zh-CN\",\"generatedAt\":\"2026-06-30T00:00:00Z\"},\"sources\":[],\"sections\":[{\"id\":\"overview\",\"level\":1,\"title\":\"概述\",\"paragraphs\":[\"正文内容。\"]}],\"qualityChecklist\":{\"assumptions\":[],\"limitations\":[],\"missingInputs\":[],\"risks\":[]}}}",
+    "If the same failure repeats, shrink to the smallest useful WordDocSpec and put uncovered details into assumptions/gaps instead of submitting another oversized or stringified spec.",
+  ].join("\n")
+}
+
+function wordRenderCheckpointPrompt(state: DeliveryDisciplineState) {
+  const generated = latestGeneratedDocxPath(state)
+  return [
+    "ChipMate Word render QA checkpoint.",
+    "A Word/DOCX deliverable has been generated or edited in this turn, but render_word_document has not been called yet.",
+    generated
+      ? `Call render_word_document now with path ${generated} to perform page-level visual QA.`
+      : "Call render_word_document now for the latest generated DOCX artifact to perform page-level visual QA.",
+    "If the user explicitly asked to skip visual QA or render_word_document cannot be used, finish only after clearly stating that page-level visual QA was not completed.",
+    "Do not confuse Mermaid PNG rendering with Word page-level visual QA; Mermaid artifacts are figure inputs, not final DOCX page render evidence.",
     deliveryDisciplineSummary(state),
   ].join("\n\n")
 }
@@ -3162,6 +3298,22 @@ function missingDeliverableFinalAnswerText(state: DeliveryDisciplineState, assis
   return missingDeliverableFallbackMessage(state)
 }
 
+function generatedDocumentFinalLocationText(state: DeliveryDisciplineState, assistantText: string) {
+  const docxPath = latestGeneratedDocxPath(state)
+  if (!docxPath) return ""
+  if (assistantTextIncludesArtifactPath(assistantText, docxPath)) return ""
+  return `生成位置：${docxPath}`
+}
+
+function wordRenderQaFinalDisclosureText(state: DeliveryDisciplineState, assistantText: string) {
+  if (!hasDocxDeliveryExpectation(state)) return ""
+  const docxPath = latestGeneratedDocxPath(state)
+  if (!docxPath) return ""
+  if (state.completedTools.includes("render_word_document")) return ""
+  if (assistantTextDisclosesMissingWordRenderQa(assistantText)) return ""
+  return `注意：Word 文档已生成（${docxPath}），但本轮未执行 render_word_document，因此页面级视觉 QA 未完成。Mermaid PNG 渲染不等同于最终 Word 页面视觉 QA。`
+}
+
 function assistantTextDisclosesMissingDeliverable(text: string) {
   if (!text.trim()) return false
   return /(未生成|没有生成|未创建|没有创建|未产出|没有产出|无法生成|未能生成|not generated|not created|was not generated|could not generate|no .*artifact|no .*file)/i.test(text) &&
@@ -3170,6 +3322,18 @@ function assistantTextDisclosesMissingDeliverable(text: string) {
 
 function assistantTextPresentsInlineDeliverableSubstitute(text: string) {
   return /完整\s*Word\s*文档如下|完整.*文档.*如下|复制到\s*Word|复制到\s*Markdown|Markdown\s*编辑器|Word\s*或\s*Markdown|直接将以下内容复制|directly copy.*Word|copy.*Markdown/i.test(text)
+}
+
+function assistantTextIncludesArtifactPath(text: string, path: string) {
+  const normalizedPath = compactSummaryText(path)
+  if (!normalizedPath) return false
+  return compactSummaryText(text).includes(normalizedPath)
+}
+
+function assistantTextDisclosesMissingWordRenderQa(text: string) {
+  if (!text.trim()) return false
+  return /(视觉\s*QA|visual\s*QA|页面级|page-level|render_word_document|页面渲染|page\s+render)/i.test(text) &&
+    /(未完成|未执行|未做|跳过|skipped|not completed|not run|not performed|unavailable|不可用)/i.test(text)
 }
 
 function missingDeliverableFallbackMessage(state: DeliveryDisciplineState) {
@@ -3684,18 +3848,29 @@ function failedToolExecution(toolName: string, error: unknown): ToolRuntimeResul
   }
 }
 
-function failedToolArgumentParsing(toolName: string, error: Exclude<ToolArgumentParseResult, { ok: true }>): ToolRuntimeResult {
+function failedToolArgumentParsing(toolName: string, error: Exclude<ToolArgumentParseResult, { ok: true }>, input = "", state?: ToolArgumentState): ToolRuntimeResult {
   const payload = {
     answerSummary: `Tool arguments invalid for ${toolName}: ${error.errorMessage}`,
     evidence: [],
     gaps: [error.errorMessage],
-    nextActions: [],
+    nextActions: isDeliverableProducerTool(toolName)
+      ? [{ tool: toolName, reason: "Retry with a valid top-level JSON object argument. For create_word_document, spec must be an object, not a string.", args: {} }]
+      : [],
     truncated: error.errorCode === "tool-arguments-truncated",
     coverage: "partial",
     data: {
       errorCode: error.errorCode,
       errorMessage: error.errorMessage,
       tool: toolName,
+      diagnostic: {
+        argumentBytes: input ? textByteLength(input) : 0,
+        toolArgumentsSanitized: true,
+        streamTruncated: Boolean(state?.truncated),
+        originalBytes: state?.originalBytes,
+        maxBytes: state?.maxBytes,
+        head: input ? textHeadByBytes(input, MAX_TOOL_ARGUMENT_DIAGNOSTIC_BYTES) : "",
+        tail: input ? textTailByBytes(input, MAX_TOOL_ARGUMENT_DIAGNOSTIC_BYTES) : "",
+      },
     },
   }
   return {
@@ -3705,6 +3880,21 @@ function failedToolArgumentParsing(toolName: string, error: Exclude<ToolArgument
     status: "failed",
     error: error.errorMessage,
     risk: "failed",
+  }
+}
+
+function toolCallForProviderHistory(call: ChatToolCall, parsed: ToolArgumentParseResult): ChatToolCall {
+  if (parsed.ok) return call
+  return {
+    ...call,
+    function: {
+      ...call.function,
+      arguments: JSON.stringify({
+        _chipmateInvalidToolArguments: true,
+        errorCode: parsed.errorCode,
+        message: parsed.errorMessage,
+      }),
+    },
   }
 }
 
@@ -3755,6 +3945,7 @@ function runProgressToolTitle(tool: string) {
   if (tool === "apply_word_document_edits") return "编辑 Word 文档"
   if (tool === "compare_word_documents") return "比较 Word 文档"
   if (tool === "merge_word_documents") return "合并 Word 文档"
+  if (tool === "chipmate_run_command") return "运行命令"
   if (tool === "chipmate_read" || tool === "chipmate_read_file" || tool === "chipmate_read_evidence" || tool.startsWith("chipmate_search") || tool.startsWith("chipmate_graph_")) return "收集证据"
   return tool || "执行工具"
 }
@@ -3921,16 +4112,16 @@ function systemPrompt(settings: RemoteSettings, skillCatalog: string, loadedSkil
     toolsEnabled
       ? [
           "Use the initial local evidence pack first. Call read-only ChipMate evidence tools only when evidence is missing, ambiguous, or needs deeper context.",
-          "Tool routing: for Mermaid-default diagram requests, use read-only evidence tools only when the content needs grounding, then answer with a fenced `mermaid` block instead of draw.io tools. When Mermaid must be embedded into a Word document or persisted as artifacts, call chipmate_render_mermaid_diagram after authoring valid Mermaid source, then place the returned PNG figure path in the matching WordDocSpec section. For explicit complex draw.io requests, use chipmate_graph_map_module, chipmate_graph_function_cfg, chipmate_graph_expand_flow_slice, chipmate_graph_state_flow_detail, chipmate_graph_find_state_machines/trace_state_path, chipmate_search_code, chipmate_search_documents, read_docx, and active skill resources to collect evidence; then use chipmate_validate_diagram_ir and finally chipmate_create_drawio_diagram. For controlled edits to an existing .docx, first call inspect_word_document and then call apply_word_document_edits with a DocumentEditPlan using only returned locators; supported operations are insertSection, replaceParagraph, replaceParagraphWithRichParagraph, replaceParagraphWithBlocks, replaceText, replaceParagraphWithTrackedChange, replaceParagraphWithRichTrackedChange, replaceTextWithTrackedChange, updateHeadingLevel, updateTable, replaceTable, updateTableHeaderRows, updateList, updateSectionPageSetup, updateImageAltText, replaceImage, updateCaptionText, updateHyperlinkText, updateHyperlinkTarget, updateNoteText, paragraph addComment, updateCommentText, setCommentResolved, fillContentControl, addTextWatermark, removeWatermark, removeAllComments, acceptAllTrackedChanges, rejectAllTrackedChanges, scrubDocumentMetadata, redactText, and patchOoxmlPart. Use audit_word_document_styles when the user asks why formatting looks inconsistent or before style cleanup; use normalize_word_document_styles only when the user wants a new style-normalized copy, and pass preserveRunFormatting such as ['bold','italic','underline','color'] when the user wants intentional manual emphasis or brand coloring preserved while other direct formatting drift is removed. Use apply_word_template_styles when the user asks to apply a DOTX/template DOCX/style pack to an existing .docx; warn that pagination and styling may change, pass styleAllowlist when the user asks to import only selected template style ids, and use returned templateAudit to explain style/numbering conflicts plus copied or blocked template relationships/media. Use audit_word_document_fields when the user asks why TOC/page numbers/captions/cross-references look stale or before rendering field-heavy documents; use refresh_word_native_fields when Word-native TOC/PAGE/NUMPAGES fields must be refreshed and render-verified; use flatten_word_ref_fields only when deterministic headless rendering should replace cached REF/PAGEREF display text in a new copy, and use materialize_word_seq_fields only when deterministic headless rendering should recalculate cached SEQ caption/table/figure numbers while preserving live SEQ fields. Do not use flatten_word_ref_fields or materialize_word_seq_fields to refresh TOC, PAGE, or NUMPAGES. Use compare_word_documents when the user asks to compare/diff/review changes between two local .docx files; the tool handles text diff, DOCX rendering, changed page detection, per-page pixel diff PNGs, changedRatio metrics, and evidence artifacts. Use merge_word_documents when the user asks to append or merge one local .docx into another; the model must choose base vs append order. Keep allowDrawings false for object-heavy append docs, but it can be true for local image/PNG figure append docs after warning that unsupported embedded objects remain out of scope; local image media and relationships are merged deterministically, hyperlink relationships are remapped, style/numbering conflicts are reported as base-wins, and unsupported embedded object relationships fail closed. Use replaceText for small exact paragraph-local edits when the surrounding paragraph should stay intact; use replaceTextWithTrackedChange instead when that small paragraph-local edit must be visible as Word redline/revision markup; use replaceParagraph only when the whole paragraph should change, and use replaceParagraphWithBlocks when one paragraph should become ordered structural blocks such as lists, figures, tables, cards, quotes, or code. Use updateHeadingLevel only with paragraph locators returned by inspect_word_document when the user asks to fix skipped heading levels or heading hierarchy accessibility warnings. Use updateTableHeaderRows only with table locators returned by inspect_word_document when the user asks to set repeated/header rows for tables or fix table-header accessibility warnings. Use updateHyperlinkText only with hyperlink locators returned by inspect_word_document when the user asks to make link text descriptive; it changes visible text only, not URL or anchor relationships. Use fillContentControl with contentControl locators returned by inspect_word_document when the user asks to fill a Word form/template field. Use addTextWatermark with the documentEnd locator to add a simple VML text watermark; use removeWatermark only with watermark locators returned by inspect_word_document. Use inspection.lists to summarize or audit existing Word numbering/list groups, list levels, and paragraph list membership; use updateList only with a list locator returned by inspect_word_document when the user asks to replace or reorganize list items. Use inspection.notes to summarize or audit existing footnotes/endnotes; use updateNoteText only with a note locator returned by inspect_word_document when the user asks to update footnote or endnote text. Use inspection.images to summarize or audit existing drawings/images, media targets, media paths, sizes, names, and alt text; use updateImageAltText only with an image locator returned by inspect_word_document when the user asks to fix or add image alt text/title, and use replaceImage with an image locator plus PNG-backed FigureSpec when the user asks to replace a local screenshot, diagram, rendered figure, or image binary. Use inspection.captions to summarize or audit existing Figure/Table captions, SEQ fields, cached numbers, and bookmarks; use updateCaptionText only with a caption locator returned by inspect_word_document when the user asks to revise caption text, and preserve SEQ fields/bookmark anchors. Use inspection.sections to summarize or audit existing page size, orientation, margins, section type, and header/footer references; use updateSectionPageSetup only with a section locator returned by inspect_word_document when the user asks to change page size, orientation, or margins. Use inspection.fields to summarize or audit existing Word fields, instructions, cached display text, and field types such as TOC, PAGE, NUMPAGES, SEQ, REF, and PAGEREF; use refresh_word_native_fields for TOC/PAGE/NUMPAGES refresh, and only use field materialization tools for the documented REF/PAGEREF flattening or SEQ cached-number workflows. Use inspection.styles to summarize or audit the existing Word style catalog and paragraph/run style usage; do not attempt arbitrary style edits because only audit, normalize, and template-style application tools are exposed. Use replaceParagraphWithTrackedChange for whole-paragraph plain-text redlines, replaceParagraphWithRichTrackedChange for whole-paragraph redlines that must preserve rich runs such as bold, hyperlinks, REF/PAGEREF, or true footnote/endnote note runs, and replaceTextWithTrackedChange for exact paragraph-local redlines; use these only when the user asks for redlines, tracked changes, or revision-mode edits. Use updateCommentText only with a returned comment locator when the user asks to revise existing comment text; use setCommentResolved only with a returned comment locator; use removeAllComments, acceptAllTrackedChanges, rejectAllTrackedChanges, scrubDocumentMetadata, redactText, and patchOoxmlPart only with the returned documentEnd locator for final clean/shareable copies or low-level OOXML repair. For redactText, prefer exact items for known sensitive values; use built-in patterns like {kind:'email'} and {kind:'phone'} for broad PII sweeps, set includeComments only when comment text must be redacted, and disclose that image OCR and cross-run semantic matching remain out of scope. Use patchOoxmlPart only as a last-resort controlled OOXML repair when no native Word operation covers the request; the plan must name a safe XML package part, exact oldText/anchor/closeTag preconditions, expectedOccurrences, and a reason, and it must not create external relationships, macros, OLE, ActiveX, or embedded binary object references. Use chipmate_ask_user_clarification only when a bounded user answer is required before continuing the same turn; it returns as a tool result, so continue after the answer. Use chipmate_create_drawio_diagram directly only for simple illustrative draw.io diagrams or after DiagramIR is validated. Use chipmate_search_text for exact strings/macros/registers/logs; chipmate_graph_inspect_symbol for definitions; chipmate_graph_find_references for references; chipmate_graph_callers/callees for direct function edges; chipmate_graph_trace_call_chain for source-to-target call paths; chipmate_graph_analyze_impact for bounded impact; chipmate_read_evidence for returned refIds; chipmate_read only for an explicit workspace path; chipmate_read_skill_resource only for active skill references/assets/scripts/tasks resources; chipmate_run_skill_script only for active skill helper scripts that are explicitly opted in through scripts/manifest.json (manifest-level directExecution true or helper execution.directExecution true) with an executable entrypoint, offline networkPolicy, input schema, and bounded output/artifacts; prefer native Word tools whenever the manifest maps the helper to one; create_word_document only for a complete WordDocSpec that should be rendered as .docx, including navigation/TOC intent when appropriate; chipmate_create_directory only when the user explicitly asks to create a new local workspace folder; chipmate_create_file only when the user explicitly asks to create a new local workspace text/code file from scratch; chipmate_edit_file only when the user explicitly asks to modify an existing local workspace text/code file by exact oldString/newString replacement.",
-          "Word document workflow: when the user asks to create, edit, review, redline, comment on, compare, diff, merge, append, normalize styles, audit formatting, apply a template/style pack, audit/flatten/materialize/refresh Word fields, render, preview, visually QA, export page PNGs, check pagination/layout, or verify a Word/DOCX document, prefer the active `documents` skill when available. The model must plan the document type, audience, design preset, preset alias when useful, header pattern when useful for a new local Word document, heading ladder, section form factors, list/table/figure intent, link/reference/note intent, navigation/TOC/field intent, form/protection intent, compare/merge/style/template/render intent, and edit strategy before calling create_word_document, apply_word_document_edits, render_word_document, compare_word_documents, merge_word_documents, audit_word_document_styles, normalize_word_document_styles, apply_word_template_styles, audit_word_document_fields, refresh_word_native_fields, flatten_word_ref_fields, or materialize_word_seq_fields. When a Word figure should come from Mermaid, call chipmate_render_mermaid_diagram first and insert the returned PNG path as a FigureSpec image in the intended section; do not put raw Mermaid syntax in the Word body. If chipmate_render_mermaid_diagram reports fallbackUsed=true, disclose that remote Mermaid rendering failed and local fallback generated the PNG; if pngGenerated=false or wordFigureUsable=false, do not use Mermaid source, source summaries, or fenced code as a Word figure substitute. Use refresh_word_native_fields when TOC/PAGE/NUMPAGES need Word-native refresh and render verification; distinguish it from static TOC and deterministic REF/PAGEREF/SEQ materialization. Use render_word_document directly when the user wants to see or verify existing DOCX layout, page PNGs, visual QA, clipping/overflow checks, or render evidence without modifying the source document. After create_word_document, apply_word_document_edits, render_word_document, or refresh_word_native_fields returns render evidence, complete the Word visual QA checkpoint before finalizing: inspect attached page PNGs when available, otherwise use render warnings and pageVisualSummaries only and say image-level visual QA was not completed. If the checkpoint finds material risks, use inspect_word_document -> apply_word_document_edits -> render_word_document, or regenerate with create_word_document when locator edits are not appropriate. The Word tools execute the structure, basic a11y, style lint/cleanup, template style-part application, field inventory/REF flattening/SEQ cached numbering/TOC-PAGE-NUMPAGES native refresh, rendering checks, deterministic navigation fields, deterministic diff artifacts, and safe body-level merges; they do not decide the user's document design by themselves.",
+          "Tool routing: for Mermaid-default diagram requests, use read-only evidence tools only when the content needs grounding, then answer with a fenced `mermaid` block instead of draw.io tools. When Mermaid must be embedded into a Word document or persisted as artifacts, call chipmate_render_mermaid_diagram after authoring valid Mermaid source, use scale 3 for Word figures, then place the returned PNG figure path in the matching WordDocSpec section while keeping the returned width/height as the display size. For explicit complex draw.io requests, use chipmate_graph_map_module, chipmate_graph_function_cfg, chipmate_graph_expand_flow_slice, chipmate_graph_state_flow_detail, chipmate_graph_find_state_machines/trace_state_path, chipmate_search_code, chipmate_search_documents, read_docx, and active skill resources to collect evidence; then use chipmate_validate_diagram_ir and finally chipmate_create_drawio_diagram. For controlled edits to an existing .docx, first call inspect_word_document and then call apply_word_document_edits with a DocumentEditPlan using only returned locators; supported operations are insertSection, replaceParagraph, replaceParagraphWithRichParagraph, replaceParagraphWithBlocks, replaceText, replaceParagraphWithTrackedChange, replaceParagraphWithRichTrackedChange, replaceTextWithTrackedChange, updateHeadingLevel, updateTable, replaceTable, updateTableHeaderRows, updateList, updateSectionPageSetup, updateImageAltText, replaceImage, updateCaptionText, updateHyperlinkText, updateHyperlinkTarget, updateNoteText, paragraph addComment, updateCommentText, setCommentResolved, fillContentControl, addTextWatermark, removeWatermark, removeAllComments, acceptAllTrackedChanges, rejectAllTrackedChanges, scrubDocumentMetadata, redactText, and patchOoxmlPart. Use audit_word_document_styles when the user asks why formatting looks inconsistent or before style cleanup; use normalize_word_document_styles only when the user wants a new style-normalized copy, and pass preserveRunFormatting such as ['bold','italic','underline','color'] when the user wants intentional manual emphasis or brand coloring preserved while other direct formatting drift is removed. Use apply_word_template_styles when the user asks to apply a DOTX/template DOCX/style pack to an existing .docx; warn that pagination and styling may change, pass styleAllowlist when the user asks to import only selected template style ids, and use returned templateAudit to explain style/numbering conflicts plus copied or blocked template relationships/media. Use audit_word_document_fields when the user asks why TOC/page numbers/captions/cross-references look stale or before rendering field-heavy documents; do not use refresh_word_native_fields for TOC/PAGE/NUMPAGES because remote native field refresh is not implemented and the VSIX client does not run local LibreOffice/soffice; use flatten_word_ref_fields only when deterministic headless rendering should replace cached REF/PAGEREF display text in a new copy, and use materialize_word_seq_fields only when deterministic headless rendering should recalculate cached SEQ caption/table/figure numbers while preserving live SEQ fields. Do not use flatten_word_ref_fields or materialize_word_seq_fields to refresh TOC, PAGE, or NUMPAGES. Use compare_word_documents when the user asks to compare/diff/review changes between two local .docx files; the tool handles text diff, DOCX rendering, changed page detection, copied before/after page artifacts, skipped pixel-diff warnings until a remote pixel-diff provider exists, and evidence artifacts. Use merge_word_documents when the user asks to append or merge one local .docx into another; the model must choose base vs append order. Keep allowDrawings false for object-heavy append docs, but it can be true for local image/PNG figure append docs after warning that unsupported embedded objects remain out of scope; local image media and relationships are merged deterministically, hyperlink relationships are remapped, style/numbering conflicts are reported as base-wins, and unsupported embedded object relationships fail closed. Use replaceText for small exact paragraph-local edits when the surrounding paragraph should stay intact; use replaceTextWithTrackedChange instead when that small paragraph-local edit must be visible as Word redline/revision markup; use replaceParagraph only when the whole paragraph should change, and use replaceParagraphWithBlocks when one paragraph should become ordered structural blocks such as lists, figures, tables, cards, quotes, or code. Use updateHeadingLevel only with paragraph locators returned by inspect_word_document when the user asks to fix skipped heading levels or heading hierarchy accessibility warnings. Use updateTableHeaderRows only with table locators returned by inspect_word_document when the user asks to set repeated/header rows for tables or fix table-header accessibility warnings. Use updateHyperlinkText only with hyperlink locators returned by inspect_word_document when the user asks to make link text descriptive; it changes visible text only, not URL or anchor relationships. Use fillContentControl with contentControl locators returned by inspect_word_document when the user asks to fill a Word form/template field. Use addTextWatermark with the documentEnd locator to add a simple VML text watermark; use removeWatermark only with watermark locators returned by inspect_word_document. Use inspection.lists to summarize or audit existing Word numbering/list groups, list levels, and paragraph list membership; use updateList only with a list locator returned by inspect_word_document when the user asks to replace or reorganize list items. Use inspection.notes to summarize or audit existing footnotes/endnotes; use updateNoteText only with a note locator returned by inspect_word_document when the user asks to update footnote or endnote text. Use inspection.images to summarize or audit existing drawings/images, media targets, media paths, sizes, names, and alt text; use updateImageAltText only with an image locator returned by inspect_word_document when the user asks to fix or add image alt text/title, and use replaceImage with an image locator plus PNG-backed FigureSpec when the user asks to replace a local screenshot, diagram, rendered figure, or image binary. Use inspection.captions to summarize or audit existing Figure/Table captions, SEQ fields, cached numbers, and bookmarks; use updateCaptionText only with a caption locator returned by inspect_word_document when the user asks to revise caption text, and preserve SEQ fields/bookmark anchors. Use inspection.sections to summarize or audit existing page size, orientation, margins, section type, and header/footer references; use updateSectionPageSetup only with a section locator returned by inspect_word_document when the user asks to change page size, orientation, or margins. Use inspection.fields to summarize or audit existing Word fields, instructions, cached display text, and field types such as TOC, PAGE, NUMPAGES, SEQ, REF, and PAGEREF; do not call refresh_word_native_fields unless the user explicitly asks to confirm native refresh is unavailable, and only use field materialization tools for the documented REF/PAGEREF flattening or SEQ cached-number workflows. Use inspection.styles to summarize or audit the existing Word style catalog and paragraph/run style usage; do not attempt arbitrary style edits because only audit, normalize, and template-style application tools are exposed. Use replaceParagraphWithTrackedChange for whole-paragraph plain-text redlines, replaceParagraphWithRichTrackedChange for whole-paragraph redlines that must preserve rich runs such as bold, hyperlinks, REF/PAGEREF, or true footnote/endnote note runs, and replaceTextWithTrackedChange for exact paragraph-local redlines; use these only when the user asks for redlines, tracked changes, or revision-mode edits. Use updateCommentText only with a returned comment locator when the user asks to revise existing comment text; use setCommentResolved only with a returned comment locator; use removeAllComments, acceptAllTrackedChanges, rejectAllTrackedChanges, scrubDocumentMetadata, redactText, and patchOoxmlPart only with the returned documentEnd locator for final clean/shareable copies or low-level OOXML repair. For redactText, prefer exact items for known sensitive values; use built-in patterns like {kind:'email'} and {kind:'phone'} for broad PII sweeps, set includeComments only when comment text must be redacted, and disclose that image OCR and cross-run semantic matching remain out of scope. Use patchOoxmlPart only as a last-resort controlled OOXML repair when no native Word operation covers the request; the plan must name a safe XML package part, exact oldText/anchor/closeTag preconditions, expectedOccurrences, and a reason, and it must not create external relationships, macros, OLE, ActiveX, or embedded binary object references. Use chipmate_ask_user_clarification only when a bounded user answer is required before continuing the same turn; it returns as a tool result, so continue after the answer. Use chipmate_create_drawio_diagram directly only for simple illustrative draw.io diagrams or after DiagramIR is validated. Use chipmate_search_text for exact strings/macros/registers/logs; chipmate_graph_inspect_symbol for definitions; chipmate_graph_find_references for references; chipmate_graph_callers/callees for direct function edges; chipmate_graph_trace_call_chain for source-to-target call paths; chipmate_graph_analyze_impact for bounded impact; chipmate_read_evidence for returned refIds; chipmate_read only for an explicit workspace path; chipmate_read_skill_resource only for active skill references/assets/scripts/tasks resources; chipmate_run_command when an active skill or the user asks to run local workspace commands, bundled scripts, builds, tests, scans, compilers, or gate checks such as python3, cmake, gcc, make, or bun test; command execution is controlled by ChipMate permission mode and does not require a skill scripts/manifest.json; chipmate_run_skill_script only for active ChipMate helper scripts that are explicitly opted in through scripts/manifest.json (manifest-level directExecution true or helper execution.directExecution true) with an executable entrypoint, offline networkPolicy, input schema, and bounded output/artifacts; prefer native Word tools whenever the manifest maps the helper to one; create_word_document only for a complete WordDocSpec that should be rendered as .docx, including navigation/TOC intent when appropriate; chipmate_create_directory only when the user explicitly asks to create a new local workspace folder; chipmate_create_file only when the user explicitly asks to create a new local workspace text/code file from scratch; chipmate_edit_file only when the user explicitly asks to modify an existing local workspace text/code file by exact oldString/newString replacement.",
+          "Word document workflow: when the user asks to create, edit, review, redline, comment on, compare, diff, merge, append, normalize styles, audit formatting, apply a template/style pack, audit/flatten/materialize Word fields, render, preview, visually QA, export page PNGs, check pagination/layout, or verify a Word/DOCX document, prefer the active `documents` skill when available. The model must plan the document type, audience, design preset, preset alias when useful, header pattern when useful for a new local Word document, heading ladder, section form factors, list/table/figure intent, link/reference/note intent, navigation/TOC/field intent, form/protection intent, compare/merge/style/template/render intent, and edit strategy before calling create_word_document, apply_word_document_edits, render_word_document, compare_word_documents, merge_word_documents, audit_word_document_styles, normalize_word_document_styles, apply_word_template_styles, audit_word_document_fields, flatten_word_ref_fields, or materialize_word_seq_fields. When a Word figure should come from Mermaid, call chipmate_render_mermaid_diagram with scale 3 first and insert the returned PNG path as a FigureSpec image in the intended section; do not put raw Mermaid syntax in the Word body, and keep the returned width/height as the Word display size rather than using pixelWidth/pixelHeight. If pngGenerated=false or wordFigureUsable=false, do not use Mermaid source, source summaries, or fenced code as a Word figure substitute. Do not use refresh_word_native_fields for TOC/PAGE/NUMPAGES in this build; distinguish static TOC/page text from deterministic REF/PAGEREF/SEQ materialization. Use render_word_document directly when the user wants to see or verify existing DOCX layout, page PNGs, visual QA, clipping/overflow checks, or render evidence without modifying the source document. After create_word_document, apply_word_document_edits, or render_word_document returns render evidence, complete the Word visual QA checkpoint before finalizing: inspect attached page PNGs when available, otherwise use render warnings and pageVisualSummaries only and say image-level visual QA was not completed. If the checkpoint finds material risks, use inspect_word_document -> apply_word_document_edits -> render_word_document, or regenerate with create_word_document when locator edits are not appropriate. The Word tools execute the structure, basic a11y, style lint/cleanup, template style-part application, field inventory/REF flattening/SEQ cached numbering, rendering checks through the remote render service, deterministic navigation fields, deterministic diff artifacts, and safe body-level merges; they do not decide the user's document design by themselves.",
           "Diagram skill precedence: obey the current user request first, then any active skill workflow, then ChipMate's default DiagramIR workflow. Active skills may change evidence ordering, reference artifacts, DiagramIR organization, composition.mode, VisualPlan hints, layoutHints, styleHints, semanticHints, and output captions, but they must not bypass the Design Compiler, ELKJS layout, offline rendering, XML/style sanitization, evidence gap reporting, or PNG safety checks.",
           "When the user wants multiple new files inside a new folder, create the folder with chipmate_create_directory first, then create new files under that folder with chipmate_create_file.",
-          "For existing-file edits, use chipmate_edit_file with an exact oldString copied from read evidence; do not use fuzzy or anchor-based patches. Do not overwrite whole files, delete files, rename, move, or run commands against existing workspace files or folders.",
+          "For existing-file edits, use chipmate_edit_file with an exact oldString copied from read evidence; do not use fuzzy or anchor-based patches. Do not overwrite whole files, delete files, or rename/move files. Use chipmate_run_command only when a local workspace command, script, build, test, scan, compiler, or active-skill gate requires it.",
           "All tool results are bounded evidence. Cite file paths and line ranges, and state gaps instead of guessing when coverage is partial or unknown.",
         ].join("\n")
       : "ChipMate tool calling is disabled. Do not request, simulate, or emit tool calls; explain missing local information instead.",
     toolsEnabled
-      ? `Permission mode: ${settings.permissions.mode}. Obey blocked tool results; only chipmate_create_directory, chipmate_create_file, chipmate_edit_file, chipmate_render_mermaid_diagram, create_word_document, apply_word_document_edits, render_word_document, compare_word_documents, merge_word_documents, normalize_word_document_styles, apply_word_template_styles, flatten_word_ref_fields, materialize_word_seq_fields, and refresh_word_native_fields may perform local writes, and only within their documented workspace boundaries.`
+      ? `Permission mode: ${settings.permissions.mode}. Obey blocked tool results; only chipmate_create_directory, chipmate_create_file, chipmate_edit_file, chipmate_run_command, chipmate_render_mermaid_diagram, create_word_document, apply_word_document_edits, render_word_document, compare_word_documents, merge_word_documents, normalize_word_document_styles, apply_word_template_styles, flatten_word_ref_fields, materialize_word_seq_fields, and refresh_word_native_fields may perform local writes or command-side local effects, and only within their documented workspace boundaries.`
       : "Permission mode settings are inactive while tool calling is disabled.",
     skillCatalog,
     loadedSkills,
@@ -4083,6 +4274,12 @@ type MermaidDiagramExtraction = {
   payloadCount: number
 }
 
+type GeneratedDocumentExtraction = {
+  parts: ChipMatePart[]
+  reason?: string
+  payloadCount: number
+}
+
 type WordRenderExtraction = {
   parts: ChipMatePart[]
   reason?: string
@@ -4229,13 +4426,71 @@ function diagramPartFromMermaidPayload(input: {
     sourceText,
     mmdPath: stringValue(payload.mmdPath),
     absoluteMmdPath: stringValue(payload.absoluteMmdPath),
-    pngPath: stringValue(payload.pngPath),
-    absolutePngPath: stringValue(payload.absolutePngPath),
-    width: numberValue(payload.width),
-    height: numberValue(payload.height),
-    renderProvider: stringValue(payload.renderProvider),
-    fallbackUsed: booleanValue(payload.fallbackUsed),
+	    pngPath: stringValue(payload.pngPath),
+	    absolutePngPath: stringValue(payload.absolutePngPath),
+	    width: numberValue(payload.width),
+	    height: numberValue(payload.height),
+	    pixelWidth: numberValue(payload.pixelWidth),
+	    pixelHeight: numberValue(payload.pixelHeight),
+	    scale: numberValue(payload.scale),
+	    contentBounds: boundsValue(payload.contentBounds),
+	    cropBounds: boundsValue(payload.cropBounds),
+	    padding: numberValue(payload.padding),
+	    contentCropRatio: numberValue(payload.contentCropRatio),
+	    renderProvider: stringValue(payload.renderProvider),
+	    fallbackUsed: booleanValue(payload.fallbackUsed),
+	    warnings,
+  } as ChipMatePart
+}
+
+function generatedDocumentPartsFromToolResult(input: {
+  sessionID: string
+  messageID: string
+  toolCallID: string
+  tool: string
+  result: ToolRuntimeResult
+}): GeneratedDocumentExtraction {
+  if (input.tool !== "create_word_document") {
+    return { parts: [], reason: "not a create_word_document result", payloadCount: 0 }
+  }
+  if (input.result.status && input.result.status !== "completed") {
+    return { parts: [], reason: `tool status ${input.result.status}`, payloadCount: 0 }
+  }
+  if (!input.result.approved) {
+    return { parts: [], reason: "tool result was not approved", payloadCount: 0 }
+  }
+  const payload = parseToolOutputObject(input.result.output)
+  const data = recordValue(payload.data)
+  const part = generatedDocumentPartFromPayload(input, data)
+  return {
+    parts: part ? [part] : [],
+    reason: part ? undefined : "create_word_document output did not contain structured data.path",
+    payloadCount: Object.keys(data).length ? 1 : 0,
+  }
+}
+
+function generatedDocumentPartFromPayload(input: {
+  sessionID: string
+  messageID: string
+  toolCallID: string
+}, payload: Record<string, unknown>): ChipMatePart | undefined {
+  const path = stringValue(payload.path)
+  if (!path || !/\.docx$/i.test(path)) return undefined
+  const warnings = stringArrayValue(payload.warnings).slice(0, 24)
+  const warningCount = numberValue(payload.warningCount) ?? warnings.length
+  return {
+    id: `${input.toolCallID}-generated-document`,
+    sessionID: input.sessionID,
+    messageID: input.messageID,
+    type: "generatedDocument",
+    title: "Generated Word Document",
+    path,
+    absolutePath: stringValue(payload.absolutePath),
+    sourceCount: numberValue(payload.sourceCount),
+    warningCount,
     warnings,
+    runSummaryPath: stringValue(payload.runSummaryPath),
+    toolCallID: input.toolCallID,
   } as ChipMatePart
 }
 
@@ -4489,6 +4744,19 @@ function logMermaidDiagramExtraction(output: vscode.OutputChannel, tool: string,
   output.appendLine(`[mermaid-artifact] skipped reason=${extraction.reason ?? "unknown"} payloads=${extraction.payloadCount} outputBytes=${textByteLength(result.output)} artifacts=${toolArtifactSummary(result)}`)
 }
 
+function logGeneratedDocumentExtraction(output: vscode.OutputChannel, tool: string, result: ToolRuntimeResult, extraction: GeneratedDocumentExtraction) {
+  if (!isGeneratedDocumentRelevantToolResult(tool, extraction)) return
+  if (extraction.parts.length > 0) {
+    const paths = extraction.parts
+      .map((part) => truncateString(stringValue((part as { path?: unknown }).path), 120))
+      .filter(Boolean)
+      .join(" | ")
+    output.appendLine(`[generated-document-artifact] inserted count=${extraction.parts.length} payloads=${extraction.payloadCount}${paths ? ` paths=${paths}` : ""}`)
+    return
+  }
+  output.appendLine(`[generated-document-artifact] skipped reason=${extraction.reason ?? "unknown"} payloads=${extraction.payloadCount} outputBytes=${textByteLength(result.output)} artifacts=${toolArtifactSummary(result)}`)
+}
+
 function logWordRenderExtraction(output: vscode.OutputChannel, tool: string, result: ToolRuntimeResult, extraction: WordRenderExtraction) {
   if (!isWordRenderRelevantToolResult(tool, result, extraction)) return
   if (extraction.parts.length > 0) {
@@ -4510,6 +4778,10 @@ function isMermaidRelevantToolResult(tool: string, result: ToolRuntimeResult, ex
   return tool === "chipmate_render_mermaid_diagram" ||
     extraction.parts.length > 0 ||
     (result.artifacts ?? []).some((artifact) => artifact.kind === "mermaid")
+}
+
+function isGeneratedDocumentRelevantToolResult(tool: string, extraction: GeneratedDocumentExtraction) {
+  return tool === "create_word_document" || extraction.parts.length > 0
 }
 
 function isWordRenderRelevantToolResult(tool: string, result: ToolRuntimeResult, extraction: WordRenderExtraction) {
@@ -5345,6 +5617,19 @@ function stringValue(value: unknown) {
 
 function numberValue(value: unknown) {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined
+}
+
+function boundsValue(value: unknown) {
+  const record = recordValue(value)
+  const width = numberValue(record.width)
+  const height = numberValue(record.height)
+  if (!width || !height) return undefined
+  return {
+    x: numberValue(record.x) ?? 0,
+    y: numberValue(record.y) ?? 0,
+    width,
+    height,
+  }
 }
 
 function upsertPart(parts: ChipMateMessage["parts"], part: ChipMateMessage["parts"][number]) {

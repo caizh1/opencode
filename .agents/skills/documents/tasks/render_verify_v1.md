@@ -31,10 +31,10 @@ If the configured remote Word render server is unconfigured, unreachable, times 
 
 ## Field Refresh Limits
 
-The offline workflow can audit Word fields, materialize some cached values, and refresh Word-native layout fields when local LibreOffice is available:
+The offline workflow can audit Word fields and materialize some cached values. Word-native layout field refresh is not available in this remote-render-only VSIX build:
 
-- `refresh_word_native_fields` refreshes Word-native `TOC`, `PAGE`, and `NUMPAGES` into a new DOCX copy and render-verifies the result.
+- Word-native `TOC`, `PAGE`, and `NUMPAGES` must use static TOC/page text, manual Word field update, or a future remote field-refresh provider.
 - `flatten_word_ref_fields` creates a deterministic render copy by replacing cached `REF` / `PAGEREF` display text with literal text.
 - `materialize_word_seq_fields` recalculates cached `SEQ` caption/table/figure numbers while preserving live `SEQ` fields.
 
-Disclose dependency limits when local LibreOffice field refresh or remote visual rendering is unavailable, and keep static TOC outputs clearly separate from Word-native refreshed fields.
+Disclose dependency limits when remote visual rendering is unavailable, and keep static TOC outputs clearly separate from Word-native fields that still need manual refresh.

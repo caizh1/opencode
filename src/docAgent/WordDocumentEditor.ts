@@ -151,6 +151,7 @@ export class WordDocumentEditor {
     plan: DocumentEditPlan
     signal?: AbortSignal
     log?: (message: string) => void
+    remoteEndpoint?: string
   }): Promise<ApplyResult> {
     input.signal?.throwIfAborted()
     const validation = validateDocumentEditPlan(input.plan, input.inspection)
@@ -253,6 +254,7 @@ export class WordDocumentEditor {
         timeoutMs: 60_000,
         signal: input.signal,
         log: input.log,
+        remoteEndpoint: input.remoteEndpoint,
       })
       let repairAttempted = false
       if (repairableIssues([...structureCheckResult.issues, ...renderCheckResult.issues]).length > 0) {
@@ -273,6 +275,7 @@ export class WordDocumentEditor {
             timeoutMs: 60_000,
             signal: input.signal,
             log: input.log,
+            remoteEndpoint: input.remoteEndpoint,
           })
         }
       }

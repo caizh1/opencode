@@ -1,5 +1,5 @@
-import { access, mkdir, stat, writeFile } from "node:fs/promises"
-import { dirname, delimiter, join, resolve, sep } from "node:path"
+import { mkdir, stat, writeFile } from "node:fs/promises"
+import { join, resolve, sep } from "node:path"
 
 const artifactDir = process.env.CHIPMATE_SKILL_ARTIFACT_DIR
 const workspaceRoot = process.env.CHIPMATE_WORKSPACE_ROOT
@@ -14,23 +14,6 @@ let stdin = ""
 for await (const chunk of process.stdin) stdin += chunk
 const args = JSON.parse(stdin || "{}")
 const documentPath = typeof args.documentPath === "string" && args.documentPath.trim() ? args.documentPath.trim() : undefined
-
-const pathEntries = (process.env.PATH ?? "").split(delimiter).filter(Boolean)
-const candidates = [
-  process.env.CHIPMATE_SOFFICE_PATH,
-  ...pathEntries.map((entry) => join(entry, "soffice")),
-  ...pathEntries.map((entry) => join(entry, "libreoffice")),
-].filter(Boolean)
-
-const existing = []
-for (const candidate of candidates) {
-  try {
-    await access(candidate)
-    if (!existing.includes(candidate)) existing.push(candidate)
-  } catch {
-    // Read-only diagnostic: unavailable candidates are reported through existing list.
-  }
-}
 
 let document = undefined
 if (documentPath && workspaceRoot) {
@@ -51,15 +34,14 @@ const report = {
   networkPolicy,
   workspaceRootPresent: Boolean(workspaceRoot),
   document,
-  libreOffice: {
-    available: existing.length > 0,
-    candidatesChecked: candidates.length,
-    firstExecutable: existing[0],
+  nativeFieldRefresh: {
+    available: false,
+    reason: "Remote native field refresh is not implemented, and the VSIX client does not run local LibreOffice/soffice.",
   },
   directHelperScope: {
     readOnly: true,
     writesOnlyArtifact: "word-runtime-field-refresh-report.json",
-    nativeToolToUseForRefresh: "refresh_word_native_fields",
+    recommendedAction: "Use static TOC/page text, update fields manually in Word, or wait for a remote field-refresh provider.",
   },
 }
 
@@ -69,6 +51,6 @@ await writeFile(reportPath, `${JSON.stringify(report, null, 2)}\n`, "utf8")
 
 console.log(JSON.stringify({
   ok: true,
-  libreOfficeAvailable: report.libreOffice.available,
+  nativeFieldRefreshAvailable: report.nativeFieldRefresh.available,
   artifact: "word-runtime-field-refresh-report.json",
 }))

@@ -16,6 +16,8 @@ import type { RemoteSettings } from "./types"
 const MAX_IMPORT_FILES = 500
 const MAX_TOTAL_BYTES = 50 * 1024 * 1024
 const MAX_FILE_BYTES = 10 * 1024 * 1024
+const HOST_SKILL_ROOTS = [".agents/skills", ".opencode/skills", ".claude/skills", ".codex/skills"] as const
+const HOST_ROOT_DIRS = new Set([".agents", ".opencode", ".claude", ".codex"])
 
 export type SkillImportCandidate = {
   source: vscode.Uri
@@ -265,35 +267,9 @@ async function expandImportSources(sources: vscode.Uri[]): Promise<ExpandedImpor
       continue
     }
 
-    let childCandidates = 0
-    const childEntries = await readDirectorySorted(source)
-    for (const [entry, fileType] of childEntries) {
-      if (!(fileType & vscode.FileType.Directory)) continue
-      const childRoot = nodePath.join(sourcePath, entry)
-      const childStat = await statSafe(childRoot)
-      if (!childStat || isSymlink(childStat)) {
-        expanded.push({
-          kind: "invalid",
-          sourcePath: childRoot,
-          sourceKind: "unsupported",
-          errors: ["symlink skill directories are not supported"],
-        })
-        continue
-      }
-      const skillFile = nodePath.join(childRoot, SKILL_FILE_NAME)
-      if (!(await isRegularFile(skillFile))) continue
-      childCandidates += 1
-      expanded.push({
-        kind: "candidate",
-        candidate: {
-          source: vscode.Uri.file(childRoot),
-          sourcePath: childRoot,
-          sourceKind: "skill-directory",
-          skillRoot: childRoot,
-          skillFile,
-          standaloneFile: false,
-        },
-      })
+    let childCandidates = await collectChildSkillCandidates(sourcePath, expanded)
+    for (const hostRoot of hostSkillRootsForImportSource(sourcePath)) {
+      childCandidates += await collectChildSkillCandidates(hostRoot, expanded)
     }
     if (childCandidates === 0) {
       expanded.push({
@@ -305,6 +281,46 @@ async function expandImportSources(sources: vscode.Uri[]): Promise<ExpandedImpor
     }
   }
   return expanded
+}
+
+async function collectChildSkillCandidates(sourceRoot: string, expanded: ExpandedImportSource[]) {
+  let childCandidates = 0
+  const childEntries = await readDirectorySorted(vscode.Uri.file(sourceRoot))
+  for (const [entry, fileType] of childEntries) {
+    if (!(fileType & vscode.FileType.Directory)) continue
+    const childRoot = nodePath.join(sourceRoot, entry)
+    const childStat = await statSafe(childRoot)
+    if (!childStat || isSymlink(childStat)) {
+      expanded.push({
+        kind: "invalid",
+        sourcePath: childRoot,
+        sourceKind: "unsupported",
+        errors: ["symlink skill directories are not supported"],
+      })
+      continue
+    }
+    const skillFile = nodePath.join(childRoot, SKILL_FILE_NAME)
+    if (!(await isRegularFile(skillFile))) continue
+    childCandidates += 1
+    expanded.push({
+      kind: "candidate",
+      candidate: {
+        source: vscode.Uri.file(childRoot),
+        sourcePath: childRoot,
+        sourceKind: "skill-directory",
+        skillRoot: childRoot,
+        skillFile,
+        standaloneFile: false,
+      },
+    })
+  }
+  return childCandidates
+}
+
+function hostSkillRootsForImportSource(sourcePath: string) {
+  const roots = HOST_SKILL_ROOTS.map((root) => nodePath.join(sourcePath, ...root.split("/")))
+  if (HOST_ROOT_DIRS.has(nodePath.basename(sourcePath))) roots.push(nodePath.join(sourcePath, "skills"))
+  return roots
 }
 
 async function validateSkillCandidate(candidate: SkillImportCandidate, targetRoot: string): Promise<SkillImportValidationResult> {

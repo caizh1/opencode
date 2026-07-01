@@ -121,6 +121,50 @@ describe("Skill import", () => {
     expect(await readFile(join(home, ".agents", "skills", "single-file", "SKILL.md"), "utf8")).toContain("Single file workflow")
   })
 
+  test("imports child skills from host install roots without copying host directories", async () => {
+    const root = await tempDir("chipmate-skill-import-host-root-")
+    const home = await tempDir("chipmate-skill-home-")
+    await writeSkill(
+      join(root, ".opencode", "skills", "iar-to-gcc-migration-gated"),
+      "iar-to-gcc-migration-gated",
+      "Migrate IAR projects to GCC with gates",
+      "",
+      "Read references/migration-reference.md and run scripts/scan_iar_constructs.py with chipmate_run_command.",
+    )
+    await mkdir(join(root, ".opencode", "skills", "iar-to-gcc-migration-gated", "references"), { recursive: true })
+    await mkdir(join(root, ".opencode", "skills", "iar-to-gcc-migration-gated", "scripts"), { recursive: true })
+    await writeFile(join(root, ".opencode", "skills", "iar-to-gcc-migration-gated", "references", "migration-reference.md"), "Reference\n")
+    await writeFile(join(root, ".opencode", "skills", "iar-to-gcc-migration-gated", "scripts", "scan_iar_constructs.py"), "print('scan')\n")
+    await writeSkill(join(root, ".claude", "skills", "review"), "review", "Review workflow")
+
+    const result = await importSkills({
+      sources: [UriShim.file(root) as never],
+      userHome: home,
+      settings: defaultSkillSettings(),
+    })
+
+    expect(result.imported.map((item) => item.name).sort()).toEqual(["iar-to-gcc-migration-gated", "review"])
+    expect(await readFile(join(home, ".agents", "skills", "iar-to-gcc-migration-gated", "SKILL.md"), "utf8")).toContain("Migrate IAR")
+    expect(await readFile(join(home, ".agents", "skills", "iar-to-gcc-migration-gated", "references", "migration-reference.md"), "utf8")).toBe("Reference\n")
+    expect(await readFile(join(home, ".agents", "skills", "iar-to-gcc-migration-gated", "scripts", "scan_iar_constructs.py"), "utf8")).toBe("print('scan')\n")
+    await expect(readFile(join(home, ".agents", "skills", ".opencode"), "utf8")).rejects.toThrow()
+  })
+
+  test("imports child skills when selecting an .opencode directory directly", async () => {
+    const root = await tempDir("chipmate-skill-import-opencode-dir-")
+    const home = await tempDir("chipmate-skill-home-")
+    await writeSkill(join(root, ".opencode", "skills", "migrate"), "migrate", "Migration workflow")
+
+    const result = await importSkills({
+      sources: [UriShim.file(join(root, ".opencode")) as never],
+      userHome: home,
+      settings: defaultSkillSettings(),
+    })
+
+    expect(result.imported.map((item) => item.name)).toEqual(["migrate"])
+    expect(await readFile(join(home, ".agents", "skills", "migrate", "SKILL.md"), "utf8")).toContain("Migration workflow")
+  })
+
   test("validates unsupported skill inputs before import", async () => {
     const root = await tempDir("chipmate-skill-import-invalid-")
     const home = await tempDir("chipmate-skill-home-")
@@ -198,7 +242,9 @@ function defaultSkillSettings() {
     enabled: [],
     overrides: {},
     scanUserSkills: true,
+    scanOpenCodeSkills: true,
     scanClaudeSkills: true,
+    scanCodexSkills: true,
     maxCatalogBytes: 8000,
   }
 }
