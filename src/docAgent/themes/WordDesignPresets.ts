@@ -7,6 +7,11 @@ const LETTER_HEIGHT_TWIPS = 15_840
 const A4_WIDTH_TWIPS = 11_906
 const A4_HEIGHT_TWIPS = 16_838
 const ONE_INCH_TWIPS = 1_440
+const MIN_TABLE_HEADER_CONTRAST = 4.5
+const DEFAULT_TABLE_HEADER_FILL = "1F4E79"
+const DEFAULT_TABLE_HEADER_TEXT = "FFFFFF"
+const LIGHT_TABLE_HEADER_FILL = "EAF3FF"
+const LIGHT_TABLE_HEADER_TEXT = "24292F"
 
 export const DEFAULT_WORD_DESIGN_PRESET: WordDesignPreset = "standard_business_brief"
 
@@ -113,6 +118,11 @@ export function resolveWordPresetTokenMap(layout?: WordDocLayoutSpec): WordPrese
 
 export function resolveWordTheme(base: ReportTheme, layout?: WordDocLayoutSpec): ReportTheme {
   const tokens = resolveWordPresetTokenMap(layout)
+  const tableHeader = ensureTableHeaderContrast({
+    fill: tokens.tables.headerFill ?? base.table.headerFill,
+    textColor: tokens.preset === "google_docs_default" ? LIGHT_TABLE_HEADER_TEXT : base.styles.tableHeader.color ?? DEFAULT_TABLE_HEADER_TEXT,
+    preferLightHeader: tokens.preset === "google_docs_default",
+  })
   return {
     ...base,
     id: themeId(tokens),
@@ -146,14 +156,14 @@ export function resolveWordTheme(base: ReportTheme, layout?: WordDocLayoutSpec):
       heading1: { ...base.styles.heading1, font: tokens.typography.bodyFont, sizeHalfPoints: tokens.headings.h1.sizeHalfPoints, color: tokens.headings.h1.color, bold: tokens.headings.h1.bold ?? true, spacingBefore: tokens.headings.h1.before, spacingAfter: tokens.headings.h1.after },
       heading2: { ...base.styles.heading2, font: tokens.typography.bodyFont, sizeHalfPoints: tokens.headings.h2.sizeHalfPoints, color: tokens.headings.h2.color, bold: tokens.headings.h2.bold ?? true, spacingBefore: tokens.headings.h2.before, spacingAfter: tokens.headings.h2.after },
       heading3: { ...base.styles.heading3, font: tokens.typography.bodyFont, sizeHalfPoints: tokens.headings.h3.sizeHalfPoints, color: tokens.headings.h3.color, bold: tokens.headings.h3.bold ?? true, spacingBefore: tokens.headings.h3.before, spacingAfter: tokens.headings.h3.after },
-      tableHeader: { ...base.styles.tableHeader, color: tokens.preset === "google_docs_default" ? "000000" : base.styles.tableHeader.color },
+      tableHeader: { ...base.styles.tableHeader, color: tableHeader.textColor },
       calloutTitle: { ...base.styles.calloutTitle, color: tokens.colors.secondary },
     },
     table: {
       ...base.table,
       borderSize: tokens.tables.borderSize,
       cellMargin: tokens.tables.cellMarginTwips,
-      headerFill: tokens.tables.headerFill ?? base.table.headerFill,
+      headerFill: tableHeader.fill,
     },
     callout: {
       ...base.callout,
@@ -179,7 +189,7 @@ function baseTokenMap(preset: WordDesignPreset): WordPresetTokenMap {
       contentWidth: 9_360,
     },
     lists: { markerAlignedTwips: 360, textIndentTwips: 720, hangingTwips: 360, spacingAfter: 160 },
-    tables: { widthTwips: 9_360, indentTwips: 120, cellMarginTwips: 120, borderSize: 8, headerFill: "F2F4F7" },
+    tables: { widthTwips: 9_360, indentTwips: 120, cellMarginTwips: 120, borderSize: 8, headerFill: DEFAULT_TABLE_HEADER_FILL },
     callouts: { fill: "EAF3FF", borderSize: 8 },
     headers: { enabled: true, quietLabel: "Document" },
     footers: { enabled: true, quietLabel: "Page" },
@@ -195,7 +205,7 @@ function baseTokenMap(preset: WordDesignPreset): WordPresetTokenMap {
         h2: { sizeHalfPoints: 32, color: "000000", before: 360, after: 120, bold: false },
         h3: { sizeHalfPoints: 28, color: "434343", before: 320, after: 80, bold: false },
       },
-      tables: { ...shared.tables, indentTwips: 0, borderSize: 4, headerFill: "FFFFFF" },
+      tables: { ...shared.tables, indentTwips: 0, borderSize: 4, headerFill: LIGHT_TABLE_HEADER_FILL },
       callouts: { fill: "FFFFFF", borderSize: 0 },
       headers: { enabled: false },
       footers: { enabled: false },
@@ -213,7 +223,7 @@ function baseTokenMap(preset: WordDesignPreset): WordPresetTokenMap {
         h3: { sizeHalfPoints: 22, color: "1F4D78", before: 200, after: 100 },
       },
       lists: { markerAlignedTwips: 270, textIndentTwips: 540, hangingTwips: 270, spacingAfter: 80 },
-      tables: { ...shared.tables, cellMarginTwips: 96, headerFill: "E8EEF5" },
+      tables: { ...shared.tables, cellMarginTwips: 96, headerFill: DEFAULT_TABLE_HEADER_FILL },
       colors: { primary: "24292F", secondary: "2E74B5", muted: "596579", border: "C7D1DD", surface: "FFFFFF" },
     }
   }
@@ -241,6 +251,52 @@ function baseTokenMap(preset: WordDesignPreset): WordPresetTokenMap {
       h3: { sizeHalfPoints: 24, color: "1F4D78", before: 160, after: 80 },
     },
   }
+}
+
+function ensureTableHeaderContrast(input: { fill: string; textColor: string; preferLightHeader: boolean }) {
+  const fill = normalizeHexColor(input.fill) ?? (input.preferLightHeader ? LIGHT_TABLE_HEADER_FILL : DEFAULT_TABLE_HEADER_FILL)
+  const textColor = normalizeHexColor(input.textColor) ?? (input.preferLightHeader ? LIGHT_TABLE_HEADER_TEXT : DEFAULT_TABLE_HEADER_TEXT)
+  if (contrastRatio(fill, textColor) >= MIN_TABLE_HEADER_CONTRAST && !isNearWhite(fill)) {
+    return { fill, textColor }
+  }
+  if (input.preferLightHeader && contrastRatio(LIGHT_TABLE_HEADER_FILL, LIGHT_TABLE_HEADER_TEXT) >= MIN_TABLE_HEADER_CONTRAST) {
+    return { fill: LIGHT_TABLE_HEADER_FILL, textColor: LIGHT_TABLE_HEADER_TEXT }
+  }
+  return { fill: DEFAULT_TABLE_HEADER_FILL, textColor: DEFAULT_TABLE_HEADER_TEXT }
+}
+
+function normalizeHexColor(value: string | undefined) {
+  const raw = value?.trim().replace(/^#/, "")
+  if (!raw) return undefined
+  if (/^[\da-fA-F]{3}$/.test(raw)) return raw.split("").map((char) => `${char}${char}`).join("").toUpperCase()
+  if (/^[\da-fA-F]{6}$/.test(raw)) return raw.toUpperCase()
+  return undefined
+}
+
+function contrastRatio(left: string, right: string) {
+  const leftLuminance = relativeLuminance(left)
+  const rightLuminance = relativeLuminance(right)
+  const lighter = Math.max(leftLuminance, rightLuminance)
+  const darker = Math.min(leftLuminance, rightLuminance)
+  return (lighter + 0.05) / (darker + 0.05)
+}
+
+function relativeLuminance(hex: string) {
+  const red = Number.parseInt(hex.slice(0, 2), 16)
+  const green = Number.parseInt(hex.slice(2, 4), 16)
+  const blue = Number.parseInt(hex.slice(4, 6), 16)
+  const [r, g, b] = [red, green, blue].map((component) => {
+    const channel = component / 255
+    return channel <= 0.03928 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4
+  })
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b
+}
+
+function isNearWhite(hex: string) {
+  const red = Number.parseInt(hex.slice(0, 2), 16)
+  const green = Number.parseInt(hex.slice(2, 4), 16)
+  const blue = Number.parseInt(hex.slice(4, 6), 16)
+  return red >= 246 && green >= 246 && blue >= 246
 }
 
 function applyAliasTokens(tokens: WordPresetTokenMap, alias: WordPresetAlias): WordPresetTokenMap {

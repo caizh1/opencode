@@ -16,18 +16,112 @@ class UriShim {
     return new UriShim(path)
   }
 
+  static joinPath(base: UriShim, ...segments: string[]) {
+    return new UriShim(join(base.fsPath, ...segments))
+  }
+
   toString() {
     return `file://${this.fsPath}`
   }
 }
 
+class PositionShim {
+  constructor(
+    readonly line: number,
+    readonly character: number,
+  ) {}
+}
+
+class RangeShim {
+  readonly start: { line: number; character: number }
+  readonly end: { line: number; character: number }
+
+  constructor(start: PositionShim, end: PositionShim)
+  constructor(startLine: number, startCharacter: number, endLine: number, endCharacter: number)
+  constructor(startOrLine: PositionShim | number, startCharacterOrEnd: PositionShim | number, endLine?: number, endCharacter?: number) {
+    if (typeof startOrLine === "number") {
+      this.start = { line: startOrLine, character: startCharacterOrEnd as number }
+      this.end = { line: endLine ?? startOrLine, character: endCharacter ?? (startCharacterOrEnd as number) }
+      return
+    }
+    this.start = startOrLine
+    this.end = startCharacterOrEnd as PositionShim
+  }
+}
+
+class SelectionShim extends RangeShim {}
+
+class RelativePatternShim {
+  constructor(readonly base: unknown, readonly pattern: string) {}
+}
+
 mock.module("vscode", () => ({
-  FileType: { File: 1, Directory: 2 },
+  FileType: {
+    Unknown: 0,
+    File: 1,
+    Directory: 2,
+    SymbolicLink: 64,
+  },
   Uri: UriShim,
+  Position: PositionShim,
+  Range: RangeShim,
+  Selection: SelectionShim,
+  RelativePattern: RelativePatternShim,
+  InlineCompletionItem: class InlineCompletionItem {
+    filterText?: string
+    command?: unknown
+
+    constructor(readonly insertText: string, readonly range?: unknown, command?: unknown) {
+      this.command = command
+    }
+  },
+  InlineCompletionTriggerKind: {
+    Invoke: 0,
+    Automatic: 1,
+  },
+  WorkspaceEdit: class WorkspaceEdit {
+    readonly inserts: unknown[] = []
+    readonly replaces: unknown[] = []
+    readonly deletes: unknown[] = []
+    insert(...args: unknown[]) {
+      this.inserts.push(args)
+    }
+    replace(...args: unknown[]) {
+      this.replaces.push(args)
+    }
+    delete(...args: unknown[]) {
+      this.deletes.push(args)
+    }
+  },
+  DiagnosticSeverity: {
+    Error: 0,
+    Warning: 1,
+    Information: 2,
+    Hint: 3,
+  },
+  ConfigurationTarget: {
+    Global: "global",
+  },
+  env: {
+    remoteName: undefined,
+  },
   workspace: {
     get workspaceFolders() {
       return workspaceFolders
     },
+    textDocuments: [],
+    asRelativePath: (uri: { fsPath?: string; path?: string }) => uri.fsPath ?? uri.path ?? "",
+    getWorkspaceFolder: () => workspaceFolders[0],
+    getConfiguration: () => ({
+      get: <T>(_key: string, fallback?: T) => fallback as T,
+      update: async () => undefined,
+    }),
+    onDidChangeConfiguration: () => ({ dispose: () => undefined }),
+    onDidChangeTextDocument: () => ({ dispose: () => undefined }),
+    onDidOpenTextDocument: () => ({ dispose: () => undefined }),
+    onDidCloseTextDocument: () => ({ dispose: () => undefined }),
+    findFiles: async () => [],
+    openTextDocument: async () => undefined,
     fs: {
       createDirectory: async (uri: UriShim) => mkdir(uri.fsPath, { recursive: true }),
       writeFile: async (uri: UriShim, data: Uint8Array) => {
@@ -35,11 +129,38 @@ mock.module("vscode", () => ({
         await writeFile(uri.fsPath, data)
       },
       readFile: async (uri: UriShim) => readFile(uri.fsPath),
+      readDirectory: async () => [],
+      delete: async (uri: UriShim) => rm(uri.fsPath, { recursive: true, force: true }),
       stat: async (uri: UriShim) => {
         const item = await stat(uri.fsPath)
         return { type: item.isDirectory() ? 2 : 1, size: item.size }
       },
     },
+  },
+  window: {
+    activeTextEditor: undefined,
+    visibleTextEditors: [],
+    textDocuments: [],
+    onDidChangeActiveTextEditor: () => ({ dispose: () => undefined }),
+    onDidChangeTextEditorSelection: () => ({ dispose: () => undefined }),
+    createOutputChannel: () => ({
+      appendLine: () => undefined,
+      show: () => undefined,
+      dispose: () => undefined,
+    }),
+    setStatusBarMessage: () => ({ dispose: () => undefined }),
+    showSaveDialog: async () => undefined,
+    showInformationMessage: async () => undefined,
+    showWarningMessage: async () => undefined,
+    showErrorMessage: async () => undefined,
+  },
+  commands: {
+    executeCommand: async () => [],
+    registerCommand: () => ({ dispose: () => undefined }),
+  },
+  languages: {
+    getDiagnostics: () => [],
+    registerInlineCompletionItemProvider: () => ({ dispose: () => undefined }),
   },
 }))
 

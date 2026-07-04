@@ -2,6 +2,7 @@ export type ConnectionState = "disconnected" | "connecting" | "connected" | "aut
 export type CompletionLogLevel = "off" | "info" | "debug"
 export type CompletionProfile = "generic-chat" | "qwen-coder-fim" | "deepseek-fim"
 export type CompletionProvider = "openai-compatible" | "qwen-direct" | "fim-direct" | "none"
+export type CompletionProviderMode = "inherit-chat" | "custom"
 export type CompletionCommentGuidedRetrievalMode = "qa-exact" | "completion"
 export type CodeGraphAnalysisMode = "auto" | "fast" | "ast" | "semantic"
 export type PermissionMode = "ask" | "auto" | "full-access"
@@ -124,6 +125,8 @@ export type RagConfigurationApplyAction =
 export type RagConfigurationApplyOptions = {
   forceRebuild?: boolean
   preserveExistingIndex?: boolean
+  resumeExistingIndex?: boolean
+  stopInFlightPreserveIndex?: boolean
 }
 
 export type RagConfigurationApplyResult = {
@@ -153,6 +156,7 @@ export type DocumentRagSettings = {
   excludeGlobs: string[]
   queryTopK: number
   maxEvidenceBytes: number
+  workerConcurrency: number
 }
 
 export type DocumentRagProgress = {
@@ -205,6 +209,7 @@ export type RemoteSettings = {
     apiBaseUrl: string
     chatModel: string
     maxTokens: number
+    contextLength: number
     temperature: number
     topP: number
   }
@@ -249,6 +254,7 @@ export type RemoteSettings = {
   }
   completion: {
     enabled: boolean
+    providerMode: CompletionProviderMode
     provider: CompletionProvider
     profile: CompletionProfile
     apiBaseUrl: string

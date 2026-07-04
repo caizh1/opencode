@@ -6,6 +6,7 @@ import { join } from "node:path"
 import type { SkillRegistry } from "../src/skills"
 import type { GoalToolHandler, ToolRuntime as ToolRuntimeInstance, ToolRuntimeResult } from "../src/tool-runtime"
 import type { DrawioGeneratedDiagram } from "../src/drawio-diagram-generator"
+import type { WordDocSpec } from "../src/docAgent/types"
 import type { RemoteSettings, ThreadGoalStatus } from "../src/types"
 import { CHAT_SESSION_TITLE } from "../src/chat-session"
 import { cGuidelineDocxFixture, docxFixture } from "./document-fixtures"
@@ -136,8 +137,9 @@ mock.module("vscode", () => ({
   Selection: class Selection {},
 }))
 
-const { DirectAgentClient } = await import("../src/direct-agent-client")
+const { DirectAgentClient, understandingGroundingFinalDisclosureText } = await import("../src/direct-agent-client")
 const { ToolRuntime } = await import("../src/tool-runtime")
+const { WordDocBuilder } = await import("../src/docAgent/WordDocBuilder")
 const { GoalRuntime, GoalStore, MAX_THREAD_GOAL_OBJECTIVE_CHARS } = await import("../src/goal-runtime")
 const { generateDrawioDiagram } = await import("../src/drawio-diagram-generator")
 const { setDrawioElkLayoutRunnerForTest } = await import("../src/drawio-layout-engine")
@@ -811,6 +813,273 @@ describe("ToolRuntime", () => {
     expect(payload.data.renderCheckResult.pdfArtifactPath).toMatch(/^\.chipmate\/docs\/rendered\/configured-render-.+\/document\.pdf$/)
     expect(payload.data.renderCheckResult.pagePngPaths?.[0]).toMatch(/^\.chipmate\/docs\/rendered\/configured-render-.+\/page-1\.png$/)
     expect((await readFile(join(root, payload.data.renderCheckResult.pagePngPaths![0]))).subarray(0, 8)).toEqual(tinyPngBytes().subarray(0, 8))
+  })
+
+  test("render_word_document includes table header contrast issues from structure QA", async () => {
+    const root = await tempDir("chipmate-render-table-contrast-")
+    workspaceFolders = [{ name: "repo", uri: UriShim.file(root) }]
+    const docxPath = join(root, "low-contrast-table.docx")
+    const bytes = await replaceDocxPartForTest(await new WordDocBuilder().build(minimalWordDocSpecForToolRuntime()), "word/document.xml", (xml) => xml
+      .replace(/w:fill="1F4E79"/g, 'w:fill="FFFFFF"')
+      .replace(/w:color w:val="FFFFFF"/g, 'w:color w:val="FFFFFF"'))
+    await writeFile(docxPath, bytes)
+
+    const requests: Array<{ url?: string; body: Record<string, unknown> }> = []
+    const baseUrl = (await listen(async (request, response) => {
+      if (request.method !== "POST" || request.url !== "/render/word") {
+        response.writeHead(404).end()
+        return
+      }
+      requests.push({ url: request.url, body: await collectJson(request) })
+      response.writeHead(200, { "content-type": "application/json" })
+      response.end(JSON.stringify({
+        ok: true,
+        pageCount: 1,
+        pdf: { contentType: "application/pdf", base64: Buffer.from("%PDF-1.4\n% ChipMate test\n").toString("base64") },
+        pages: [{
+          page: 1,
+          contentType: "image/png",
+          base64: Buffer.from(tinyPngBytes()).toString("base64"),
+          width: 1,
+          height: 1,
+          visualSummary: { totalPixels: 1, inkPixels: 1, inkRatio: 1 },
+        }],
+        issues: [],
+        renderer: { kind: "remote-opencode", docxToPdf: "libreoffice", pdfToPng: "pdftoppm" },
+      }))
+    })).replace(/\/v1$/, "")
+    configurationValues["chipmate.wordRender.remoteEndpoint"] = baseUrl
+    const runtime = new ToolRuntime({ append: async () => undefined } as never)
+
+    const rendered = await runtime.execute({
+      sessionID: "session-1",
+      mode: "auto",
+      name: "render_word_document",
+      arguments: {
+        path: "low-contrast-table.docx",
+        artifactNameBase: "low-contrast-table",
+        timeoutMs: 5_000,
+      },
+    })
+
+    expect(rendered.status).toBe("completed")
+    expect(requests).toHaveLength(1)
+    const payload = JSON.parse(rendered.output) as { gaps: string[]; data: { renderCheckResult: { ok: boolean; issues: Array<{ code: string; message: string }> } } }
+    expect(payload.data.renderCheckResult.ok).toBe(false)
+    expect(payload.data.renderCheckResult.issues.map((item) => item.code)).toContain("table-header-low-contrast")
+    expect(payload.gaps.join("\n")).toContain("table-header-low-contrast")
+  })
+
+  test("apply_word_document_edits reports field-level validation diagnostics without leaking edit text", async () => {
+    const root = await tempDir("chipmate-word-edit-diagnostics-")
+    workspaceFolders = [{ name: "repo", uri: UriShim.file(root) }]
+    await mkdir(join(root, "docs"), { recursive: true })
+    await writeFile(join(root, "docs", "edit.docx"), cGuidelineDocxFixture({
+      title: "编辑诊断 Word",
+      sections: [{ heading: "第一章", paragraphs: ["这是第一段。"] }],
+      tableRows: [["字段", "值"]],
+    }))
+    const outputLines: string[] = []
+    const runtime = new ToolRuntime(
+      { append: async () => undefined } as never,
+      { appendLine: (line: string) => outputLines.push(line), append: () => undefined } as never,
+    )
+    const sensitiveReplacement = "SENSITIVE_REPLACEMENT_TEXT_SHOULD_NOT_APPEAR_IN_LOGS"
+
+    const result = await runtime.execute({
+      sessionID: "session-1",
+      mode: "auto",
+      name: "apply_word_document_edits",
+      arguments: {
+        path: "docs/edit.docx",
+        plan: {
+          planId: "bad-locator",
+          targetPath: "docs/edit.docx",
+          operations: [{
+            type: "replaceParagraph",
+            locator: { kind: "paragraph", blockId: "invented-paragraph" },
+            text: sensitiveReplacement,
+          }],
+          warnings: [],
+        },
+      },
+    })
+
+    expect(result.status).toBe("failed")
+    const payload = JSON.parse(result.output) as {
+      data: {
+        errorCode: string
+        normalizationErrors: string[]
+        validationErrors: string[]
+        rawPlanSummary: { planType: string; operationCount: number; operationTypes: string[] }
+        normalizedPlanSummary: { operationCount: number; operationTypes: string[] }
+        inspectionSummary: { paragraphs: number; tables: number; locators: number }
+      }
+      gaps: string[]
+    }
+    expect(payload.data.errorCode).toBe("document-edit-plan-validation-failed")
+    expect(payload.data.normalizationErrors).toEqual([])
+    expect(payload.data.validationErrors.join("\n")).toContain("operations[0].locator")
+    expect(payload.gaps.join("\n")).toContain("operations[0].locator")
+    expect(payload.data.rawPlanSummary).toMatchObject({
+      planType: "object",
+      operationCount: 1,
+      operationTypes: ["replaceParagraph"],
+    })
+    expect(payload.data.normalizedPlanSummary).toMatchObject({
+      operationCount: 1,
+      operationTypes: ["replaceParagraph"],
+    })
+    expect(payload.data.inspectionSummary.paragraphs).toBeGreaterThan(0)
+    expect(payload.data.inspectionSummary.locators).toBeGreaterThan(0)
+    const log = outputLines.join("\n")
+    expect(log).toContain("[word-edit] start path=docs/edit.docx")
+    expect(log).toContain("planType=object")
+    expect(log).toContain("operationTypes=replaceParagraph")
+    expect(log).toContain("[word-edit] validation failed path=docs/edit.docx")
+    expect(log).toContain("operations[0].locator")
+    expect(log).not.toContain(sensitiveReplacement)
+  })
+
+  test("apply_word_document_edits reports malformed operation diagnostics before validation", async () => {
+    const root = await tempDir("chipmate-word-edit-malformed-operation-")
+    workspaceFolders = [{ name: "repo", uri: UriShim.file(root) }]
+    await mkdir(join(root, "docs"), { recursive: true })
+    await writeFile(join(root, "docs", "edit.docx"), cGuidelineDocxFixture({
+      title: "编辑诊断 Word",
+      sections: [{ heading: "第一章", paragraphs: ["这是第一段。"] }],
+      tableRows: [["字段", "值"]],
+    }))
+    const outputLines: string[] = []
+    const runtime = new ToolRuntime(
+      { append: async () => undefined } as never,
+      { appendLine: (line: string) => outputLines.push(line), append: () => undefined } as never,
+    )
+    const sensitiveOldText = "SECRET_OLD_TEXT_SHOULD_NOT_APPEAR"
+
+    const result = await runtime.execute({
+      sessionID: "session-1",
+      mode: "auto",
+      name: "apply_word_document_edits",
+      arguments: {
+        path: "docs/edit.docx",
+        plan: {
+          operations: [{
+            action: "replaceText",
+            locator: { kind: "paragraph", blockId: "invented-paragraph" },
+            oldText: sensitiveOldText,
+            newText: "新文本",
+          }],
+        },
+      },
+    })
+
+    expect(result.status).toBe("failed")
+    const payload = JSON.parse(result.output) as {
+      data: {
+        normalizationErrors: string[]
+        validationErrors: string[]
+        rawPlanSummary: { operationCount: number; operationTypes: string[] }
+        normalizedPlanSummary: { operationCount: number; operationTypes: string[] }
+        operationDiagnostics: Array<{ keys: string[]; typeType: string; textFieldBytes: Record<string, number> }>
+      }
+      gaps: string[]
+    }
+    expect(payload.data.normalizationErrors.join("\n")).toContain("operations[0].type is required")
+    expect(payload.gaps.join("\n")).toContain("operations[0].type is required")
+    expect(payload.data.rawPlanSummary.operationCount).toBe(1)
+    expect(payload.data.rawPlanSummary.operationTypes).toEqual(["unknown"])
+    expect(payload.data.normalizedPlanSummary.operationCount).toBe(0)
+    expect(payload.data.normalizedPlanSummary.operationTypes).toEqual([])
+    expect(payload.data.operationDiagnostics[0]?.keys).toEqual(["action", "locator", "newText", "oldText"])
+    expect(payload.data.operationDiagnostics[0]?.textFieldBytes.oldText).toBeGreaterThan(0)
+    expect(result.output).not.toContain(sensitiveOldText)
+    const log = outputLines.join("\n")
+    expect(log).toContain("rawOperationCount=1")
+    expect(log).toContain("normalizedOperationCount=0")
+    expect(log).toContain("droppedOperationCount=1")
+    expect(log).toContain("operations[0].type is required")
+    expect(log).not.toContain(sensitiveOldText)
+  })
+
+  test("apply_word_document_edits rejects string and invalid plan arguments before inspecting the docx", async () => {
+    const root = await tempDir("chipmate-word-edit-plan-argument-")
+    workspaceFolders = [{ name: "repo", uri: UriShim.file(root) }]
+    const outputLines: string[] = []
+    const runtime = new ToolRuntime(
+      { append: async () => undefined } as never,
+      { appendLine: (line: string) => outputLines.push(line), append: () => undefined } as never,
+    )
+    const sensitivePlan = JSON.stringify({ operations: [{ type: "replaceText", oldText: "SECRET_PLAN_TEXT_SHOULD_NOT_LEAK", newText: "x" }] })
+
+    const stringResult = await runtime.execute({
+      sessionID: "session-1",
+      mode: "auto",
+      name: "apply_word_document_edits",
+      arguments: {
+        path: "docs/missing.docx",
+        plan: sensitivePlan,
+      },
+    })
+
+    expect(stringResult.status).toBe("failed")
+    const stringPayload = JSON.parse(stringResult.output) as {
+      gaps: string[]
+      data: {
+        errorCode: string
+        planType: string
+        legacyStringPlan: boolean
+        argumentBytes: number
+        receivedArgumentKeys: string[]
+        expectedShape: { path: string; plan: { operations: Array<{ type: string }> } }
+      }
+    }
+    expect(stringPayload.data.errorCode).toBe("document-edit-plan-string-disallowed")
+    expect(stringPayload.data.planType).toBe("string")
+    expect(stringPayload.data.legacyStringPlan).toBe(true)
+    expect(stringPayload.data.argumentBytes).toBeGreaterThan(0)
+    expect(stringPayload.data.receivedArgumentKeys).toEqual(["path", "plan"])
+    expect(stringPayload.data.expectedShape.plan.operations[0]?.type).toBe("replaceText")
+    expect(stringPayload.gaps.join("\n")).toContain("Pass plan as a JSON object")
+    expect(stringResult.output).not.toContain("SECRET_PLAN_TEXT_SHOULD_NOT_LEAK")
+
+    const invalidResult = await runtime.execute({
+      sessionID: "session-1",
+      mode: "auto",
+      name: "apply_word_document_edits",
+      arguments: {
+        path: "docs/missing.docx",
+        plan: [],
+      },
+    })
+    expect(invalidResult.status).toBe("failed")
+    const invalidPayload = JSON.parse(invalidResult.output) as { data: { errorCode: string; planType: string } }
+    expect(invalidPayload.data.errorCode).toBe("document-edit-plan-invalid-argument")
+    expect(invalidPayload.data.planType).toBe("array")
+
+    const log = outputLines.join("\n")
+    expect(log).toContain("[word-edit] argument check path=docs/missing.docx")
+    expect(log).toContain("planType=string")
+    expect(log).toContain("planType=array")
+    expect(log).not.toContain("SECRET_PLAN_TEXT_SHOULD_NOT_LEAK")
+  })
+
+  test("apply_word_document_edits exposes a structured object-plan schema", () => {
+    const runtime = new ToolRuntime({ append: async () => undefined } as never)
+    const tool = runtime.toolDefinitions().find((definition) => definition.function.name === "apply_word_document_edits")
+    const schemaText = JSON.stringify(tool?.function.parameters)
+
+    expect(schemaText).toContain('"plan"')
+    expect(schemaText).toContain('"operations"')
+    expect(schemaText).toContain('"required":["operations"]')
+    expect(schemaText).toContain('"required":["type","locator"]')
+    expect(schemaText).toContain('"replaceText"')
+    expect(schemaText).toContain('"replaceParagraph"')
+    expect(schemaText).toContain('"insertSection"')
+    expect(schemaText).toContain('"insertTableColumn"')
+    expect(schemaText).toContain('"updateTableHeaderRows"')
+    expect(schemaText).toContain("Prefer 1-3 operations")
+    expect(schemaText).toContain("Do not pass this field as a JSON string")
   })
 
   test("create_word_document passes the configured remote endpoint to its internal render check", async () => {
@@ -3099,9 +3368,81 @@ describe("GoalRuntime", () => {
     expect(prompt).toContain("Derive concrete requirements from the objective")
     expect(prompt).toContain("For every explicit requirement, numbered item, named artifact, command, test, gate, invariant, and deliverable")
     expect(prompt).toContain("The audit must prove completion, not merely fail to find obvious remaining work.")
+    expect(prompt).toContain("If you are about to tell the user that the active goal is finished, delivered, passed, complete, or otherwise done, you must call update_goal with status \"complete\" in that same turn.")
     expect(prompt).toContain("Do not call update_goal with status \"blocked\" the first time a blocker appears.")
     expect(prompt).toContain("If the user resumes a goal that was previously marked \"blocked\", treat the resumed run as a fresh blocked audit.")
     expect(prompt).toContain("Do not mark a goal complete merely because the budget is nearly exhausted or because you are stopping work.")
+  })
+})
+
+describe("understanding grounding final disclosure", () => {
+  test("adds a grounding note when the final answer omits retrieved evidence citations", () => {
+    const disclosure = understandingGroundingFinalDisclosureText({
+      aggregation: {
+        evidenceCount: 1,
+        omittedDuplicateEvidence: 0,
+        gaps: [],
+        claims: [],
+        factors: [
+          {
+            label: "Scan scope and data volume",
+            category: "scan_scope",
+            confidence: "medium",
+            strength: "direct",
+            hypothesis: false,
+            gaps: [],
+            supportingEvidence: [
+              {
+                path: "src/gc.c",
+                startLine: 10,
+                endLine: 12,
+                snippetHash: "scan",
+                source: "queryEvidence",
+                taskType: "semantic_search",
+                snippet: "scan all blocks",
+              },
+            ],
+          },
+        ],
+      },
+    }, "GC speed is affected by scan scope.")
+
+    expect(disclosure).toContain("Grounding note")
+    expect(disclosure).toContain("src/gc.c:10-12")
+  })
+
+  test("does not add a grounding note when the final answer cites retrieved evidence", () => {
+    const disclosure = understandingGroundingFinalDisclosureText({
+      aggregation: {
+        evidenceCount: 1,
+        omittedDuplicateEvidence: 0,
+        gaps: [],
+        claims: [],
+        factors: [
+          {
+            label: "Scan scope and data volume",
+            category: "scan_scope",
+            confidence: "medium",
+            strength: "direct",
+            hypothesis: false,
+            gaps: [],
+            supportingEvidence: [
+              {
+                path: "src/gc.c",
+                startLine: 10,
+                endLine: 12,
+                snippetHash: "scan",
+                source: "queryEvidence",
+                taskType: "semantic_search",
+                snippet: "scan all blocks",
+              },
+            ],
+          },
+        ],
+      },
+    }, "GC speed is affected by scan scope; see src/gc.c:10-12.")
+
+    expect(disclosure).toBeUndefined()
   })
 })
 
@@ -3169,6 +3510,130 @@ describe("DirectAgentClient", () => {
       expect.objectContaining({ type: "goal.updated", properties: expect.objectContaining({ goal: expect.objectContaining({ status: "complete" }) }) }),
       expect.objectContaining({ type: "goal.operation.finished" }),
     ]))
+  })
+
+  test("inserts a goal finalization checkpoint before accepting final text from an active continuation", async () => {
+    const requests: Array<{ body: Record<string, unknown> }> = []
+    const baseUrl = await listen(async (request, response) => {
+      if (request.url !== "/v1/chat/completions") {
+        response.writeHead(404).end()
+        return
+      }
+      const body = await collectJson(request)
+      requests.push({ body })
+      if (requests.length === 1) {
+        writeChatSse(response, "WordVisualQaVerdict: PASS\n视觉 QA 已结束，最终文档在 /tmp/final.docx。")
+        return
+      }
+      if (requests.length === 2) {
+        response.writeHead(200, { "content-type": "text/event-stream" })
+        response.end([
+          sse({ choices: [{ delta: { tool_calls: [{ index: 0, id: "call_goal", function: { name: "update_goal", arguments: "{\"status\":\"complete\"}" } }] } }] }),
+          "data: [DONE]\n\n",
+        ].join(""))
+        return
+      }
+      writeChatSse(response, "Goal finalized after update_goal.")
+    })
+    const client = directClient(baseUrl, {
+      storageRoot: await tempDir("chipmate-goal-finalization-checkpoint-storage-"),
+      tools: new ToolRuntime({ append: async () => undefined } as never),
+      toolsEnabled: true,
+      maxAgentSteps: 5,
+    })
+    const session = await client.createSession()
+
+    await client.startGoalOperation({
+      sessionID: session.id,
+      objective: "视觉 QA 文档直到没有明显错位",
+      tokenBudget: 100000,
+    })
+    await waitFor(async () => {
+      const messages = await client.getMessages(session.id)
+      return (await client.getGoal(session.id))?.status === "complete"
+        && messages.some((message) => textPartsForTest(message).includes("Goal finalized after update_goal."))
+    }, 1500)
+
+    expect(requests).toHaveLength(3)
+    const checkpointMessages = (requests[1]?.body.messages ?? []) as Array<{ role?: string; content?: string }>
+    expect(checkpointMessages.at(-2)).toMatchObject({
+      role: "assistant",
+      content: expect.stringContaining("WordVisualQaVerdict: PASS"),
+    })
+    const checkpointContent = String(checkpointMessages.at(-1)?.content)
+    expect(checkpointMessages.at(-1)?.role).toBe("user")
+    expect(checkpointContent).toContain("Goal finalization checkpoint.")
+    expect(checkpointContent).toContain("If the full user objective is actually complete, call update_goal with status \"complete\" now.")
+  })
+
+  test("leaves an active continuation active when the checkpoint response does not call update_goal", async () => {
+    const requests: Array<{ body: Record<string, unknown> }> = []
+    const baseUrl = await listen(async (request, response) => {
+      if (request.url !== "/v1/chat/completions") {
+        response.writeHead(404).end()
+        return
+      }
+      const body = await collectJson(request)
+      requests.push({ body })
+      if (requests.length === 1) {
+        writeChatSse(response, "WordVisualQaVerdict: NEEDS_FIX\n仍有页面需要修复。")
+        return
+      }
+      writeChatSse(response, "继续保持 active，下一轮再修。")
+    })
+    const client = directClient(baseUrl, {
+      storageRoot: await tempDir("chipmate-goal-finalization-active-storage-"),
+      tools: new ToolRuntime({ append: async () => undefined } as never),
+      toolsEnabled: true,
+      maxAgentSteps: 4,
+    })
+    const session = await client.createSession()
+
+    await client.startGoalOperation({
+      sessionID: session.id,
+      objective: "继续修复 Word 文档视觉问题",
+      tokenBudget: 100000,
+    })
+    await waitFor(async () => {
+      const status = (await client.getSessionStatuses())[session.id]
+      return requests.length === 2 && status?.type === "idle"
+    }, 1500)
+
+    expect(await client.getGoal(session.id)).toMatchObject({ status: "active" })
+    const checkpointMessages = (requests[1]?.body.messages ?? []) as Array<{ role?: string; content?: string }>
+    expect(checkpointMessages.at(-1)?.content).toContain("Goal finalization checkpoint.")
+
+    await client.clearGoal(session.id)
+    await new Promise((resolve) => setTimeout(resolve, 180))
+    expect(requests).toHaveLength(2)
+  })
+
+  test("does not insert a goal finalization checkpoint for ordinary non-goal turns", async () => {
+    const requests: Array<{ body: Record<string, unknown> }> = []
+    const baseUrl = await listen(async (request, response) => {
+      if (request.url !== "/v1/chat/completions") {
+        response.writeHead(404).end()
+        return
+      }
+      requests.push({ body: await collectJson(request) })
+      writeChatSse(response, "WordVisualQaVerdict: PASS\n普通对话中的视觉 QA 文本。")
+    })
+    const client = directClient(baseUrl, {
+      storageRoot: await tempDir("chipmate-non-goal-finalization-storage-"),
+      tools: new ToolRuntime({ append: async () => undefined } as never),
+      toolsEnabled: true,
+      maxAgentSteps: 4,
+    })
+    const session = await client.createSession()
+
+    await client.sendMessageAsync({ sessionID: session.id, text: "看一下这个 Word QA 结果" })
+    await waitFor(async () => (await client.getSessionStatuses())[session.id]?.type === "idle", 1500)
+    await new Promise((resolve) => setTimeout(resolve, 180))
+
+    expect(requests).toHaveLength(1)
+    const promptText = JSON.stringify(requests[0]?.body.messages ?? [])
+    expect(promptText).not.toContain("Goal finalization checkpoint.")
+    expect(await client.getGoal(session.id)).toBeUndefined()
   })
 
   test("schedules goal continuation after an ordinary async user turn becomes idle", async () => {
@@ -3925,6 +4390,55 @@ describe("DirectAgentClient", () => {
       expect.objectContaining({ id: "gpt-chip", providerID: "openai-compatible", providerIndex: 0, source: "provider" }),
       expect.objectContaining({ id: "qwen-fim", providerIndex: 1, providerName: "OpenAI Compatible", source: "provider" }),
     ])
+  })
+
+  test("discovers completion models from custom completion provider with a temporary key", async () => {
+    const requests: Array<{ auth?: string; url?: string }> = []
+    const chatBaseUrl = await listen((request, response) => {
+      requests.push({ auth: request.headers.authorization, url: request.url })
+      response.writeHead(500).end()
+    })
+    const completionBaseUrl = await listen((request, response) => {
+      requests.push({ auth: request.headers.authorization, url: request.url })
+      if (request.url === "/v1/models") {
+        json(response, 200, { data: [{ id: "qwen-coder-custom" }] })
+        return
+      }
+      response.writeHead(404).end()
+    })
+    const client = directClient(chatBaseUrl)
+    const settings = directSettings(chatBaseUrl)
+    settings.completion.providerMode = "custom"
+    settings.completion.apiBaseUrl = completionBaseUrl
+    settings.completion.model = "qwen-coder-manual"
+
+    await expect(client.listCompletionModels({ settings, apiKey: "temporary-completion-key" })).resolves.toEqual([
+      expect.objectContaining({ id: "qwen-coder-manual", isDefault: true, source: "configured" }),
+      expect.objectContaining({ id: "qwen-coder-custom", providerIndex: 0, source: "provider" }),
+    ])
+    expect(requests).toEqual([{ auth: "Bearer temporary-completion-key", url: "/v1/models" }])
+  })
+
+  test("discovers inherited completion models from the chat provider", async () => {
+    const requests: string[] = []
+    const baseUrl = await listen((request, response) => {
+      requests.push(request.url ?? "")
+      if (request.url === "/v1/models") {
+        json(response, 200, { data: [{ id: "qwen-coder-inherited" }] })
+        return
+      }
+      response.writeHead(404).end()
+    })
+    const client = directClient(baseUrl)
+    const settings = directSettings(baseUrl)
+    settings.completion.providerMode = "inherit-chat"
+    settings.completion.apiBaseUrl = "https://ignored-completion.example.test/v1"
+
+    await expect(client.listCompletionModels({ settings, apiKey: "secret" })).resolves.toEqual([
+      expect.objectContaining({ id: "completion-model", isDefault: true, source: "configured" }),
+      expect.objectContaining({ id: "qwen-coder-inherited", providerIndex: 0, source: "provider" }),
+    ])
+    expect(requests).toEqual(["/v1/models"])
   })
 
   test("health reports disconnected when provider settings are incomplete", async () => {
@@ -4848,7 +5362,7 @@ describe("DirectAgentClient", () => {
         answers: [expect.objectContaining({ questionId: "diagram_type", choiceId: "drawio", text: "draw.io" })],
       }),
     ]))
-    expect(outputLines.join("\n")).not.toContain("fallback")
+    expect(outputLines.join("\n")).not.toContain("clarification fallback")
   })
 
   test("sends recent clean chat history without replaying old local context", async () => {
@@ -4933,6 +5447,1229 @@ describe("DirectAgentClient", () => {
       { role: "user", content: "continue" },
     ])
     expect(JSON.stringify(requests[1]?.body.messages)).not.toContain("User question:\nfirst question")
+  })
+
+  test("uses completed compact replacement history instead of raw recent history", async () => {
+    const requests: Array<{ url?: string; body: Record<string, unknown> }> = []
+    const baseUrl = await listen(async (request, response) => {
+      if (request.url !== "/v1/chat/completions") {
+        response.writeHead(404).end()
+        return
+      }
+      const body = await collectJson(request)
+      requests.push({ url: request.url, body })
+      response.writeHead(200, {
+        "content-type": "text/event-stream",
+      })
+      response.end([
+        sse({ choices: [{ delta: { content: "Compacted reply." } }] }),
+        "data: [DONE]\n\n",
+      ].join(""))
+    })
+    const outputLines: string[] = []
+    const storageRoot = await tempDir("chipmate-compact-adapter-storage-")
+    const client = directClient(baseUrl, { outputLines, storageRoot })
+    const session = await client.createSession()
+    const rawUserEvent = {
+      type: "message",
+      message: {
+        info: { id: "u-old-raw", role: "user", time: { created: 1 } },
+        parts: [{ type: "text", text: "User question:\nRAW_RECENT_HISTORY_SHOULD_NOT_APPEAR" }],
+      },
+    }
+    const compactEvent = {
+      type: "context_compaction",
+      contextCompaction: {
+        version: 1,
+        id: "compact-e2e",
+        trigger: "soft_threshold",
+        reason: "soft_threshold",
+        implementation: "local_summary",
+        strategy: "local_summary",
+        phase: "pre_turn",
+        status: "completed",
+        createdAt: 2,
+        completedAt: 3,
+        beforeTokens: 900,
+        afterTokens: 200,
+        window: {
+          source: "manual",
+          modelContextWindow: 1000,
+          effectiveContextWindow: 1000,
+        },
+        summary: "Old raw history was compacted.",
+        replacementHistory: [
+          {
+            id: "retained:u-old-raw",
+            kind: "retained_user_message",
+            role: "user",
+            content: "retained compact user intent",
+            sourceMessageId: "u-old-raw",
+            source: "history_transcript",
+          },
+          {
+            id: "summary:compact-e2e",
+            kind: "compaction_summary",
+            role: "assistant",
+            content: "compact summary replaces old raw history",
+            source: "compaction_summary",
+          },
+        ],
+        retainedMessageIds: ["u-old-raw"],
+        omittedMessageIds: ["a-old-raw"],
+        omittedMessageCount: 1,
+        historyVersion: 2,
+        compactPromptSource: "default",
+      },
+    }
+    await writeFile(
+      join(storageRoot, "sessions", `${session.id}.jsonl`),
+      `${JSON.stringify(rawUserEvent)}\n${JSON.stringify(compactEvent)}\n`,
+      { flag: "a" },
+    )
+
+    await client.sendMessage({ sessionID: session.id, text: "continue after compact" })
+
+    const messages = requests[0]?.body.messages as Array<{ role: string; content?: string }>
+    const serialized = JSON.stringify(messages)
+    expect(outputLines.join("\n")).toContain("[context-compact-adapter] using completed compact id=compact-e2e")
+    expect(messages.map((message) => message.role)).toEqual(["system", "user", "assistant", "user"])
+    expect(serialized).toContain("retained compact user intent")
+    expect(serialized).toContain("ChipMate compacted conversation continuity context")
+    expect(serialized).toContain("not as a new user request")
+    expect(serialized).toContain("compact summary replaces old raw history")
+    expect(serialized).not.toContain("RAW_RECENT_HISTORY_SHOULD_NOT_APPEAR")
+    expect(messages.slice(1).some((message) => message.role === "system")).toBe(false)
+  })
+
+  test("reinjects compact initial context and detects baseline changes after restart", async () => {
+    const requests: Array<{ url?: string; body: Record<string, unknown> }> = []
+    const baseUrl = await listen(async (request, response) => {
+      if (request.url !== "/v1/chat/completions") {
+        response.writeHead(404).end()
+        return
+      }
+      requests.push({ url: request.url, body: await collectJson(request) })
+      response.writeHead(200, { "content-type": "text/event-stream" })
+      response.end([
+        sse({ choices: [{ delta: { content: "Reply after restarted compact resume." } }] }),
+        "data: [DONE]\n\n",
+      ].join(""))
+    })
+    const outputLines: string[] = []
+    const storageRoot = await tempDir("chipmate-compact-reinject-restart-storage-")
+    const client = directClient(baseUrl, { outputLines, storageRoot })
+    const session = await client.createSession()
+    const worldBefore = {
+      type: "world_baseline",
+      worldBaseline: {
+        id: "world-before-compact",
+        workspaceRoot: "/repo",
+        gitHead: "abc123",
+        gitDirty: false,
+        settingsHash: "settings-a",
+        ragIndexVersion: "rag-a",
+        toolVersionHash: "tools-a",
+        model: "chat-model",
+        createdAt: 1,
+      },
+    }
+    const completedCompact = {
+      type: "context_compaction",
+      contextCompaction: {
+        version: 1,
+        id: "compact-resume-after-restart",
+        trigger: "soft_threshold",
+        reason: "soft_threshold",
+        implementation: "local_summary",
+        strategy: "local_summary",
+        phase: "pre_turn",
+        status: "completed",
+        createdAt: 2,
+        completedAt: 3,
+        beforeTokens: 12000,
+        afterTokens: 6000,
+        window: {
+          source: "manual",
+          modelContextWindow: 16000,
+          effectiveContextWindow: 14000,
+        },
+        summary: "Compact summary after restart.",
+        replacementHistory: [
+          {
+            id: "retained:resume",
+            kind: "retained_user_message",
+            role: "user",
+            content: "retained intent after restart",
+            sourceMessageId: "u-retained-resume",
+            source: "history_transcript",
+          },
+          {
+            id: "summary:resume",
+            kind: "compaction_summary",
+            role: "assistant",
+            content: "Compact summary after restart.",
+            source: "compaction_summary",
+          },
+        ],
+        retainedMessageIds: ["u-retained-resume"],
+        omittedMessageIds: ["a-raw-old"],
+        omittedMessageCount: 1,
+        historyVersion: 4,
+        sourceModel: "chat-model",
+        sourceWindow: "manual",
+        compactPromptSource: "default",
+        initialContextReinjection: "next_turn_full",
+        baselineMetadata: {
+          source: "world_baseline",
+          workspaceRoot: "/repo",
+          gitHead: "abc123",
+          gitDirty: false,
+          settingsHash: "settings-a",
+          ragIndexVersion: "rag-a",
+          toolVersionHash: "tools-a",
+          model: "chat-model",
+          sourceModel: "chat-model",
+          sourceWindow: "manual",
+          fullReinjectRequired: false,
+          diffRequired: false,
+        },
+      },
+    }
+    const worldAfter = {
+      type: "world_baseline",
+      worldBaseline: {
+        ...worldBefore.worldBaseline,
+        id: "world-after-compact",
+        settingsHash: "settings-b",
+        ragIndexVersion: "rag-b",
+        createdAt: 10,
+      },
+    }
+    await writeFile(
+      join(storageRoot, "sessions", `${session.id}.jsonl`),
+      `${JSON.stringify(worldBefore)}\n${JSON.stringify(completedCompact)}\n${JSON.stringify(worldAfter)}\n`,
+      { flag: "a" },
+    )
+
+    const restoredClient = directClient(baseUrl, { outputLines, storageRoot })
+    await restoredClient.sendMessage({ sessionID: session.id, text: "continue after restarted compact" })
+
+    expect(requests).toHaveLength(1)
+    const messages = requests[0]?.body.messages as Array<{ role: string; content?: string }>
+    const serialized = JSON.stringify(messages)
+    expect(serialized).toContain("<chipmate-initial-context-reinjection>")
+    expect(serialized).toContain("compactId: compact-resume-after-restart")
+    expect(serialized).toContain("mode: next_turn_full")
+    expect(serialized).toContain("settings hash changed since compact: settings-a -> settings-b")
+    expect(serialized).toContain("RAG index version changed since compact: rag-a -> rag-b")
+    expect(serialized).toContain("retained intent after restart")
+    expect(serialized).toContain("Compact summary after restart.")
+    expect(serialized).toContain("continue after restarted compact")
+    expect(messages.slice(1).some((message) => message.role === "system")).toBe(false)
+    expect(outputLines.join("\n")).toContain("[context-compact-reinject] id=compact-resume-after-restart mode=next_turn_full")
+  })
+
+  test("does not pre-turn reinject mid-turn compact initial context", async () => {
+    const requests: Array<{ url?: string; body: Record<string, unknown> }> = []
+    const baseUrl = await listen(async (request, response) => {
+      if (request.url !== "/v1/chat/completions") {
+        response.writeHead(404).end()
+        return
+      }
+      requests.push({ url: request.url, body: await collectJson(request) })
+      response.writeHead(200, { "content-type": "text/event-stream" })
+      response.end([
+        sse({ choices: [{ delta: { content: "Reply after mid-turn compact." } }] }),
+        "data: [DONE]\n\n",
+      ].join(""))
+    })
+    const outputLines: string[] = []
+    const storageRoot = await tempDir("chipmate-mid-turn-reinject-guard-storage-")
+    const client = directClient(baseUrl, { outputLines, storageRoot })
+    const session = await client.createSession()
+    const completedCompact = {
+      type: "context_compaction",
+      contextCompaction: {
+        version: 1,
+        id: "compact-mid-turn-guard",
+        trigger: "mid_turn_pressure",
+        reason: "soft_threshold",
+        implementation: "local_summary",
+        strategy: "local_summary",
+        phase: "mid_turn",
+        status: "completed",
+        createdAt: 2,
+        completedAt: 3,
+        beforeTokens: 12000,
+        afterTokens: 6000,
+        window: {
+          source: "manual",
+          modelContextWindow: 16000,
+          effectiveContextWindow: 14000,
+        },
+        summary: "Mid-turn compact summary should remain in replacement history.",
+        replacementHistory: [
+          {
+            id: "retained:mid-turn",
+            kind: "retained_user_message",
+            role: "user",
+            content: "retained mid-turn intent",
+            sourceMessageId: "u-mid-turn",
+            source: "history_transcript",
+          },
+          {
+            id: "summary:mid-turn",
+            kind: "compaction_summary",
+            role: "assistant",
+            content: "Mid-turn compact summary should remain in replacement history.",
+            source: "compaction_summary",
+          },
+        ],
+        retainedMessageIds: ["u-mid-turn"],
+        omittedMessageIds: ["a-mid-turn-old"],
+        omittedMessageCount: 1,
+        historyVersion: 5,
+        compactPromptSource: "default",
+        initialContextReinjection: "mid_turn_insert",
+      },
+    }
+    await writeFile(
+      join(storageRoot, "sessions", `${session.id}.jsonl`),
+      `${JSON.stringify(completedCompact)}\n`,
+      { flag: "a" },
+    )
+
+    await client.sendMessage({ sessionID: session.id, text: "continue after mid-turn compact" })
+
+    expect(requests).toHaveLength(1)
+    const messages = requests[0]?.body.messages as Array<{ role: string; content?: string }>
+    const serialized = JSON.stringify(messages)
+    expect(serialized).toContain("retained mid-turn intent")
+    expect(serialized).toContain("Mid-turn compact summary should remain in replacement history.")
+    expect(serialized).not.toContain("<chipmate-initial-context-reinjection>")
+    expect(outputLines.join("\n")).not.toContain("[context-compact-reinject] id=compact-mid-turn-guard")
+    expect(messages.slice(1).some((message) => message.role === "system")).toBe(false)
+  })
+
+  test("manual compact service writes a completed event through the compact pipeline", async () => {
+    const requests: Array<{ url?: string; body: Record<string, unknown> }> = []
+    const baseUrl = await listen(async (request, response) => {
+      if (request.url !== "/v1/chat/completions") {
+        response.writeHead(404).end()
+        return
+      }
+      const body = await collectJson(request)
+      requests.push({ url: request.url, body })
+      json(response, 200, {
+        choices: [{
+          message: {
+            content: JSON.stringify({
+              summary: "Manual compact summary persisted.",
+              retainedUserMessageIds: ["u-manual"],
+              nextActions: ["Continue after manual compact"],
+              risks: ["Manual compact still needs UI replay"],
+              stateCoverage: ["TaskState", "PlanState"],
+              omissions: ["Older raw transcript"],
+            }),
+          },
+        }],
+      })
+    })
+    const outputLines: string[] = []
+    const storageRoot = await tempDir("chipmate-manual-compact-storage-")
+    const client = directClient(baseUrl, {
+      outputLines,
+      storageRoot,
+      historyBytes: 200000,
+      providerContextLength: 100000,
+    })
+    const session = await client.createSession()
+    await client.appendLocalMessages({
+      sessionID: session.id,
+      messages: [
+        { role: "user", text: "Manual compact objective should survive.", mode: "local" },
+        { role: "assistant", text: "Older assistant answer before manual compact.", mode: "local" },
+      ],
+    })
+
+    const compact = await client.compactSession({ sessionID: session.id })
+    const latestCompact = await client.getLatestContextCompaction(session.id)
+
+    expect(compact?.status).toBe("completed")
+    expect(latestCompact?.id).toBe(compact?.id)
+    expect(latestCompact?.status).toBe("completed")
+    expect(compact?.trigger).toBe("manual")
+    expect(compact?.phase).toBe("manual")
+    expect(compact?.implementation).toBe("local_summary")
+    expect(compact?.strategy).toBe("local_summary")
+    expect(requests).toHaveLength(1)
+    expect(requests[0]?.body.stream).toBe(false)
+    expect(requests[0]?.body).not.toHaveProperty("tools")
+    const compactRequestMessages = JSON.stringify(requests[0]?.body.messages)
+    expect(compactRequestMessages).toContain("<chipmate-compact-summary-input>")
+    expect(compactRequestMessages).toContain("candidateTrigger: manual")
+    const sessionLog = await readFile(join(storageRoot, "sessions", `${session.id}.jsonl`), "utf8")
+    expect(sessionLog).toContain("\"type\":\"context_compaction_lifecycle\"")
+    expect(sessionLog).toContain("\"type\":\"context_compaction\"")
+    expect(sessionLog).toContain("\"trigger\":\"manual\"")
+    expect(sessionLog).toContain("\"phase\":\"manual\"")
+    expect(sessionLog).toContain("\"status\":\"completed\"")
+    expect(sessionLog).toContain("Manual compact summary persisted.")
+    const output = outputLines.join("\n")
+    expect(output).toContain("[context-compact-manual]")
+    expect(output).toContain("[context-compact-strategy]")
+    expect(output).toContain("phase=manual")
+    expect(output).toContain("[context-compact-summary] request")
+    expect(output).toContain("[context-compact-event]")
+  })
+
+  test("compacts mid-turn only at a complete tool-call boundary and keeps the provider history valid", async () => {
+    const requests: Array<{ url?: string; body: Record<string, unknown> }> = []
+    let streamCount = 0
+    const baseUrl = await listen(async (request, response) => {
+      if (request.url !== "/v1/chat/completions") {
+        response.writeHead(404).end()
+        return
+      }
+      const body = await collectJson(request)
+      requests.push({ url: request.url, body })
+      if (body.stream === false) {
+        json(response, 200, {
+          choices: [{
+            message: {
+              content: JSON.stringify({
+                summary: "Use the tool result after mid-turn compact pressure, then continue the answer.",
+                retainedUserMessageIds: [],
+                nextActions: ["Continue from the retained tool output after mid-turn compact"],
+                risks: ["Do not orphan tool output while rewriting live history"],
+                stateCoverage: ["TaskState", "ToolExecutionState"],
+                omissions: ["Older raw live history replaced by compact summary"],
+              }),
+            },
+          }],
+        })
+        return
+      }
+      streamCount += 1
+      response.writeHead(200, { "content-type": "text/event-stream" })
+      if (streamCount === 1) {
+        response.end([
+          sse({ choices: [{ delta: { content: "Reading " } }] }),
+          sse({ choices: [{ delta: { tool_calls: [{ index: 0, id: "call_mid", function: { name: "chipmate_read", arguments: "{\"path\":\"huge.log\"}" } }] } }] }),
+          "data: [DONE]\n\n",
+        ].join(""))
+        return
+      }
+      response.end([
+        sse({ choices: [{ delta: { content: "Final after mid-turn compact." } }] }),
+        "data: [DONE]\n\n",
+      ].join(""))
+    })
+    const outputLines: string[] = []
+    const storageRoot = await tempDir("chipmate-mid-turn-compact-storage-")
+    const client = directClient(baseUrl, {
+      outputLines,
+      storageRoot,
+      toolsEnabled: true,
+      providerContextLength: 12000,
+      tools: {
+        toolDefinitions: () => [{
+          type: "function",
+          function: {
+            name: "chipmate_read",
+            description: "Read a file",
+            parameters: { type: "object", properties: { path: { type: "string" } }, required: ["path"] },
+          },
+        }],
+        execute: async (): Promise<ToolRuntimeResult> => ({
+          title: "Read huge file",
+          output: `TOOL_RESULT_AFTER_COMPACT ${"tool-output-token ".repeat(10000)}`,
+          approved: true,
+          status: "completed",
+          risk: "low",
+        }),
+      } as unknown as ToolRuntimeInstance,
+    })
+    const session = await client.createSession()
+
+    await client.sendMessage({ sessionID: session.id, text: "Use the tool result after mid-turn compact pressure" })
+
+    expect(requests.map((item) => item.body.stream)).toEqual([true, false, true])
+    const compactRequest = requests[1]
+    const secondStreamRequest = requests[2]
+    expect(JSON.stringify(compactRequest?.body.messages)).toContain("<chipmate-compact-summary-input>")
+    expect(JSON.stringify(compactRequest?.body.messages)).toContain("candidateTrigger: mid_turn_pressure")
+    const messages = secondStreamRequest?.body.messages as Array<{ role: string; content?: string; tool_call_id?: string; tool_calls?: unknown[] }>
+    const serialized = JSON.stringify(messages)
+    expect(serialized).toContain("ChipMate compacted conversation continuity context")
+    expect(serialized).toContain("Use the tool result after mid-turn compact pressure, then continue the answer.")
+    expect(serialized).toContain("<chipmate-mid-turn-context-reinjection>")
+    expect(serialized).toContain("TOOL_RESULT_AFTER_COMPACT")
+    expect(serialized).not.toContain("<chipmate-initial-context-reinjection>")
+    expect(messages.slice(1).some((message) => message.role === "system")).toBe(false)
+    let assistantToolIndex = -1
+    let toolOutputIndex = -1
+    messages.forEach((message, index) => {
+      if (message.role === "assistant" && Array.isArray(message.tool_calls) && message.tool_calls.length > 0) assistantToolIndex = index
+      if (message.role === "tool" && message.tool_call_id === "call_mid") toolOutputIndex = index
+    })
+    expect(assistantToolIndex).toBeGreaterThanOrEqual(0)
+    expect(toolOutputIndex).toBe(assistantToolIndex + 1)
+
+    const sessionLog = await readFile(join(storageRoot, "sessions", `${session.id}.jsonl`), "utf8")
+    expect(sessionLog).toContain("\"trigger\":\"mid_turn_pressure\"")
+    expect(sessionLog).toContain("\"phase\":\"mid_turn\"")
+    expect(sessionLog).toContain("\"initialContextReinjection\":\"mid_turn_insert\"")
+    expect(sessionLog).toContain("Use the tool result after mid-turn compact pressure, then continue the answer.")
+    const output = outputLines.join("\n")
+    expect(output).toContain("[context-compact-mid-turn] re-packed live tool loop")
+    expect(output).toContain("phase=mid_turn")
+  })
+
+  test("generates a completed compact event and repacks the same turn before streaming", async () => {
+    const requests: Array<{ url?: string; body: Record<string, unknown> }> = []
+    const baseUrl = await listen(async (request, response) => {
+      if (request.url !== "/v1/chat/completions") {
+        response.writeHead(404).end()
+        return
+      }
+      const body = await collectJson(request)
+      requests.push({ url: request.url, body })
+      if (body.stream === false) {
+        json(response, 200, {
+          choices: [{
+            message: {
+              content: JSON.stringify({
+                summary: "Model compact summary persisted.",
+                retainedUserMessageIds: ["u-compact-old"],
+                nextActions: ["Continue after compact"],
+                risks: ["Quality gate is still pending"],
+                stateCoverage: ["TaskState", "EvidenceState"],
+                omissions: ["Full raw history"],
+              }),
+            },
+          }],
+        })
+        return
+      }
+      response.writeHead(200, { "content-type": "text/event-stream" })
+      response.end([
+        sse({ choices: [{ delta: { content: "Reply after compact." } }] }),
+        "data: [DONE]\n\n",
+      ].join(""))
+    })
+    const outputLines: string[] = []
+    const storageRoot = await tempDir("chipmate-compact-summary-storage-")
+    const client = directClient(baseUrl, {
+      outputLines,
+      storageRoot,
+      historyBytes: 200000,
+      providerContextLength: 23500,
+    })
+    const session = await client.createSession()
+    await client.appendLocalMessages({
+      sessionID: session.id,
+      messages: [
+        { role: "user", text: `User question:\n${"long compact history ".repeat(6000)}` },
+        { role: "assistant", text: "Old assistant answer before compact." },
+      ],
+    })
+
+    await client.sendMessage({ sessionID: session.id, text: "continue with compact" })
+
+    const compactRequest = requests.find((item) => item.body.stream === false)
+    const streamRequest = requests.find((item) => item.body.stream === true)
+    expect(compactRequest).toBeDefined()
+    expect(streamRequest).toBeDefined()
+    expect(requests.indexOf(compactRequest!)).toBeLessThan(requests.indexOf(streamRequest!))
+    expect(compactRequest?.body).not.toHaveProperty("tools")
+    expect(compactRequest?.body.max_tokens).toBeGreaterThanOrEqual(512)
+    expect(JSON.stringify(compactRequest?.body.messages)).toContain("<chipmate-compact-summary-input>")
+    expect(JSON.stringify(compactRequest?.body.messages)).toContain("TaskState:")
+    const streamMessages = JSON.stringify(streamRequest?.body.messages)
+    expect(streamMessages).toContain("ChipMate compacted conversation continuity context")
+    expect(streamMessages).toContain("Model compact summary persisted.")
+    expect(streamMessages).toContain("continue with compact")
+    expect(streamMessages).not.toContain("Old assistant answer before compact.")
+    expect(streamMessages).not.toContain("<chipmate-compact-summary-input>")
+    const sessionLog = await readFile(join(storageRoot, "sessions", `${session.id}.jsonl`), "utf8")
+    expect(sessionLog).toContain("\"type\":\"context_compaction\"")
+    expect(sessionLog).toContain("\"status\":\"completed\"")
+    expect(sessionLog).toContain("\"implementation\":\"local_summary\"")
+    expect(sessionLog).toContain("\"strategy\":\"local_summary\"")
+    expect(sessionLog).toContain("\"compactPromptSource\":\"default\"")
+    expect(sessionLog).toContain("Model compact summary persisted.")
+    expect(sessionLog).not.toContain("Compacted ChipMate conversation context.")
+    expect(outputLines.join("\n")).toContain("[context-compact-strategy]")
+    expect(outputLines.join("\n")).toContain("implementation=local_summary")
+    expect(outputLines.join("\n")).toContain("[context-compact-summary] request")
+    expect(outputLines.join("\n")).toContain("[context-compact-event]")
+    expect(outputLines.join("\n")).toContain("[context-compact-inline] re-packed current request")
+    expect(outputLines.join("\n")).toContain("[context-compact-adapter] using completed compact")
+  })
+
+  test("prefers completed compact over request-stage fallback pruning when initial gate truncates", async () => {
+    const requests: Array<{ url?: string; body: Record<string, unknown> }> = []
+    const baseUrl = await listen(async (request, response) => {
+      if (request.url !== "/v1/chat/completions") {
+        response.writeHead(404).end()
+        return
+      }
+      const body = await collectJson(request)
+      requests.push({ url: request.url, body })
+      if (body.stream === false) {
+        json(response, 200, {
+          choices: [{
+            message: {
+              content: JSON.stringify({
+                summary: "Request-stage overflow compact summary persisted.",
+                retainedUserMessageIds: ["u-overflow"],
+                nextActions: ["Continue after overflow compact"],
+                risks: ["Fallback pruning remains available if compact fails"],
+                stateCoverage: ["TaskState", "FailureState"],
+                omissions: ["Raw oversized assistant history"],
+              }),
+            },
+          }],
+        })
+        return
+      }
+      response.writeHead(200, { "content-type": "text/event-stream" })
+      response.end([
+        sse({ choices: [{ delta: { content: "Reply after overflow compact." } }] }),
+        "data: [DONE]\n\n",
+      ].join(""))
+    })
+    const outputLines: string[] = []
+    const storageRoot = await tempDir("chipmate-compact-first-over-prune-storage-")
+    const client = directClient(baseUrl, {
+      outputLines,
+      storageRoot,
+      historyBytes: 400000,
+      providerContextLength: 5000,
+    })
+    const session = await client.createSession()
+    await client.appendLocalMessages({
+      sessionID: session.id,
+      messages: [
+        { role: "user", text: "Original compact objective should survive." },
+        { role: "assistant", text: `RAW_OVER_LIMIT_ASSISTANT_SHOULD_NOT_STREAM ${"oversized assistant history ".repeat(10000)}` },
+      ],
+    })
+
+    await client.sendMessage({ sessionID: session.id, text: "continue after request-stage overflow" })
+
+    const compactRequest = requests.find((item) => item.body.stream === false)
+    const streamRequest = requests.find((item) => item.body.stream === true)
+    expect(compactRequest).toBeDefined()
+    expect(streamRequest).toBeDefined()
+    expect(requests.indexOf(compactRequest!)).toBeLessThan(requests.indexOf(streamRequest!))
+    const streamMessages = JSON.stringify(streamRequest?.body.messages)
+    expect(streamMessages).toContain("Request-stage overflow compact summary persisted.")
+    expect(streamMessages).toContain("Original compact objective should survive.")
+    expect(streamMessages).toContain("continue after request-stage overflow")
+    expect(streamMessages).not.toContain("RAW_OVER_LIMIT_ASSISTANT_SHOULD_NOT_STREAM")
+    const sessionLog = await readFile(join(storageRoot, "sessions", `${session.id}.jsonl`), "utf8")
+    expect(sessionLog).toContain("\"status\":\"completed\"")
+    expect(sessionLog).toContain("\"implementation\":\"local_summary\"")
+    expect(sessionLog).toContain("\"trigger\":\"request_stage_truncated\"")
+    expect(sessionLog).not.toContain("\"status\":\"fallback_pruned\"")
+    const output = outputLines.join("\n")
+    expect(output).toContain("truncated=true")
+    expect(output).toContain("[context-compact-inline] re-packed current request")
+    expect(output).not.toContain("[context-compact-fallback]")
+  })
+
+  test("retries compact summary with trimmed oldest transcript when provider reports context overflow", async () => {
+    const requests: Array<{ url?: string; body: Record<string, unknown> }> = []
+    const baseUrl = await listen(async (request, response) => {
+      if (request.url !== "/v1/chat/completions") {
+        response.writeHead(404).end()
+        return
+      }
+      const body = await collectJson(request)
+      requests.push({ url: request.url, body })
+      if (body.stream === false) {
+        const compactAttempt = requests.filter((item) => item.body.stream === false).length
+        if (compactAttempt === 1) {
+          json(response, 400, {
+            error: {
+              message: "maximum context length exceeded; messages resulted in too many tokens, reduce the input messages",
+            },
+          })
+          return
+        }
+        json(response, 200, {
+          choices: [{
+            message: {
+              content: JSON.stringify({
+                summary: "Recovered compact summary after overflow retry.",
+                retainedUserMessageIds: ["u-overflow-retry-30"],
+                nextActions: ["Continue after compact overflow retry"],
+                risks: ["Compact input had to trim older transcript items"],
+                stateCoverage: ["TaskState", "FailureState"],
+                omissions: ["Oldest compact transcript messages"],
+              }),
+            },
+          }],
+        })
+        return
+      }
+      response.writeHead(200, { "content-type": "text/event-stream" })
+      response.end([
+        sse({ choices: [{ delta: { content: "Reply after compact overflow retry." } }] }),
+        "data: [DONE]\n\n",
+      ].join(""))
+    })
+    const outputLines: string[] = []
+    const storageRoot = await tempDir("chipmate-compact-overflow-retry-storage-")
+    const client = directClient(baseUrl, {
+      outputLines,
+      storageRoot,
+      historyTurns: 40,
+      historyBytes: 500000,
+      providerContextLength: 15000,
+    })
+    const session = await client.createSession()
+    await client.appendLocalMessages({
+      sessionID: session.id,
+      messages: Array.from({ length: 30 }).flatMap((_, index) => {
+        const turn = index + 1
+        return [
+          { role: "user" as const, text: `User question:\ncompact-overflow-user-${turn} ${"history body ".repeat(260)}` },
+          { role: "assistant" as const, text: `compact-overflow-assistant-${turn} ${"assistant body ".repeat(260)}` },
+        ]
+      }),
+    })
+
+    await client.sendMessage({ sessionID: session.id, text: "continue after compact call overflow" })
+
+    const compactRequests = requests.filter((item) => item.body.stream === false)
+    const streamRequest = requests.find((item) => item.body.stream === true)
+    expect(compactRequests).toHaveLength(2)
+    expect(streamRequest).toBeDefined()
+    const firstCompactMessages = JSON.stringify(compactRequests[0]?.body.messages)
+    const retryCompactMessages = JSON.stringify(compactRequests[1]?.body.messages)
+    expect(firstCompactMessages).toContain("compact-overflow-user-20")
+    expect(firstCompactMessages).toContain("compact-overflow-user-30")
+    expect(retryCompactMessages).not.toContain("compact-overflow-user-20")
+    expect(retryCompactMessages).toContain("compact-overflow-user-30")
+    const streamMessages = JSON.stringify(streamRequest?.body.messages)
+    expect(streamMessages).toContain("Recovered compact summary after overflow retry.")
+    expect(streamMessages).toContain("continue after compact call overflow")
+    const sessionLog = await readFile(join(storageRoot, "sessions", `${session.id}.jsonl`), "utf8")
+    expect(sessionLog).toContain("\"status\":\"completed\"")
+    expect(sessionLog).toContain("compact summary request exceeded model context")
+    expect(sessionLog).not.toContain("\"status\":\"failed\"")
+    const output = outputLines.join("\n")
+    expect(output).toContain("[context-compact-summary] overflow retry")
+    expect(output).toContain("[context-compact-summary] overflow recovered")
+    expect(output).toContain("trimmedOldestMessages=")
+  })
+
+  test("parity eval keeps replacement history resume rollback stale evidence and visual fallback across a 30 plus turn compact", async () => {
+    const requests: Array<{ url?: string; body: Record<string, unknown> }> = []
+    const outputLines: string[] = []
+    const baseUrl = await listen(async (request, response) => {
+      if (request.url !== "/v1/chat/completions") {
+        response.writeHead(404).end()
+        return
+      }
+      const body = await collectJson(request)
+      requests.push({ url: request.url, body })
+      if (body.stream === false) {
+        json(response, 200, {
+          choices: [{
+            message: {
+              content: JSON.stringify({
+                summary: [
+                  "H4 compact parity summary preserved the current compaction parity objective.",
+                  "Stale RAG evidence docs/stale-rag.md must be refreshed before concrete claims.",
+                  "Visual fallback artifact .chipmate/visual/parity-flow-page-2.png page 2 sourceHash diagram-v1 remains text-only continuity context.",
+                  "Rollback marker requires full reinject and the rolled-back secret must stay omitted.",
+                  "Verification failed in bun test test/direct-agent-client.test.ts and remains unresolved.",
+                ].join(" "),
+                retainedUserMessageIds: ["u-parity-31"],
+                nextActions: [
+                  "Run H4 parity eval and then update compaction matrix H5.",
+                  "Refresh stale RAG evidence before relying on docs/stale-rag.md.",
+                ],
+                risks: [
+                  "Long session and compacted visual evidence may reduce accuracy.",
+                  "Rollback/stale evidence must not leak old raw transcript into replacement history.",
+                ],
+                stateCoverage: [
+                  "TaskState",
+                  "PlanState",
+                  "VerificationState",
+                  "FailureState",
+                  "EvidenceState",
+                  "VisualEvidenceState",
+                  "RollbackState",
+                ],
+                omissions: [
+                  "Older raw transcript omitted after replacement-history compaction",
+                  "Rolled-back secret turn omitted from model-visible compact history",
+                  "PNG data URI omitted from compacted transcript",
+                ],
+              }),
+            },
+          }],
+        })
+        return
+      }
+      response.writeHead(200, { "content-type": "text/event-stream" })
+      response.end([
+        sse({ choices: [{ delta: { content: `Parity stream reply ${requests.filter((item) => item.body.stream === true).length}.` } }] }),
+        "data: [DONE]\n\n",
+      ].join(""))
+    })
+    const storageRoot = await tempDir("chipmate-compaction-parity-eval-storage-")
+    const client = directClient(baseUrl, {
+      outputLines,
+      storageRoot,
+      historyTurns: 80,
+      historyBytes: 800000,
+      providerContextLength: 45000,
+    })
+    const session = await client.createSession()
+    const seededMessages: Array<{ role: "user" | "assistant"; text: string; parts?: Parameters<DirectAgentClient["appendLocalMessages"]>[0]["messages"][number]["parts"] }> = []
+    for (let turn = 1; turn <= 31; turn += 1) {
+      seededMessages.push({
+        role: "user",
+        text: [
+          `User question:\nparity-turn-${turn}`,
+          turn === 1 ? "RAW_PARITY_OLD_HISTORY_SHOULD_NOT_REAPPEAR" : "",
+          turn === 30 ? "注意：H4 parity eval 必须保留 stale evidence 与 visual fallback，但不要把旧 raw transcript 继续发给模型。" : "",
+          `body ${"long-history-token ".repeat(190)}`,
+        ].filter(Boolean).join("\n"),
+      })
+      seededMessages.push({
+        role: "assistant",
+        text: `assistant parity turn ${turn} ${"assistant-history-token ".repeat(190)}`,
+      })
+    }
+    seededMessages.push({
+      role: "assistant",
+      text: "Verification failed for H4 parity eval.",
+      parts: [
+        { type: "text", text: "Verification failed for H4 parity eval." },
+        {
+          type: "tool",
+          tool: "shell_exec",
+          callID: "verify-h4",
+          state: {
+            status: "failed",
+            input: { command: "bun test test/direct-agent-client.test.ts -t parity", cwd: "/repo" },
+            output: { exitCode: 1, stderr: "H4 parity mismatch", path: "test/direct-agent-client.test.ts" },
+            error: "H4 parity mismatch",
+          },
+        },
+      ],
+    })
+    const persisted = await client.appendLocalMessages({ sessionID: session.id, messages: seededMessages })
+    const previousAssistant = persisted.find((message) => textPartsForTest(message).includes("assistant parity turn 29"))
+    const rolledBackUser = persisted.find((message) => textPartsForTest(message).includes("parity-turn-2"))
+    await client.appendVisualEvidence({
+      sessionID: session.id,
+      messageID: previousAssistant!.info.id,
+      kind: "word-render-page",
+      title: "Parity flow page",
+      sourceHash: "diagram-v1",
+      artifactPath: ".chipmate/visual/parity-flow-page-2.png",
+      page: 2,
+      dataUri: tinyPngDataUri(),
+      width: 32,
+      height: 32,
+    })
+    const extraEvents = [
+      {
+        type: "world_baseline",
+        worldBaseline: {
+          id: "world-before-h4-compact",
+          workspaceRoot: "/repo",
+          gitHead: "abc123",
+          gitDirty: false,
+          settingsHash: "settings-h4-a",
+          ragIndexVersion: "rag-h4-a",
+          toolVersionHash: "tools-h4-a",
+          model: "chat-model",
+          createdAt: 1,
+        },
+      },
+      {
+        type: "plan",
+        plan: {
+          id: "plan-h4",
+          steps: [
+            { id: "H4", title: "Run compaction parity eval fixture", status: "in_progress", evidenceRefs: ["test/direct-agent-client.test.ts"] },
+            { id: "H5", title: "Backfill compaction matrix from eval evidence", status: "pending", evidenceRefs: [] },
+          ],
+          updatedAt: 2,
+        },
+      },
+      {
+        type: "evidence",
+        evidence: {
+          messageID: previousAssistant!.info.id,
+          entries: [
+            {
+              source: "rag",
+              kind: "doc",
+              path: "docs/stale-rag.md",
+              summary: "stale RAG fact for compaction parity eval",
+              truncated: false,
+              staleness: "stale",
+            },
+            {
+              source: "codegraph",
+              kind: "code",
+              path: "src/context-compaction.ts",
+              summary: "current compaction adapter evidence",
+              truncated: false,
+              staleness: "current",
+            },
+          ],
+        },
+      },
+      {
+        type: "rollback",
+        rollback: {
+          id: "rollback-h4",
+          reason: "remove stale turn before compact parity eval",
+          rolledBackMessageIDs: [rolledBackUser!.info.id],
+          rolledBackTurnIDs: [],
+          cleanedStateRefs: ["evidence:docs/stale-rag.md"],
+          createdAt: 3,
+          fullReinjectRequired: true,
+        },
+      },
+      {
+        type: "message",
+        message: {
+          info: { id: "u-rolled-back-secret", role: "user", time: { created: 4 } },
+          parts: [{ type: "text", text: "User question:\nROLLED_BACK_SECRET_SHOULD_NOT_REAPPEAR" }],
+        },
+      },
+      {
+        type: "rollback",
+        rollback: {
+          id: "rollback-h4-secret",
+          reason: "remove secret fixture turn",
+          rolledBackMessageIDs: ["u-rolled-back-secret"],
+          rolledBackTurnIDs: [],
+          cleanedStateRefs: [],
+          createdAt: 5,
+          fullReinjectRequired: true,
+        },
+      },
+    ]
+    await writeFile(
+      join(storageRoot, "sessions", `${session.id}.jsonl`),
+      `${extraEvents.map((event) => JSON.stringify(event)).join("\n")}\n`,
+      { flag: "a" },
+    )
+
+    await client.sendMessage({ sessionID: session.id, text: "continue H4 parity eval after compact" })
+
+    const compactRequest = requests.find((item) => item.body.stream === false)
+    const firstStreamRequest = requests.find((item) => item.body.stream === true)
+    expect(compactRequest).toBeDefined()
+    expect(firstStreamRequest).toBeDefined()
+    expect(requests.indexOf(compactRequest!)).toBeLessThan(requests.indexOf(firstStreamRequest!))
+    const compactPrompt = JSON.stringify(compactRequest?.body.messages)
+    expect(compactPrompt).toContain("<chipmate-compact-summary-input>")
+    expect(compactPrompt).toContain("PlanState:")
+    expect(compactPrompt).toContain("H4 [in_progress] Run compaction parity eval fixture")
+    expect(compactPrompt).toContain("EvidenceState:")
+    expect(compactPrompt).toContain("stale docs/stale-rag.md")
+    expect(compactPrompt).toContain("VisualEvidenceFallback:")
+    expect(compactPrompt).toContain(".chipmate/visual/parity-flow-page-2.png")
+    expect(compactPrompt).toContain("sourceHash=diagram-v1")
+    expect(compactPrompt).toContain("VerificationState:")
+    expect(compactPrompt).toContain("H4 parity mismatch")
+    expect(compactPrompt).toContain("rollback invalidated baseline")
+    expect(compactPrompt).not.toContain(tinyPngDataUri())
+
+    const firstStreamMessages = firstStreamRequest?.body.messages as Array<{ role: string; content?: unknown }>
+    const firstStreamPayload = JSON.stringify(firstStreamMessages)
+    expect(firstStreamPayload).toContain("ChipMate compacted conversation continuity context")
+    expect(firstStreamPayload).toContain("H4 compact parity summary preserved")
+    expect(firstStreamPayload).toContain("docs/stale-rag.md must be refreshed")
+    expect(firstStreamPayload).toContain(".chipmate/visual/parity-flow-page-2.png")
+    expect(firstStreamPayload).toContain("sourceHash diagram-v1")
+    expect(firstStreamPayload).toContain("Rollback marker requires full reinject")
+    expect(firstStreamPayload).toContain("continue H4 parity eval after compact")
+    expect(firstStreamPayload).not.toContain("RAW_PARITY_OLD_HISTORY_SHOULD_NOT_REAPPEAR")
+    expect(firstStreamPayload).not.toContain("ROLLED_BACK_SECRET_SHOULD_NOT_REAPPEAR")
+    expect(firstStreamPayload).not.toContain(tinyPngDataUri())
+    expect(firstStreamPayload).not.toContain("image_url")
+    expect(firstStreamMessages.slice(1).some((message) => message.role === "system")).toBe(false)
+
+    const sessionLog = await readFile(join(storageRoot, "sessions", `${session.id}.jsonl`), "utf8")
+    expect(sessionLog).toContain("\"type\":\"context_compaction_lifecycle\"")
+    expect(sessionLog).toContain("\"type\":\"context_compaction\"")
+    expect(sessionLog).toContain("\"status\":\"completed\"")
+    expect(sessionLog).toContain("\"implementation\":\"local_summary\"")
+    expect(sessionLog).toContain("\"strategy\":\"local_summary\"")
+    expect(sessionLog).toContain("\"type\":\"visual_evidence\"")
+    expect(sessionLog).not.toContain(tinyPngDataUri())
+    const latestCompact = await client.getLatestContextCompaction(session.id)
+    expect(latestCompact).toMatchObject({
+      status: "completed",
+      implementation: "local_summary",
+      strategy: "local_summary",
+      phase: "pre_turn",
+    })
+
+    const restoredClient = directClient(baseUrl, {
+      outputLines,
+      storageRoot,
+      historyTurns: 80,
+      historyBytes: 800000,
+      providerContextLength: 45000,
+    })
+    await restoredClient.sendMessage({ sessionID: session.id, text: "resume H4 parity eval after restart" })
+
+    const secondStreamRequest = requests.filter((item) => item.body.stream === true).at(-1)
+    const secondStreamPayload = JSON.stringify(secondStreamRequest?.body.messages)
+    expect(secondStreamPayload).toContain("H4 compact parity summary preserved")
+    expect(secondStreamPayload).toContain("<chipmate-initial-context-reinjection>")
+    expect(secondStreamPayload).toContain("rollback invalidated baseline")
+    expect(secondStreamPayload).toContain("resume H4 parity eval after restart")
+    expect(secondStreamPayload).not.toContain("RAW_PARITY_OLD_HISTORY_SHOULD_NOT_REAPPEAR")
+    expect(secondStreamPayload).not.toContain("ROLLED_BACK_SECRET_SHOULD_NOT_REAPPEAR")
+    expect(secondStreamPayload).not.toContain(tinyPngDataUri())
+    expect(outputLines.join("\n")).toContain("[context-compact-adapter] using completed compact")
+  })
+
+  test("does not repeat compact when latest completed event already covers unchanged soft pressure", async () => {
+    const requests: Array<{ url?: string; body: Record<string, unknown> }> = []
+    const baseUrl = await listen(async (request, response) => {
+      if (request.url !== "/v1/chat/completions") {
+        response.writeHead(404).end()
+        return
+      }
+      requests.push({ url: request.url, body: await collectJson(request) })
+      response.writeHead(200, { "content-type": "text/event-stream" })
+      response.end([
+        sse({ choices: [{ delta: { content: "Reply without repeated compact." } }] }),
+        "data: [DONE]\n\n",
+      ].join(""))
+    })
+    const outputLines: string[] = []
+    const storageRoot = await tempDir("chipmate-compact-skip-storage-")
+    const client = directClient(baseUrl, {
+      outputLines,
+      storageRoot,
+      historyBytes: 400000,
+      providerContextLength: 12600,
+    })
+    const session = await client.createSession()
+    const completedCompact = {
+      type: "context_compaction",
+      contextCompaction: {
+        version: 1,
+        id: "compact-existing-soft",
+        trigger: "soft_threshold",
+        reason: "soft_threshold",
+        implementation: "local_summary",
+        strategy: "local_summary",
+        phase: "pre_turn",
+        status: "completed",
+        createdAt: 2,
+        completedAt: 3,
+        beforeTokens: 12000,
+        afterTokens: 7600,
+        window: {
+          source: "manual",
+          modelContextWindow: 12600,
+          effectiveContextWindow: 8504,
+          activeTokens: 12000,
+          scopeTokens: 12000,
+          bodyTokens: 12000,
+          prefillTokens: 0,
+        },
+        summary: "Existing compact summary covers unchanged pressure.",
+        replacementHistory: [
+          {
+            id: "retained:existing",
+            kind: "retained_user_message",
+            role: "user",
+            content: "existing retained compact intent",
+            sourceMessageId: "u-existing",
+            source: "history_transcript",
+          },
+          {
+            id: "summary:existing",
+            kind: "compaction_summary",
+            role: "assistant",
+            content: `Existing compact summary covers unchanged pressure.\n${"pressure ".repeat(7600)}`,
+            source: "compaction_summary",
+          },
+        ],
+        retainedMessageIds: ["u-existing"],
+        omittedMessageIds: ["a-old"],
+        omittedMessageCount: 1,
+        historyVersion: 2,
+        compactPromptSource: "default",
+      },
+    }
+    await writeFile(
+      join(storageRoot, "sessions", `${session.id}.jsonl`),
+      `${JSON.stringify(completedCompact)}\n`,
+      { flag: "a" },
+    )
+
+    await client.sendMessage({ sessionID: session.id, text: "continue without repeated compact" })
+
+    expect(requests).toHaveLength(1)
+    expect(requests[0]?.body.stream).toBe(true)
+    const streamMessages = JSON.stringify(requests[0]?.body.messages)
+    expect(streamMessages).toContain("Existing compact summary covers unchanged pressure.")
+    expect(streamMessages).toContain("continue without repeated compact")
+    const sessionLog = await readFile(join(storageRoot, "sessions", `${session.id}.jsonl`), "utf8")
+    const compactEventCount = (sessionLog.match(/"type":"context_compaction"/g) ?? []).length
+    expect(compactEventCount).toBe(1)
+    const output = outputLines.join("\n")
+    expect(output).toContain("[context-compact-skip]")
+    expect(output).toContain("coveredBy=compact-existing-soft")
+    expect(output).not.toContain("[context-compact-summary] request")
+  })
+
+  test("does not persist completed compact event when compact summary quality gate fails", async () => {
+    const requests: Array<{ url?: string; body: Record<string, unknown> }> = []
+    const baseUrl = await listen(async (request, response) => {
+      if (request.url !== "/v1/chat/completions") {
+        response.writeHead(404).end()
+        return
+      }
+      const body = await collectJson(request)
+      requests.push({ url: request.url, body })
+      if (body.stream === false) {
+        json(response, 200, {
+          choices: [{
+            message: {
+              content: JSON.stringify({
+                summary: "Too vague to preserve continuity.",
+              }),
+            },
+          }],
+        })
+        return
+      }
+      response.writeHead(200, { "content-type": "text/event-stream" })
+      response.end([
+        sse({ choices: [{ delta: { content: "Reply despite failed compact." } }] }),
+        "data: [DONE]\n\n",
+      ].join(""))
+    })
+    const outputLines: string[] = []
+    const storageRoot = await tempDir("chipmate-compact-quality-fail-storage-")
+    const client = directClient(baseUrl, {
+      outputLines,
+      storageRoot,
+      historyBytes: 200000,
+      providerContextLength: 23500,
+    })
+    const session = await client.createSession()
+    await client.appendLocalMessages({
+      sessionID: session.id,
+      messages: [
+        { role: "user", text: `User question:\n${"long compact history ".repeat(6000)}` },
+        { role: "assistant", text: "Old assistant answer before compact." },
+      ],
+    })
+
+    await client.sendMessage({ sessionID: session.id, text: "continue with compact" })
+
+    expect(requests.some((item) => item.body.stream === false)).toBe(true)
+    expect(requests.some((item) => item.body.stream === true)).toBe(true)
+    const sessionLog = await readFile(join(storageRoot, "sessions", `${session.id}.jsonl`), "utf8")
+    const sessionEvents = sessionLog.split(/\r?\n/).filter(Boolean).map((line) => JSON.parse(line) as Record<string, unknown>)
+    const compactionEvents = sessionEvents.filter((event) => event.type === "context_compaction")
+    expect(sessionLog).toContain("\"type\":\"context_compaction_lifecycle\"")
+    expect(sessionLog).toContain("\"status\":\"failed\"")
+    expect(sessionLog).toContain("missing_next_actions")
+    expect(sessionLog).toContain("missing_risks")
+    expect(compactionEvents).toHaveLength(1)
+    expect(compactionEvents[0]).toMatchObject({
+      type: "context_compaction",
+      contextCompaction: expect.objectContaining({
+        status: "failed",
+        implementation: "local_summary",
+        strategy: "local_summary",
+        compactPromptSource: "default",
+        failureReason: expect.stringContaining("Compact summary quality gate failed"),
+      }),
+    })
+    expect(JSON.stringify(compactionEvents)).not.toContain("\"status\":\"completed\"")
+    expect(outputLines.join("\n")).toContain("Compact summary quality gate failed")
+    expect(outputLines.join("\n")).toContain("[context-compact-event]")
+  })
+
+  test("does not treat rolling memory summary as compact replacement history", async () => {
+    const requests: Array<{ url?: string; body: Record<string, unknown> }> = []
+    const baseUrl = await listen(async (request, response) => {
+      if (request.url !== "/v1/chat/completions") {
+        response.writeHead(404).end()
+        return
+      }
+      requests.push({ url: request.url, body: await collectJson(request) })
+      response.writeHead(200, { "content-type": "text/event-stream" })
+      response.end([
+        sse({ choices: [{ delta: { content: "Reply with memory sidecar." } }] }),
+        "data: [DONE]\n\n",
+      ].join(""))
+    })
+    const outputLines: string[] = []
+    const storageRoot = await tempDir("chipmate-memory-not-compact-storage-")
+    const client = directClient(baseUrl, { outputLines, storageRoot })
+    const session = await client.createSession()
+    const [rawUser] = await client.appendLocalMessages({
+      sessionID: session.id,
+      messages: [
+        { role: "user", text: "RAW_RECENT_HISTORY_SHOULD_STILL_APPEAR" },
+        { role: "assistant", text: "Assistant raw history." },
+      ],
+    })
+    const memoryEvent = {
+      type: "memory",
+      memory: {
+        id: "memory-looks-like-compact",
+        sessionID: session.id,
+        createdAt: 1,
+        updatedAt: 2,
+        coveredMessageIDs: [rawUser!.info.id],
+        summary: "MEMORY_ONLY_PSEUDO_COMPACT_SUMMARY",
+        sourceTurnCount: 10,
+        summaryVersion: 1,
+        replacementHistory: [{
+          id: "summary:memory-only",
+          kind: "compaction_summary",
+          role: "assistant",
+          content: "This rolling memory must not become replacement history.",
+          source: "compaction_summary",
+        }],
+      },
+    }
+    await writeFile(
+      join(storageRoot, "sessions", `${session.id}.jsonl`),
+      `${JSON.stringify(memoryEvent)}\n`,
+      { flag: "a" },
+    )
+
+    await client.sendMessage({ sessionID: session.id, text: "continue after memory" })
+
+    const messages = requests[0]?.body.messages as Array<{ role: string; content?: string }>
+    const serialized = JSON.stringify(messages)
+    expect(serialized).toContain("Conversation memory summary")
+    expect(serialized).toContain("MEMORY_ONLY_PSEUDO_COMPACT_SUMMARY")
+    expect(serialized).toContain("RAW_RECENT_HISTORY_SHOULD_STILL_APPEAR")
+    expect(serialized).not.toContain("<chipmate-compaction-summary")
+    expect(serialized).not.toContain("This rolling memory must not become replacement history.")
+    expect(outputLines.join("\n")).not.toContain("[context-compact-adapter] using completed compact")
   })
 
   test("keeps chat history disabled when maxHistoryTurns is zero", async () => {
@@ -7106,6 +8843,215 @@ describe("DirectAgentClient", () => {
     expect(outputLines.join("\n")).toContain("[tool-loop] evidence convergence checkpoint inserted")
   })
 
+  test("does not count inspect_word_document source paths as completed Word deliverables", async () => {
+    const requests: Array<{ url?: string; body: Record<string, unknown> }> = []
+    const outputLines: string[] = []
+    const baseUrl = await listen(async (request, response) => {
+      if (request.url !== "/v1/chat/completions") {
+        response.writeHead(404).end()
+        return
+      }
+      const body = await collectJson(request)
+      requests.push({ url: request.url, body })
+      response.writeHead(200, { "content-type": "text/event-stream" })
+      if (requests.length === 1) {
+        response.end([
+          sse({ choices: [{ delta: { tool_calls: [{ index: 0, id: "call_inspect_word", function: { name: "inspect_word_document", arguments: JSON.stringify({ path: ".chipmate/docs/source.docx" }) } }] } }] }),
+          "data: [DONE]\n\n",
+        ].join(""))
+        return
+      }
+      response.end([
+        sse({ choices: [{ delta: {} }] }),
+        "data: [DONE]\n\n",
+      ].join(""))
+    })
+    const client = directClient(baseUrl, {
+      storageRoot: await tempDir("chipmate-doc-inspect-not-deliverable-storage-"),
+      outputLines,
+      toolsEnabled: true,
+      maxAgentSteps: 4,
+      skills: {
+        enabledSkills: async () => [documentsSkillForTest(["inspect_word_document", "apply_word_document_edits"])],
+        loadSkill: async (_id, invocationMode) => ({
+          ...documentsSkillForTest(["inspect_word_document", "apply_word_document_edits"]),
+          body: "Documents skill body marker: inspect existing Word documents, then apply edits with returned locators.",
+          invocationMode,
+        }),
+      } as unknown as SkillRegistry,
+      tools: {
+        toolDefinitions: () => [
+          {
+            type: "function",
+            function: {
+              name: "inspect_word_document",
+              description: "Inspect a Word document",
+              parameters: { type: "object", properties: { path: { type: "string" } }, required: ["path"] },
+            },
+          },
+          {
+            type: "function",
+            function: {
+              name: "apply_word_document_edits",
+              description: "Apply Word document edits",
+              parameters: { type: "object", properties: { path: { type: "string" }, plan: { type: "object" } }, required: ["path", "plan"] },
+            },
+          },
+        ],
+        execute: async (): Promise<ToolRuntimeResult> => ({
+          title: "Inspect Word document",
+          output: JSON.stringify({
+            answerSummary: "Inspected Word document: .chipmate/docs/source.docx",
+            evidence: [],
+            gaps: [],
+            nextActions: [{ tool: "apply_word_document_edits", reason: "Apply the requested heading update using returned locators.", args: {} }],
+            truncated: false,
+            coverage: "bounded-complete",
+            data: { path: ".chipmate/docs/source.docx" },
+          }),
+          approved: true,
+          status: "completed",
+        }),
+      } as unknown as ToolRuntimeInstance,
+    })
+
+    const session = await client.createSession()
+    const assistant = await client.sendMessage({ sessionID: session.id, text: "$documents 修改 .chipmate/docs/source.docx 的下标题4。" })
+
+    expect(requests).toHaveLength(3)
+    expect(JSON.stringify(requests[2]?.body.messages)).toContain("ChipMate deliverable discipline checkpoint")
+    expect(textPartsForTest(assistant)).toContain("未生成请求的本地交付物")
+    expect(textPartsForTest(assistant)).toContain("apply_word_document_edits")
+    const output = outputLines.join("\n")
+    expect(output).toContain("[tool-loop] missing deliverable steering inserted")
+    expect(output).toContain("[tool-loop] enforced missing deliverable final answer")
+  })
+
+  test("does not carry Word deliverable discipline into a later ordinary QA turn", async () => {
+    const requests: Array<{ url?: string; body: Record<string, unknown> }> = []
+    const outputLines: string[] = []
+    const baseUrl = await listen(async (request, response) => {
+      if (request.url !== "/v1/chat/completions") {
+        response.writeHead(404).end()
+        return
+      }
+      const body = await collectJson(request)
+      requests.push({ url: request.url, body })
+      response.writeHead(200, { "content-type": "text/event-stream" })
+      if (requests.length === 1) {
+        response.end([
+          sse({ choices: [{ delta: { tool_calls: [{ index: 0, id: "call_create_word", function: { name: "create_word_document", arguments: JSON.stringify({ filename: "gc-context.docx", spec: minimalWordDocSpecForTest("GC 背景文档") }) } }] } }] }),
+          "data: [DONE]\n\n",
+        ].join(""))
+        return
+      }
+      if (requests.length === 2) {
+        response.end([
+          sse({ choices: [{ delta: { content: "Word 文档已生成：.chipmate/docs/gc-context.docx" } }] }),
+          "data: [DONE]\n\n",
+        ].join(""))
+        return
+      }
+      response.end([
+        sse({ choices: [{ delta: { content: "影响 GC 快慢的因素包括触发阈值、有效页比例、搬移数据量、擦除延迟和并发 IO 压力。" } }] }),
+        "data: [DONE]\n\n",
+      ].join(""))
+    })
+    const client = directClient(baseUrl, {
+      storageRoot: await tempDir("chipmate-word-discipline-qa-turn-storage-"),
+      outputLines,
+      toolsEnabled: true,
+      skills: {
+        enabledSkills: async () => [documentsSkillForTest(["create_word_document"])],
+        loadSkill: async (_id, invocationMode) => ({
+          ...documentsSkillForTest(["create_word_document"]),
+          body: "Documents skill body marker: create Word documents when requested.",
+          invocationMode,
+        }),
+      } as unknown as SkillRegistry,
+      tools: {
+        toolDefinitions: () => [{
+          type: "function",
+          function: {
+            name: "create_word_document",
+            description: "Create a Word document",
+            parameters: { type: "object", properties: { spec: { type: "object" }, filename: { type: "string" } }, required: ["spec"] },
+          },
+        }],
+        execute: async (): Promise<ToolRuntimeResult> => ({
+          title: "Create Word document",
+          output: JSON.stringify({
+            answerSummary: "Created Word document: .chipmate/docs/gc-context.docx",
+            evidence: [],
+            gaps: [],
+            nextActions: [],
+            truncated: false,
+            coverage: "complete",
+            data: { path: ".chipmate/docs/gc-context.docx" },
+          }),
+          approved: true,
+          status: "completed",
+        }),
+      } as unknown as ToolRuntimeInstance,
+    })
+
+    const session = await client.createSession()
+    const first = await client.sendMessage({ sessionID: session.id, text: "请生成一份 Word 文档，总结 GC 背景。" })
+    const second = await client.sendMessage({ sessionID: session.id, text: "影响 gc 快慢的因素有哪些？" })
+
+    expect(textPartsForTest(first)).toContain(".chipmate/docs/gc-context.docx")
+    const secondText = textPartsForTest(second)
+    expect(secondText).toContain("影响 GC 快慢的因素")
+    expect(secondText).not.toContain("未生成请求的本地交付物")
+    expect(secondText).not.toContain("Word .docx document")
+    const output = outputLines.join("\n")
+    expect(output).toContain("[delivery] artifactRequestedThisTurn=true expectations=docx reason=word-generation")
+    expect(output).toContain("[delivery] artifactRequestedThisTurn=false expectations=none reason=none")
+    expect(output).not.toContain("[tool-loop] enforced missing deliverable final answer expected=docx")
+  })
+
+  test("does not turn explicit documents skill QA into a DOCX deliverable request", async () => {
+    const requests: Array<{ url?: string; body: Record<string, unknown> }> = []
+    const outputLines: string[] = []
+    const baseUrl = await listen(async (request, response) => {
+      if (request.url !== "/v1/chat/completions") {
+        response.writeHead(404).end()
+        return
+      }
+      const body = await collectJson(request)
+      requests.push({ url: request.url, body })
+      response.writeHead(200, { "content-type": "text/event-stream" })
+      response.end([
+        sse({ choices: [{ delta: { content: "这个文档的结构分为背景、范围、实现和验收四部分。" } }] }),
+        "data: [DONE]\n\n",
+      ].join(""))
+    })
+    const client = directClient(baseUrl, {
+      storageRoot: await tempDir("chipmate-documents-skill-qa-storage-"),
+      outputLines,
+      toolsEnabled: true,
+      skills: {
+        enabledSkills: async () => [documentsSkillForTest(["inspect_word_document", "create_word_document"])],
+        loadSkill: async (_id, invocationMode) => ({
+          ...documentsSkillForTest(["inspect_word_document", "create_word_document"]),
+          body: "Documents skill body marker: create or inspect Word documents when requested.",
+          invocationMode,
+        }),
+      } as unknown as SkillRegistry,
+    })
+
+    const session = await client.createSession()
+    const assistant = await client.sendMessage({ sessionID: session.id, text: "$documents 解释这个文档的结构和影响因素有哪些？" })
+
+    expect(requests).toHaveLength(1)
+    const text = textPartsForTest(assistant)
+    expect(text).toContain("这个文档的结构")
+    expect(text).not.toContain("未生成请求的本地交付物")
+    const output = outputLines.join("\n")
+    expect(output).toContain("[skills] active")
+    expect(output).toContain("[delivery] artifactRequestedThisTurn=false expectations=none reason=none activeSkills=documents")
+  })
+
   test("steers a failed document producer tool to repair WordDocSpec instead of broad search", async () => {
     const requests: Array<{ url?: string; body: Record<string, unknown> }> = []
     const outputLines: string[] = []
@@ -7358,6 +9304,246 @@ describe("DirectAgentClient", () => {
     expect(repairPrompt).toContain("JSON.stringify(spec)")
     expect(repairPrompt).toContain("word-doc-spec-string-disallowed")
     expect(textPartsForTest(assistant)).toContain(".chipmate/docs/string-repair.docx")
+  })
+
+  test("logs failed apply_word_document_edits diagnostics from structured tool output", async () => {
+    const outputLines: string[] = []
+    let requests = 0
+    const baseUrl = await listen(async (request, response) => {
+      if (request.url !== "/v1/chat/completions") {
+        response.writeHead(404).end()
+        return
+      }
+      requests += 1
+      response.writeHead(200, { "content-type": "text/event-stream" })
+      if (requests === 1) {
+        response.end([
+          sse({ choices: [{ delta: { tool_calls: [{ index: 0, id: "call_apply_bad", function: { name: "apply_word_document_edits", arguments: JSON.stringify({ path: "docs/edit.docx", plan: { planId: "bad", targetPath: "docs/edit.docx", operations: [] } }) } }] } }] }),
+          "data: [DONE]\n\n",
+        ].join(""))
+        return
+      }
+      response.end([
+        sse({ choices: [{ delta: { content: "Word 编辑未完成。" } }] }),
+        "data: [DONE]\n\n",
+      ].join(""))
+    })
+    const client = directClient(baseUrl, {
+      outputLines,
+      toolsEnabled: true,
+      maxAgentSteps: 1,
+      tools: {
+        toolDefinitions: () => [{
+          type: "function",
+          function: {
+            name: "apply_word_document_edits",
+            description: "Apply Word document edits",
+            parameters: { type: "object", properties: { path: { type: "string" }, plan: { type: "object" } }, required: ["path", "plan"] },
+          },
+        }],
+        execute: async (): Promise<ToolRuntimeResult> => ({
+          title: "Apply Word document edits",
+          output: JSON.stringify({
+            answerSummary: "Apply Word document edits failed: DocumentEditPlan validation failed.",
+            evidence: [],
+            gaps: ["operations[0].locator was not produced by inspect_word_document."],
+            nextActions: [],
+            truncated: false,
+            coverage: "partial",
+            data: {
+              errorCode: "document-edit-plan-validation-failed",
+              errorMessage: "DocumentEditPlan validation failed: operations[0].locator was not produced by inspect_word_document.",
+              normalizationErrors: ["operations[0].type is required. Received keys=action,locator,newText,oldText."],
+              validationErrors: ["operations[0].locator was not produced by inspect_word_document."],
+            },
+          }),
+          approved: false,
+          status: "failed",
+          error: "DocumentEditPlan validation failed.",
+        }),
+      } as unknown as ToolRuntimeInstance,
+    })
+    const session = await client.createSession()
+
+    await client.sendMessage({ sessionID: session.id, text: "请编辑 Word 文档。" })
+
+    const log = outputLines.join("\n")
+    expect(log).toContain("[tool] apply_word_document_edits status=failed")
+    expect(log).toContain("errorCode=document-edit-plan-validation-failed")
+    expect(log).toContain("normalizationErrors=operations[0].type is required")
+    expect(log).toContain("validationErrors=operations[0].locator was not produced by inspect_word_document.")
+  })
+
+  test("steers apply_word_document_edits validation failures to repair DocumentEditPlan operations", async () => {
+    const outputLines: string[] = []
+    const requests: Array<{ body: Record<string, unknown> }> = []
+    const baseUrl = await listen(async (request, response) => {
+      if (request.url !== "/v1/chat/completions") {
+        response.writeHead(404).end()
+        return
+      }
+      const body = await collectJson(request)
+      requests.push({ body })
+      response.writeHead(200, { "content-type": "text/event-stream" })
+      if (requests.length === 1) {
+        response.end([
+          sse({ choices: [{ delta: { tool_calls: [{ index: 0, id: "call_apply_bad", function: { name: "apply_word_document_edits", arguments: JSON.stringify({ path: "docs/edit.docx", plan: { operations: [{ action: "replaceText", locator: { kind: "paragraph", blockId: "p1" }, oldText: "old", newText: "new" }] } }) } }] } }] }),
+          "data: [DONE]\n\n",
+        ].join(""))
+        return
+      }
+      response.end([
+        sse({ choices: [{ delta: { content: "已根据错误准备重新提交合法 DocumentEditPlan。" } }] }),
+        "data: [DONE]\n\n",
+      ].join(""))
+    })
+    const client = directClient(baseUrl, {
+      outputLines,
+      toolsEnabled: true,
+      maxAgentSteps: 2,
+      tools: {
+        toolDefinitions: () => [{
+          type: "function",
+          function: {
+            name: "apply_word_document_edits",
+            description: "Apply Word document edits",
+            parameters: { type: "object", properties: { path: { type: "string" }, plan: { type: "object" } }, required: ["path", "plan"] },
+          },
+        }],
+        execute: async (): Promise<ToolRuntimeResult> => ({
+          title: "Apply Word document edits",
+          output: JSON.stringify({
+            answerSummary: "Apply Word document edits failed: DocumentEditPlan validation failed.",
+            evidence: [],
+            gaps: ["operations[0].type is required. Received keys=action,locator,newText,oldText."],
+            nextActions: [{ tool: "apply_word_document_edits", reason: "Repair the DocumentEditPlan using only locators returned by inspect_word_document.", args: { path: "docs/edit.docx" } }],
+            truncated: false,
+            coverage: "partial",
+            data: {
+              errorCode: "document-edit-plan-validation-failed",
+              errorMessage: "DocumentEditPlan validation failed: operations[0].type is required.",
+              normalizationErrors: ["operations[0].type is required. Received keys=action,locator,newText,oldText."],
+              validationErrors: ["DocumentEditPlan.operations must contain at least one operation."],
+            },
+          }),
+          approved: false,
+          status: "failed",
+          error: "DocumentEditPlan validation failed.",
+        }),
+      } as unknown as ToolRuntimeInstance,
+    })
+    const session = await client.createSession()
+
+    await client.sendMessage({ sessionID: session.id, text: "请编辑 docs/edit.docx 并生成新的 .docx 文件。" })
+
+    expect(requests.length).toBeGreaterThanOrEqual(2)
+    const repairPrompt = JSON.stringify(requests[1]?.body.messages)
+    expect(repairPrompt).toContain("apply_word_document_edits DocumentEditPlan repair rule")
+    expect(repairPrompt).toContain("Every plan.operations[] item MUST include a supported `type`")
+    expect(repairPrompt).toContain("Do not use `action`, `op`, or `operationType` instead of `type`")
+    expect(repairPrompt).toContain("operations[0].type is required")
+    expect(outputLines.join("\n")).toContain("producer failure repair checkpoint inserted")
+  })
+
+  test("steers stringified apply_word_document_edits plans to retry with an object plan", async () => {
+    const outputLines: string[] = []
+    const requests: Array<{ body: Record<string, unknown> }> = []
+    const planTypes: string[] = []
+    const baseUrl = await listen(async (request, response) => {
+      if (request.url !== "/v1/chat/completions") {
+        response.writeHead(404).end()
+        return
+      }
+      const body = await collectJson(request)
+      requests.push({ body })
+      response.writeHead(200, { "content-type": "text/event-stream" })
+      if (requests.length === 1) {
+        response.end([
+          sse({ choices: [{ delta: { tool_calls: [{ index: 0, id: "call_apply_string", function: { name: "apply_word_document_edits", arguments: JSON.stringify({ path: "docs/edit.docx", plan: JSON.stringify({ operations: [{ type: "replaceText", locator: { kind: "paragraph", blockId: "p1" }, oldText: "old", newText: "new" }] }) }) } }] } }] }),
+          "data: [DONE]\n\n",
+        ].join(""))
+        return
+      }
+      if (requests.length === 2) {
+        response.end([
+          sse({ choices: [{ delta: { tool_calls: [{ index: 0, id: "call_apply_object", function: { name: "apply_word_document_edits", arguments: JSON.stringify({ path: "docs/edit.docx", plan: { operations: [{ type: "replaceText", locator: { kind: "paragraph", blockId: "p1" }, oldText: "old", newText: "new" }] } }) } }] } }] }),
+          "data: [DONE]\n\n",
+        ].join(""))
+        return
+      }
+      response.end([
+        sse({ choices: [{ delta: { content: "Word 编辑已完成：.chipmate/docs/edit-fixed.docx" } }] }),
+        "data: [DONE]\n\n",
+      ].join(""))
+    })
+    const client = directClient(baseUrl, {
+      outputLines,
+      toolsEnabled: true,
+      maxAgentSteps: 3,
+      tools: {
+        toolDefinitions: () => [{
+          type: "function",
+          function: {
+            name: "apply_word_document_edits",
+            description: "Apply Word document edits",
+            parameters: { type: "object", properties: { path: { type: "string" }, plan: { type: "object" } }, required: ["path", "plan"] },
+          },
+        }],
+        execute: async (input: { arguments: Record<string, unknown> }): Promise<ToolRuntimeResult> => {
+          planTypes.push(typeof input.arguments.plan)
+          if (typeof input.arguments.plan === "string") {
+            return {
+              title: "Apply Word document edits",
+              output: JSON.stringify({
+                answerSummary: "Apply Word document edits failed: DocumentEditPlan argument plan was a string.",
+                evidence: [],
+                gaps: ["DocumentEditPlan argument plan was a string. Pass plan as a JSON object, not JSON.stringify(plan)."],
+                nextActions: [{ tool: "apply_word_document_edits", reason: "Retry with plan as a JSON object.", args: { path: "docs/edit.docx" } }],
+                truncated: false,
+                coverage: "partial",
+                data: {
+                  errorCode: "document-edit-plan-string-disallowed",
+                  errorMessage: "DocumentEditPlan argument plan was a string. Pass plan as a JSON object, not JSON.stringify(plan).",
+                  planType: "string",
+                  legacyStringPlan: true,
+                },
+              }),
+              approved: false,
+              status: "failed",
+              error: "DocumentEditPlan argument plan was a string.",
+            }
+          }
+          return {
+            title: "Applied Word edits: .chipmate/docs/edit-fixed.docx",
+            output: JSON.stringify({
+              answerSummary: "Created edited Word document: .chipmate/docs/edit-fixed.docx",
+              evidence: [],
+              gaps: [],
+              nextActions: [],
+              truncated: false,
+              coverage: "complete",
+              data: { path: ".chipmate/docs/edit-fixed.docx" },
+            }),
+            approved: true,
+            status: "completed",
+          }
+        },
+      } as unknown as ToolRuntimeInstance,
+    })
+    const session = await client.createSession()
+
+    const assistant = await client.sendMessage({ sessionID: session.id, text: "请编辑 docs/edit.docx 并生成新的 .docx 文件。" })
+
+    expect(planTypes).toEqual(["string", "object"])
+    expect(requests.length).toBeGreaterThanOrEqual(3)
+    const repairMessages = requests[1]?.body.messages as Array<{ role?: string; content?: string }> | undefined
+    const repairPrompt = (repairMessages ?? []).map((message) => typeof message.content === "string" ? message.content : "").join("\n\n")
+    expect(repairPrompt).toContain("document-edit-plan-string-disallowed")
+    expect(repairPrompt).toContain("The `plan` value MUST be a JSON object")
+    expect(repairPrompt).toContain("Do not use JSON.stringify(plan)")
+    expect(repairPrompt).toContain("{\"path\":\".chipmate/docs/example.docx\",\"plan\":{\"operations\"")
+    expect(repairPrompt).toContain("Invalid shape to avoid")
+    expect(textPartsForTest(assistant)).toContain(".chipmate/docs/edit-fixed.docx")
   })
 
   test("steers failed Mermaid Word figures to repair the source before creating the Word document", async () => {
@@ -7715,6 +9901,8 @@ describe("DirectAgentClient", () => {
       expect.objectContaining({ type: "text", text: expect.stringContaining("Word visual QA render round 1/2, page batch 1/1") }),
       expect.objectContaining({ type: "image_url", image_url: expect.objectContaining({ url: tinyPngDataUri() }) }),
     ])
+    expect(JSON.stringify(qaUser?.content)).toContain("low-contrast table headers")
+    expect(JSON.stringify(qaUser?.content)).toContain("table-header-low-contrast")
     const sessionLog = await readFile(join(storageRoot, "sessions", `${session.id}.jsonl`), "utf8")
     expect(sessionLog).toContain("\"kind\":\"word-render-page\"")
     expect(sessionLog).not.toContain(tinyPngDataUri())
@@ -8365,6 +10553,7 @@ describe("DirectAgentClient", () => {
     expect(requests).toHaveLength(3)
     expect(requests[2]?.body.messages).toEqual([
       expect.objectContaining({ role: "system" }),
+      expect.objectContaining({ role: "user", content: expect.stringContaining("<chipmate-task-state>") }),
       expect.objectContaining({ role: "assistant", content: expect.stringContaining("Tool execution history") }),
       { role: "user", content: "continue" },
     ])
@@ -8576,6 +10765,131 @@ describe("DirectAgentClient", () => {
     expect(output).toContain("sseDataCount=0")
     expect(output).toContain("rawBytes=")
     expect(output).toContain("emptySsePreview=event: ping")
+  })
+
+  test("chat-stream diagnoses reasoning-only empty assistant content", async () => {
+    const outputLines: string[] = []
+    const baseUrl = await listen(async (request, response) => {
+      if (request.url !== "/v1/chat/completions") {
+        response.writeHead(404).end()
+        return
+      }
+      await collectJson(request)
+      response.writeHead(200, { "content-type": "text/event-stream" })
+      response.end([
+        sse({ choices: [{ delta: { reasoning_content: "Hidden reasoning about Word edit locators." } }] }),
+        sse({ choices: [{ delta: {}, finish_reason: "stop" }] }),
+        "data: [DONE]\n\n",
+      ].join(""))
+    })
+    const client = directClient(baseUrl, {
+      storageRoot: await tempDir("chipmate-chat-stream-reasoning-only-storage-"),
+      outputLines,
+    })
+    const session = await client.createSession()
+
+    const assistant = await client.sendMessage({ sessionID: session.id, text: "explain the empty stream" })
+
+    expect(textPartsForTest(assistant)).toBe("")
+    const output = outputLines.join("\n")
+    expect(output).toContain("[chat-stream] empty assistant content")
+    expect(output).toContain("reasoning=present")
+    expect(output).toContain("reasoningDeltaCount=1")
+    expect(output).toContain("textBytes=0")
+    expect(output).toContain("reasoningPreview=Hidden reasoning about Word edit locators.")
+    expect(output).toContain("deltaKeys=reasoning_content")
+  })
+
+  test("chat-stream diagnoses empty string content deltas", async () => {
+    const outputLines: string[] = []
+    const baseUrl = await listen(async (request, response) => {
+      if (request.url !== "/v1/chat/completions") {
+        response.writeHead(404).end()
+        return
+      }
+      await collectJson(request)
+      response.writeHead(200, { "content-type": "text/event-stream" })
+      response.end([
+        sse({ choices: [{ delta: { content: "" }, finish_reason: "stop" }] }),
+        "data: [DONE]\n\n",
+      ].join(""))
+    })
+    const client = directClient(baseUrl, {
+      storageRoot: await tempDir("chipmate-chat-stream-empty-content-storage-"),
+      outputLines,
+    })
+    const session = await client.createSession()
+
+    await client.sendMessage({ sessionID: session.id, text: "answer briefly" })
+
+    const output = outputLines.join("\n")
+    expect(output).toContain("[chat-stream] empty assistant content")
+    expect(output).toContain("emptyContentDeltaCount=1")
+    expect(output).toContain("contentDeltaCount=0")
+    expect(output).toContain("deltaKeys=content")
+    expect(output).toContain("finishReason=stop")
+  })
+
+  test("chat-stream diagnoses tool-call-only streams without treating them as text", async () => {
+    const outputLines: string[] = []
+    const baseUrl = await listen(async (request, response) => {
+      if (request.url !== "/v1/chat/completions") {
+        response.writeHead(404).end()
+        return
+      }
+      await collectJson(request)
+      response.writeHead(200, { "content-type": "text/event-stream" })
+      response.end([
+        sse({ choices: [{ delta: { tool_calls: [{ index: 0, id: "call_read", function: { name: "chipmate_read", arguments: "{\"path\":\"README.md\"}" } }] } }] }),
+        sse({ choices: [{ delta: {}, finish_reason: "stop" }] }),
+        "data: [DONE]\n\n",
+      ].join(""))
+    })
+    const client = directClient(baseUrl, {
+      storageRoot: await tempDir("chipmate-chat-stream-tool-only-storage-"),
+      outputLines,
+    })
+    const session = await client.createSession()
+
+    const assistant = await client.sendMessage({ sessionID: session.id, text: "read a file" })
+
+    expect(textPartsForTest(assistant)).toContain("工具调用已关闭")
+    const output = outputLines.join("\n")
+    expect(output).toContain("[chat-stream] empty assistant content")
+    expect(output).toContain("toolCalls=1")
+    expect(output).toContain("toolCallDeltaCount=1")
+    expect(output).toContain("contentDeltaCount=0")
+    expect(output).toContain("deltaKeys=tool_calls")
+  })
+
+  test("chat-stream logs unknown delta keys without full provider payload", async () => {
+    const outputLines: string[] = []
+    const secretPayload = `SECRET-${"x".repeat(900)}-END`
+    const baseUrl = await listen(async (request, response) => {
+      if (request.url !== "/v1/chat/completions") {
+        response.writeHead(404).end()
+        return
+      }
+      await collectJson(request)
+      response.writeHead(200, { "content-type": "text/event-stream" })
+      response.end([
+        sse({ choices: [{ delta: { provider_private_blob: secretPayload, content: "" }, finish_reason: "stop" }] }),
+        "data: [DONE]\n\n",
+      ].join(""))
+    })
+    const client = directClient(baseUrl, {
+      storageRoot: await tempDir("chipmate-chat-stream-unknown-delta-storage-"),
+      outputLines,
+    })
+    const session = await client.createSession()
+
+    await client.sendMessage({ sessionID: session.id, text: "answer with provider-specific fields" })
+
+    const output = outputLines.join("\n")
+    expect(output).toContain("[chat-stream] empty assistant content")
+    expect(output).toContain("deltaKeys=content,provider_private_blob")
+    expect(output).toContain("rawPreview=")
+    expect(output).not.toContain(secretPayload)
   })
 
   test("parses CRLF-delimited OpenAI SSE streams", async () => {
@@ -8828,8 +11142,10 @@ describe("DirectAgentClient", () => {
     expect(text).toContain("未生成请求的本地交付物")
     expect(text).toContain("Word .docx document")
     expect(text).toContain("create_word_document")
-    expect(text).not.toContain("完整 Word 文档如下")
+    expect(text).toContain("模型原始回答（未生成请求的本地 artifact，仅供参考，不代表 Word .docx 已交付）")
+    expect(text).toContain("完整 Word 文档如下")
     expect(outputLines.join("\n")).toContain("[tool-loop] enforced missing deliverable final answer")
+    expect(outputLines.join("\n")).toContain("preservedOriginal=true")
   })
 
   test("does not truncate create_word_document arguments above the generic stream limit", async () => {
@@ -9112,6 +11428,104 @@ describe("DirectAgentClient", () => {
     expect(outputLines.join("\n")).toContain("[tool-loop] enforced word render QA disclosure")
   })
 
+  test("treats apply_word_document_edits internal render as completed Word render QA", async () => {
+    const requests: Array<{ url?: string; body: Record<string, unknown> }> = []
+    const outputLines: string[] = []
+    const baseUrl = await listen(async (request, response) => {
+      if (request.url !== "/v1/chat/completions") {
+        response.writeHead(404).end()
+        return
+      }
+      const body = await collectJson(request)
+      requests.push({ url: request.url, body })
+      response.writeHead(200, { "content-type": "text/event-stream" })
+      if (requests.length === 1) {
+        response.end([
+          sse({ choices: [{ delta: { tool_calls: [{ index: 0, id: "call_apply_word_rendered", function: { name: "apply_word_document_edits", arguments: JSON.stringify({ path: ".chipmate/docs/source.docx", plan: { operations: [{ type: "insertTableColumn", locator: { kind: "table", tableIndex: 1, normalizedHash: "h" }, header: "验收", values: ["通过"] }] } }) } }] } }] }),
+          "data: [DONE]\n\n",
+        ].join(""))
+        return
+      }
+      response.end([
+        sse({ choices: [{ delta: { content: "Word 文档已编辑完成。" } }] }),
+        "data: [DONE]\n\n",
+      ].join(""))
+    })
+    const toolExecutions: string[] = []
+    const client = directClient(baseUrl, {
+      storageRoot: await tempDir("chipmate-apply-internal-render-storage-"),
+      outputLines,
+      toolsEnabled: true,
+      skills: {
+        enabledSkills: async () => [documentsSkillForTest(["apply_word_document_edits", "render_word_document"])],
+        loadSkill: async (_id, invocationMode) => ({
+          ...documentsSkillForTest(["apply_word_document_edits", "render_word_document"]),
+          body: "Documents skill body marker: apply edits and use render evidence.",
+          invocationMode,
+        }),
+      } as unknown as SkillRegistry,
+      tools: {
+        toolDefinitions: () => [
+          {
+            type: "function",
+            function: {
+              name: "apply_word_document_edits",
+              description: "Apply Word document edits",
+              parameters: { type: "object", properties: { path: { type: "string" }, plan: { type: "object" } }, required: ["path", "plan"] },
+            },
+          },
+          {
+            type: "function",
+            function: {
+              name: "render_word_document",
+              description: "Render a Word document",
+              parameters: { type: "object", properties: { path: { type: "string" } }, required: ["path"] },
+            },
+          },
+        ],
+        execute: async (input: Parameters<ToolRuntimeInstance["execute"]>[0]): Promise<ToolRuntimeResult> => {
+          toolExecutions.push(input.name)
+          return {
+            title: "Applied Word edits: .chipmate/docs/source-20260703-031150.docx",
+            output: JSON.stringify({
+              answerSummary: "Created edited Word document: .chipmate/docs/source-20260703-031150.docx",
+              evidence: [],
+              gaps: [],
+              nextActions: [],
+              truncated: false,
+              coverage: "complete",
+              data: {
+                path: ".chipmate/docs/source-20260703-031150.docx",
+                absolutePath: "/tmp/source-20260703-031150.docx",
+                renderCheckResult: {
+                  attempted: true,
+                  ok: true,
+                  visualQaStatus: "completed",
+                  pageCount: 2,
+                  pdfArtifactPath: ".chipmate/docs/rendered/source/document.pdf",
+                  pagePngPaths: [".chipmate/docs/rendered/source/page-1.png", ".chipmate/docs/rendered/source/page-2.png"],
+                  issues: [],
+                },
+                tablePreservationCheckResult: { ok: true, issues: [], checkedTables: 1, beforeNonEmptyCells: 4, afterNonEmptyCells: 6, preservedNonEmptyCells: 4, lostNonEmptyCells: 0, operations: [] },
+              },
+            }),
+            approved: true,
+            status: "completed",
+          }
+        },
+      } as unknown as ToolRuntimeInstance,
+    })
+    const session = await client.createSession()
+
+    const assistant = await client.sendMessage({ sessionID: session.id, text: "请修改 .chipmate/docs/source.docx 这个 Word 文档。" })
+
+    expect(toolExecutions).toEqual(["apply_word_document_edits"])
+    expect(JSON.stringify(requests[1]?.body.messages)).not.toContain("ChipMate Word render QA checkpoint")
+    const text = textPartsForTest(assistant)
+    expect(text).toContain("生成位置：.chipmate/docs/source-20260703-031150.docx")
+    expect(text).not.toContain("未执行 render_word_document")
+  })
+
   test("adds the generated Word document location when the final answer omits it", async () => {
     const requests: Array<{ url?: string; body: Record<string, unknown> }> = []
     const outputLines: string[] = []
@@ -9337,13 +11751,164 @@ describe("DirectAgentClient", () => {
     expect(text).toContain("未生成请求的本地交付物")
     expect(text).toContain("tool-arguments-invalid-json")
     expect(text).not.toContain("word-doc-spec-missing")
-    expect(text).not.toContain("完整 Word 文档如下")
+    expect(text).toContain("模型原始回答（未生成请求的本地 artifact，仅供参考，不代表 Word .docx 已交付）")
+    expect(text).toContain("完整 Word 文档如下")
     const followupMessages = requests[1]?.body.messages as Array<{ role?: string; tool_calls?: Array<{ function?: { arguments?: string } }> }> | undefined
     const recordedToolCall = followupMessages?.flatMap((message) => message.tool_calls ?? [])[0]
     expect(recordedToolCall?.function?.arguments).toContain("_chipmateInvalidToolArguments")
     expect(recordedToolCall?.function?.arguments).not.toBe("{\"filename\":\"bad.docx\",\"spec\":")
     expect(JSON.stringify(requests[1]?.body.messages)).toContain("tool-arguments-invalid-json")
     expect(outputLines.join("\n")).toContain("toolArgumentsSanitized=true")
+  })
+
+  test("inserts a compact object-plan checkpoint after inspecting a Word document", async () => {
+    const requests: Array<{ url?: string; body: Record<string, unknown> }> = []
+    const outputLines: string[] = []
+    const baseUrl = await listen(async (request, response) => {
+      if (request.url !== "/v1/chat/completions") {
+        response.writeHead(404).end()
+        return
+      }
+      const body = await collectJson(request)
+      requests.push({ url: request.url, body })
+      response.writeHead(200, { "content-type": "text/event-stream" })
+      if (requests.length === 1) {
+        response.end([
+          sse({ choices: [{ delta: { tool_calls: [{ index: 0, id: "call_inspect_docx", function: { name: "inspect_word_document", arguments: JSON.stringify({ path: ".chipmate/docs/source.docx" }) } }] } }] }),
+          "data: [DONE]\n\n",
+        ].join(""))
+        return
+      }
+      response.end([
+        sse({ choices: [{ delta: { content: "我会按检查结果执行最小 Word 编辑。" } }] }),
+        "data: [DONE]\n\n",
+      ].join(""))
+    })
+    const client = directClient(baseUrl, {
+      storageRoot: await tempDir("chipmate-word-edit-argument-checkpoint-storage-"),
+      outputLines,
+      toolsEnabled: true,
+      skills: {
+        enabledSkills: async () => [documentsSkillForTest(["inspect_word_document", "apply_word_document_edits"])],
+        loadSkill: async (_id, invocationMode) => ({
+          ...documentsSkillForTest(["inspect_word_document", "apply_word_document_edits"]),
+          body: "Documents skill body marker: use small object-shaped edit plans.",
+          invocationMode,
+        }),
+      } as unknown as SkillRegistry,
+      tools: {
+        toolDefinitions: () => [
+          {
+            type: "function",
+            function: {
+              name: "inspect_word_document",
+              description: "Inspect Word document",
+              parameters: { type: "object", properties: { path: { type: "string" } }, required: ["path"] },
+            },
+          },
+          {
+            type: "function",
+            function: {
+              name: "apply_word_document_edits",
+              description: "Apply Word document edits",
+              parameters: { type: "object", properties: { path: { type: "string" }, plan: { type: "object" } }, required: ["path", "plan"] },
+            },
+          },
+        ],
+        execute: async (): Promise<ToolRuntimeResult> => ({
+          title: "Inspected Word document",
+          output: JSON.stringify({
+            answerSummary: "Inspected .chipmate/docs/source.docx",
+            evidence: [],
+            gaps: [],
+            nextActions: [],
+            truncated: false,
+            coverage: "complete",
+            data: { path: ".chipmate/docs/source.docx" },
+          }),
+          approved: true,
+          status: "completed",
+        }),
+      } as unknown as ToolRuntimeInstance,
+    })
+    const session = await client.createSession()
+
+    await client.sendMessage({ sessionID: session.id, text: "请修改 .chipmate/docs/source.docx 这个 Word 文档。" })
+
+    const secondRequestMessages = JSON.stringify(requests[1]?.body.messages)
+    expect(secondRequestMessages).toContain("ChipMate Word edit argument checkpoint")
+    expect(secondRequestMessages).toContain("Keep the edit plan small")
+    expect(secondRequestMessages).toContain("tool arguments must be shaped")
+    expect(secondRequestMessages).toContain("operations")
+    expect(secondRequestMessages).toContain("insertTableColumn")
+    expect(outputLines.join("\n")).toContain("[tool-loop] word-edit argument checkpoint inserted")
+  })
+
+  test("repairs invalid apply_word_document_edits JSON with object-plan instructions", async () => {
+    const requests: Array<{ url?: string; body: Record<string, unknown> }> = []
+    const outputLines: string[] = []
+    const baseUrl = await listen(async (request, response) => {
+      if (request.url !== "/v1/chat/completions") {
+        response.writeHead(404).end()
+        return
+      }
+      const body = await collectJson(request)
+      requests.push({ url: request.url, body })
+      response.writeHead(200, { "content-type": "text/event-stream" })
+      if (requests.length === 1) {
+        response.end([
+          sse({ choices: [{ delta: { tool_calls: [{ index: 0, id: "call_bad_apply_json", function: { name: "apply_word_document_edits", arguments: "{\"path\":\".chipmate/docs/source.docx\",\"plan\":{\"operations\":[" } }] } }] }),
+          "data: [DONE]\n\n",
+        ].join(""))
+        return
+      }
+      response.end([
+        sse({ choices: [{ delta: { content: "未能修改 Word 文档。" } }] }),
+        "data: [DONE]\n\n",
+      ].join(""))
+    })
+    let toolExecutions = 0
+    const client = directClient(baseUrl, {
+      storageRoot: await tempDir("chipmate-invalid-apply-json-storage-"),
+      outputLines,
+      toolsEnabled: true,
+      maxAgentSteps: 2,
+      skills: {
+        enabledSkills: async () => [documentsSkillForTest(["apply_word_document_edits"])],
+        loadSkill: async (_id, invocationMode) => ({
+          ...documentsSkillForTest(["apply_word_document_edits"]),
+          body: "Documents skill body marker: repair invalid apply arguments.",
+          invocationMode,
+        }),
+      } as unknown as SkillRegistry,
+      tools: {
+        toolDefinitions: () => [{
+          type: "function",
+          function: {
+            name: "apply_word_document_edits",
+            description: "Apply Word document edits",
+            parameters: { type: "object", properties: { path: { type: "string" }, plan: { type: "object" } }, required: ["path", "plan"] },
+          },
+        }],
+        execute: async (): Promise<ToolRuntimeResult> => {
+          toolExecutions += 1
+          return { title: "Apply Word edits", output: "should not run", approved: true, status: "completed" }
+        },
+      } as unknown as ToolRuntimeInstance,
+    })
+    const session = await client.createSession()
+
+    await client.sendMessage({ sessionID: session.id, text: "请修改 .chipmate/docs/source.docx 这个 Word 文档。" })
+
+    expect(toolExecutions).toBe(0)
+    const repairMessages = JSON.stringify(requests[1]?.body.messages)
+    expect(repairMessages).toContain("ChipMate producer failure repair checkpoint")
+    expect(repairMessages).toContain("apply_word_document_edits DocumentEditPlan repair rule")
+    expect(repairMessages).toContain("Do not reuse the malformed prior arguments")
+    expect(repairMessages).toContain("plan")
+    expect(repairMessages).toContain("insertTableColumn")
+    expect(outputLines.join("\n")).toContain("toolArgumentsSanitized=true errorCode=tool-arguments-invalid-json")
+    expect(outputLines.join("\n")).toContain("producer failure repair checkpoint inserted")
   })
 
   test("does not accept copy-to-Word Markdown as a completed DOCX deliverable", async () => {
@@ -9393,9 +11958,11 @@ describe("DirectAgentClient", () => {
     const text = textPartsForTest(assistant)
     expect(requests.length).toBeGreaterThanOrEqual(1)
     expect(text).toContain("未生成请求的本地交付物")
-    expect(text).not.toContain("复制到 Word 或 Markdown")
-    expect(text).not.toContain("UFS3030-CV 项目 CI/CD 流程详细设计文档")
+    expect(text).toContain("模型原始回答（未生成请求的本地 artifact，仅供参考，不代表 Word .docx 已交付）")
+    expect(text).toContain("复制到 Word 或 Markdown")
+    expect(text).toContain("UFS3030-CV 项目 CI/CD 流程详细设计文档")
     expect(outputLines.join("\n")).toContain("[tool-loop] enforced missing deliverable final answer")
+    expect(outputLines.join("\n")).toContain("preservedOriginal=true")
   })
 
   test("reports producer validation failures when repeated create_word_document attempts never produce DOCX", async () => {
@@ -9518,7 +12085,8 @@ describe("DirectAgentClient", () => {
     expect(text).toContain("最终产物工具失败原因")
     expect(text).toContain("word-doc-spec-validation-failed")
     expect(text).toContain("WordDocSpec metadata.title is required.")
-    expect(text).not.toContain("完整 Word 文档如下")
+    expect(text).toContain("模型原始回答（未生成请求的本地 artifact，仅供参考，不代表 Word .docx 已交付）")
+    expect(text).toContain("完整 Word 文档如下")
   })
 
   test("does not execute tool calls returned by tool-loop finalization", async () => {
@@ -9920,6 +12488,7 @@ function directClient(baseUrl: string, overrides: Partial<{
   permissionMode: RemoteSettings["permissions"]["mode"]
   historyTurns: number
   historyBytes: number
+  providerContextLength: number
   memorySummaryEnabled: boolean
   memorySummaryMaxBytes: number
   memorySummaryTriggerOverflowTurns: number
@@ -9934,6 +12503,7 @@ function directClient(baseUrl: string, overrides: Partial<{
   if (overrides.permissionMode !== undefined) settings.permissions.mode = overrides.permissionMode
   if (overrides.historyTurns !== undefined) settings.context.maxHistoryTurns = overrides.historyTurns
   if (overrides.historyBytes !== undefined) settings.context.maxHistoryBytes = overrides.historyBytes
+  if (overrides.providerContextLength !== undefined) settings.provider.contextLength = overrides.providerContextLength
   if (overrides.memorySummaryEnabled !== undefined) settings.context.memorySummary.enabled = overrides.memorySummaryEnabled
   if (overrides.memorySummaryMaxBytes !== undefined) settings.context.memorySummary.maxBytes = overrides.memorySummaryMaxBytes
   if (overrides.memorySummaryTriggerOverflowTurns !== undefined) settings.context.memorySummary.triggerOverflowTurns = overrides.memorySummaryTriggerOverflowTurns
@@ -10054,6 +12624,7 @@ function directSettings(baseUrl: string): RemoteSettings {
       apiBaseUrl: baseUrl,
       chatModel: "chat-model",
       maxTokens: 128,
+      contextLength: 0,
       temperature: 0,
       topP: 1,
     },
@@ -10096,11 +12667,13 @@ function directSettings(baseUrl: string): RemoteSettings {
     },
     completion: {
       enabled: true,
+      providerMode: "custom",
       provider: "openai-compatible",
       profile: "qwen-coder-fim",
       apiBaseUrl: baseUrl,
       model: "completion-model",
       maxTokens: 128,
+      contextLength: 200000,
       temperature: 0,
       topP: 1,
       debounceMs: 0,
@@ -10178,6 +12751,7 @@ function directSettings(baseUrl: string): RemoteSettings {
       excludeGlobs: [],
       queryTopK: 12,
       maxEvidenceBytes: 24000,
+      workerConcurrency: 2,
     },
   }
 }
@@ -10234,6 +12808,41 @@ async function tempDir(prefix: string) {
   const root = join(tmpdir(), `${prefix}${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`)
   await mkdir(root, { recursive: true })
   return root
+}
+
+async function replaceDocxPartForTest(bytes: Uint8Array, partPath: string, replace: (xml: string) => string) {
+  const JSZip = (await import("jszip")).default
+  const zip = await JSZip.loadAsync(Buffer.from(bytes))
+  const part = zip.file(partPath)
+  if (!part) throw new Error(`Missing DOCX part: ${partPath}`)
+  zip.file(partPath, replace(await part.async("string")))
+  return await zip.generateAsync({ type: "nodebuffer", compression: "DEFLATE" })
+}
+
+function minimalWordDocSpecForToolRuntime(): WordDocSpec {
+  return {
+    metadata: {
+      title: "Table Contrast Check",
+      documentType: "visual-qa",
+      language: "en-US",
+      generatedAt: "2026-07-03T00:00:00.000Z",
+    },
+    sources: [],
+    layout: { preset: "standard_business_brief" },
+    sections: [{
+      id: "overview",
+      level: 1,
+      title: "Overview",
+      paragraphs: [
+        "This document contains enough text for a render quality smoke test and includes one table with a deliberately damaged header style.",
+        "The table header contrast issue should be reported by the deterministic DOCX structure gate before page-image review is considered passed.",
+      ],
+      tables: [{
+        headers: ["Source", "Role", "Path", "Description"],
+        rows: [["ext", "Input", "src/ext", "External source evidence"]],
+      }],
+    }],
+  }
 }
 
 function extensionContext(storageRoot: string) {

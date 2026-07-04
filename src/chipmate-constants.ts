@@ -10,6 +10,7 @@ export const CHIPMATE_TERMINAL_SESSION_TITLE = "ChipMate Terminal"
 export const CHIPMATE_LOCAL_AGENT_ID = "chipmate-local"
 
 export const PROVIDER_API_KEY_SECRET_KEY = "chipmate.provider.apiKey"
+export const COMPLETION_API_KEY_SECRET_KEY = "chipmate.completion.apiKey"
 export const RAG_API_KEY_SECRET_KEY = "chipmate.rag.apiKey"
 
 export const CHIPMATE_COMMANDS = {

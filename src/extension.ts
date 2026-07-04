@@ -12,12 +12,14 @@ import { addPickedFilesToContext, addTrackedFileToContext, addTrackedSelectionTo
 import { DirectAgentClient } from "./direct-agent-client"
 import { DocumentRagService, isCodeGraphBusyForDocumentRag } from "./document-rag"
 import { EditorContextTracker } from "./editor-context"
+import { registerExtensionAutoUpdate } from "./extension-auto-update"
 import { shouldPromptReloadForInstalledVersion } from "./extension-version"
 import { registerQwenAutocompleteProvider } from "./qwen-autocomplete"
 import {
   connectionInputHasPassword,
   migrateLegacyRagApiKey,
   promptAndSaveProviderApiKey,
+  readEffectiveCompletionApiKey,
   readProviderApiKey,
   readRemoteSettings,
   saveConnectionSettings,
@@ -67,7 +69,8 @@ export async function activate(context: vscode.ExtensionContext) {
   logActivationPhase("bootstrap", activationStartedAt)
 
   let phaseStartedAt = activationNow()
-  registerExtensionUpdateReloadPrompt(context, output, activationStartedAt)
+  const updateReloadController = registerExtensionUpdateReloadPrompt(context, output, activationStartedAt)
+  registerExtensionAutoUpdate({ context, output, reloadController: updateReloadController })
   logActivationPhase("update-reload-prompt", phaseStartedAt)
 
   phaseStartedAt = activationNow()
@@ -207,6 +210,7 @@ export async function activate(context: vscode.ExtensionContext) {
   phaseStartedAt = activationNow()
   chatProvider = new RemoteChatViewProvider({
     output,
+    context,
     extensionUri: context.extensionUri,
     contextStore,
     codeGraph,
@@ -214,7 +218,7 @@ export async function activate(context: vscode.ExtensionContext) {
     getClient: () => client,
     getSettings,
     getEditorContext: () => editorContextTracker.snapshot(),
-    getProviderApiKey: () => readProviderApiKey(context),
+    getProviderApiKey: () => readEffectiveCompletionApiKey(context, getSettings()),
     connectWithSettings,
     testWithSettings,
     setConnectionState,
@@ -436,7 +440,7 @@ export async function activate(context: vscode.ExtensionContext) {
   phaseStartedAt = activationNow()
   try {
     context.subscriptions.push(registerQwenAutocompleteProvider(context, {
-      apiKey: () => readProviderApiKey(context),
+      apiKey: () => readEffectiveCompletionApiKey(context, getSettings()),
       log: (message) => output.appendLine(message),
       rootPathGraph: {
         findSymbols: (input) => codeGraph.findSymbols(input),
@@ -527,7 +531,7 @@ function registerExtensionUpdateReloadPrompt(context: vscode.ExtensionContext, o
   }
   if (!runningVersion) {
     appendUpdateReloadLog(`event=disabled extensionId=${updateReloadLogValue(extensionId)} skipReason=no-running-version`)
-    return
+    return { check: (_reason: string) => undefined }
   }
 
   let promptInFlightVersion: string | undefined
@@ -631,6 +635,7 @@ function registerExtensionUpdateReloadPrompt(context: vscode.ExtensionContext, o
     retryTimers.clear()
   }))
   scheduleReloadPromptCheck("activation")
+  return { check: scheduleReloadPromptCheck }
 }
 
 function readPackageJsonVersion(packageJSON: unknown) {

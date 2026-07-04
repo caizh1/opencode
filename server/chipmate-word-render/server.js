@@ -1,16 +1,19 @@
 "use strict";
 
 const http = require("node:http");
+const crypto = require("node:crypto");
 const fs = require("node:fs");
 const fsp = require("node:fs/promises");
 const os = require("node:os");
 const path = require("node:path");
 const { spawn, spawnSync } = require("node:child_process");
 const { pathToFileURL } = require("node:url");
+const JSZip = require("jszip");
 const { PNG } = require("pngjs");
 
 const PORT = Number(process.env.PORT || 6001);
 const PACKAGE_ROOT = process.env.PACKAGE_ROOT || "/packages";
+const UPDATE_EXTENSION_ID = process.env.UPDATE_EXTENSION_ID || "local.chipmate";
 const MAX_DOCX_BYTES = Number(process.env.MAX_DOCX_BYTES || 50 * 1024 * 1024);
 const MAX_MERMAID_SOURCE_BYTES = Number(process.env.MAX_MERMAID_SOURCE_BYTES || 512 * 1024);
 const RENDER_TIMEOUT_MS = Number(process.env.RENDER_TIMEOUT_MS || 120000);
@@ -33,6 +36,10 @@ const server = http.createServer(async (request, response) => {
       await handleRenderMermaid(request, response);
       return;
     }
+    if (request.method === "GET" && request.url === "/packages/manifest.json") {
+      await handlePackageManifest(response);
+      return;
+    }
     if (request.method === "GET" && request.url && request.url.startsWith("/packages/")) {
       await handlePackageFile(request, response);
       return;
@@ -46,9 +53,11 @@ const server = http.createServer(async (request, response) => {
   }
 });
 
-server.listen(PORT, "0.0.0.0", () => {
-  console.log(`chipmate-word-render listening on 0.0.0.0:${PORT}`);
-});
+if (require.main === module) {
+  server.listen(PORT, "0.0.0.0", () => {
+    console.log(`chipmate-word-render listening on 0.0.0.0:${PORT}`);
+  });
+}
 
 async function handleRenderWord(request, response) {
   const payload = JSON.parse(await readBody(request, MAX_DOCX_BYTES * 2));
@@ -229,6 +238,76 @@ async function handlePackageFile(request, response) {
   fs.createReadStream(target).pipe(response);
 }
 
+async function handlePackageManifest(response) {
+  const manifest = await generatePackageManifest(PACKAGE_ROOT, UPDATE_EXTENSION_ID);
+  sendJson(response, 200, manifest);
+}
+
+async function generatePackageManifest(packageRoot = PACKAGE_ROOT, extensionId = UPDATE_EXTENSION_ID) {
+  const root = path.resolve(packageRoot);
+  const packages = [];
+  const entries = await fsp.readdir(root).catch((error) => {
+    if (error && error.code === "ENOENT") return [];
+    throw error;
+  });
+  for (const entry of entries) {
+    if (!entry.toLowerCase().endsWith(".vsix")) continue;
+    const absolute = path.join(root, entry);
+    const info = await packageEntryFromVsix(absolute, entry).catch((error) => {
+      console.warn(`[packages] skipped ${entry}: ${formatError(error)}`);
+      return undefined;
+    });
+    if (!info || info.extensionId !== extensionId) continue;
+    packages.push(info);
+  }
+  packages.sort((left, right) => {
+    const versionDelta = compareExtensionVersions(right.version, left.version);
+    if (versionDelta !== 0) return versionDelta;
+    return right.mtimeMs - left.mtimeMs;
+  });
+  return {
+    ok: true,
+    schemaVersion: 1,
+    service: "chipmate-word-render",
+    generatedAt: new Date().toISOString(),
+    latest: packages[0] || null,
+    packages,
+  };
+}
+
+async function packageEntryFromVsix(absolute, filename) {
+  const [stat, bytes] = await Promise.all([fsp.stat(absolute), fsp.readFile(absolute)]);
+  if (!stat.isFile()) throw new Error("not a file");
+  const manifest = await readVsixExtensionManifest(bytes);
+  const publisher = requireManifestString(manifest.publisher, "publisher");
+  const name = requireManifestString(manifest.name, "name");
+  const version = requireManifestString(manifest.version, "version");
+  return {
+    extensionId: `${publisher}.${name}`,
+    publisher,
+    name,
+    version,
+    filename,
+    url: `/packages/${encodeURIComponent(filename)}`,
+    sha256: crypto.createHash("sha256").update(bytes).digest("hex"),
+    sizeBytes: stat.size,
+    mtimeMs: stat.mtimeMs,
+  };
+}
+
+async function readVsixExtensionManifest(bytes) {
+  const zip = await JSZip.loadAsync(bytes);
+  const packageJson = zip.file("extension/package.json");
+  if (!packageJson) throw new Error("extension/package.json missing");
+  const raw = await packageJson.async("string");
+  return JSON.parse(raw);
+}
+
+function requireManifestString(value, field) {
+  if (typeof value !== "string" || !value.trim()) throw new Error(`extension/package.json ${field} must be a non-empty string`);
+  return value.trim();
+}
+
 function healthPayload() {
   return {
     ok: true,
@@ -249,6 +328,11 @@ function healthPayload() {
         cssSizeFields: ["width", "height"],
         pixelSizeFields: ["pixelWidth", "pixelHeight"],
         crop: { mode: "svg-content-bounds", padding: 32, fields: ["contentBounds", "cropBounds"] },
+      },
+      autoUpdateManifest: {
+        endpoint: "/packages/manifest.json",
+        packageRoot: PACKAGE_ROOT,
+        extensionId: UPDATE_EXTENSION_ID,
       },
     },
   };
@@ -774,11 +858,13 @@ async function terminateProcess(child) {
 }
 
 function contentTypeFor(file) {
-  if (file.endsWith(".json")) return "application/json; charset=utf-8";
-  if (file.endsWith(".sha256")) return "text/plain; charset=utf-8";
-  if (file.endsWith(".sh")) return "text/x-shellscript; charset=utf-8";
-  if (file.endsWith(".gz")) return "application/gzip";
-  if (file.endsWith(".tar")) return "application/x-tar";
+  const lower = file.toLowerCase();
+  if (lower.endsWith(".json")) return "application/json; charset=utf-8";
+  if (lower.endsWith(".vsix")) return "application/octet-stream";
+  if (lower.endsWith(".sha256")) return "text/plain; charset=utf-8";
+  if (lower.endsWith(".sh")) return "text/x-shellscript; charset=utf-8";
+  if (lower.endsWith(".gz")) return "application/gzip";
+  if (lower.endsWith(".tar")) return "application/x-tar";
   return "application/octet-stream";
 }
 
@@ -795,3 +881,71 @@ function formatError(error) {
 function bounded(input) {
   return String(input).replace(/\s+/g, " ").trim().slice(0, 2000);
 }
+
+const EXTENSION_VERSION_PATTERN = /^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$/;
+const NUMERIC_IDENTIFIER_PATTERN = /^\d+$/;
+
+function compareExtensionVersions(left, right) {
+  const leftVersion = parseExtensionVersion(left);
+  const rightVersion = parseExtensionVersion(right);
+  if (!leftVersion || !rightVersion) return left === right ? 0 : 1;
+
+  const coreDelta =
+    leftVersion.major - rightVersion.major
+    || leftVersion.minor - rightVersion.minor
+    || leftVersion.patch - rightVersion.patch;
+  if (coreDelta !== 0) return coreDelta;
+
+  return comparePrereleaseIdentifiers(leftVersion.prerelease, rightVersion.prerelease);
+}
+
+function parseExtensionVersion(version) {
+  const match = String(version).trim().match(EXTENSION_VERSION_PATTERN);
+  if (!match) return undefined;
+  const prerelease = match[4] ? match[4].split(".") : [];
+  if (prerelease.some((identifier) => identifier.length === 0)) return undefined;
+  return {
+    major: Number(match[1]),
+    minor: Number(match[2]),
+    patch: Number(match[3]),
+    prerelease,
+  };
+}
+
+function comparePrereleaseIdentifiers(left, right) {
+  if (left.length === 0 && right.length === 0) return 0;
+  if (left.length === 0) return 1;
+  if (right.length === 0) return -1;
+
+  const length = Math.max(left.length, right.length);
+  for (let index = 0; index < length; index += 1) {
+    const leftIdentifier = left[index];
+    const rightIdentifier = right[index];
+    if (leftIdentifier === undefined) return -1;
+    if (rightIdentifier === undefined) return 1;
+
+    const delta = comparePrereleaseIdentifier(leftIdentifier, rightIdentifier);
+    if (delta !== 0) return delta;
+  }
+  return 0;
+}
+
+function comparePrereleaseIdentifier(left, right) {
+  const leftIsNumeric = NUMERIC_IDENTIFIER_PATTERN.test(left);
+  const rightIsNumeric = NUMERIC_IDENTIFIER_PATTERN.test(right);
+
+  if (leftIsNumeric && rightIsNumeric) return Number(left) - Number(right);
+  if (leftIsNumeric !== rightIsNumeric) return leftIsNumeric ? -1 : 1;
+  if (left < right) return -1;
+  if (left > right) return 1;
+  return 0;
+}
+
+module.exports = {
+  compareExtensionVersions,
+  contentTypeFor,
+  generatePackageManifest,
+  packageEntryFromVsix,
+  readVsixExtensionManifest,
+  server,
+};

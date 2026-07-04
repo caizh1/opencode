@@ -85,17 +85,19 @@ export class QwenRecentlyOpenedTracker implements QwenRecentlyOpenedSource {
   }
 
   private register(): void {
-    this.disposables.push(
-      vscode.workspace.onDidOpenTextDocument((document) => this.schedule(document)),
-      vscode.workspace.onDidCloseTextDocument((document) => this.remove(document)),
-    )
+    if (typeof vscode.workspace.onDidOpenTextDocument === "function") {
+      this.disposables.push(vscode.workspace.onDidOpenTextDocument((document) => this.schedule(document)))
+    }
+    if (typeof vscode.workspace.onDidCloseTextDocument === "function") {
+      this.disposables.push(vscode.workspace.onDidCloseTextDocument((document) => this.remove(document)))
+    }
     const activeEditor = (
       vscode.window as unknown as {
         onDidChangeActiveTextEditor?: (
           listener: (editor: vscode.TextEditor | undefined) => unknown,
         ) => vscode.Disposable
-      }
-    ).onDidChangeActiveTextEditor
+      } | undefined
+    )?.onDidChangeActiveTextEditor
     if (activeEditor) {
       this.disposables.push(
         activeEditor((editor) => {
@@ -108,8 +110,8 @@ export class QwenRecentlyOpenedTracker implements QwenRecentlyOpenedSource {
   private seed(): void {
     const docs = [
       ...new Set([
-        ...vscode.window.visibleTextEditors.map((editor) => editor.document),
-        ...vscode.workspace.textDocuments,
+        ...((vscode.window as typeof vscode.window | undefined)?.visibleTextEditors ?? []).map((editor) => editor.document),
+        ...(vscode.workspace.textDocuments ?? []),
       ]),
     ]
     for (const document of docs) this.schedule(document as vscode.TextDocument)

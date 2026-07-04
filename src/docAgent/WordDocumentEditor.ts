@@ -44,6 +44,7 @@ import type {
 	  WordDocumentLocator,
 	  WordEditRenderCheckResult,
 	  WordEditStructureCheckResult,
+	  WordTablePreservationCheckResult,
 	  WordListItemSpec,
 	  WordListSpec,
 	} from "./types"
@@ -65,6 +66,7 @@ type ApplyResult = {
   bytes: Uint8Array
   appliedOperations: Array<{ type: DocumentEditOperation["type"]; locator: WordDocumentLocator; detail: string }>
   structureCheckResult: WordEditStructureCheckResult
+  tablePreservationCheckResult: WordTablePreservationCheckResult
   renderCheckResult: WordEditRenderCheckResult
   repairAttempted: boolean
   warnings: string[]
@@ -224,6 +226,10 @@ export class WordDocumentEditor {
         appliedOperations.push({ type: operation.type, locator: operation.locator, detail: applied.detail })
       }
       documentXml = ensureDocumentFallbacks(documentXml)
+      const tablePreservationCheckResult = checkTablePreservation(validation.plan.operations, input.inspection, documentXml)
+      if (!tablePreservationCheckResult.ok) {
+        throw new Error(`Edited DOCX failed table preservation validation: ${tablePreservationCheckResult.issues.filter((item) => item.severity === "error").map((item) => `${item.code}: ${item.message}`).join("; ")}`)
+      }
       await writeFile(documentPath, documentXml)
       await ensurePackageFallbacks(unpacked)
       if (commentDrafts.length > 0) await ensureCommentPackageParts(unpacked, commentDrafts)
@@ -293,6 +299,7 @@ export class WordDocumentEditor {
         bytes,
         appliedOperations,
         structureCheckResult,
+        tablePreservationCheckResult,
         renderCheckResult,
         repairAttempted,
         warnings: unique(warnings),
@@ -371,6 +378,7 @@ function applyOperation(documentXml: string, operation: DocumentEditOperation, l
   if (operation.type === "updateHeadingLevel") return updateHeadingLevel(documentXml, operation)
   if (operation.type === "updateTable") return updateTable(documentXml, operation)
   if (operation.type === "replaceTable") return replaceTable(documentXml, operation)
+  if (operation.type === "insertTableColumn") return insertTableColumn(documentXml, operation)
   if (operation.type === "updateTableHeaderRows") return updateTableHeaderRows(documentXml, operation)
   if (operation.type === "updateList") return updateList(documentXml, operation, listKindByNumId)
   if (operation.type === "updateSectionPageSetup") return updateSectionPageSetup(documentXml, operation)
@@ -1359,6 +1367,18 @@ function replaceTable(documentXml: string, operation: Extract<DocumentEditOperat
   }
 }
 
+function insertTableColumn(documentXml: string, operation: Extract<DocumentEditOperation, { type: "insertTableColumn" }>) {
+  const elements = parseTopLevelElements(documentXml)
+  const tableIndex = operation.locator.tableIndex
+  const target = elements.find((element) => element.kind === "table" && element.tableIndex === tableIndex)
+  if (!target) throw new Error(`insertTableColumn locator not found: table ${tableIndex}`)
+  const tableXml = insertTableColumnXml(target.xml, operation)
+  return {
+    documentXml: documentXml.replace(target.xml, tableXml),
+    detail: `inserted table column in table ${tableIndex}`,
+  }
+}
+
 function updateTableHeaderRows(documentXml: string, operation: Extract<DocumentEditOperation, { type: "updateTableHeaderRows" }>) {
   const elements = parseTopLevelElements(documentXml)
   const tableIndex = operation.locator.tableIndex
@@ -1369,6 +1389,147 @@ function updateTableHeaderRows(documentXml: string, operation: Extract<DocumentE
     documentXml: documentXml.replace(target.xml, tableXml),
     detail: `updated ${operation.headerRowCount} table header row(s) in table ${tableIndex}`,
   }
+}
+
+function insertTableColumnXml(tableXml: string, operation: Extract<DocumentEditOperation, { type: "insertTableColumn" }>) {
+  const rows = tableXml.match(/<w:tr\b[\s\S]*?<\/w:tr>/g) ?? []
+  if (rows.length === 0) throw new Error("insertTableColumn requires a table with at least one row.")
+  if (operation.values.length !== rows.length - 1) throw new Error(`insertTableColumn values length ${operation.values.length} does not match non-header row count ${rows.length - 1}.`)
+  const columnCounts = rows.map((row) => row.match(/<w:tc\b[\s\S]*?<\/w:tc>/g)?.length ?? 0)
+  const maxColumns = Math.max(...columnCounts)
+  const columnIndex = Math.min(operation.columnIndex ?? maxColumns, maxColumns)
+  let nextTableXml = updateTableGridForInsertedColumn(tableXml, columnIndex)
+  for (const [rowIndex, row] of rows.entries()) {
+    const text = rowIndex === 0 ? operation.header : operation.values[rowIndex - 1] ?? ""
+    const updated = insertCellIntoRow(row, columnIndex, text)
+    nextTableXml = nextTableXml.replace(row, updated)
+  }
+  return nextTableXml
+}
+
+function updateTableGridForInsertedColumn(tableXml: string, columnIndex: number) {
+  const gridMatch = tableXml.match(/<w:tblGrid\b[^>]*>[\s\S]*?<\/w:tblGrid>/)
+  if (!gridMatch) return tableXml
+  const gridXml = gridMatch[0]
+  const cols = gridXml.match(/<w:gridCol\b[^>]*\/>/g) ?? []
+  if (!cols.length) return tableXml
+  const source = cols[Math.min(columnIndex, cols.length - 1)] ?? cols[cols.length - 1]!
+  const insertAt = Math.min(columnIndex, cols.length)
+  const nextCols = [...cols.slice(0, insertAt), source, ...cols.slice(insertAt)]
+  return tableXml.replace(gridXml, gridXml.replace(/<w:tblGrid\b([^>]*)>[\s\S]*?<\/w:tblGrid>/, `<w:tblGrid$1>${nextCols.join("")}</w:tblGrid>`))
+}
+
+function insertCellIntoRow(rowXml: string, columnIndex: number, text: string) {
+  const cells = rowXml.match(/<w:tc\b[\s\S]*?<\/w:tc>/g) ?? []
+  const insertAt = Math.min(columnIndex, cells.length)
+  const reference = cells[Math.max(0, Math.min(insertAt, cells.length - 1))]
+  const cell = insertedTableCellXml(text, reference)
+  if (!cells.length) return rowXml.replace("</w:tr>", `${cell}</w:tr>`)
+  if (insertAt >= cells.length) return rowXml.replace(cells[cells.length - 1]!, `${cells[cells.length - 1]}${cell}`)
+  return rowXml.replace(cells[insertAt]!, `${cell}${cells[insertAt]}`)
+}
+
+function insertedTableCellXml(text: string, referenceCellXml: string | undefined) {
+  const tcPr = referenceCellXml?.match(/<w:tcPr\b[\s\S]*?<\/w:tcPr>/)?.[0]
+    ?.replace(/<w:gridSpan\b[^>]*\/>/g, "")
+    .replace(/<w:vMerge\b[^>]*\/>/g, "")
+    .replace(/<w:vMerge\b[\s\S]*?<\/w:vMerge>/g, "")
+    ?? "<w:tcPr><w:vAlign w:val=\"center\"/></w:tcPr>"
+  return `<w:tc>${tcPr}${paragraphXml(text || " ", "Normal")}</w:tc>`
+}
+
+function checkTablePreservation(
+  operations: DocumentEditOperation[],
+  inspection: WordDocumentInspection,
+  documentXml: string,
+): WordTablePreservationCheckResult {
+  const tableOperations = operations.filter((operation) =>
+    operation.type === "replaceTable" ||
+    operation.type === "insertTableColumn" ||
+    operation.type === "updateTable" ||
+    operation.type === "updateTableWithTrackedChange" ||
+    operation.type === "updateTableHeaderRows"
+  )
+  const issues: QualityIssue[] = []
+  const details: WordTablePreservationCheckResult["operations"] = []
+  const elements = parseTopLevelElements(documentXml)
+  let beforeNonEmptyCells = 0
+  let afterNonEmptyCells = 0
+  let preservedNonEmptyCells = 0
+  let lostNonEmptyCells = 0
+  for (const operation of tableOperations) {
+    const tableIndex = operation.locator.tableIndex
+    const beforeTable = inspection.tables.find((table) => table.tableIndex === tableIndex)
+    const afterXml = elements.find((element) => element.kind === "table" && element.tableIndex === tableIndex)?.xml
+    if (!beforeTable || !afterXml) continue
+    const beforeRows = beforeTable.rows
+    const afterRows = tableRows(afterXml)
+    const summary = tablePreservationSummary(beforeRows, afterRows)
+    beforeNonEmptyCells += summary.beforeNonEmptyCells
+    afterNonEmptyCells += summary.afterNonEmptyCells
+    preservedNonEmptyCells += summary.preservedNonEmptyCells
+    lostNonEmptyCells += summary.lostNonEmptyCells
+    details.push({
+      type: operation.type,
+      tableIndex,
+      beforeRows: beforeRows.length,
+      afterRows: afterRows.length,
+      beforeColumns: maxTableColumns(beforeRows),
+      afterColumns: maxTableColumns(afterRows),
+      beforeNonEmptyCells: summary.beforeNonEmptyCells,
+      afterNonEmptyCells: summary.afterNonEmptyCells,
+      preservedNonEmptyCells: summary.preservedNonEmptyCells,
+      lostNonEmptyCells: summary.lostNonEmptyCells,
+      preservationRatio: summary.preservationRatio,
+    })
+    if (operation.type === "replaceTable" && summary.beforeNonEmptyCells >= 20 && (summary.preservationRatio < 0.8 || afterRows.length < beforeRows.length)) {
+      issues.push(issue("error", "replace-table-content-loss-risk", `replaceTable on table ${tableIndex} would preserve only ${Math.round(summary.preservationRatio * 100)}% of inspected non-empty cells; use insertTableColumn/updateTable for local table edits or provide a complete replacement table.`))
+    }
+    if (operation.type === "insertTableColumn" && (afterRows.length !== beforeRows.length || maxTableColumns(afterRows) < maxTableColumns(beforeRows) + 1 || summary.lostNonEmptyCells > 0)) {
+      issues.push(issue("error", "insert-table-column-preservation-failed", `insertTableColumn on table ${tableIndex} did not preserve the original table shape/content.`))
+    }
+  }
+  return {
+    ok: !issues.some((item) => item.severity === "error"),
+    issues,
+    checkedTables: details.length,
+    beforeNonEmptyCells,
+    afterNonEmptyCells,
+    preservedNonEmptyCells,
+    lostNonEmptyCells,
+    operations: details,
+  }
+}
+
+function tablePreservationSummary(beforeRows: string[][], afterRows: string[][]) {
+  const beforeCells = beforeRows.flat().map(normalizedCellText).filter(Boolean)
+  const afterCounts = new Map<string, number>()
+  for (const text of afterRows.flat().map(normalizedCellText).filter(Boolean)) afterCounts.set(text, (afterCounts.get(text) ?? 0) + 1)
+  let preservedNonEmptyCells = 0
+  for (const text of beforeCells) {
+    const count = afterCounts.get(text) ?? 0
+    if (count <= 0) continue
+    preservedNonEmptyCells += 1
+    afterCounts.set(text, count - 1)
+  }
+  const beforeNonEmptyCells = beforeCells.length
+  const afterNonEmptyCells = afterRows.flat().map(normalizedCellText).filter(Boolean).length
+  const lostNonEmptyCells = Math.max(0, beforeNonEmptyCells - preservedNonEmptyCells)
+  return {
+    beforeNonEmptyCells,
+    afterNonEmptyCells,
+    preservedNonEmptyCells,
+    lostNonEmptyCells,
+    preservationRatio: beforeNonEmptyCells ? preservedNonEmptyCells / beforeNonEmptyCells : 1,
+  }
+}
+
+function normalizedCellText(input: string) {
+  return input.replace(/\s+/g, " ").trim()
+}
+
+function maxTableColumns(rows: string[][]) {
+  return rows.reduce((max, row) => Math.max(max, row.length), 0)
 }
 
 function setTableHeaderRows(tableXml: string, headerRowCount: number) {

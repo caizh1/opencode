@@ -31,6 +31,13 @@ describe("document RAG service integration", () => {
   test("backs off during code indexing and does not block chat sends", () => {
     expect(serviceSource).toContain("Waiting for local code graph or code RAG indexing to finish.")
     expect(serviceSource).toContain("DOCUMENT_RAG_BACKOFF_MS")
+    expect(serviceSource).toContain("DocumentRagWorkerPool")
+    expect(serviceSource).toContain("[document-rag-worker] healthy=")
+    expect(serviceSource).toContain("settings.documentRag.workerConcurrency")
+    expect(serviceSource).toContain("DOCUMENT_RAG_STATUS_MIN_INTERVAL_MS")
+    expect(serviceSource).toContain("DOCUMENT_RAG_CHECKPOINT_DOCUMENT_INTERVAL")
+    expect(serviceSource).toContain("flushIndexCheckpoint")
+    expect(serviceSource).toContain("yieldToHost")
     expect(contextSource).toContain("retrieveDocumentRagEvidence")
     expect(contextSource).toContain("CHAT_DOCUMENT_RAG_LATENCY_BUDGET_MS")
     expect(contextSource).toContain("catch {")

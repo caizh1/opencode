@@ -25,6 +25,7 @@ export function summarizeSessionUsage(input: {
   models: ChipMateModelInfo[]
   selectedModel: string
   loadedMessageLimit?: number
+  contextLimitOverride?: ChipMateModelLimit
 }): RenderedSessionUsage {
   const assistantMessages = input.messages.filter((message) => message.info.role === "assistant")
   const usages = assistantMessages.flatMap((message) => {
@@ -52,7 +53,7 @@ export function summarizeSessionUsage(input: {
   const latest = usages[usages.length - 1]
   const maybeCapped = input.loadedMessageLimit !== undefined && input.messages.length >= input.loadedMessageLimit
   const total = totalUsage(usages, maybeCapped)
-  const modelLimit = resolveContextLimit({
+  const modelLimit = input.contextLimitOverride ?? resolveContextLimit({
     messages: input.messages,
     models: input.models,
     selectedModel: input.selectedModel,

@@ -83,11 +83,12 @@ export class QwenImportDefinitionsTracker implements QwenImportDefinitionsSource
     this.read = deps.read ?? readQwenAutocompleteConfig
     this.ranges = deps.readRange ?? readRange
     if (!active(this.read())) return
-    this.disposables.push(
-      vscode.window.onDidChangeActiveTextEditor((editor) => {
+    const windowApi = vscode.window as typeof vscode.window | undefined
+    if (typeof windowApi?.onDidChangeActiveTextEditor === "function") {
+      this.disposables.push(windowApi.onDidChangeActiveTextEditor((editor) => {
         if (editor?.document) this.schedule(editor.document)
-      }),
-    )
+      }))
+    }
   }
 
   dispose(): void {

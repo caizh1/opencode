@@ -1,6 +1,8 @@
 import { describe, expect, test } from "bun:test"
-import { existsSync, readFileSync } from "node:fs"
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { spawnSync } from "node:child_process"
 
 describe("extension manifest", () => {
   const manifest = JSON.parse(readFileSync(join(import.meta.dir, "..", "package.json"), "utf8"))
@@ -99,7 +101,19 @@ describe("extension manifest", () => {
     expect(serverSource).toContain("crop: { mode: \"svg-content-bounds\"")
     expect(serverSource).toContain("mermaidScreenshotBounds(cdp, sessionId)")
     expect(serverSource).toContain("contentBounds: rendered.contentBounds")
+    expect(serverSource).toContain("autoUpdateManifest")
+    expect(serverSource).toContain("generatePackageManifest")
+    expect(serverSource).toContain("UPDATE_EXTENSION_ID")
+    expect(serverManifest.dependencies?.jszip).toBe("^3.10.1")
     expect(serverSource).not.toContain("Math.ceil(document.documentElement.scrollWidth || document.body.scrollWidth || 800)")
+  })
+
+  test("contributes render-service based automatic update settings", () => {
+    expect(properties["chipmate.updates.enabled"]).toMatchObject({ type: "boolean", default: true })
+    expect(properties["chipmate.updates.manifestUrl"]).toMatchObject({ type: "string", default: "" })
+    expect(properties["chipmate.updates.manifestUrl"]?.description).toContain("chipmate.wordRender.remoteEndpoint")
+    expect(properties["chipmate.updates.checkIntervalHours"]).toMatchObject({ type: "number", default: 24, minimum: 1 })
+    expect(properties["chipmate.updates.maxDownloadBytes"]).toMatchObject({ type: "number", default: 536870912 })
   })
 
   test("keeps PDF.js parser runtime while excluding local canvas fallback", () => {
@@ -233,6 +247,158 @@ describe("extension manifest", () => {
     expect(helperManifest.helpers?.every((helper) => Array.isArray(helper.chipmateEquivalent) && helper.chipmateEquivalent.length > 0)).toBe(true)
     expect(vscodeIgnore).not.toMatch(/^\.agents\/\*\*$/m)
     expect(vscodeIgnore).not.toMatch(/^\.agents\/skills\/documents\/scripts/m)
+  })
+
+  test("packages the source-backed detail design skill and validates helper artifacts", () => {
+    const skillRoot = join(import.meta.dir, "..", ".agents", "skills", "source-backed-detail-design")
+    const skillMarkdown = readFileSync(join(skillRoot, "SKILL.md"), "utf8")
+    const mermaidRules = readFileSync(join(skillRoot, "references", "08-mermaid-png-rendering-rules.md"), "utf8")
+    const wordRules = readFileSync(join(skillRoot, "references", "12-word-export-rules.md"), "utf8")
+    const qualityRules = readFileSync(join(skillRoot, "references", "13-quality-gates-and-validator.md"), "utf8")
+    const helperManifest = JSON.parse(readFileSync(join(skillRoot, "scripts", "manifest.json"), "utf8")) as {
+      schemaVersion?: number
+      executionPolicy?: { directExecution?: boolean }
+      helpers?: Array<{
+        name?: string
+        status?: string
+        chipmateEquivalent?: string[]
+        execution?: { directExecution?: boolean; runtime?: string; entrypoint?: string; networkPolicy?: string }
+      }>
+    }
+    const validator = join(skillRoot, "scripts", "validate_artifacts.mjs")
+    const references = [
+      "01-core-principles.md",
+      "02-input-and-module-scope-rules.md",
+      "03-source-exploration-rules.md",
+      "04-control-flow-evidence-schema.md",
+      "05-submodule-business-flow-rules.md",
+      "06-state-machine-extraction-rules.md",
+      "07-diagram-planning-and-splitting-rules.md",
+      "08-mermaid-png-rendering-rules.md",
+      "09-parent-module-assembly-rules.md",
+      "10-detail-design-output-templates.md",
+      "11-feature-diff-completeness-rules.md",
+      "12-word-export-rules.md",
+      "13-quality-gates-and-validator.md",
+      "14-continuation-checkpoint-protocol.md",
+      "15-business-flow-abstraction-rules.md",
+    ]
+
+    expect(skillMarkdown).toContain("name: source-backed-detail-design")
+    expect(skillMarkdown).toContain("metadata:")
+    expect(skillMarkdown).toContain("基于旧详设")
+    expect(skillMarkdown).toContain("references/01-core-principles.md")
+    expect(skillMarkdown).toContain("scripts/manifest.json")
+    expect(skillMarkdown).toContain("chipmate_render_mermaid_diagram")
+    expect(skillMarkdown).toContain("create_word_document")
+    expect(skillMarkdown).toContain("render_word_document")
+    expect(skillMarkdown).toContain("Pass `spec` as a JSON object")
+    expect(skillMarkdown).toContain("never as `JSON.stringify(spec)`")
+    expect(mermaidRules).toContain("chipmate_render_mermaid_diagram")
+    expect(mermaidRules).toContain("scale: 3")
+    expect(mermaidRules).toContain("Do not use local `mmdc`")
+    expect(wordRules).toContain("create_word_document")
+    expect(wordRules).toContain("render_word_document")
+    expect(wordRules).toContain("Never pass `JSON.stringify(spec)`")
+    expect(wordRules).toContain("local pandoc")
+    expect(qualityRules).toContain("ChipMate validator helper")
+    expect(qualityRules).toContain("create_word_document")
+    for (const reference of references) {
+      expect(existsSync(join(skillRoot, "references", reference))).toBe(true)
+    }
+    expect(helperManifest.schemaVersion).toBe(2)
+    expect(helperManifest.executionPolicy?.directExecution).toBe(false)
+    expect(helperManifest.helpers?.find((helper) => helper.name === "validate_artifacts")).toMatchObject({
+      status: "executable",
+      chipmateEquivalent: ["chipmate_run_skill_script"],
+      execution: expect.objectContaining({
+        directExecution: true,
+        runtime: "node",
+        entrypoint: "scripts/validate_artifacts.mjs",
+        networkPolicy: "none",
+      }),
+    })
+    expect(existsSync(validator)).toBe(true)
+
+    const tempRoot = mkdtempSync(join(tmpdir(), "chipmate-source-backed-fixture-"))
+    try {
+      const outputRoot = join(tempRoot, "out")
+      const artifactRoot = join(tempRoot, "artifacts")
+      for (const dir of [
+        "02-source-evidence",
+        "03-control-flow-evidence",
+        "04-diagrams/mmd/business",
+        "04-diagrams/png/business",
+        "05-enhanced-detail-design",
+      ]) {
+        mkdirSync(join(outputRoot, dir), { recursive: true })
+      }
+      for (const file of [
+        "02-source-evidence/module-scope.md",
+        "02-source-evidence/source-evidence-index.md",
+        "04-diagrams/diagram-index.md",
+        "04-diagrams/business-flow-index.md",
+        "05-enhanced-detail-design/README.md",
+        "07-diff-and-improvement-report.md",
+        "08-word-export-input.md",
+        "resume-state.md",
+        "continue-prompt.md",
+        "quality-gate-report.md",
+      ]) {
+        writeFileSync(join(outputRoot, file), `${file}\n`)
+      }
+      for (const csv of [
+        "01-function-inventory.csv",
+        "02-entry-points.csv",
+        "03-call-edges.csv",
+        "04-function-branches.csv",
+        "05-state-transitions.csv",
+        "09-business-capability-map.csv",
+        "10-business-flow-steps.csv",
+        "11-business-flow-edges.csv",
+        "12-business-flow-edge-coverage.csv",
+        "13-business-text-coverage.csv",
+      ]) {
+        writeFileSync(join(outputRoot, "03-control-flow-evidence", csv), "id,name\n1,item\n")
+      }
+      writeFileSync(join(outputRoot, "04-diagrams", "mmd", "business", "flow.mmd"), "flowchart TD\n  A --> B\n")
+      writeFileSync(join(outputRoot, "04-diagrams", "png", "business", "flow.png"), "png-bytes\n")
+      writeFileSync(join(outputRoot, "final.docx"), "docx-bytes\n")
+
+      const pass = spawnSync(process.execPath, [validator], {
+        cwd: tempRoot,
+        encoding: "utf8",
+        input: JSON.stringify({ outputRoot: "out", mode: "final", wordPath: "out/final.docx" }),
+        env: {
+          ...process.env,
+          CHIPMATE_WORKSPACE_ROOT: tempRoot,
+          CHIPMATE_SKILL_ROOT: skillRoot,
+          CHIPMATE_SKILL_ARTIFACT_DIR: artifactRoot,
+        },
+      })
+      expect(pass.status).toBe(0)
+      expect(pass.stdout).toContain("\"status\": \"PASS\"")
+      expect(JSON.parse(readFileSync(join(artifactRoot, "validate-artifacts-report.json"), "utf8"))).toMatchObject({
+        ok: true,
+        status: "PASS",
+      })
+
+      const fail = spawnSync(process.execPath, [validator], {
+        cwd: tempRoot,
+        encoding: "utf8",
+        input: JSON.stringify({ outputRoot: "missing", mode: "final" }),
+        env: {
+          ...process.env,
+          CHIPMATE_WORKSPACE_ROOT: tempRoot,
+          CHIPMATE_SKILL_ROOT: skillRoot,
+          CHIPMATE_SKILL_ARTIFACT_DIR: join(tempRoot, "failed-artifacts"),
+        },
+      })
+      expect(fail.status).toBe(1)
+      expect(fail.stdout).toContain("\"status\": \"INCOMPLETE\"")
+    } finally {
+      rmSync(tempRoot, { recursive: true, force: true })
+    }
   })
 
   test("runs as a workspace extension for local and Remote SSH workspace hosts", () => {
@@ -402,6 +568,12 @@ describe("extension manifest", () => {
   test("contributes provider, skills, permissions, MCP, completion, RAG, and code graph settings", () => {
     expect(properties["chipmate.provider.apiBaseUrl"]?.type).toBe("string")
     expect(properties["chipmate.provider.chatModel"]?.type).toBe("string")
+    expect(properties["chipmate.provider.contextLength"]).toMatchObject({
+      type: "number",
+      default: 0,
+      minimum: 0,
+      maximum: 1000000,
+    })
     expect(properties["chipmate.permissions.mode"]).toMatchObject({
       type: "string",
       enum: ["ask", "auto", "full-access"],
@@ -475,6 +647,11 @@ describe("extension manifest", () => {
       type: "string",
       enum: ["qwen-direct", "fim-direct", "none", "openai-compatible"],
       default: "qwen-direct",
+    })
+    expect(properties["chipmate.completion.providerMode"]).toMatchObject({
+      type: "string",
+      enum: ["inherit-chat", "custom"],
+      default: "inherit-chat",
     })
     expect(properties["chipmate.completion.apiBaseUrl"]).toMatchObject({
       type: "string",

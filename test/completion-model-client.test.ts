@@ -1,6 +1,6 @@
 import { afterAll, describe, expect, test } from "bun:test"
 import * as http from "node:http"
-import { CompletionModelClient, CompletionModelRequestError, chatCompletionsUrl, completionModel, completionsUrl, directCompletionRequestDiagnostic } from "../src/completion-model-client"
+import { CompletionModelClient, CompletionModelRequestError, chatCompletionsUrl, completionApiBaseUrl, completionModel, completionsUrl, directCompletionRequestDiagnostic } from "../src/completion-model-client"
 import { completionInsertText } from "../src/completion-text"
 import type { RemoteSettings } from "../src/types"
 
@@ -257,10 +257,27 @@ describe("direct completion model client", () => {
     expect(completionsUrl("http://localhost:8000/v1/completions")).toBe("http://localhost:8000/v1/completions")
     expect(completionModel(settings("http://localhost:8000/v1", { completionModel: "", defaultModel: "fallback" }))).toBe("fallback")
   })
+
+  test("uses chat provider base URL until completion provider mode is custom", () => {
+    expect(completionApiBaseUrl(settings("http://completion.local/v1", {
+      providerBaseUrl: "http://chat.local/v1",
+    }))).toBe("http://chat.local/v1")
+    expect(completionApiBaseUrl(settings("http://completion.local/v1", {
+      providerBaseUrl: "http://chat.local/v1",
+      providerMode: "custom",
+    }))).toBe("http://completion.local/v1")
+  })
 })
 
-function settings(baseUrl: string, input: { completionModel?: string; defaultModel?: string; profile?: RemoteSettings["completion"]["profile"] } = {}): RemoteSettings {
+function settings(baseUrl: string, input: { completionModel?: string; defaultModel?: string; profile?: RemoteSettings["completion"]["profile"]; providerBaseUrl?: string; providerMode?: RemoteSettings["completion"]["providerMode"] } = {}): RemoteSettings {
   return {
+    provider: {
+      apiBaseUrl: input.providerBaseUrl ?? baseUrl,
+      chatModel: "",
+      maxTokens: 4096,
+      temperature: 0.2,
+      topP: 0.8,
+    },
     serverUrl: "http://localhost:4096",
     username: "chipmate",
     defaultModel: input.defaultModel ?? "",
@@ -300,11 +317,13 @@ function settings(baseUrl: string, input: { completionModel?: string; defaultMod
     },
     completion: {
       enabled: true,
+      providerMode: input.providerMode ?? "inherit-chat",
       provider: "openai-compatible",
       profile: input.profile ?? "generic-chat",
       apiBaseUrl: baseUrl,
       model: input.completionModel ?? "qwen",
       maxTokens: 128,
+      contextLength: 200000,
       temperature: 0.2,
       topP: 0.8,
       debounceMs: 350,

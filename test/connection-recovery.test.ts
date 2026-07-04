@@ -72,7 +72,9 @@ describe("ChipMate direct runtime wiring", () => {
     expect(body).toContain("RELOAD_WINDOW_ACTION")
     expect(body).toContain('executeCommand("workbench.action.reloadWindow")')
     expect(body).toContain("context.globalState.update(EXTENSION_UPDATE_RELOAD_ACCEPTED_KEY, reloadVersion)")
+    expect(body).toContain("return { check: scheduleReloadPromptCheck }")
     expect(body).not.toContain("restartExtension")
+    expect(extensionSource).toContain("registerExtensionAutoUpdate({ context, output, reloadController: updateReloadController })")
   })
 
   test("debounces RAG configuration apply events", () => {

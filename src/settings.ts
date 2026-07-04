@@ -1,12 +1,13 @@
 import * as vscode from "vscode"
-import { CHIPMATE_CONFIG_SECTION, CHIPMATE_LOCAL_AGENT_ID, PROVIDER_API_KEY_SECRET_KEY, RAG_API_KEY_SECRET_KEY } from "./chipmate-constants"
+import { CHIPMATE_CONFIG_SECTION, CHIPMATE_LOCAL_AGENT_ID, COMPLETION_API_KEY_SECRET_KEY, PROVIDER_API_KEY_SECRET_KEY, RAG_API_KEY_SECRET_KEY } from "./chipmate-constants"
 import { RAG_EMBEDDING_MAX_TOKENS_PER_REQUEST_DEFAULT } from "./rag-token"
-import type { CodeGraphAnalysisMode, CompletionCommentGuidedRetrievalMode, CompletionLogLevel, CompletionProfile, CompletionProvider, PermissionMode, RagEmbeddingCheckpointMode, RagEmbeddingEncodingFormat, RemoteSettings } from "./types"
+import type { CodeGraphAnalysisMode, CompletionCommentGuidedRetrievalMode, CompletionLogLevel, CompletionProfile, CompletionProvider, CompletionProviderMode, PermissionMode, RagEmbeddingCheckpointMode, RagEmbeddingEncodingFormat, RemoteSettings } from "./types"
 
 export const PASSWORD_SECRET_KEY = "chipmate.provider.legacyPassword"
 export const LEGACY_RAG_API_KEY_SECRET_KEY = RAG_API_KEY_SECRET_KEY
 export const DEFAULT_COMPLETION_MODEL = "qwen-coder-30b0"
 export const DEFAULT_COMPLETION_CONTEXT_LENGTH = 200_000
+export const DEFAULT_PROVIDER_CONTEXT_LENGTH = 0
 export const DEFAULT_RAG_EMBEDDING_MODEL = "qwen3-embedding-8b"
 export const DEFAULT_RAG_RERANK_MODEL = "qwen3-reranker-8b"
 export const RAG_EMBEDDING_BATCH_SIZE_DEFAULT = 64
@@ -35,6 +36,7 @@ export const DOCUMENT_RAG_MAX_EXTRACTED_BYTES_PER_FILE_DEFAULT = 1024 * 1024
 export const DOCUMENT_RAG_MAX_CHUNKS_DEFAULT = 50000
 export const DOCUMENT_RAG_QUERY_TOP_K_DEFAULT = 12
 export const DOCUMENT_RAG_MAX_EVIDENCE_BYTES_DEFAULT = 24000
+export const DOCUMENT_RAG_WORKER_CONCURRENCY_DEFAULT = 2
 export const DEFAULT_TOOLS_MAX_AGENT_STEPS = 25
 
 export type ConnectionSettingsInput = {
@@ -45,9 +47,12 @@ export type ConnectionSettingsInput = {
 
 export type CompletionSettingsInput = {
   enabled: boolean
+  providerMode?: CompletionProviderMode
   provider: CompletionProvider
   profile: CompletionProfile
-  apiBaseUrl: string
+  apiBaseUrl?: string
+  apiKey?: string
+  resetToInherit?: boolean
   model: string
   maxTokens: number
   contextLength: number
@@ -121,6 +126,8 @@ export type NormalizedRagSettingsInput = {
   rerankTopK: number
 }
 
+export type RagSettingsChangeKind = "unchanged" | "identity" | "scheduler" | "query" | "policy"
+
 export function readRemoteSettings(): RemoteSettings {
   const config = vscode.workspace.getConfiguration(CHIPMATE_CONFIG_SECTION)
   const providerApiBaseUrl = normalizeServerUrl(config.get<string>("provider.apiBaseUrl", ""))
@@ -133,6 +140,7 @@ export function readRemoteSettings(): RemoteSettings {
       apiBaseUrl: providerApiBaseUrl,
       chatModel: providerChatModel,
       maxTokens: Math.max(1, Math.min(131072, config.get<number>("provider.maxTokens", 4096))),
+      contextLength: clampInteger(config.get<number>("provider.contextLength", DEFAULT_PROVIDER_CONTEXT_LENGTH), 0, 1_000_000, DEFAULT_PROVIDER_CONTEXT_LENGTH),
       temperature: Math.max(0, Math.min(2, config.get<number>("provider.temperature", 0.2))),
       topP: Math.max(0, Math.min(1, config.get<number>("provider.topP", 1))),
     },
@@ -177,6 +185,7 @@ export function readRemoteSettings(): RemoteSettings {
     },
     completion: {
       enabled: config.get<boolean>("completion.enabled", true),
+      providerMode: readCompletionProviderMode(config.get<string>("completion.providerMode", "inherit-chat")),
       provider: readCompletionProvider(config.get<string>("completion.provider", "qwen-direct")),
       profile: readCompletionProfile(config.get<string>("completion.profile", "qwen-coder-fim")),
       apiBaseUrl: normalizeServerUrl(config.get<string>("completion.apiBaseUrl", "")),
@@ -263,6 +272,7 @@ export function readRemoteSettings(): RemoteSettings {
       excludeGlobs: readStringArray(config.get<unknown>("documentRag.excludeGlobs", [])),
       queryTopK: clampInteger(config.get<number>("documentRag.queryTopK", DOCUMENT_RAG_QUERY_TOP_K_DEFAULT), 1, 100, DOCUMENT_RAG_QUERY_TOP_K_DEFAULT),
       maxEvidenceBytes: clampInteger(config.get<number>("documentRag.maxEvidenceBytes", DOCUMENT_RAG_MAX_EVIDENCE_BYTES_DEFAULT), 1000, 200000, DOCUMENT_RAG_MAX_EVIDENCE_BYTES_DEFAULT),
+      workerConcurrency: clampInteger(config.get<number>("documentRag.workerConcurrency", DOCUMENT_RAG_WORKER_CONCURRENCY_DEFAULT), 1, 4, DOCUMENT_RAG_WORKER_CONCURRENCY_DEFAULT),
     },
   }
 }
@@ -289,6 +299,18 @@ export async function readProviderApiKey(context: vscode.ExtensionContext) {
   return context.secrets.get(PROVIDER_API_KEY_SECRET_KEY)
 }
 
+export async function readCompletionApiKey(context: vscode.ExtensionContext) {
+  return context.secrets.get(COMPLETION_API_KEY_SECRET_KEY)
+}
+
+export async function readEffectiveCompletionApiKey(context: vscode.ExtensionContext, settings = readRemoteSettings()) {
+  if (settings.completion.providerMode === "custom") {
+    const completionKey = (await readCompletionApiKey(context))?.trim()
+    if (completionKey) return completionKey
+  }
+  return readProviderApiKey(context)
+}
+
 export async function writeProviderApiKey(context: vscode.ExtensionContext, apiKey: string | undefined) {
   const value = apiKey?.trim()
   if (value) {
@@ -296,6 +318,15 @@ export async function writeProviderApiKey(context: vscode.ExtensionContext, apiK
     return
   }
   await context.secrets.delete(PROVIDER_API_KEY_SECRET_KEY)
+}
+
+export async function writeCompletionApiKey(context: vscode.ExtensionContext, apiKey: string | undefined) {
+  const value = apiKey?.trim()
+  if (value) {
+    await context.secrets.store(COMPLETION_API_KEY_SECRET_KEY, value)
+    return
+  }
+  await context.secrets.delete(COMPLETION_API_KEY_SECRET_KEY)
 }
 
 export async function migrateLegacyRagApiKey(context: vscode.ExtensionContext) {
@@ -373,9 +404,10 @@ export function connectionInputHasPassword(input: ConnectionSettingsInput) {
   return Object.prototype.hasOwnProperty.call(input, "password")
 }
 
-export async function saveCompletionSettings(input: CompletionSettingsInput) {
+export async function saveCompletionSettings(input: CompletionSettingsInput, context?: vscode.ExtensionContext) {
   const config = vscode.workspace.getConfiguration(CHIPMATE_CONFIG_SECTION)
   await config.update("completion.enabled", input.enabled, vscode.ConfigurationTarget.Global)
+  await config.update("completion.providerMode", input.resetToInherit ? "inherit-chat" : readCompletionProviderMode(input.providerMode), vscode.ConfigurationTarget.Global)
   await config.update("completion.provider", readCompletionProvider(input.provider), vscode.ConfigurationTarget.Global)
   await config.update("completion.profile", readCompletionProfile(input.profile), vscode.ConfigurationTarget.Global)
   if (input.apiBaseUrl !== undefined) await config.update("completion.apiBaseUrl", normalizeServerUrl(input.apiBaseUrl), vscode.ConfigurationTarget.Global)
@@ -384,6 +416,11 @@ export async function saveCompletionSettings(input: CompletionSettingsInput) {
   await config.update("completion.contextLength", clampInteger(input.contextLength, 0, 1_000_000, DEFAULT_COMPLETION_CONTEXT_LENGTH), vscode.ConfigurationTarget.Global)
   await config.update("completion.temperature", Math.max(0, Math.min(2, input.temperature)), vscode.ConfigurationTarget.Global)
   await config.update("completion.topP", Math.max(0, Math.min(1, input.topP)), vscode.ConfigurationTarget.Global)
+  if (context && input.resetToInherit) {
+    await writeCompletionApiKey(context, undefined)
+  } else if (context && Object.prototype.hasOwnProperty.call(input, "apiKey") && input.apiKey?.trim()) {
+    await writeCompletionApiKey(context, input.apiKey)
+  }
 }
 
 export async function saveProviderSettings(input: ProviderSettingsInput) {
@@ -519,6 +556,36 @@ export function ragSettingsInputChangesEmbeddingIdentity(input: RagSettingsInput
   return next.embeddingEndpoint !== previous.embeddingEndpoint || next.embeddingModel !== previous.embeddingModel
 }
 
+export function classifyRagSettingsInputChange(input: RagSettingsInput, current = readRemoteSettings().rag): RagSettingsChangeKind {
+  const next = normalizeRagSettingsInput(input)
+  const previous = normalizeCurrentRagSettings(current)
+  if (normalizedRagSettingsEqual(next, previous)) return "unchanged"
+  if (
+    next.embeddingEndpoint !== previous.embeddingEndpoint
+    || next.embeddingModel !== previous.embeddingModel
+    || next.indexTests !== previous.indexTests
+  ) return "identity"
+  if (
+    next.embeddingBatchSize !== previous.embeddingBatchSize
+    || next.embeddingMaxTokensPerRequest !== previous.embeddingMaxTokensPerRequest
+    || next.embeddingConcurrentRequests !== previous.embeddingConcurrentRequests
+    || next.embeddingMaxInFlightTokens !== previous.embeddingMaxInFlightTokens
+    || next.embeddingEncodingFormat !== previous.embeddingEncodingFormat
+    || next.embeddingCheckpointMode !== previous.embeddingCheckpointMode
+    || next.embeddingCheckpointChunkInterval !== previous.embeddingCheckpointChunkInterval
+    || next.embeddingCheckpointIntervalMs !== previous.embeddingCheckpointIntervalMs
+    || next.embeddingTimeoutMs !== previous.embeddingTimeoutMs
+    || next.embeddingRequestDelayMs !== previous.embeddingRequestDelayMs
+    || next.embeddingMaxRequestsPerRun !== previous.embeddingMaxRequestsPerRun
+    || next.embeddingMaxRetries !== previous.embeddingMaxRetries
+    || next.embeddingRetryBackoffMs !== previous.embeddingRetryBackoffMs
+    || next.embeddingResumeAutomatically !== previous.embeddingResumeAutomatically
+    || next.embeddingResumeDelayMs !== previous.embeddingResumeDelayMs
+  ) return "scheduler"
+  if (JSON.stringify(next.allowedHosts) !== JSON.stringify(previous.allowedHosts)) return "policy"
+  return "query"
+}
+
 function normalizedRagSettingsEqual(left: NormalizedRagSettingsInput, right: NormalizedRagSettingsInput) {
   return JSON.stringify(left) === JSON.stringify(right)
 }
@@ -557,6 +624,10 @@ function readCompletionLogLevel(input: string): CompletionLogLevel {
 
 function readCompletionCommentGuidedRetrievalMode(input: string | undefined): CompletionCommentGuidedRetrievalMode {
   return input === "completion" ? "completion" : "qa-exact"
+}
+
+function readCompletionProviderMode(input: string | undefined): CompletionProviderMode {
+  return input === "custom" ? "custom" : "inherit-chat"
 }
 
 function readCompletionProvider(input: string): CompletionProvider {

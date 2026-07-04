@@ -2,7 +2,7 @@
   "name": "chipmate",
   "displayName": "ChipMate",
   "description": "Direct OpenAI-compatible coding agent with workspace skills for VS Code",
-  "version": "0.2.0-build.7",
+  "version": "0.2.0-build.47",
   "icon": "media/chipmate-icon.png",
   "publisher": "local",
   "license": "MIT",
@@ -253,6 +253,13 @@
           "maximum": 131072,
           "description": "Maximum generated tokens for ChipMate chat responses."
         },
+        "chipmate.provider.contextLength": {
+          "type": "number",
+          "default": 0,
+          "minimum": 0,
+          "maximum": 1000000,
+          "description": "Input context window for ChipMate chat requests. Set to 0 to auto-detect from provider /models metadata, then built-in public model limits, and finally fall back to 262144 tokens with a visible notice. This is separate from chipmate.provider.maxTokens, which only limits generated output."
+        },
         "chipmate.provider.temperature": {
           "type": "number",
           "default": 0.2,
@@ -271,6 +278,30 @@
           "type": "string",
           "default": "",
           "description": "Remote ChipMate Word/Mermaid render server base URL or /render/word endpoint. Word visual QA uses /render/word; Mermaid PNG generation uses /render/mermaid. The VSIX client does not use local LibreOffice, Poppler, PDF.js/canvas, or local Chrome/Edge fallbacks; when the remote service is empty or unreachable, page-level visual QA is skipped and Mermaid PNG figures are unavailable."
+        },
+        "chipmate.updates.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically check the configured ChipMate render service package manifest for newer local VSIX builds."
+        },
+        "chipmate.updates.manifestUrl": {
+          "type": "string",
+          "default": "",
+          "description": "Optional ChipMate update manifest URL. Leave empty to derive /packages/manifest.json from chipmate.wordRender.remoteEndpoint."
+        },
+        "chipmate.updates.checkIntervalHours": {
+          "type": "number",
+          "default": 24,
+          "minimum": 1,
+          "maximum": 720,
+          "description": "Minimum interval in hours between automatic ChipMate update checks."
+        },
+        "chipmate.updates.maxDownloadBytes": {
+          "type": "number",
+          "default": 536870912,
+          "minimum": 1048576,
+          "maximum": 2147483648,
+          "description": "Maximum VSIX download size accepted by ChipMate automatic updates."
         },
         "chipmate.context.maxFileBytes": {
           "type": "number",
@@ -423,6 +454,15 @@
           "type": "boolean",
           "default": true,
           "description": "Enable ChipMate inline completions."
+        },
+        "chipmate.completion.providerMode": {
+          "type": "string",
+          "enum": [
+            "inherit-chat",
+            "custom"
+          ],
+          "default": "inherit-chat",
+          "description": "Choose whether inline completion inherits the Chat provider base URL and API key or uses a custom completion provider override."
         },
         "chipmate.completion.provider": {
           "type": "string",
@@ -1070,6 +1110,13 @@
           "minimum": 1000,
           "maximum": 200000,
           "description": "Maximum Document RAG evidence bytes injected into one chat request."
+        },
+        "chipmate.documentRag.workerConcurrency": {
+          "type": "number",
+          "default": 2,
+          "minimum": 1,
+          "maximum": 4,
+          "description": "Number of worker threads used to parse Word, Excel, and PDF documents for Document RAG."
         }
       }
     },
@@ -1171,6 +1218,7 @@
     "check-types": "tsc --noEmit",
     "lint": "eslint src",
     "test": "bun test",
+    "eval:understanding": "bun test test/understanding-eval.test.ts",
     "eval:completion-quality": "bun scripts/completion-quality-eval.ts",
     "eval:completion-c-embedded": "bun scripts/completion-c-embedded-eval.ts",
     "eval:drawio-visual": "bun scripts/drawio-visual-eval.ts",
@@ -1185,6 +1233,15 @@
     "verify:qwen-vsix": "bun scripts/verify-qwen-vsix.ts",
     "test:ui-windows:bundle": "bun scripts/package-windows-ui-test.ts",
     "test:ui-windows:verify-bundle": "bun scripts/verify-windows-ui-test-bundle.ts",
+    "test:system:doctor": "bun test/live-vscode/runner/main.ts doctor",
+    "test:system:inventory": "bun test/live-vscode/runner/main.ts inventory",
+    "test:system:smoke": "bun test/live-vscode/runner/main.ts smoke",
+    "test:system:full": "bun test/live-vscode/runner/main.ts full",
+    "test:system:soak": "bun test/live-vscode/runner/main.ts soak",
+    "test:system:ui-smoke": "bun test/live-vscode/runner/main.ts ui-smoke",
+    "test:system:ui-full": "bun test/live-vscode/runner/main.ts ui-full",
+    "test:system:ui-visual": "bun test/live-vscode/runner/main.ts ui-visual",
+    "test:system:report": "bun test/live-vscode/runner/main.ts report",
     "test:vscode": "bun run package && node ./dist/test/runTest.js",
     "vsix": "bun scripts/package-vsix.ts"
   },

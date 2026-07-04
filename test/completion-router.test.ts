@@ -514,11 +514,13 @@ function settings(input: Partial<RemoteSettings["completion"]> = {}): RemoteSett
     },
     completion: {
       enabled: true,
+      providerMode: "custom",
       provider: "openai-compatible",
       profile: "generic-chat",
       apiBaseUrl: "http://localhost:8000/v1",
       model: "qwen",
       maxTokens: 128,
+      contextLength: 200000,
       temperature: 0,
       topP: 1,
       debounceMs: 350,

@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, mock, test } from "bun:test"
+import { afterAll, beforeEach, describe, expect, mock, test } from "bun:test"
 import { mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -19,6 +19,23 @@ class UriShim {
   }
 }
 
+class PositionShim {
+  constructor(readonly line: number, readonly character: number) {}
+}
+
+class RangeShim {
+  constructor(
+    readonly startOrLine: PositionShim | number,
+    readonly startCharacterOrEnd?: PositionShim | number,
+    readonly endLine?: number,
+    readonly endCharacter?: number,
+  ) {}
+}
+
+class RelativePatternShim {
+  constructor(readonly base: unknown, readonly pattern: string) {}
+}
+
 mock.module("vscode", () => ({
   FileType: {
     Unknown: 0,
@@ -27,7 +44,48 @@ mock.module("vscode", () => ({
     SymbolicLink: 64,
   },
   Uri: UriShim,
+  Position: PositionShim,
+  Range: RangeShim,
+  RelativePattern: RelativePatternShim,
+  InlineCompletionItem: class InlineCompletionItem {
+    constructor(readonly insertText: string, readonly range?: unknown, readonly command?: unknown) {}
+  },
+  InlineCompletionTriggerKind: {
+    Invoke: 0,
+    Automatic: 1,
+  },
+  WorkspaceEdit: class WorkspaceEdit {
+    insert() {}
+    replace() {}
+    delete() {}
+  },
+  DiagnosticSeverity: {
+    Error: 0,
+    Warning: 1,
+    Information: 2,
+    Hint: 3,
+  },
+  ConfigurationTarget: {
+    Global: "global",
+  },
+  env: {
+    remoteName: undefined,
+  },
   workspace: {
+    workspaceFolders: [],
+    textDocuments: [],
+    getConfiguration: () => ({
+      get: <T>(_key: string, fallback?: T) => fallback as T,
+      update: async () => undefined,
+    }),
+    onDidChangeConfiguration: () => ({ dispose: () => undefined }),
+    onDidChangeTextDocument: () => ({ dispose: () => undefined }),
+    onDidOpenTextDocument: () => ({ dispose: () => undefined }),
+    onDidCloseTextDocument: () => ({ dispose: () => undefined }),
+    asRelativePath: (uri: { fsPath?: string; path?: string }) => uri.fsPath ?? uri.path ?? "",
+    getWorkspaceFolder: () => undefined,
+    findFiles: async () => [],
+    openTextDocument: async () => undefined,
     fs: {
       createDirectory: async (uri: UriShim) => mkdir(uri.fsPath, { recursive: true }),
       delete: async (uri: UriShim, options?: { recursive?: boolean }) => rm(uri.fsPath, { recursive: Boolean(options?.recursive), force: true }),
@@ -48,6 +106,31 @@ mock.module("vscode", () => ({
       writeFile: async (uri: UriShim, data: Uint8Array) => writeFile(uri.fsPath, data),
     },
   },
+  window: {
+    activeTextEditor: undefined,
+    visibleTextEditors: [],
+    textDocuments: [],
+    onDidChangeActiveTextEditor: () => ({ dispose: () => undefined }),
+    onDidChangeTextEditorSelection: () => ({ dispose: () => undefined }),
+    createOutputChannel: () => ({
+      appendLine: () => undefined,
+      show: () => undefined,
+      dispose: () => undefined,
+    }),
+    setStatusBarMessage: () => ({ dispose: () => undefined }),
+    showSaveDialog: async () => undefined,
+    showInformationMessage: async () => undefined,
+    showWarningMessage: async () => undefined,
+    showErrorMessage: async () => undefined,
+  },
+  commands: {
+    executeCommand: async () => [],
+    registerCommand: () => ({ dispose: () => undefined }),
+  },
+  languages: {
+    getDiagnostics: () => [],
+    registerInlineCompletionItemProvider: () => ({ dispose: () => undefined }),
+  },
 }))
 
 const {
@@ -57,6 +140,10 @@ const {
 } = await import("../src/skill-importer")
 
 beforeEach(() => {})
+
+afterAll(() => {
+  mock.restore()
+})
 
 describe("Skill import", () => {
   test("imports a single skill directory into user .agents skills", async () => {

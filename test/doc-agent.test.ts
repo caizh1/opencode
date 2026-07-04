@@ -70,7 +70,7 @@ const { GuidelineReferencePackFlow } = await import("../src/docAgent/DocumentAge
 const { DocxRenderQualityGate } = await import("../src/docAgent/DocxRenderQualityGate")
 const { WordDocBuilder } = await import("../src/docAgent/WordDocBuilder")
 const { WordDocSpecValidator } = await import("../src/docAgent/WordDocSpecValidator")
-const { resolveWordDesignPreset, resolveWordHeaderPattern, resolveWordPresetTokenMap } = await import("../src/docAgent/themes/WordDesignPresets")
+const { defaultWordThemeForSpec, resolveWordDesignPreset, resolveWordHeaderPattern, resolveWordPresetTokenMap } = await import("../src/docAgent/themes/WordDesignPresets")
 const { ReportQualityGate } = await import("../src/docAgent/ReportQualityGate")
 const { ChipMateDocModelProvider, DOCUMENT_MODEL_COMPAT_MAX_TOKENS } = await import("../src/docAgent/ChipMateDocModelProvider")
 const { RuleChunkFilter } = await import("../src/docAgent/RuleChunkFilter")
@@ -78,7 +78,7 @@ const { WorkspaceRuleExtractionCache } = await import("../src/docAgent/RuleExtra
 const { SourceBlockPlacementPlanner } = await import("../src/docAgent/SourceBlockPlacementPlanner")
 const { SOURCE_BLOCK_PLACEMENT_VERSION } = await import("../src/docAgent/SourceBlockPlacementCache")
 const { createWordDocument } = await import("../src/tools/createWordDocumentTool")
-const { DocumentEditPlanner, validateDocumentEditPlan } = await import("../src/docAgent/DocumentEditPlan")
+const { DocumentEditPlanner, normalizeDocumentEditPlanWithDiagnostics, validateDocumentEditPlan } = await import("../src/docAgent/DocumentEditPlan")
 const { WordDocumentEditor } = await import("../src/docAgent/WordDocumentEditor")
 const { auditWordDocumentFields, flattenRefFieldsInDocxBytes, materializeSeqFieldsInDocxBytes, prepareNativeFieldRefreshInDocxBytes, WordNativeFieldRefresher, WordRefFieldFlattener, WordSeqFieldMaterializer } = await import("../src/docAgent/WordDocumentFields")
 const { WordDocumentInspector } = await import("../src/docAgent/WordDocumentInspector")
@@ -686,6 +686,31 @@ describe("word edit agent", () => {
     }, inspection)
     expect(invalid.ok).toBe(false)
     expect(invalid.errors.join("\n")).toContain("locator")
+  })
+
+  test("normalizeDocumentEditPlanWithDiagnostics reports dropped malformed operations safely", () => {
+    const secretText = "SECRET_EDIT_TEXT_SHOULD_NOT_LEAK"
+    const missingType = normalizeDocumentEditPlanWithDiagnostics({
+      operations: [{ action: "replaceText", locator: { kind: "paragraph", blockId: "p1" }, oldText: secretText, newText: "safe" } as never],
+    }, "docs/edit.docx")
+    expect(missingType.plan.operations).toHaveLength(0)
+    expect(missingType.diagnostics.rawOperationCount).toBe(1)
+    expect(missingType.diagnostics.normalizedOperationCount).toBe(0)
+    expect(missingType.diagnostics.droppedOperationCount).toBe(1)
+    expect(missingType.diagnostics.errors.join("\n")).toContain("operations[0].type is required")
+    expect(missingType.diagnostics.errors.join("\n")).toContain("keys=action,locator,newText,oldText")
+    expect(JSON.stringify(missingType.diagnostics)).not.toContain(secretText)
+    expect(missingType.diagnostics.operationDiagnostics[0]?.textFieldBytes.oldText).toBeGreaterThan(0)
+
+    const unsupported = normalizeDocumentEditPlanWithDiagnostics({
+      operations: [{ type: "rewriteEverything", locator: { kind: "paragraph", blockId: "p1" } } as never],
+    }, "docs/edit.docx")
+    expect(unsupported.diagnostics.errors.join("\n")).toContain('operations[0].type is not supported: "rewriteEverything"')
+
+    const invalidLocator = normalizeDocumentEditPlanWithDiagnostics({
+      operations: [{ type: "replaceText", locator: { kind: "unknown" }, oldText: "a", newText: "b" } as never],
+    }, "docs/edit.docx")
+    expect(invalidLocator.diagnostics.errors.join("\n")).toContain("operations[0].locator is missing or invalid")
   })
 
   test("edit planner fallback uses table cell tracked change for inspected table replacements", async () => {
@@ -1399,6 +1424,96 @@ describe("word edit agent", () => {
 	    ])
 	    expect(result.appliedOperations[0]?.type).toBe("replaceTable")
 	    expect(result.structureCheckResult.ok).toBe(true)
+	  })
+
+	  test("apply_word_document_edits can insert a table column while preserving existing table content", async () => {
+	    const root = await tempDir("chipmate-word-table-column-")
+	    workspaceFolders = [{ name: "repo", uri: UriShim.file(root) }]
+	    const spec = minimalRenderableWordDocSpec()
+	    spec.metadata.documentType = "table-column-insert"
+	    spec.sections = [{
+	      id: "table",
+	      level: 1,
+	      title: "Table Column",
+	      tables: [{
+	        headers: ["Item", "Owner"],
+	        rows: Array.from({ length: 20 }, (_unused, index) => [`Phase ${index + 1}`, `Owner ${index + 1}`]),
+	      }],
+	    }]
+	    const bytes = await new WordDocBuilder().build(spec)
+	    const inspection = await new WordDocumentInspector().inspect({ path: "docs/table-column.docx", bytes })
+	    const table = inspection.tables.find((item) => item.rows.some((row) => row.includes("Item") && row.includes("Owner")))!
+	    const validation = validateDocumentEditPlan({
+	      planId: "insert-column",
+	      targetPath: "docs/table-column.docx",
+	      outputFilenameBase: "table-column-inserted",
+	      operations: [{
+	        type: "insertTableColumn",
+	        locator: table.locator,
+	        header: "是否满足验收标准",
+	        values: table.rows.slice(1).map((_row, index) => index % 2 === 0 ? "满足" : "不满足"),
+	      }],
+	      warnings: [],
+	    }, inspection)
+	    expect(validation.ok).toBe(true)
+
+	    const result = await new WordDocumentEditor(root).apply({
+	      sourcePath: "docs/table-column.docx",
+	      bytes,
+	      inspection,
+	      plan: validation.plan!,
+	    })
+
+	    const outputBytes = await readFile(join(root, result.path))
+	    const updatedInspection = await new WordDocumentInspector().inspect({ path: result.path, bytes: outputBytes })
+	    const updatedTable = updatedInspection.tables.find((item) => item.rows.some((row) => row.includes("Item") && row.includes("Owner")))!
+	    expect(updatedTable.rows[0]).toEqual(["Item", "Owner", "是否满足验收标准"])
+	    expect(updatedTable.rows[1]).toEqual(["Phase 1", "Owner 1", "满足"])
+	    expect(updatedTable.rows[20]).toEqual(["Phase 20", "Owner 20", "不满足"])
+	    expect(result.tablePreservationCheckResult.ok).toBe(true)
+	    expect(result.tablePreservationCheckResult.lostNonEmptyCells).toBe(0)
+	    expect(result.appliedOperations[0]?.type).toBe("insertTableColumn")
+	  })
+
+	  test("apply_word_document_edits blocks destructive large-table replaceTable edits", async () => {
+	    const root = await tempDir("chipmate-word-table-replace-risk-")
+	    workspaceFolders = [{ name: "repo", uri: UriShim.file(root) }]
+	    const spec = minimalRenderableWordDocSpec()
+	    spec.metadata.documentType = "table-replace-risk"
+	    spec.sections = [{
+	      id: "table",
+	      level: 1,
+	      title: "Table Replace Risk",
+	      tables: [{
+	        headers: ["Item", "Owner"],
+	        rows: Array.from({ length: 20 }, (_unused, index) => [`Phase ${index + 1}`, `Owner ${index + 1}`]),
+	      }],
+	    }]
+	    const bytes = await new WordDocBuilder().build(spec)
+	    const inspection = await new WordDocumentInspector().inspect({ path: "docs/table-replace-risk.docx", bytes })
+	    const table = inspection.tables.find((item) => item.rows.some((row) => row.includes("Item") && row.includes("Owner")))!
+	    const validation = validateDocumentEditPlan({
+	      planId: "destructive-replace",
+	      targetPath: "docs/table-replace-risk.docx",
+	      outputFilenameBase: "table-replace-risk",
+	      operations: [{
+	        type: "replaceTable",
+	        locator: table.locator,
+	        table: {
+	          headers: ["是否满足验收标准"],
+	          rows: [["不满足"], ["满足"]],
+	        },
+	      }],
+	      warnings: [],
+	    }, inspection)
+	    expect(validation.ok).toBe(true)
+
+	    await expect(new WordDocumentEditor(root).apply({
+	      sourcePath: "docs/table-replace-risk.docx",
+	      bytes,
+	      inspection,
+	      plan: validation.plan!,
+	    })).rejects.toThrow("replace-table-content-loss-risk")
 	  })
 
 	  test("apply_word_document_edits can replace a table with merged cells", async () => {
@@ -6074,6 +6189,45 @@ describe("doc agent merge/spec/render", () => {
     expect(issues.filter((issue) => issue.severity === "error")).toEqual([])
   })
 
+  test("uses high-contrast table headers for generated Word design presets", async () => {
+    const presets = ["standard_business_brief", "compact_reference_guide", "narrative_proposal", "google_docs_default"] as const
+    for (const preset of presets) {
+      const theme = defaultWordThemeForSpec({ preset })
+      expect(headerContrastRatioForTest(theme.table.headerFill, theme.styles.tableHeader.color ?? "")).toBeGreaterThanOrEqual(4.5)
+      expect(theme.table.headerFill).not.toBe("FFFFFF")
+
+      const spec = minimalRenderableWordDocSpec()
+      spec.layout = { preset }
+      const bytes = await new WordDocBuilder().build(spec)
+      const documentXml = await readDocxPart(bytes, "word/document.xml")
+      const headerRow = documentXml.match(/<w:tr\b[\s\S]*?<w:tblHeader\/>[\s\S]*?<\/w:tr>/)?.[0] ?? ""
+      expect(headerRow).toContain(`w:fill="${theme.table.headerFill}"`)
+      expect(headerRow).toContain(`w:color w:val="${theme.styles.tableHeader.color}"`)
+      const issues = await new DocxRenderQualityGate().check(bytes)
+      expect(issues.map((issue) => issue.code)).not.toContain("table-header-low-contrast")
+    }
+  })
+
+  test("flags low-contrast and near-white table headers in DOCX structure QA", async () => {
+    const bytes = await new WordDocBuilder().build(minimalRenderableWordDocSpec())
+    const whiteOnWhite = await replaceDocxPart(bytes, "word/document.xml", (xml) => xml
+      .replace(/w:fill="1F4E79"/g, 'w:fill="FFFFFF"')
+      .replace(/w:color w:val="FFFFFF"/g, 'w:color w:val="FFFFFF"'))
+    const whiteOnWhiteIssues = await new DocxRenderQualityGate().check(whiteOnWhite)
+    expect(whiteOnWhiteIssues.map((issue) => issue.code)).toContain("table-header-low-contrast")
+    expect(whiteOnWhiteIssues.map((issue) => issue.code)).toContain("table-header-fill-too-light")
+    expect(whiteOnWhiteIssues.find((issue) => issue.code === "table-header-low-contrast")?.message).toMatch(/table 1 header row 1 cell 1.*fill #FFFFFF, text #FFFFFF/)
+
+    const shallowGrayOnWhite = await replaceDocxPart(bytes, "word/document.xml", (xml) => xml
+      .replace(/w:fill="1F4E79"/g, 'w:fill="F2F4F7"')
+      .replace(/w:color w:val="FFFFFF"/g, 'w:color w:val="FFFFFF"'))
+    const shallowIssues = await new DocxRenderQualityGate().check(shallowGrayOnWhite)
+    expect(shallowIssues.map((issue) => issue.code)).toContain("table-header-low-contrast")
+
+    const highContrastIssues = await new DocxRenderQualityGate().check(bytes)
+    expect(highContrastIssues.map((issue) => issue.code)).not.toContain("table-header-low-contrast")
+  })
+
   test("embeds PNG figures in the section that owns them", async () => {
     const spec = minimalRenderableWordDocSpec()
     spec.sections = [
@@ -9503,6 +9657,27 @@ async function writeDocxPart(bytes: Uint8Array, partPath: string, content: strin
   const zip = await JSZip.loadAsync(Buffer.from(bytes))
   zip.file(partPath, content)
   return await zip.generateAsync({ type: "nodebuffer", compression: "DEFLATE" })
+}
+
+function headerContrastRatioForTest(left: string, right: string) {
+  const leftLuminance = testRelativeLuminance(left)
+  const rightLuminance = testRelativeLuminance(right)
+  const lighter = Math.max(leftLuminance, rightLuminance)
+  const darker = Math.min(leftLuminance, rightLuminance)
+  return (lighter + 0.05) / (darker + 0.05)
+}
+
+function testRelativeLuminance(hex: string) {
+  const normalized = hex.trim().replace(/^#/, "")
+  const red = Number.parseInt(normalized.slice(0, 2), 16)
+  const green = Number.parseInt(normalized.slice(2, 4), 16)
+  const blue = Number.parseInt(normalized.slice(4, 6), 16)
+  return 0.2126 * testLinearRgb(red) + 0.7152 * testLinearRgb(green) + 0.0722 * testLinearRgb(blue)
+}
+
+function testLinearRgb(component: number) {
+  const channel = component / 255
+  return channel <= 0.03928 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4
 }
 
 function replaceFirstSdtByTag(xml: string, tag: string, replace: (sdtXml: string) => string) {

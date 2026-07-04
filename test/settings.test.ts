@@ -144,12 +144,14 @@ const {
   RAG_EMBEDDING_REQUEST_DELAY_DEFAULT_MS,
   RAG_EMBEDDING_TIMEOUT_DEFAULT_MS,
   RAG_EMBEDDING_TIMEOUT_LARGE_BATCH_MS,
+  classifyRagSettingsInputChange,
   connectionInputHasPassword,
   migrateLegacyRagApiKey,
   ragEmbeddingTimeoutMsForBatchSize,
   ragSettingsInputChangesEmbeddingIdentity,
   ragSettingsInputMatchesCurrent,
   ragSettingsUpdates,
+  readEffectiveCompletionApiKey,
   readRemoteSettings,
   saveConnectionSettings,
   saveCompletionSettings,
@@ -157,7 +159,7 @@ const {
   saveRagSettings,
   validateRagEmbeddingBatchSize,
 } = await import("../src/settings")
-const { PROVIDER_API_KEY_SECRET_KEY } = await import("../src/chipmate-constants")
+const { COMPLETION_API_KEY_SECRET_KEY, PROVIDER_API_KEY_SECRET_KEY } = await import("../src/chipmate-constants")
 
 beforeEach(() => {
   configValues = new Map<string, unknown>()
@@ -224,25 +226,30 @@ describe("completion settings", () => {
     const settings = readRemoteSettings()
 
     expect(settings.completion.enabled).toBe(true)
+    expect(settings.completion.providerMode).toBe("inherit-chat")
     expect(settings.completion.provider).toBe("qwen-direct")
     expect(settings.completion.profile).toBe("qwen-coder-fim")
     expect(settings.completion.apiBaseUrl).toBe("")
     expect(settings.completion.model).toBe(DEFAULT_COMPLETION_MODEL)
     expect(settings.completion.contextLength).toBe(DEFAULT_COMPLETION_CONTEXT_LENGTH)
+    expect(settings.provider.contextLength).toBe(0)
 
     configValues = new Map<string, unknown>([
       ["completion.enabled", false],
       ["completion.provider", "none"],
       ["completion.contextLength", 0],
+      ["provider.contextLength", 131072],
     ])
     expect(readRemoteSettings().completion.enabled).toBe(false)
     expect(readRemoteSettings().completion.provider).toBe("none")
     expect(readRemoteSettings().completion.contextLength).toBe(0)
+    expect(readRemoteSettings().provider.contextLength).toBe(131072)
   })
 
   test("saves inline completion context length and normalizes invalid values to the 200k default", async () => {
     await saveCompletionSettings({
       enabled: true,
+      providerMode: "custom",
       provider: "qwen-direct",
       profile: "qwen-coder-fim",
       apiBaseUrl: "http://localhost:4096/",
@@ -254,12 +261,14 @@ describe("completion settings", () => {
     })
 
     expect(configUpdates).toContainEqual({ key: "completion.contextLength", value: DEFAULT_COMPLETION_CONTEXT_LENGTH })
+    expect(configUpdates).toContainEqual({ key: "completion.providerMode", value: "custom" })
     expect(configUpdates).toContainEqual({ key: "completion.apiBaseUrl", value: "http://localhost:4096" })
   })
 
   test("reads and saves fim-direct DeepSeek completion settings without changing provider defaults", async () => {
     configValues = new Map<string, unknown>([
       ["completion.provider", "fim-direct"],
+      ["completion.providerMode", "custom"],
       ["completion.profile", "deepseek-fim"],
       ["completion.apiBaseUrl", "https://api.deepseek.com/"],
       ["completion.model", "deepseek-v4-flash"],
@@ -275,6 +284,7 @@ describe("completion settings", () => {
 
     await saveCompletionSettings({
       enabled: true,
+      providerMode: "custom",
       provider: "fim-direct",
       profile: "deepseek-fim",
       apiBaseUrl: "https://api.deepseek.com/beta",
@@ -286,9 +296,74 @@ describe("completion settings", () => {
     })
 
     expect(configUpdates).toContainEqual({ key: "completion.provider", value: "fim-direct" })
+    expect(configUpdates).toContainEqual({ key: "completion.providerMode", value: "custom" })
     expect(configUpdates).toContainEqual({ key: "completion.profile", value: "deepseek-fim" })
     expect(configUpdates).toContainEqual({ key: "completion.apiBaseUrl", value: "https://api.deepseek.com/beta" })
     expect(configUpdates).not.toContainEqual({ key: "provider.apiBaseUrl", value: "https://api.deepseek.com/beta" })
+  })
+
+  test("resolves completion API key from custom override before falling back to chat provider key", async () => {
+    configValues = new Map<string, unknown>([
+      ["completion.providerMode", "custom"],
+    ])
+    secretValues.set(PROVIDER_API_KEY_SECRET_KEY, "chat-secret")
+    secretValues.set(COMPLETION_API_KEY_SECRET_KEY, "completion-secret")
+
+    await expect(readEffectiveCompletionApiKey(secretContext())).resolves.toBe("completion-secret")
+
+    secretValues.delete(COMPLETION_API_KEY_SECRET_KEY)
+    await expect(readEffectiveCompletionApiKey(secretContext())).resolves.toBe("chat-secret")
+  })
+
+  test("saving completion key keeps existing key when omitted and clears it only on reset", async () => {
+    secretValues.set(COMPLETION_API_KEY_SECRET_KEY, "old-completion-secret")
+
+    await saveCompletionSettings({
+      enabled: true,
+      providerMode: "custom",
+      provider: "qwen-direct",
+      profile: "qwen-coder-fim",
+      apiBaseUrl: "http://localhost:4096",
+      model: "qwen-coder-30b0",
+      maxTokens: 128,
+      contextLength: DEFAULT_COMPLETION_CONTEXT_LENGTH,
+      temperature: 0.1,
+      topP: 1,
+    }, secretContext())
+    expect(secretStores).toEqual([])
+    expect(secretDeletes).toEqual([])
+    expect(secretValues.get(COMPLETION_API_KEY_SECRET_KEY)).toBe("old-completion-secret")
+
+    await saveCompletionSettings({
+      enabled: true,
+      providerMode: "custom",
+      provider: "qwen-direct",
+      profile: "qwen-coder-fim",
+      apiBaseUrl: "http://localhost:4096",
+      apiKey: "new-completion-secret",
+      model: "qwen-coder-30b0",
+      maxTokens: 128,
+      contextLength: DEFAULT_COMPLETION_CONTEXT_LENGTH,
+      temperature: 0.1,
+      topP: 1,
+    }, secretContext())
+    expect(secretStores).toContainEqual({ key: COMPLETION_API_KEY_SECRET_KEY, value: "new-completion-secret" })
+
+    await saveCompletionSettings({
+      enabled: true,
+      providerMode: "custom",
+      provider: "qwen-direct",
+      profile: "qwen-coder-fim",
+      apiBaseUrl: "http://localhost:4096",
+      resetToInherit: true,
+      model: "qwen-coder-30b0",
+      maxTokens: 128,
+      contextLength: DEFAULT_COMPLETION_CONTEXT_LENGTH,
+      temperature: 0.1,
+      topP: 1,
+    }, secretContext())
+    expect(configUpdates).toContainEqual({ key: "completion.providerMode", value: "inherit-chat" })
+    expect(secretDeletes).toContain(COMPLETION_API_KEY_SECRET_KEY)
   })
 })
 
@@ -524,6 +599,19 @@ describe("RAG settings validation", () => {
       rerankTopK: 8,
       allowedHosts: ["rag.internal"],
     }))).toBe(false)
+  })
+
+  test("classifies RAG settings changes by indexing lifecycle impact", () => {
+    for (const update of ragSettingsUpdates(ragInput())) {
+      configValues.set(update.key, update.value)
+    }
+
+    expect(classifyRagSettingsInputChange(ragInput())).toBe("unchanged")
+    expect(classifyRagSettingsInputChange(ragInput({ embeddingModel: "different-embedding" }))).toBe("identity")
+    expect(classifyRagSettingsInputChange(ragInput({ indexTests: true }))).toBe("identity")
+    expect(classifyRagSettingsInputChange(ragInput({ embeddingBatchSize: 512 }))).toBe("scheduler")
+    expect(classifyRagSettingsInputChange(ragInput({ allowedHosts: ["rag.internal"] }))).toBe("policy")
+    expect(classifyRagSettingsInputChange(ragInput({ rerankModel: "different-rerank" }))).toBe("query")
   })
 
   test("saves adaptive embedding concurrency settings", async () => {

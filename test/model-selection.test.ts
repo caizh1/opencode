@@ -9,7 +9,9 @@ describe("model selection flow", () => {
 
   test("loads models through OpenAI-compatible /models with configured fallback names", () => {
     expect(directClientSource).toContain("async listModels")
-    expect(directClientSource).toContain("modelsUrl(settings.provider.apiBaseUrl)")
+    expect(directClientSource).toContain("async listCompletionModels")
+    expect(directClientSource).toContain("baseUrl: settings.provider.apiBaseUrl")
+    expect(directClientSource).toContain("baseUrl: completionApiBaseUrl(input.settings)")
     expect(directClientSource).toContain("/models unavailable, using configured models")
     expect(directClientSource).toContain("configuredModels(settings)")
     expect(directClientSource).toContain("normalizeModelInfos")
@@ -24,6 +26,8 @@ describe("model selection flow", () => {
     expect(chatViewSource).toContain('config.update("provider.chatModel"')
     expect(chatViewSource).toContain("selectedModel: settings.defaultModel")
     expect(chatViewSource).toContain("models: this.models")
+    expect(chatViewSource).toContain("completionModels: this.completionModels")
+    expect(chatViewSource).toContain("completionModelsLoaded: this.completionModelsLoaded")
   })
 
   test("renders model selector and manual fallback", () => {
@@ -62,16 +66,21 @@ describe("model selection flow", () => {
   })
 
   test("renders completion model selection from profile-aware provider models", () => {
+    expect(chatHtmlSource).toContain('<label class="field">Provider mode<select id="completionProviderMode">')
+    expect(chatHtmlSource).toContain('<label class="field">API Base URL<input id="completionApiBaseUrl" type="url"')
+    expect(chatHtmlSource).toContain('<label class="field">API key<input id="completionApiKey" type="password"')
     expect(chatHtmlSource).toContain('<label class="field">Model<select id="completionModel"></select></label>')
+    expect(chatHtmlSource).toContain('id="resetCompletionProvider"')
     expect(chatHtmlSource).toContain('id="completionContextLength"')
     expect(chatHtmlSource).toContain('title="0 = auto detect via /models"')
     expect(chatHtmlSource).toContain('id="refreshCompletionModels"')
-    expect(chatHtmlSource).toContain('type: "refreshModels"')
+    expect(chatHtmlSource).toContain('type: "refreshCompletionModels"')
+    expect(chatHtmlSource).toContain("const models = state.completionModelsLoaded ? (state.completionModels || []) : (state.models || []);")
     expect(chatHtmlSource).toContain("function completionCandidateModels(profile, savedModel)")
     expect(chatHtmlSource).toContain('model.source !== "provider"')
     expect(chatHtmlSource).toContain('if (profile === "deepseek-fim") return text.includes("deepseek")')
     expect(chatHtmlSource).toContain('return text.includes("qwen") && text.includes("coder")')
-    expect(chatHtmlSource).toContain('configured.toLowerCase().includes("deepseek")')
+    expect(chatHtmlSource).toContain("completionModelMatchesProfile(configured.toLowerCase(), profile)")
     expect(chatHtmlSource).toContain(".sort((left, right) => (left.providerIndex ?? 1e9) - (right.providerIndex ?? 1e9))")
     expect(chatHtmlSource).toContain("completionModelId(candidates[0])")
     expect(chatHtmlSource).toContain("No Qwen Coder completion model")
@@ -79,6 +88,9 @@ describe("model selection flow", () => {
     expect(chatHtmlSource).toContain("无可用补全模型，补全暂不可用")
     expect(chatHtmlSource).toContain('numberInputValue("completionContextLength", 200000)')
     expect(chatHtmlSource).toContain('el("completionContextLength").value = String(completion.contextLength ?? 200000);')
+    expect(chatHtmlSource).toContain('const providerMode = el("completionProviderMode").value;')
+    expect(chatHtmlSource).toContain("providerMode,")
+    expect(chatHtmlSource).toContain('apiBaseUrl: providerMode === "custom" ? el("completionApiBaseUrl").value : ""')
     expect(chatHtmlSource).toContain("el(\"saveCompletionSettings\").disabled = unavailable")
     expect(chatHtmlSource).toContain("el(\"testCompletionApi\").disabled = !direct || unavailable")
   })

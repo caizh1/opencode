@@ -1,6 +1,7 @@
 import * as crypto from "node:crypto"
 import * as vscode from "vscode"
 import { parseSupportedDocument } from "./document-parser"
+import { DocumentRagWorkerPool } from "./document-rag-worker-host"
 import {
   createDocumentRagChunks,
   decodeDocumentRagVectors,
@@ -69,6 +70,10 @@ const DOCUMENT_RAG_UNRESOLVED_CHANGE_RECONCILE_DELAY_MS = 500
 const DOCUMENT_RAG_WATCHER_RESCAN_THRESHOLD = 500
 const DOCUMENT_RAG_QUERY_BUDGET_MS = 1000
 const DOCUMENT_RAG_EMBEDDING_BATCH_LIMIT = 32
+const DOCUMENT_RAG_STATUS_MIN_INTERVAL_MS = 1000
+const DOCUMENT_RAG_CHECKPOINT_DOCUMENT_INTERVAL = 8
+const DOCUMENT_RAG_CHECKPOINT_INTERVAL_MS = 30 * 1000
+const DOCUMENT_RAG_YIELD_DOCUMENT_INTERVAL = 2
 
 export class DocumentRagService implements vscode.Disposable, DocumentRagContextProvider {
   private watcher?: vscode.FileSystemWatcher
@@ -79,12 +84,18 @@ export class DocumentRagService implements vscode.Disposable, DocumentRagContext
   private intervalTimer?: ReturnType<typeof setInterval>
   private pendingChanges = new Map<string, PendingChange>()
   private pendingDocuments = new Map<string, DocumentRagDocument>()
+  private readonly workerPool = new DocumentRagWorkerPool()
   private index?: DocumentRagIndex
   private running = false
   private paused = false
   private disposed = false
   private rescanScheduled = false
   private largeWorkspacePaused = false
+  private lastStatusPushAt = 0
+  private statusPushTimer?: ReturnType<typeof setTimeout>
+  private dirtyDocumentsSinceSave = 0
+  private indexDirty = false
+  private lastIndexSaveAt = 0
   private statusValue: DocumentRagStatus = {
     enabled: true,
     availability: "no-documents",
@@ -127,6 +138,9 @@ export class DocumentRagService implements vscode.Disposable, DocumentRagContext
     if (this.changeTimer) clearTimeout(this.changeTimer)
     if (this.processTimer) clearTimeout(this.processTimer)
     if (this.intervalTimer) clearInterval(this.intervalTimer)
+    if (this.statusPushTimer) clearTimeout(this.statusPushTimer)
+    this.workerPool.dispose()
+    this.flushIndexCheckpointInBackground("dispose")
   }
 
   status() {
@@ -144,6 +158,7 @@ export class DocumentRagService implements vscode.Disposable, DocumentRagContext
 
   pauseIndexing(reason = "paused by user") {
     this.paused = true
+    this.flushIndexCheckpointInBackground("pause")
     this.setStatus("paused", { fallbackReason: reason })
   }
 
@@ -279,6 +294,7 @@ export class DocumentRagService implements vscode.Disposable, DocumentRagContext
   private async applyPendingChanges() {
     if (this.disposed || this.pendingChanges.size === 0) return
     if (this.paused) {
+      await this.flushIndexCheckpoint("pending changes paused")
       this.setStatus("paused", { fallbackReason: "Document changes are queued while indexing is paused." })
       return
     }
@@ -442,6 +458,10 @@ export class DocumentRagService implements vscode.Disposable, DocumentRagContext
     this.running = true
     try {
       await this.ensureIndex()
+      const workerStatus = await this.workerPool.health(settings.documentRag.workerConcurrency)
+      this.output.appendLine(
+        `[document-rag-worker] healthy=${workerStatus.healthy ? "true" : "false"} workers=${workerStatus.workers}${workerStatus.error ? ` error=${workerStatus.error}` : ""}`,
+      )
       const provider = await this.embeddingProvider(settings)
       if (!provider) {
         this.setStatus("not-configured", { fallbackReason: "Document RAG embedding provider is not configured." })
@@ -457,9 +477,14 @@ export class DocumentRagService implements vscode.Disposable, DocumentRagContext
         if (!document) break
         this.setStatus("indexing", { progress: this.progress("indexing") })
         await this.indexDocument(document, provider, settings)
+        if (this.dirtyDocumentsSinceSave % DOCUMENT_RAG_YIELD_DOCUMENT_INTERVAL === 0) await yieldToHost()
       }
+      await this.flushIndexCheckpoint("queue complete")
       this.refreshReadyStatus()
     } catch (error) {
+      await this.flushIndexCheckpoint("error").catch((saveError) => {
+        this.output.appendLine(`[document-rag] checkpoint failed after indexing error: ${formatError(saveError)}`)
+      })
       this.setStatus("error", { lastError: formatError(error) })
       this.output.appendLine(`[document-rag] indexing failed: ${formatError(error)}`)
     } finally {
@@ -482,12 +507,15 @@ export class DocumentRagService implements vscode.Disposable, DocumentRagContext
       return
     }
     let parsed: Awaited<ReturnType<typeof parseSupportedDocument>>
+    let parseElapsedMs = 0
     try {
-      parsed = await parseSupportedDocument({
+      const parseStarted = Date.now()
+      parsed = await this.parseDocumentWithWorker({
         path: document.path,
         bytes,
         maxBytes: settings.documentRag.maxExtractedBytesPerFile,
-      })
+      }, settings)
+      parseElapsedMs = Date.now() - parseStarted
       if (!parsed) {
         await this.markSkipped(document, "unsupported document")
         return
@@ -512,7 +540,9 @@ export class DocumentRagService implements vscode.Disposable, DocumentRagContext
       await this.markSkipped(document, "no extractable text")
       return
     }
+    const embeddingStarted = Date.now()
     const vectors = await this.embedChunks(provider, chunks, settings)
+    const embeddingElapsedMs = Date.now() - embeddingStarted
     this.replaceDocument(document.uri, {
       ...document,
       hash,
@@ -521,8 +551,16 @@ export class DocumentRagService implements vscode.Disposable, DocumentRagContext
       skipped: false,
       error: undefined,
     }, chunks, vectors)
-    await this.saveIndex()
-    this.output.appendLine(`[document-rag] indexed ${document.path} chunks=${chunks.length}`)
+    await this.maybeCheckpointIndex("document indexed")
+    this.output.appendLine(`[document-rag] indexed ${document.path} chunks=${chunks.length} parseMs=${parseElapsedMs} embeddingMs=${embeddingElapsedMs}`)
+  }
+
+  private async parseDocumentWithWorker(input: {
+    path: string
+    bytes: Uint8Array
+    maxBytes: number
+  }, settings: RemoteSettings) {
+    return this.workerPool.parseDocument(input, settings.documentRag.workerConcurrency)
   }
 
   private async embedChunks(provider: EmbeddingProvider, chunks: DocumentRagChunk[], settings: RemoteSettings) {
@@ -545,7 +583,9 @@ export class DocumentRagService implements vscode.Disposable, DocumentRagContext
       indexedAt: Date.now(),
       chunkCount: 0,
     }
-    await this.saveIndex()
+    this.index!.updatedAt = Date.now()
+    this.markIndexDirty()
+    await this.maybeCheckpointIndex("document skipped")
     this.output.appendLine(`[document-rag] skipped ${document.path}: ${reason}`)
   }
 
@@ -607,6 +647,7 @@ export class DocumentRagService implements vscode.Disposable, DocumentRagContext
     this.index!.provider = this.embeddingProviderId()
     this.index!.model = this.getSettings().rag.embedding.model
     this.index!.updatedAt = Date.now()
+    this.markIndexDirty()
   }
 
   private removeDocument(uri: string) {
@@ -614,6 +655,7 @@ export class DocumentRagService implements vscode.Disposable, DocumentRagContext
     this.removeDocumentChunks(uri)
     this.pendingDocuments.delete(uri)
     this.index!.updatedAt = Date.now()
+    this.markIndexDirty()
   }
 
   private removeDocumentChunks(uri: string) {
@@ -628,6 +670,39 @@ export class DocumentRagService implements vscode.Disposable, DocumentRagContext
     this.index.chunks = chunks
     this.index.vectors = vectors
     this.index.dimension = vectors[0]?.length ?? 0
+  }
+
+  private markIndexDirty() {
+    this.indexDirty = true
+    this.dirtyDocumentsSinceSave += 1
+  }
+
+  private async maybeCheckpointIndex(reason: string) {
+    if (!this.indexDirty) return
+    const now = Date.now()
+    if (
+      this.dirtyDocumentsSinceSave < DOCUMENT_RAG_CHECKPOINT_DOCUMENT_INTERVAL
+      && now - this.lastIndexSaveAt < DOCUMENT_RAG_CHECKPOINT_INTERVAL_MS
+    ) {
+      return
+    }
+    await this.flushIndexCheckpoint(reason)
+  }
+
+  private async flushIndexCheckpoint(reason: string) {
+    if (!this.index || !this.indexDirty) return
+    const started = Date.now()
+    await this.saveIndex()
+    this.indexDirty = false
+    this.dirtyDocumentsSinceSave = 0
+    this.lastIndexSaveAt = Date.now()
+    this.output.appendLine(`[document-rag] checkpoint saved reason=${reason} elapsedMs=${this.lastIndexSaveAt - started} documents=${Object.keys(this.index.documents).length} chunks=${this.index.chunks.length}`)
+  }
+
+  private flushIndexCheckpointInBackground(reason: string) {
+    void this.flushIndexCheckpoint(reason).catch((error) => {
+      this.output.appendLine(`[document-rag] checkpoint failed reason=${reason}: ${formatError(error)}`)
+    })
   }
 
   private shiftPendingDocument() {
@@ -680,7 +755,33 @@ export class DocumentRagService implements vscode.Disposable, DocumentRagContext
       lastScanAt: patch.lastScanAt ?? index?.lastScanAt,
       ...patch,
     }
-    this.onStatusChange()
+    this.notifyStatusChange(availability)
+  }
+
+  private notifyStatusChange(availability: DocumentRagStatus["availability"]) {
+    const throttle = availability === "indexing" || availability === "scanning"
+    if (!throttle) {
+      if (this.statusPushTimer) {
+        clearTimeout(this.statusPushTimer)
+        this.statusPushTimer = undefined
+      }
+      this.lastStatusPushAt = Date.now()
+      this.onStatusChange()
+      return
+    }
+    const now = Date.now()
+    const elapsed = now - this.lastStatusPushAt
+    if (elapsed >= DOCUMENT_RAG_STATUS_MIN_INTERVAL_MS) {
+      this.lastStatusPushAt = now
+      this.onStatusChange()
+      return
+    }
+    if (this.statusPushTimer) return
+    this.statusPushTimer = setTimeout(() => {
+      this.statusPushTimer = undefined
+      this.lastStatusPushAt = Date.now()
+      this.onStatusChange()
+    }, Math.max(1, DOCUMENT_RAG_STATUS_MIN_INTERVAL_MS - elapsed))
   }
 
   private refreshReadyStatus() {
@@ -750,6 +851,9 @@ export class DocumentRagService implements vscode.Disposable, DocumentRagContext
     const vectors = encodeDocumentRagVectors(this.index.vectors, this.index.dimension)
     await vscode.workspace.fs.writeFile(vscode.Uri.joinPath(dir, "vectors.f32"), vectors)
     await vscode.workspace.fs.writeFile(vscode.Uri.joinPath(dir, "manifest.json"), encodeJson(manifest))
+    this.indexDirty = false
+    this.dirtyDocumentsSinceSave = 0
+    this.lastIndexSaveAt = Date.now()
   }
 
   private async loadIndex(): Promise<DocumentRagIndex | undefined> {
@@ -908,6 +1012,10 @@ function abortSignalAfter(ms: number) {
   const controller = new AbortController()
   setTimeout(() => controller.abort(), Math.max(1, ms))
   return controller.signal
+}
+
+function yieldToHost() {
+  return new Promise<void>((resolve) => setTimeout(resolve, 0))
 }
 
 function encodeJson(value: unknown) {

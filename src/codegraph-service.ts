@@ -309,8 +309,7 @@ export class LocalCodeGraphService implements vscode.Disposable {
   resumeRagIndexing() {
     this.ragManualPauseSequence += 1
     const manualRagResume = this.resumeManualRagIndexing()
-    if (!manualRagResume) void this.scheduleRagIndexResumeFromStatus("manual-resume")
-    this.schedulePendingRagWorkAfterCodeGraphReady("manual-resume")
+    if (!manualRagResume) void this.resumeRagIndexFromStatus("manual-resume")
   }
 
   async benchmarkSyntheticRepository(files = 1000) {
@@ -472,6 +471,35 @@ export class LocalCodeGraphService implements vscode.Disposable {
       this.queuePendingRagRefresh(undefined, { ignorePrevious: true })
       this.runPendingRagRefreshWhenReady("RAG force rebuild requested", { restartInFlight: true, ignorePrevious: true })
       return this.ragApplyResult(ready ? "build-started" : "build-queued")
+    }
+
+    if (options.resumeExistingIndex) {
+      const ready = this.isCodeGraphReadyForRag()
+      await this.refreshRagIndex(undefined, {
+        restartInFlight: true,
+        continuePreviousElapsed: true,
+        reason: "RAG scheduler configuration changed",
+      })
+      return this.ragApplyResult(ready ? "build-started" : "build-queued")
+    }
+
+    if (options.stopInFlightPreserveIndex) {
+      this.clearPendingRagWorkTimer()
+      this.pendingRagRefresh = undefined
+      this.pendingRagRefreshIgnorePrevious = false
+      this.pendingRagRefreshContinuePreviousElapsed = false
+      this.pendingRagResumeTrigger = undefined
+      this.abortRagIndex("RAG configuration no longer matches active build")
+      if (this.ragIndexInFlight) {
+        try {
+          await this.ragIndexInFlight
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error)
+          this.output.appendLine(`[rag-index] active build stopped after RAG configuration change: ${message}`)
+        }
+      }
+      const status = await this.probeRagConfiguration()
+      return this.ragApplyResult(status.availability === "unavailable" ? "unavailable" : "status-refreshed", status)
     }
 
     if (options.preserveExistingIndex) {
@@ -1542,9 +1570,10 @@ export class LocalCodeGraphService implements vscode.Disposable {
       : "ready"
     const availability = indexAvailability
     const hasVectors = index.dimension > 0 && index.vectors.length > 0
+    const activeIndexError = index.state === "stale" || pendingChunkCount > 0
     const fallbackReason = index.staleReason
       ? index.staleReason
-      : index.indexPausedReason
+      : activeIndexError && index.indexPausedReason
       ? ragPausedReasonMessage(index.indexPausedReason, index.lastError)
       : pendingChunkCount > 0
         ? "RAG vector index is partially built; remaining chunks will be embedded on the next RAG index run"
@@ -1572,7 +1601,7 @@ export class LocalCodeGraphService implements vscode.Disposable {
       rerankLastError: rerankProbe.lastError,
       dimension: index.dimension,
       updatedAt: index.updatedAt,
-      lastError: index.lastError,
+      lastError: activeIndexError ? index.lastError : undefined,
       fallbackReason,
     }
   }
@@ -2371,6 +2400,20 @@ export class LocalCodeGraphService implements vscode.Disposable {
           this.ragResumeInFlight = undefined
         })
     }, delayMs)
+  }
+
+  private async resumeRagIndexFromStatus(trigger: string) {
+    const index = this.ragIndex
+    const pending = index?.pendingChunkCount ?? 0
+    if (index && pending > 0 && index.state !== "stale" && !index.staleReason) {
+      this.output.appendLine(`[rag-index] manual resume starting trigger=${trigger} pending=${pending} reason=${index.indexPausedReason ?? "partial"}`)
+      await this.refreshRagIndex(undefined, { reason: trigger, continuePreviousElapsed: true })
+      return
+    }
+
+    this.clearRagIndexResume()
+    const status = await this.probeRagConfiguration()
+    this.output.appendLine(`[rag-index] manual resume refreshed RAG status trigger=${trigger} availability=${status.availability ?? "unknown"} pending=${pending}`)
   }
 
   private ragResumeDelayMs(index: RagVectorIndex, reason: RagResumeReason) {

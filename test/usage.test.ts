@@ -57,6 +57,19 @@ describe("token usage summaries", () => {
     expect(usage.detail).toBe("Context 24.1k tokens used by the latest assistant turn input. Model context limit is unknown. Loaded session 25.2k tokens")
   })
 
+  test("uses resolved chat context window override when provider model limits are unavailable", () => {
+    const usage = summarizeSessionUsage({
+      messages: [assistant("m1", { input: 24_100, output: 1100, reasoning: 0 })],
+      models: [],
+      selectedModel: "",
+      contextLimitOverride: { context: 262_144 },
+    })
+
+    expect(usage.summary).toBe("Context 24.1k / 262.1k | 238k left est.")
+    expect(usage.detail).toBe("Estimated context remaining: 238k tokens of 262.1k. Session 25.2k tokens")
+    expect(usage.detail).not.toContain("Model context limit is unknown")
+  })
+
   test("does not show context zero for incomplete zero-token placeholders", () => {
     const usage = summarizeSessionUsage({
       messages: [assistant("m1", { input: 0, output: 0, reasoning: 0 })],

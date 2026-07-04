@@ -1016,11 +1016,13 @@ function evalSettings(): RemoteSettings {
     },
     completion: {
       enabled: true,
+      providerMode: "custom" as const,
       provider: "openai-compatible" as const,
       profile: "generic-chat" as const,
       apiBaseUrl: "http://localhost:8000/v1",
       model: "qwen",
       maxTokens: 128,
+      contextLength: 200000,
       temperature: 0,
       topP: 1,
       debounceMs: 350,

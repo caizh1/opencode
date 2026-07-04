@@ -260,7 +260,7 @@ function skippedRenderResult(input: {
   input.log?.(`[word-agent] remote Word render skipped: ${input.reason}; endpoint=${endpoint}; ${input.message}`)
   return {
     attempted: false,
-    ok: true,
+    ok: !input.structureIssues.some((item) => item.severity === "error"),
     visualQaStatus: "skipped",
     skipReason: input.reason,
     issues: [
@@ -332,7 +332,13 @@ function normalizeRemoteEndpoint(input: string) {
 }
 
 function renderRelevantStructureIssues(issues: QualityIssue[] | undefined) {
-  return (issues ?? []).filter((item) => item.code === "toc-placeholder" || item.code === "table-overflow-risk" || item.code === "missing-header" || item.code === "missing-footer")
+  return (issues ?? []).filter((item) => item.code === "toc-placeholder"
+    || item.code === "table-overflow-risk"
+    || item.code === "missing-header"
+    || item.code === "missing-footer"
+    || item.code === "table-header-low-contrast"
+    || item.code === "table-header-fill-missing"
+    || item.code === "table-header-fill-too-light")
 }
 
 function positiveInteger(value: unknown) {

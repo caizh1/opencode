@@ -107,11 +107,13 @@ function settings(input: { localOnlyMode: boolean; defaultAgent?: string }): Rem
     },
     completion: {
       enabled: false,
+      providerMode: "inherit-chat",
       provider: "openai-compatible",
       profile: "generic-chat",
       apiBaseUrl: "",
       model: "",
       maxTokens: 128,
+      contextLength: 200000,
       temperature: 0.2,
       topP: 0.8,
       debounceMs: 350,

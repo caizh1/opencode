@@ -1,0 +1,18 @@
+{
+  "extensionId": "local.chipmate",
+  "codeCmd": "code",
+  "realUserDataDir": "~/Library/Application Support/Code/User",
+  "realExtensionsDir": "~/.vscode/extensions",
+  "workspace": "test/live-vscode/fixtures/workspaces/small-c",
+  "providerMode": "use-existing-secret",
+  "completion": {
+    "enabled": false
+  },
+  "timeouts": {
+    "startupMs": 45000,
+    "commandMs": 20000,
+    "indexMs": 180000,
+    "soakMs": 900000
+  },
+  "redact": []
+}

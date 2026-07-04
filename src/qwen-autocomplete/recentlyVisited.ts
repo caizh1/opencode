@@ -50,8 +50,9 @@ export class QwenRecentlyVisitedTracker implements QwenRecentlyVisitedSource {
     this.guard = deps.guard ?? shouldGuardQwenContextDocument
     this.now = deps.now ?? Date.now
     this.read = deps.read ?? readQwenAutocompleteConfig
-    if (active(this.read())) {
-      this.listener = vscode.window.onDidChangeTextEditorSelection((event) => {
+    const windowApi = vscode.window
+    if (active(this.read()) && windowApi && typeof windowApi.onDidChangeTextEditorSelection === "function") {
+      this.listener = windowApi.onDidChangeTextEditorSelection((event) => {
         const task = this.capture(event as unknown as Event)
         this.pending.add(task)
         task.finally(() => this.pending.delete(task)).catch((err) => void err)

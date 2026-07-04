@@ -650,6 +650,13 @@ export type DocumentEditOperation =
 	      table: TableSpec
 	    }
 	  | {
+	      type: "insertTableColumn"
+	      locator: WordDocumentLocator
+	      header: string
+	      values: string[]
+	      columnIndex?: number
+	    }
+	  | {
 	      type: "updateTableHeaderRows"
 	      locator: WordDocumentLocator
 	      headerRowCount: number
@@ -817,6 +824,29 @@ export type WordEditStructureCheckResult = {
   issues: QualityIssue[]
 }
 
+export type WordTablePreservationCheckResult = {
+  ok: boolean
+  issues: QualityIssue[]
+  checkedTables: number
+  beforeNonEmptyCells: number
+  afterNonEmptyCells: number
+  preservedNonEmptyCells: number
+  lostNonEmptyCells: number
+  operations: Array<{
+    type: "replaceTable" | "insertTableColumn" | "updateTable" | "updateTableWithTrackedChange" | "updateTableHeaderRows"
+    tableIndex?: number
+    beforeRows?: number
+    afterRows?: number
+    beforeColumns?: number
+    afterColumns?: number
+    beforeNonEmptyCells?: number
+    afterNonEmptyCells?: number
+    preservedNonEmptyCells?: number
+    lostNonEmptyCells?: number
+    preservationRatio?: number
+  }>
+}
+
 export type WordEditRenderCheckResult = {
   attempted: boolean
   ok: boolean
@@ -928,6 +958,7 @@ export type DocumentSkillRunSummary = {
   editPlan?: DocumentEditPlan
   appliedOperations: Array<{ type: DocumentEditOperation["type"]; locator: WordDocumentLocator; detail: string }>
   structureCheckResult?: WordEditStructureCheckResult
+  tablePreservationCheckResult?: WordTablePreservationCheckResult
   renderCheckResult?: WordEditRenderCheckResult
   visualQaVerdict?: WordVisualQaVerdict
   repairAttempted: boolean

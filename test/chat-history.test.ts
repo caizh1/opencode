@@ -63,7 +63,7 @@ describe("chat history flow", () => {
     expect(chatViewSource).toContain('const kind = stringFromPart(record.kind) || "drawio"')
     expect(chatViewSource).toContain('xml: stringFromPart(record.xml)')
     expect(chatViewSource).toContain('|| part.xml')
-    expect(chatHtmlSource).toContain('return (item.parts || []).some((part) => part.text || part.detail || part.status || part.xml || part.type === "diagram" || part.type === "wordRender");')
+    expect(chatHtmlSource).toContain('return (item.parts || []).some((part) => part.text || part.detail || part.status || part.xml || part.type === "diagram" || part.type === "wordRender" || part.type === "runProgress");')
   })
 
   test("keeps document agent stage summaries in persisted history", () => {
@@ -229,16 +229,18 @@ describe("chat history flow", () => {
     expect(chatViewSource).toContain("private async testRagSettings")
     expect(chatViewSource).not.toContain("private async setRag" + "ApiKey")
     expect(chatViewSource).toContain("await saveRagSettings(input)")
-    expect(chatViewSource).toContain("ragSettingsInputChangesEmbeddingIdentity")
-    expect(chatViewSource).toContain("ragSettingsInputMatchesCurrent(input")
-    expect(chatViewSource).toContain("ragExistingIndexConfirmationReason")
-    expect(chatViewSource).toContain("confirmForceRagRebuild")
+    expect(chatViewSource).toContain("classifyRagSettingsInputChange")
+    expect(chatViewSource).toContain("confirmRagSettingsSave")
+    expect(chatViewSource).toContain("confirmStandaloneRagForceRebuild")
     expect(chatViewSource).toContain("forceRebuild: true")
+    expect(chatViewSource).toContain("resumeExistingIndex: true")
+    expect(chatViewSource).toContain("stopInFlightPreserveIndex: true")
     expect(chatViewSource).toContain("preserveExistingIndex: true")
-    expect(chatViewSource).toContain("RAG settings not saved. Existing local RAG index kept.")
-    expect(chatViewSource).toContain("Embedding endpoint 或 model 已变化")
-    expect(chatViewSource).toContain("本地已有完整 RAG 索引")
-    expect(chatViewSource).toContain("本地已有未完成的 RAG 索引")
+    expect(chatViewSource).toContain("RAG settings not saved. Current indexing state was not changed.")
+    expect(chatViewSource).toContain("必须从 0 重建")
+    expect(chatViewSource).toContain("无需从 0 重建")
+    expect(chatViewSource).toContain("强制重建 Code RAG 会停止当前 indexing、删除旧 Code RAG index，并按已保存配置从 0 重建")
+    expect(chatViewSource).toContain('case "forceRebuildCodeRag"')
     expect(chatViewSource).toContain("this.deps.codeGraph?.testRagConfiguration()")
     expect(chatViewSource).toContain("[rag-test] testing RAG configuration")
     expect(chatViewSource).toContain("[rag-test] result:")
@@ -247,6 +249,7 @@ describe("chat history flow", () => {
     expect(chatViewSource).toContain('type: "pauseRagIndexing"')
     expect(chatViewSource).toContain('type: "resumeRagIndexing"')
     expect(chatViewSource).toContain('type: "cancelRagIndexing"')
+    expect(chatViewSource).toContain('type: "forceRebuildCodeRag"')
     expect(chatViewSource).toContain("this.deps.codeGraph?.pauseRagIndexing")
     expect(chatViewSource).toContain("this.deps.codeGraph?.resumeRagIndexing")
     expect(chatViewSource).toContain("this.deps.codeGraph?.cancelRagIndexing")
@@ -267,16 +270,17 @@ describe("chat history flow", () => {
     expect(contextSource).toContain("<local-document-rag>")
   })
 
-  test("defaults the RAG rebuild confirmation to keeping the existing index", () => {
-    const start = chatViewSource.indexOf("private async confirmForceRagRebuild")
+  test("uses explicit RAG save and force rebuild confirmation buttons", () => {
+    const start = chatViewSource.indexOf("private async confirmRagSettingsSave")
     const end = chatViewSource.indexOf("private async testRagSettings", start)
     const body = chatViewSource.slice(start, end)
-    const keep = 'const keep = { title: "否，保留现有索引" }'
-    const force = 'const force = { title: "是，强制重建" }'
+    const cancel = 'const cancel = { title: "取消，不保存" }'
+    const rebuild = 'title: kind === "identity" ? "保存并重建" : "保存并继续索引"'
 
-    expect(body.indexOf(keep)).toBeGreaterThanOrEqual(0)
-    expect(body.indexOf(force)).toBeGreaterThan(body.indexOf(keep))
-    expect(body).toContain("selected?.title === force.title")
+    expect(body.indexOf(cancel)).toBeGreaterThanOrEqual(0)
+    expect(body.indexOf(rebuild)).toBeGreaterThan(body.indexOf(cancel))
+    expect(body).toContain("selected?.title === save.title")
+    expect(body).toContain("强制重建 Code RAG")
     expect(body).not.toContain("isCloseAffordance")
   })
 
@@ -552,7 +556,8 @@ describe("chat history flow", () => {
 	    expect(chatHtmlSource).toContain('fingerprint: assistantActivityFingerprint(activityStatus)')
 	    expect(chatHtmlSource).toContain("if (activityStatus && !activityMessageKey) {")
 	    expect(chatHtmlSource).toContain('renderPartCards(body, item, options)')
-	    expect(chatHtmlSource).toContain('root.appendChild(toolLiveActivityRow(liveToolActivity));')
+	    expect(chatHtmlSource).toContain("liveToolActivity,")
+	    expect(chatHtmlSource).toContain("if (input.liveToolActivity) return assistantActivityLabel(input.liveToolActivity);")
 	    expect(chatHtmlSource).toContain("hasAssistantContentAfterLastUser")
 	  })
 

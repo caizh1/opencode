@@ -682,7 +682,7 @@ function table(spec: TableSpec, theme: ReportTheme, context?: WordBuildContext) 
     : genericTableColumnWidths(spec.headers, theme)
   const item = context?.tableMap.get(spec)
   const rows = [
-    tableRow(spec.headers.map((header, index) => tableCell(header, theme.styles.tableHeader, theme, theme.table.headerFill, undefined, columnWidths[index], spec.columnAlignments?.[index] ?? "center")), spec.repeatHeader !== false),
+    tableRow(spec.headers.map((header, index) => tableCell(header, theme.styles.tableHeader, theme, theme.table.headerFill, undefined, columnWidths[index], spec.columnAlignments?.[index] ?? "center", undefined, "TableHeader")), spec.repeatHeader !== false),
     tableBodyRows(spec, theme, columnWidths),
   ].join("")
   return [
@@ -752,8 +752,8 @@ function definitionListTable(items: DefinitionListItemSpec[], theme: ReportTheme
   const columnWidths = distributeByRatios(pageTextWidth(theme), [30, 70])
   const rows = [
     tableRow([
-      tableCell("术语", theme.styles.tableHeader, theme, theme.table.headerFill, undefined, columnWidths[0], "center"),
-      tableCell("定义 / 说明", theme.styles.tableHeader, theme, theme.table.headerFill, undefined, columnWidths[1], "center"),
+      tableCell("术语", theme.styles.tableHeader, theme, theme.table.headerFill, undefined, columnWidths[0], "center", undefined, "TableHeader"),
+      tableCell("定义 / 说明", theme.styles.tableHeader, theme, theme.table.headerFill, undefined, columnWidths[1], "center", undefined, "TableHeader"),
     ]),
     ...items
       .filter((item) => item.term?.trim() && item.definition?.trim())
@@ -769,10 +769,10 @@ function sourceListTable(items: SourceListItemSpec[], theme: ReportTheme) {
   const columnWidths = distributeByRatios(pageTextWidth(theme), [28, 18, 30, 24])
   const rows = [
     tableRow([
-      tableCell("来源", theme.styles.tableHeader, theme, theme.table.headerFill, undefined, columnWidths[0], "center"),
-      tableCell("角色", theme.styles.tableHeader, theme, theme.table.headerFill, undefined, columnWidths[1], "center"),
-      tableCell("路径", theme.styles.tableHeader, theme, theme.table.headerFill, undefined, columnWidths[2], "center"),
-      tableCell("说明", theme.styles.tableHeader, theme, theme.table.headerFill, undefined, columnWidths[3], "center"),
+      tableCell("来源", theme.styles.tableHeader, theme, theme.table.headerFill, undefined, columnWidths[0], "center", undefined, "TableHeader"),
+      tableCell("角色", theme.styles.tableHeader, theme, theme.table.headerFill, undefined, columnWidths[1], "center", undefined, "TableHeader"),
+      tableCell("路径", theme.styles.tableHeader, theme, theme.table.headerFill, undefined, columnWidths[2], "center", undefined, "TableHeader"),
+      tableCell("说明", theme.styles.tableHeader, theme, theme.table.headerFill, undefined, columnWidths[3], "center", undefined, "TableHeader"),
     ]),
     ...items
       .filter((item) => item.title?.trim() || item.sourceId?.trim())
@@ -1045,8 +1045,8 @@ function formFieldsTable(fields: FormFieldSpec[], theme: ReportTheme) {
   const columnWidths = distributeByRatios(pageTextWidth(theme), [32, 68])
   const rows = [
     tableRow([
-      tableCell("字段", theme.styles.tableHeader, theme, theme.table.headerFill, undefined, columnWidths[0], "center"),
-      tableCell("填写内容", theme.styles.tableHeader, theme, theme.table.headerFill, undefined, columnWidths[1], "center"),
+      tableCell("字段", theme.styles.tableHeader, theme, theme.table.headerFill, undefined, columnWidths[0], "center", undefined, "TableHeader"),
+      tableCell("填写内容", theme.styles.tableHeader, theme, theme.table.headerFill, undefined, columnWidths[1], "center", undefined, "TableHeader"),
     ], true),
     ...fields.map((field, index) => tableRow([
       tableCell([field.label, field.helpText].filter(Boolean).join("\n"), theme.styles.tableCell, theme, undefined, undefined, columnWidths[0]),
@@ -1275,7 +1275,7 @@ function tableRow(cells: string[], repeatHeader = false) {
   return `<w:tr>${repeatHeader ? "<w:trPr><w:tblHeader/></w:trPr>" : ""}${cells.join("")}</w:tr>`
 }
 
-function tableCell(text: string, style: TextStyle, theme: ReportTheme, fill?: string, gridSpan?: number, width?: number, alignment?: "left" | "center" | "right", merge?: { vMerge?: "restart" | "continue" }) {
+function tableCell(text: string, style: TextStyle, theme: ReportTheme, fill?: string, gridSpan?: number, width?: number, alignment?: "left" | "center" | "right", merge?: { vMerge?: "restart" | "continue" }, styleId = "Normal") {
   return [
     "<w:tc>",
     "<w:tcPr>",
@@ -1285,7 +1285,7 @@ function tableCell(text: string, style: TextStyle, theme: ReportTheme, fill?: st
     fill ? `<w:shd w:fill="${fill}"/>` : "",
     '<w:vAlign w:val="center"/>',
     "</w:tcPr>",
-    paragraph(text || " ", style, "Normal", alignment === "center" || alignment === "right" ? alignment : undefined),
+    paragraph(text || " ", style, styleId, alignment === "center" || alignment === "right" ? alignment : undefined),
     "</w:tc>",
   ].join("")
 }
@@ -1458,6 +1458,7 @@ function stylesXml(theme: ReportTheme) {
     styleXml("Quote", "Quote", { ...theme.styles.muted, italic: true, sizeHalfPoints: Math.max(theme.styles.body.sizeHalfPoints, theme.styles.muted.sizeHalfPoints) }, theme, "paragraph"),
     styleXml("IntenseQuote", "Intense Quote", { ...theme.styles.body, italic: true, bold: true, sizeHalfPoints: Math.max(theme.styles.body.sizeHalfPoints + 4, 26), color: theme.colors.secondary }, theme, "paragraph"),
     styleXml("ListParagraph", "List Paragraph", theme.styles.body, theme, "paragraph"),
+    styleXml("TableHeader", "Table Header", theme.styles.tableHeader, theme, "paragraph"),
     styleXml("Heading1", "heading 1", theme.styles.heading1, theme, "paragraph", false, 0),
     styleXml("Heading2", "heading 2", theme.styles.heading2, theme, "paragraph", false, 1),
     styleXml("Heading3", "heading 3", theme.styles.heading3, theme, "paragraph", false, 2),

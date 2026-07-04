@@ -63,6 +63,9 @@ mock.module("vscode", () => ({
   Position: PositionShim,
   RelativePattern: RelativePatternShim,
   Uri: UriShim,
+  env: {
+    remoteName: undefined,
+  },
   FileType: {
     File: 1,
     Directory: 2,
@@ -134,6 +137,7 @@ mock.module("vscode", () => ({
 }))
 
 const { buildChatPrompt, buildChatPromptWithEvidence, LocalContextStore } = await import("../src/context")
+const { UnderstandingPlanner } = await import("../src/understanding-planner")
 
 beforeEach(() => {
   workspaceFolders = [{ name: "repo", uri: UriShim.file("/repo") }]
@@ -339,6 +343,186 @@ describe("QA chat evidence retrieval", () => {
     })
     expect(prompt).toContain("Local analysis evidence pack:")
     expect(prompt).toContain("ftl/bkm/ftl_bkm.c")
+  })
+
+  test("uses understanding planner evidence for non-fast-path broad code questions", async () => {
+    const document = fakeDocument("src/gc.c", "void gc_collect(void) { scan_heap(); }\n")
+    textDocuments = [document]
+    const calls: CapturedCodeGraphCalls = { build: [], query: [] }
+    const toolCalls: string[] = []
+    const prompt = await buildChatPrompt({
+      question: "提升 GC 速度的因素有哪些",
+      options: {
+        includeSelection: false,
+        includeCurrentFile: true,
+        includeOpenFiles: false,
+        includeDiagnostics: false,
+        includeGitDiff: false,
+      },
+      settings: settings(),
+      contextStore: new LocalContextStore(),
+      editorContext: {
+        uri: document.uri as never,
+        selection: { isEmpty: true } as never,
+        position: { line: 0, character: 0 } as never,
+      },
+      codeGraph: codeGraphWithPlannerTools(readyRagStatus(), calls, toolCalls),
+      understandingPlanner: new UnderstandingPlanner({
+        provider: async () => gcSpeedPlan(),
+      }),
+    })
+
+    expect(prompt).toContain("Local understanding planner evidence:")
+    expect(prompt).toContain("Question summary: 分析影响 GC 速度的代码因素")
+    expect(prompt).toContain("type=module_map")
+    expect(prompt).toContain("void gc_collect(void)")
+    expect(prompt).toContain("Aggregated evidence factors:")
+    expect(prompt).toContain("Call frequency and hot paths")
+    expect(prompt).toContain("Configuration thresholds")
+    expect(prompt).toContain("Tests and benchmarks")
+    expect(prompt).toContain("Missing factor evidence:")
+    expect(prompt).toContain("hypothesis=true")
+    expect(prompt).toContain("Answer grounding rules:")
+    expect(prompt).not.toContain("Local analysis evidence pack:")
+    expect(calls.query.map((item) => item.question)).toContain("gc speed latency performance")
+    expect(calls.query.map((item) => item.question)).not.toContain("提升 GC 速度的因素有哪些")
+    expect(toolCalls).toContain("getModuleMap:gc")
+    expect(toolCalls).toContain("getCallers:gc_collect")
+    expect(toolCalls).toContain("getCallees:gc_collect")
+  })
+
+  test("passes previous understanding plan, trace, and confirmed concepts into follow-up planning", async () => {
+    const document = fakeDocument("src/gc.c", "void gc_collect(void) { scan_heap(); }\n")
+    textDocuments = [document]
+    const first = await buildChatPromptWithEvidence({
+      question: "提升 GC 速度的因素有哪些",
+      options: {
+        includeSelection: false,
+        includeCurrentFile: true,
+        includeOpenFiles: false,
+        includeDiagnostics: false,
+        includeGitDiff: false,
+      },
+      settings: settings(),
+      contextStore: new LocalContextStore(),
+      editorContext: {
+        uri: document.uri as never,
+        selection: { isEmpty: true } as never,
+        position: { line: 0, character: 0 } as never,
+      },
+      codeGraph: codeGraphWithPlannerTools(readyRagStatus(), { build: [], query: [] }, []),
+      understandingPlanner: new UnderstandingPlanner({
+        provider: async () => gcSpeedPlan(),
+      }),
+    })
+
+    const providerInputs: unknown[] = []
+    await buildChatPrompt({
+      question: "那配置阈值这一块继续展开",
+      options: {
+        includeSelection: false,
+        includeCurrentFile: true,
+        includeOpenFiles: false,
+        includeDiagnostics: false,
+        includeGitDiff: false,
+      },
+      settings: settings(),
+      contextStore: new LocalContextStore(),
+      editorContext: {
+        uri: document.uri as never,
+        selection: { isEmpty: true } as never,
+        position: { line: 0, character: 0 } as never,
+      },
+      codeGraph: codeGraphWithPlannerTools(readyRagStatus(), { build: [], query: [] }, []),
+      previousUnderstanding: {
+        plan: first.understandingPlannerAudit?.result.kind === "planned" ? first.understandingPlannerAudit.result.plan : undefined,
+        trace: first.understandingPlannerAudit?.execution?.trace ?? first.understandingPlannerAudit?.result.trace,
+        confirmedConcepts: first.understandingPlannerAudit?.result.kind === "planned" ? first.understandingPlannerAudit.result.plan.concepts : [],
+        previousEvidenceRefs: first.understandingPlannerAudit?.aggregation?.factors.flatMap((factor) => factor.supportingEvidence),
+        previousGaps: first.understandingPlannerAudit?.aggregation?.gaps,
+        previousClaims: first.understandingPlannerAudit?.aggregation?.claims,
+      },
+      understandingPlanner: new UnderstandingPlanner({
+        provider: async (input) => {
+          providerInputs.push(input)
+          return gcSpeedPlan()
+        },
+      }),
+    })
+
+    expect(providerInputs).toHaveLength(1)
+    expect(providerInputs[0]).toMatchObject({
+      previousPlan: expect.objectContaining({ questionSummary: "分析影响 GC 速度的代码因素" }),
+      previousTrace: expect.objectContaining({ planner_used: true }),
+      confirmedConcepts: ["GC", "speed", "latency"],
+      previousEvidenceRefs: expect.any(Array),
+      previousGaps: expect.any(Array),
+      previousClaims: expect.any(Array),
+    })
+  })
+
+  test("keeps explicit graph fast-path questions on existing analysis retrieval", async () => {
+    const document = fakeDocument("src/gc.c", "void gc_collect(void) {}\n")
+    textDocuments = [document]
+    const calls: CapturedCodeGraphCalls = { build: [], query: [] }
+    const prompt = await buildChatPrompt({
+      question: "谁调用了 gc_collect",
+      options: {
+        includeSelection: false,
+        includeCurrentFile: true,
+        includeOpenFiles: false,
+        includeDiagnostics: false,
+        includeGitDiff: false,
+      },
+      settings: settings(),
+      contextStore: new LocalContextStore(),
+      editorContext: {
+        uri: document.uri as never,
+        selection: { isEmpty: true } as never,
+        position: { line: 0, character: 0 } as never,
+      },
+      codeGraph: codeGraphWithRagStatus(readyRagStatus(), calls),
+      understandingPlanner: new UnderstandingPlanner({
+        provider: async () => {
+          throw new Error("provider should not run for fast path")
+        },
+      }),
+    })
+
+    expect(prompt).toContain("Local analysis evidence pack:")
+    expect(prompt).toContain("planner_used=false fast_path_reason=callers")
+    expect(calls.query.map((item) => item.question)).toEqual(["谁调用了 gc_collect"])
+  })
+
+  test("falls back to existing analysis retrieval when planner fails", async () => {
+    const document = fakeDocument("src/gc.c", "void gc_collect(void) {}\n")
+    textDocuments = [document]
+    const calls: CapturedCodeGraphCalls = { build: [], query: [] }
+    const prompt = await buildChatPrompt({
+      question: "提升 GC 速度的因素有哪些",
+      options: {
+        includeSelection: false,
+        includeCurrentFile: true,
+        includeOpenFiles: false,
+        includeDiagnostics: false,
+        includeGitDiff: false,
+      },
+      settings: settings(),
+      contextStore: new LocalContextStore(),
+      editorContext: {
+        uri: document.uri as never,
+        selection: { isEmpty: true } as never,
+        position: { line: 0, character: 0 } as never,
+      },
+      codeGraph: codeGraphWithRagStatus(readyRagStatus(), calls),
+      understandingPlanner: new UnderstandingPlanner({
+        provider: async () => ({ tasks: [] }),
+      }),
+    })
+
+    expect(prompt).toContain("fallback_reason=planner-missing-questionSummary")
+    expect(prompt).toContain("Local analysis evidence pack:")
+    expect(calls.query.map((item) => item.question)).toEqual(["提升 GC 速度的因素有哪些"])
   })
 
   test("uses graph-only retrieval while RAG is indexing", async () => {
@@ -636,6 +820,72 @@ function codeGraphWithRagStatus(rag: Partial<RagStatus>, calls: CapturedCodeGrap
   } as CodeGraphContextProvider
 }
 
+function codeGraphWithPlannerTools(rag: Partial<RagStatus>, calls: CapturedCodeGraphCalls, toolCalls: string[]): CodeGraphContextProvider {
+  return {
+    ...codeGraphWithRagStatus(rag, calls),
+    findSymbols: async (input) => {
+      toolCalls.push(`findSymbols:${input.query}`)
+      return [
+        {
+          name: input.query,
+          kind: "function",
+          path: "src/gc.c",
+          startLine: 1,
+          endLine: 1,
+          signature: "void gc_collect(void)",
+          snippet: "void gc_collect(void) {}",
+          score: 1,
+          reason: "test",
+        },
+      ]
+    },
+    runAnalysisTool: async (input) => {
+      toolCalls.push(`${input.tool}:${input.args?.query ?? input.args?.symbol ?? ""}`)
+      return {
+        ok: true,
+        traceId: `trace-${input.tool}`,
+        tool: input.tool,
+        elapsedMs: 1,
+        data: {},
+        evidence: [{
+          file: "src/gc.c",
+          startLine: 1,
+          endLine: 1,
+          snippetHash: `hash-${input.tool}`,
+          parserKind: "test",
+          snippet: "void gc_collect(void) {}",
+        }],
+        audit: {
+          traceId: `trace-${input.tool}`,
+          tool: input.tool,
+          argsSummary: "",
+          evidenceCount: 1,
+          elapsedMs: 1,
+          blocked: false,
+        },
+      }
+    },
+  } as CodeGraphContextProvider
+}
+
+function gcSpeedPlan() {
+  return {
+    questionSummary: "分析影响 GC 速度的代码因素",
+    concepts: ["GC", "speed", "latency"],
+    hypotheses: ["scan scope", "lock contention", "batch size"],
+    tasks: [
+      { type: "semantic_search", query: "gc speed latency performance" },
+      { type: "symbol_discovery", query: "gc" },
+      { type: "module_map", query: "gc" },
+      { type: "config_search", query: "gc threshold batch interval" },
+      { type: "test_search", query: "gc performance benchmark" },
+      { type: "call_expansion", query: "gc", symbol: "gc_collect", direction: "both" },
+    ],
+    answerShape: "factor_grouped",
+    riskNotes: ["Evidence can suggest factors but cannot prove runtime impact without measurement."],
+  }
+}
+
 function codeGraphStatus(rag: Partial<RagStatus>): CodeGraphStatus {
   return {
     state: "ready",
@@ -765,11 +1015,13 @@ function settings(): RemoteSettings {
     },
     completion: {
       enabled: false,
+      providerMode: "inherit-chat",
       provider: "openai-compatible",
       profile: "qwen-coder-fim",
       apiBaseUrl: "http://127.0.0.1/v1",
       model: "",
       maxTokens: 128,
+      contextLength: 200000,
       temperature: 0,
       topP: 1,
       debounceMs: 0,
@@ -847,6 +1099,7 @@ function settings(): RemoteSettings {
       excludeGlobs: [],
       queryTopK: 12,
       maxEvidenceBytes: 24000,
+      workerConcurrency: 2,
     },
   }
 }

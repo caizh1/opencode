@@ -9,7 +9,8 @@ import { validateDiagramIr } from "./diagram-ir"
 import { parseSupportedDocument } from "./document-parser"
 import { generateDrawioDiagram, type DrawioGeneratedDiagram } from "./drawio-diagram-generator"
 import { MermaidPngRenderError, renderMermaidToPngRemoteFirst, type MermaidPngRenderDiagnostic } from "./mermaid-png-renderer"
-import { normalizeDocumentEditPlan, validateDocumentEditPlan } from "./docAgent/DocumentEditPlan"
+import { normalizeDocumentEditPlanWithDiagnostics, validateDocumentEditPlan } from "./docAgent/DocumentEditPlan"
+import { DocxRenderQualityGate } from "./docAgent/DocxRenderQualityGate"
 import { compareWordDocuments } from "./docAgent/WordDocumentDiff"
 import { WordDocumentEditor } from "./docAgent/WordDocumentEditor"
 import { auditWordDocumentFields, WordNativeFieldRefresher, WordRefFieldFlattener, WordSeqFieldMaterializer } from "./docAgent/WordDocumentFields"
@@ -26,7 +27,7 @@ import { decidePermission, type PermissionDecision, type ToolRequest } from "./p
 import type { ActiveSkillPolicy } from "./skills"
 import type { PermissionMode, RemoteSettings, ThreadGoalStatus } from "./types"
 import type { GoalToolResponse } from "./goal-runtime"
-import type { QualityIssue, WordDocSpec, WordDocumentInspection, WordEditRenderCheckResult } from "./docAgent/types"
+import type { DocumentEditOperation, QualityIssue, WordDocSpec, WordDocumentInspection, WordDocumentLocator, WordEditRenderCheckResult } from "./docAgent/types"
 
 export type ToolApprovalRequest = {
   id: string
@@ -659,11 +660,8 @@ export class ToolRuntime {
         type: "function",
         function: {
           name: "apply_word_document_edits",
-          description: "Use when inspect_word_document has already returned locators and a validated DocumentEditPlan is ready. Do not use without verified locators, for unsupported edit operations, or to overwrite the source document. Returns a new .docx artifact path, edit summary, structural checks, and render-quality status. Supports insertSection with ordered blocks for paragraphs, rich paragraphs, true Word lists, PNG figures with captions/bookmarks, fixed-layout tables including merged cells, callouts, code blocks, REF/PAGEREF cross-reference fields or {{ref:bookmark|text}}/{{pageref:bookmark|page}} authoring markers, and true footnote/endnote note runs; replaceParagraph, replaceParagraphWithRichParagraph, replaceText, replaceParagraphWithTrackedChange, replaceParagraphWithRichTrackedChange, replaceTextWithTrackedChange, updateHeadingLevel, updateTable, updateTableWithTrackedChange, replaceTable, updateTableHeaderRows, updateList, updateSectionPageSetup, updateImageAltText, replaceImage, updateCaptionText, updateHyperlinkText, updateHyperlinkTarget, updateNoteText, paragraph addComment, multi-paragraph updateCommentText, setCommentResolved, fillContentControl, addTextWatermark across existing header parts, removeWatermark by inspected document/header/footer VML locator with part audit detail, removeAllComments, acceptAllTrackedChanges, rejectAllTrackedChanges, scrubDocumentMetadata, redactText, and patchOoxmlPart. setCommentResolved updates legacy comments.xml state and existing commentsExtended.xml state; removeAllComments strips comments/commentsExtended/commentsIds package parts, relationships, and content types. Use replaceImage only for inspected images whose replaceSupported is true; external linked images, missing relationships, unresolved media targets, and non-PNG media must be reported rather than forced through replaceImage. redactText supports exact items plus bounded email/phone/custom patterns, optional comment redaction, and package-level match-count audit details without exposing sensitive values. patchOoxmlPart is a last-resort controlled OOXML repair path: use only with documentEnd locator, safe XML package parts, exact oldText/anchor/closeTag preconditions, and when no native operation covers the requested repair.",
-          parameters: objectSchema({
-            path: { type: "string", description: "Absolute or workspace-relative source .docx file that was inspected." },
-            plan: { type: "object", description: "DocumentEditPlan using only locators returned by inspect_word_document.", additionalProperties: true },
-          }, ["path", "plan"]),
+          description: "Use when inspect_word_document has already returned locators and a validated DocumentEditPlan is ready. Do not use without verified locators, for unsupported edit operations, or to overwrite the source document. The plan argument must be a JSON object, never JSON.stringify(plan), quoted JSON, Markdown, or prose. Keep each apply call small: prefer 1-3 operations, split complex edits into multiple inspect/apply rounds, and avoid sending whole tables or whole documents when a local operation can do the job. The plan must contain operations[], and every operations[] item must include a supported type, the exact locator returned by inspect_word_document, and that operation's required fields; do not use action, op, or operationType instead of type. Returns a new .docx artifact path, edit summary, structural checks, table preservation checks, and render-quality status. Supports insertSection with ordered blocks for paragraphs, rich paragraphs, true Word lists, PNG figures with captions/bookmarks, fixed-layout tables including merged cells, callouts, code blocks, REF/PAGEREF cross-reference fields or {{ref:bookmark|text}}/{{pageref:bookmark|page}} authoring markers, and true footnote/endnote note runs; replaceParagraph, replaceParagraphWithRichParagraph, replaceText, replaceParagraphWithTrackedChange, replaceParagraphWithRichTrackedChange, replaceTextWithTrackedChange, updateHeadingLevel, updateTable, updateTableWithTrackedChange, insertTableColumn for adding a column while preserving the inspected table, replaceTable only for deliberate whole-table replacement, updateTableHeaderRows, updateList, updateSectionPageSetup, updateImageAltText, replaceImage, updateCaptionText, updateHyperlinkText, updateHyperlinkTarget, updateNoteText, paragraph addComment, multi-paragraph updateCommentText, setCommentResolved, fillContentControl, addTextWatermark across existing header parts, removeWatermark by inspected document/header/footer VML locator with part audit detail, removeAllComments, acceptAllTrackedChanges, rejectAllTrackedChanges, scrubDocumentMetadata, redactText, and patchOoxmlPart. For existing-table local edits such as adding an acceptance-status column, use insertTableColumn; do not use replaceTable or large updateTable payloads for local table-column edits. setCommentResolved updates legacy comments.xml state and existing commentsExtended.xml state; removeAllComments strips comments/commentsExtended/commentsIds package parts, relationships, and content types. Use replaceImage only for inspected images whose replaceSupported is true; external linked images, missing relationships, unresolved media targets, and non-PNG media must be reported rather than forced through replaceImage. redactText supports exact items plus bounded email/phone/custom patterns, optional comment redaction, and package-level match-count audit details without exposing sensitive values. patchOoxmlPart is a last-resort controlled OOXML repair path: use only with documentEnd locator, safe XML package parts, exact oldText/anchor/closeTag preconditions, and when no native operation covers the requested repair.",
+          parameters: applyWordDocumentEditsToolParameters(),
         },
       },
       {
@@ -1730,13 +1728,50 @@ export class ToolRuntime {
       if (!target.toLowerCase().endsWith(".docx")) {
         return failed("Apply Word document edits", `apply_word_document_edits only supports .docx files: ${target}`, `Unsupported file extension: ${target}`, decision.risk)
       }
-      const bytes = await vscode.workspace.fs.readFile(vscode.Uri.file(target))
       const sourcePath = workspaceRelativePath(target)
+      const planArgument = input.arguments.plan
+      const planSummary = summarizeDocumentEditPlanArgument(planArgument)
+      const argumentBytes = jsonByteLength(input.arguments)
+      const receivedArgumentKeys = Object.keys(input.arguments).sort().slice(0, 24)
+      this.output?.appendLine(`[word-edit] argument check path=${sourcePath} argumentBytes=${argumentBytes} receivedArgumentKeys=${receivedArgumentKeys.join(",") || "none"} planType=${planSummary.planType}`)
+      const invalidPlan = documentEditPlanArgumentFailure(input.arguments, sourcePath, decision.risk)
+      if (invalidPlan) return invalidPlan
+      const bytes = await vscode.workspace.fs.readFile(vscode.Uri.file(target))
       const inspection = await new WordDocumentInspector().inspect({ path: sourcePath, bytes })
-      const plan = normalizeDocumentEditPlan(input.arguments.plan as never, sourcePath)
+      const inspectionSummary = summarizeWordInspectionForEdit(inspection)
+      const normalized = normalizeDocumentEditPlanWithDiagnostics(planArgument as never, sourcePath)
+      const plan = normalized.plan
+      const normalizedPlanSummary = summarizeNormalizedDocumentEditPlan(plan)
+      this.output?.appendLine(`[word-edit] start path=${sourcePath} argumentBytes=${jsonByteLength(input.arguments)} ${documentEditPlanSummaryLog(planSummary)} ${documentEditNormalizationLog(normalized.diagnostics, normalizedPlanSummary)} inspect=${JSON.stringify(inspectionSummary)}`)
       const validation = validateDocumentEditPlan(plan, inspection)
       if (!validation.ok || !validation.plan) {
-        return failed("Apply Word document edits", `DocumentEditPlan validation failed: ${validation.errors.join("; ")}`, validation.errors.join("; "), decision.risk)
+        const normalizationErrors = normalized.diagnostics.errors.slice(0, 20)
+        const validationErrors = validation.errors.slice(0, 20)
+        const allErrors = [...normalizationErrors, ...validationErrors].slice(0, 20)
+        const failedErrors = allErrors.length ? allErrors : validationErrors
+        this.output?.appendLine(`[word-edit] validation failed path=${sourcePath} rawOperationCount=${normalized.diagnostics.rawOperationCount} normalizedOperationCount=${normalized.diagnostics.normalizedOperationCount} droppedOperationCount=${normalized.diagnostics.droppedOperationCount} errors=${failedErrors.map((item) => truncateString(compactLogText(item), 240)).join(" | ")}`)
+        return failed("Apply Word document edits", JSON.stringify({
+          answerSummary: `Apply Word document edits failed: DocumentEditPlan validation failed (${failedErrors.length} error(s)).`,
+          evidence: [],
+          gaps: failedErrors,
+          nextActions: [{ tool: "apply_word_document_edits", reason: "Repair the DocumentEditPlan using only locators returned by inspect_word_document.", args: { path: sourcePath } }],
+          truncated: false,
+          coverage: "partial",
+          data: {
+            errorCode: "document-edit-plan-validation-failed",
+            errorMessage: `DocumentEditPlan validation failed: ${failedErrors.join("; ")}`,
+            normalizationErrors,
+            normalizationErrorCount: normalized.diagnostics.errors.length,
+            validationErrors,
+            validationErrorCount: validation.errors.length,
+            rawPlanSummary: planSummary,
+            normalizedPlanSummary,
+            operationDiagnostics: normalized.diagnostics.operationDiagnostics.slice(0, 20),
+            inspectionSummary,
+            rejectedLocators: rejectedLocatorSummaries(plan.operations, validationErrors),
+            availableLocatorHints: availableLocatorHintsForEditFailures(plan.operations, inspection, validationErrors),
+          },
+        }, null, 2), failedErrors.join("; "), decision.risk)
       }
       const remoteEndpoint = configuredWordRenderRemoteEndpoint()
       this.output?.appendLine(`[word-edit] internal render endpoint ${remoteEndpoint ? "configured" : "unconfigured"}`)
@@ -1763,6 +1798,7 @@ export class ToolRuntime {
             absolutePath: result.absolutePath,
             appliedOperations: result.appliedOperations,
             structureCheckResult: result.structureCheckResult,
+            tablePreservationCheckResult: result.tablePreservationCheckResult,
             renderCheckResult: result.renderCheckResult,
             repairAttempted: result.repairAttempted,
             warnings: result.warnings,
@@ -1775,7 +1811,23 @@ export class ToolRuntime {
     } catch (error) {
       if (input.signal?.aborted) throw error
       const message = formatErrorMessage(error)
-      return failed(`Apply Word document edits: ${target}`, `Apply Word document edits failed: ${target}\n${message}`, message, decision.risk)
+      const sourcePath = workspaceRelativePath(target)
+      const diagnostic = documentEditApplyFailureDiagnostic(message, error)
+      this.output?.appendLine(`[word-edit] apply failed path=${sourcePath} errorCode=${diagnostic.errorCode} message=${truncateString(compactLogText(message), 500)}${diagnostic.stackSnippet ? ` stack=${diagnostic.stackSnippet}` : ""}`)
+      return failed(`Apply Word document edits: ${target}`, JSON.stringify({
+        answerSummary: `Apply Word document edits failed: ${sourcePath}: ${message}`,
+        evidence: [],
+        gaps: [message],
+        nextActions: [{ tool: "inspect_word_document", reason: "Re-inspect the Word document and retry with a validated DocumentEditPlan.", args: { path: sourcePath } }],
+        truncated: false,
+        coverage: "partial",
+        data: {
+          ...diagnostic,
+          errorMessage: message,
+          path: sourcePath,
+          planSummary: summarizeDocumentEditPlanArgument(input.arguments.plan),
+        },
+      }, null, 2), message, decision.risk)
     }
   }
 
@@ -1812,11 +1864,13 @@ export class ToolRuntime {
         path: workspaceRelativePath(target),
       })
       const bytes = await vscode.workspace.fs.readFile(vscode.Uri.file(target))
+      const structureIssues = await new DocxRenderQualityGate().check(bytes)
       const remoteEndpoint = configuredWordRenderRemoteEndpoint()
       this.output?.appendLine(`[word-render] remote endpoint ${remoteEndpoint ? "configured" : "unconfigured"}`)
       const result = await renderWordDocument({
         docxPath: target,
         bytes,
+        structureIssues,
         timeoutMs,
         workspaceRoot: workspaceRoot(),
         artifactNameBase,
@@ -3504,6 +3558,147 @@ function createWordDocumentToolParameters() {
   }, ["spec"])
 }
 
+function applyWordDocumentEditsToolParameters() {
+  return objectSchema({
+    path: { type: "string", description: "Absolute or workspace-relative source .docx file that was inspected." },
+    plan: documentEditPlanToolSchema(),
+  }, ["path", "plan"])
+}
+
+function documentEditPlanToolSchema() {
+  return {
+    type: "object",
+    description: "DocumentEditPlan object. Required: operations. Do not pass this field as a JSON string or JSON.stringify(plan). Keep operations small; prefer 1-3 operations per call and split larger edits into multiple apply calls.",
+    required: ["operations"],
+    additionalProperties: true,
+    properties: {
+      planId: { type: "string", description: "Optional stable edit plan id." },
+      outputTitle: { type: "string", description: "Optional title for the generated edited copy." },
+      outputFilenameBase: { type: "string", description: "Optional safe filename base for the edited copy." },
+      warnings: { type: "array", items: { type: "string" }, description: "Optional model-authored warnings or assumptions for this edit." },
+      operations: {
+        type: "array",
+        minItems: 1,
+        maxItems: 20,
+        description: "One or more controlled Word edit operations. Prefer 1-3 operations per call. Every operation must include type and an exact locator returned by inspect_word_document.",
+        items: {
+          anyOf: [
+            documentEditReplaceTextOperationSchema(),
+            documentEditReplaceParagraphOperationSchema(),
+            documentEditInsertSectionOperationSchema(),
+            documentEditInsertTableColumnOperationSchema(),
+            documentEditUpdateTableHeaderRowsOperationSchema(),
+            documentEditGenericOperationSchema(),
+          ],
+        },
+      },
+    },
+  }
+}
+
+function documentEditLocatorSchema(description = "Exact locator object returned by inspect_word_document.") {
+  return {
+    type: "object",
+    description,
+    required: ["kind"],
+    additionalProperties: true,
+    properties: {
+      kind: { type: "string", description: "Locator kind from inspect_word_document, such as paragraph, table, documentEnd, image, caption, hyperlink, note, comment, section, field, list, watermark, or contentControl." },
+    },
+  }
+}
+
+function documentEditGenericOperationSchema() {
+  return {
+    type: "object",
+    description: "Generic supported DocumentEditPlan operation. Use this for supported operations not covered by the minimal high-frequency schemas.",
+    required: ["type", "locator"],
+    additionalProperties: true,
+    properties: {
+      type: { type: "string", description: "Supported operation type, for example replaceText, replaceParagraph, insertSection, insertTableColumn, updateTableHeaderRows, addComment, updateCaptionText, updateHyperlinkText, updateHeadingLevel, updateTable, or patchOoxmlPart." },
+      locator: documentEditLocatorSchema(),
+    },
+  }
+}
+
+function documentEditReplaceTextOperationSchema() {
+  return {
+    type: "object",
+    description: "Small paragraph-local exact text replacement. Use when the surrounding paragraph should stay intact.",
+    required: ["type", "locator", "oldText", "newText"],
+    additionalProperties: true,
+    properties: {
+      type: { type: "string", enum: ["replaceText"] },
+      locator: documentEditLocatorSchema("Exact paragraph locator returned by inspect_word_document."),
+      oldText: { type: "string", description: "Exact visible text to replace within the located paragraph." },
+      newText: { type: "string", description: "Replacement visible text." },
+    },
+  }
+}
+
+function documentEditReplaceParagraphOperationSchema() {
+  return {
+    type: "object",
+    description: "Whole paragraph replacement. Use only when the entire paragraph should change.",
+    required: ["type", "locator", "text"],
+    additionalProperties: true,
+    properties: {
+      type: { type: "string", enum: ["replaceParagraph"] },
+      locator: documentEditLocatorSchema("Exact paragraph locator returned by inspect_word_document."),
+      text: { type: "string", description: "New paragraph text." },
+    },
+  }
+}
+
+function documentEditInsertSectionOperationSchema() {
+  return {
+    type: "object",
+    description: "Insert a new section after a paragraph or at document end. Keep blocks bounded.",
+    required: ["type", "locator", "title"],
+    additionalProperties: true,
+    properties: {
+      type: { type: "string", enum: ["insertSection"] },
+      locator: documentEditLocatorSchema("Exact paragraph or documentEnd locator returned by inspect_word_document."),
+      title: { type: "string", description: "Inserted section heading." },
+      level: { type: "number", description: "Heading level, usually 1, 2, or 3." },
+      paragraphs: { type: "array", items: { type: "string" }, description: "Optional simple paragraph blocks for the inserted section." },
+      bullets: { type: "array", items: { type: "string" }, description: "Optional simple bullet items." },
+      blocks: { type: "array", items: { type: "object", additionalProperties: true }, description: "Optional structured blocks when paragraphs/bullets are insufficient." },
+    },
+  }
+}
+
+function documentEditInsertTableColumnOperationSchema() {
+  return {
+    type: "object",
+    description: "Safely insert a column into an existing inspected table while preserving original cells. Prefer this for adding/filling acceptance, status, owner, note, or review-result columns.",
+    required: ["type", "locator", "header", "values"],
+    additionalProperties: true,
+    properties: {
+      type: { type: "string", enum: ["insertTableColumn"] },
+      locator: documentEditLocatorSchema("Exact table locator returned by inspect_word_document."),
+      header: { type: "string", description: "New column header text." },
+      values: { type: "array", items: { type: "string" }, description: "One value per non-header row, in table order." },
+      index: { type: "number", description: "Optional zero-based insertion index. Omit to append at the end." },
+      repeatHeader: { type: "boolean", description: "Optional header-row repeat flag." },
+    },
+  }
+}
+
+function documentEditUpdateTableHeaderRowsOperationSchema() {
+  return {
+    type: "object",
+    description: "Mark existing table header rows for accessibility/repeat behavior.",
+    required: ["type", "locator", "headerRowCount"],
+    additionalProperties: true,
+    properties: {
+      type: { type: "string", enum: ["updateTableHeaderRows"] },
+      locator: documentEditLocatorSchema("Exact table locator returned by inspect_word_document."),
+      headerRowCount: { type: "number", description: "Number of leading rows to mark as header rows." },
+    },
+  }
+}
+
 function wordDocSpecToolSchema() {
   return {
     type: "object",
@@ -4376,6 +4571,179 @@ function safeClarificationId(input: string, fallback: string) {
 
 function compactText(input: string) {
   return input.replace(/\s+/g, " ").trim()
+}
+
+function compactLogText(input: string) {
+  return compactText(input).replace(/[\u0000-\u001F\u007F]+/g, " ")
+}
+
+function summarizeDocumentEditPlanArgument(input: unknown) {
+  const record = objectRecord(input)
+  const operations = arrayRecords(record?.operations)
+  return {
+    planType: Array.isArray(input) ? "array" : input === null ? "null" : typeof input,
+    planTopLevelKeys: record ? Object.keys(record).sort().slice(0, 24) : [],
+    planId: record ? truncateString(compactLogText(stringArg(record.planId)), 120) : "",
+    targetPath: record ? truncateString(compactLogText(stringArg(record.targetPath)), 240) : "",
+    operationCount: operations.length,
+    operationTypes: operations.map((operation) => truncateString(compactLogText(stringArg(operation.type) || "unknown"), 80)).slice(0, 24),
+  }
+}
+
+function documentEditPlanArgumentFailure(args: Record<string, unknown>, sourcePath: string, risk?: string): ToolRuntimeResult | undefined {
+  const rawPlan = Object.prototype.hasOwnProperty.call(args, "plan") ? args.plan : undefined
+  const planType = Array.isArray(rawPlan) ? "array" : rawPlan === null ? "null" : typeof rawPlan
+  if (rawPlan && typeof rawPlan === "object" && !Array.isArray(rawPlan)) return undefined
+  const errorCode = typeof rawPlan === "string" ? "document-edit-plan-string-disallowed" : "document-edit-plan-invalid-argument"
+  const message = typeof rawPlan === "string"
+    ? "DocumentEditPlan argument plan was a string. Pass plan as a JSON object, not JSON.stringify(plan) or a stringified JSON value."
+    : `DocumentEditPlan argument plan must be a JSON object. Received ${planType}.`
+  const expectedShape = {
+    path: sourcePath,
+    plan: {
+      operations: [{
+        type: "replaceText",
+        locator: { kind: "paragraph", blockId: "..." },
+        oldText: "...",
+        newText: "...",
+      }],
+    },
+  }
+  const output = {
+    answerSummary: `Apply Word document edits failed: ${message}`,
+    evidence: [],
+    gaps: [message],
+    nextActions: [{ tool: "apply_word_document_edits", reason: "Retry with plan as a JSON object using only locators returned by inspect_word_document.", args: { path: sourcePath } }],
+    truncated: false,
+    coverage: "partial",
+    data: {
+      errorCode,
+      errorMessage: message,
+      planType,
+      legacyStringPlan: typeof rawPlan === "string",
+      argumentBytes: jsonByteLength(args),
+      receivedArgumentKeys: Object.keys(args).sort().slice(0, 24),
+      expectedShape,
+    },
+  }
+  return failed("Apply Word document edits", JSON.stringify(output, null, 2), message, risk)
+}
+
+function documentEditPlanSummaryLog(summary: ReturnType<typeof summarizeDocumentEditPlanArgument>) {
+  return [
+    `planType=${summary.planType}`,
+    `planTopLevelKeys=${summary.planTopLevelKeys.join(",") || "none"}`,
+    `planId=${summary.planId || "none"}`,
+    `targetPath=${summary.targetPath || "none"}`,
+    `operationCount=${summary.operationCount}`,
+    `operationTypes=${summary.operationTypes.join(",") || "none"}`,
+  ].join(" ")
+}
+
+function summarizeNormalizedDocumentEditPlan(plan: ReturnType<typeof normalizeDocumentEditPlanWithDiagnostics>["plan"]) {
+  return {
+    planId: truncateString(compactLogText(stringArg(plan.planId)), 120),
+    targetPath: truncateString(compactLogText(stringArg(plan.targetPath)), 240),
+    operationCount: Array.isArray(plan.operations) ? plan.operations.length : 0,
+    operationTypes: Array.isArray(plan.operations)
+      ? plan.operations.map((operation) => truncateString(compactLogText(stringArg(operation.type) || "unknown"), 80)).slice(0, 24)
+      : [],
+  }
+}
+
+function documentEditNormalizationLog(
+  diagnostics: ReturnType<typeof normalizeDocumentEditPlanWithDiagnostics>["diagnostics"],
+  normalizedSummary: ReturnType<typeof summarizeNormalizedDocumentEditPlan>,
+) {
+  const errors = diagnostics.errors.slice(0, 5).map((item) => truncateString(compactLogText(item), 180)).join(" | ") || "none"
+  return [
+    `rawOperationCount=${diagnostics.rawOperationCount}`,
+    `normalizedOperationCount=${diagnostics.normalizedOperationCount}`,
+    `droppedOperationCount=${diagnostics.droppedOperationCount}`,
+    `normalizedOperationTypes=${normalizedSummary.operationTypes.join(",") || "none"}`,
+    `normalizationErrors=${errors}`,
+  ].join(" ")
+}
+
+function summarizeWordInspectionForEdit(inspection: WordDocumentInspection) {
+  return {
+    paragraphs: inspection.paragraphs.length,
+    tables: inspection.tables.length,
+    images: inspection.images.length,
+    sections: inspection.sections.length,
+    fields: inspection.fields.length,
+    styles: inspection.styles.length,
+    locators: inspection.locators.length,
+  }
+}
+
+function rejectedLocatorSummaries(operations: DocumentEditOperation[], validationErrors: string[]) {
+  if (!validationErrors.some((item) => /locator was not produced by inspect_word_document/i.test(item))) return []
+  return operations.map((operation, index) => ({
+    index,
+    type: operation.type,
+    locator: summarizeLocatorForDiagnostics(operation.locator),
+  })).slice(0, 20)
+}
+
+function availableLocatorHintsForEditFailures(
+  operations: DocumentEditOperation[],
+  inspection: WordDocumentInspection,
+  validationErrors: string[],
+) {
+  if (!validationErrors.some((item) => /locator was not produced by inspect_word_document/i.test(item))) return undefined
+  const operationTypes = new Set(operations.map((operation) => operation.type))
+  const hints: Record<string, unknown> = {}
+  if ([...operationTypes].some((type) => type === "replaceTable" || type === "insertTableColumn" || type === "updateTableHeaderRows" || type === "updateTable")) {
+    hints.tables = inspection.tables.slice(0, 24).map((table) => ({
+      tableIndex: table.tableIndex,
+      rowCount: table.rows.length,
+      columnCount: table.rows.reduce((max, row) => Math.max(max, row.length), 0),
+      headingPath: table.headingPath,
+      rowsPreview: table.rows.slice(0, 4).map((row) => row.slice(0, 8).map((cell) => truncateString(compactLogText(cell), 120))),
+      locator: table.locator,
+    }))
+  }
+  if ([...operationTypes].some((type) => type === "updateTable" || type === "updateTableWithTrackedChange")) {
+    hints.tableCells = inspection.locators
+      .filter((locator) => locator.kind === "tableCell")
+      .slice(0, 80)
+      .map(summarizeLocatorForDiagnostics)
+  }
+  if ([...operationTypes].some((type) => type.startsWith("replaceParagraph") || type === "replaceText" || type === "replaceTextWithTrackedChange" || type === "updateHeadingLevel" || type === "addComment")) {
+    hints.paragraphs = inspection.paragraphs.slice(0, 24).map((paragraph) => ({
+      text: truncateString(compactLogText(paragraph.text), 180),
+      headingPath: paragraph.headingPath,
+      locator: paragraph.locator,
+    }))
+  }
+  return Object.keys(hints).length ? hints : undefined
+}
+
+function summarizeLocatorForDiagnostics(locator: WordDocumentLocator | undefined) {
+  if (!locator) return {}
+  return {
+    kind: locator.kind,
+    blockId: locator.blockId,
+    tableIndex: locator.tableIndex,
+    rowIndex: locator.rowIndex,
+    cellIndex: locator.cellIndex,
+    normalizedHash: locator.normalizedHash,
+    headingPath: locator.headingPath,
+  }
+}
+
+function documentEditApplyFailureDiagnostic(message: string, error: unknown) {
+  return {
+    errorCode: "word-document-edit-apply-failed",
+    rawError: truncateString(compactLogText(message), 1000),
+    stackSnippet: shortErrorStack(error),
+  }
+}
+
+function shortErrorStack(error: unknown) {
+  if (!(error instanceof Error) || !error.stack) return ""
+  return truncateString(compactLogText(error.stack.split(/\r?\n/).slice(0, 4).join(" | ")), 1200)
 }
 
 function drawioToolOutputSummary(result: DrawioGeneratedDiagram) {

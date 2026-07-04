@@ -81,6 +81,80 @@ export const DOCUMENT_EDIT_PLAN_SCHEMA = {
 
 type EditPlanJson = Partial<DocumentEditPlan>
 
+const SUPPORTED_DOCUMENT_EDIT_OPERATION_TYPES = new Set<string>([
+  "insertSection",
+  "replaceParagraph",
+  "replaceParagraphWithRichParagraph",
+  "replaceParagraphWithBlocks",
+  "replaceText",
+  "replaceParagraphWithTrackedChange",
+  "replaceParagraphWithRichTrackedChange",
+  "replaceTextWithTrackedChange",
+  "updateHeadingLevel",
+  "updateTable",
+  "updateTableWithTrackedChange",
+  "replaceTable",
+  "insertTableColumn",
+  "updateTableHeaderRows",
+  "updateList",
+  "updateSectionPageSetup",
+  "setDocumentProtection",
+  "updateImageAltText",
+  "replaceImage",
+  "updateCaptionText",
+  "updateHyperlinkText",
+  "updateHyperlinkTarget",
+  "updateNoteText",
+  "addComment",
+  "updateCommentText",
+  "setCommentResolved",
+  "fillContentControl",
+  "addTextWatermark",
+  "removeWatermark",
+  "removeAllComments",
+  "acceptAllTrackedChanges",
+  "rejectAllTrackedChanges",
+  "scrubDocumentMetadata",
+  "redactText",
+  "patchOoxmlPart",
+])
+
+const DOCUMENT_EDIT_TEXT_FIELD_NAMES = [
+  "text",
+  "oldText",
+  "newText",
+  "title",
+  "paragraph",
+  "paragraphs",
+  "richParagraphs",
+  "blocks",
+  "table",
+  "figure",
+  "items",
+  "cellUpdates",
+  "caption",
+  "reason",
+  "initialXml",
+]
+
+export type DocumentEditPlanOperationDiagnostic = {
+  index: number
+  keys: string[]
+  type?: string
+  typeType: string
+  locatorKind?: string
+  locatorKeys: string[]
+  textFieldBytes: Record<string, number>
+}
+
+export type DocumentEditPlanNormalizationDiagnostics = {
+  rawOperationCount: number
+  normalizedOperationCount: number
+  droppedOperationCount: number
+  operationDiagnostics: DocumentEditPlanOperationDiagnostic[]
+  errors: string[]
+}
+
 export class DocumentEditPlanner {
   constructor(private readonly model?: DocAgentModelProvider) {}
 
@@ -97,18 +171,19 @@ export class DocumentEditPlanner {
         purpose: "plan-document",
         system: [
           "You are a Word document edit planner. Return JSON only.",
-	          "You must output a DocumentEditPlan using only insertSection, replaceParagraph, replaceParagraphWithRichParagraph, replaceParagraphWithBlocks, replaceText, replaceParagraphWithTrackedChange, replaceParagraphWithRichTrackedChange, replaceTextWithTrackedChange, updateHeadingLevel, updateTable, updateTableWithTrackedChange, replaceTable, updateTableHeaderRows, updateList, updateSectionPageSetup, setDocumentProtection, updateImageAltText, replaceImage, updateCaptionText, updateHyperlinkText, updateHyperlinkTarget, updateNoteText, addComment, updateCommentText, setCommentResolved, fillContentControl, addTextWatermark, removeWatermark, removeAllComments, acceptAllTrackedChanges, rejectAllTrackedChanges, scrubDocumentMetadata, redactText, or patchOoxmlPart.",
+	          "You must output a DocumentEditPlan using only insertSection, replaceParagraph, replaceParagraphWithRichParagraph, replaceParagraphWithBlocks, replaceText, replaceParagraphWithTrackedChange, replaceParagraphWithRichTrackedChange, replaceTextWithTrackedChange, updateHeadingLevel, updateTable, updateTableWithTrackedChange, insertTableColumn, replaceTable, updateTableHeaderRows, updateList, updateSectionPageSetup, setDocumentProtection, updateImageAltText, replaceImage, updateCaptionText, updateHyperlinkText, updateHyperlinkTarget, updateNoteText, addComment, updateCommentText, setCommentResolved, fillContentControl, addTextWatermark, removeWatermark, removeAllComments, acceptAllTrackedChanges, rejectAllTrackedChanges, scrubDocumentMetadata, redactText, or patchOoxmlPart.",
           "Every operation must use a locator copied exactly from the provided locator registry.",
           "Never invent blockId, tableIndex, rowIndex, cellIndex, sourceLocation, or paths.",
           "Prefer native operations. Use patchOoxmlPart only when the user explicitly needs a low-level OOXML repair that no native operation supports; it must use documentEndLocator, a safe XML package part, exact oldText/anchor/closeTag preconditions, and a short reason. Do not write files.",
           "For insertSection, prefer blocks when the order of paragraphs, richParagraphs, lists, figures, tables, callouts, briefCards, evidenceCards, quoteBlocks, or codeBlocks matters.",
+          "For adding or filling a column in an existing inspected table, use insertTableColumn with the table locator, header, and one values[] item per non-header row; do not use replaceTable for local table-column edits.",
           "For cross-references in richParagraph text, prefer explicit reference runs; when prose is easier as one text run, use {{ref:bookmark|visible text}} or {{pageref:bookmark|page text}} markers so the tool converts them into live Word REF/PAGEREF fields.",
           "For table cells that need merged layout, use TableSpec row cell objects like { text, colSpan, rowSpan, alignment }; never fake merged cells with blank columns or raw OOXML.",
         ].join("\n"),
         prompt: JSON.stringify({
           userRequest: input.question,
           targetPath: input.targetPath,
-	          allowedOperations: ["insertSection", "replaceParagraph", "replaceParagraphWithRichParagraph", "replaceParagraphWithBlocks", "replaceText", "replaceParagraphWithTrackedChange", "replaceParagraphWithRichTrackedChange", "replaceTextWithTrackedChange", "updateHeadingLevel", "updateTable", "updateTableWithTrackedChange", "replaceTable", "updateTableHeaderRows", "updateList", "updateSectionPageSetup", "setDocumentProtection", "updateImageAltText", "replaceImage", "updateCaptionText", "updateHyperlinkText", "updateHyperlinkTarget", "updateNoteText", "addComment", "updateCommentText", "setCommentResolved", "fillContentControl", "addTextWatermark", "removeWatermark", "removeAllComments", "acceptAllTrackedChanges", "rejectAllTrackedChanges", "scrubDocumentMetadata", "redactText", "patchOoxmlPart"],
+	          allowedOperations: ["insertSection", "replaceParagraph", "replaceParagraphWithRichParagraph", "replaceParagraphWithBlocks", "replaceText", "replaceParagraphWithTrackedChange", "replaceParagraphWithRichTrackedChange", "replaceTextWithTrackedChange", "updateHeadingLevel", "updateTable", "updateTableWithTrackedChange", "insertTableColumn", "replaceTable", "updateTableHeaderRows", "updateList", "updateSectionPageSetup", "setDocumentProtection", "updateImageAltText", "replaceImage", "updateCaptionText", "updateHyperlinkText", "updateHyperlinkTarget", "updateNoteText", "addComment", "updateCommentText", "setCommentResolved", "fillContentControl", "addTextWatermark", "removeWatermark", "removeAllComments", "acceptAllTrackedChanges", "rejectAllTrackedChanges", "scrubDocumentMetadata", "redactText", "patchOoxmlPart"],
           locatorRegistry: locatorPrompt(input.inspection),
           expectedOutputShape: {
             planId: "short id",
@@ -127,6 +202,7 @@ export class DocumentEditPlanner {
 	              { type: "updateHeadingLevel", locator: input.inspection.paragraphs.find((item) => item.headingLevel)?.locator, level: 2 },
 	              { type: "updateTable", locator: input.inspection.locators.find((item) => item.kind === "tableCell"), text: "新的单元格内容" },
 	              { type: "updateTableWithTrackedChange", locator: input.inspection.locators.find((item) => item.kind === "tableCell"), text: "红线替换后的单元格内容", author: "ChipMate" },
+	              { type: "insertTableColumn", locator: input.inspection.tables[0]?.locator, header: "是否满足验收标准", values: ["满足", "不满足"] },
 	              { type: "replaceTable", locator: input.inspection.tables[0]?.locator, table: { headers: ["列 A", "列 B"], rows: [[{ text: "分组标题", colSpan: 2, alignment: "center" }], ["新值", "说明"]] } },
 	              { type: "updateTableHeaderRows", locator: input.inspection.tables[0]?.locator, headerRowCount: 1 },
               { type: "updateList", locator: input.inspection.lists[0]?.locator, items: [{ text: "新的列表项", level: 0 }] },
@@ -176,16 +252,39 @@ export class DocumentEditPlanner {
 }
 
 export function normalizeDocumentEditPlan(input: EditPlanJson, targetPath: string): DocumentEditPlan {
-  const operations = Array.isArray(input.operations)
-    ? input.operations.map(normalizeOperation).filter((item): item is DocumentEditOperation => Boolean(item))
+  return normalizeDocumentEditPlanWithDiagnostics(input, targetPath).plan
+}
+
+export function normalizeDocumentEditPlanWithDiagnostics(input: EditPlanJson, targetPath: string): {
+  plan: DocumentEditPlan
+  diagnostics: DocumentEditPlanNormalizationDiagnostics
+} {
+  const rawInput = input && typeof input === "object" && !Array.isArray(input) ? input : {}
+  const rawOperations = Array.isArray(rawInput.operations) ? rawInput.operations : []
+  const operations = Array.isArray(rawInput.operations)
+    ? rawInput.operations.map(normalizeOperation).filter((item): item is DocumentEditOperation => Boolean(item))
     : []
-  return {
-    planId: cleanId(input.planId) || `word-edit-${Date.now().toString(36)}`,
+  const operationDiagnostics = rawOperations.map(summarizeRawOperation)
+  const errors = rawOperations
+    .map((operation, index) => normalizeOperation(operation) ? "" : rawOperationNormalizationError(operation, index))
+    .filter(Boolean)
+  const plan = {
+    planId: cleanId(rawInput.planId) || `word-edit-${Date.now().toString(36)}`,
     targetPath,
-    outputTitle: typeof input.outputTitle === "string" ? input.outputTitle.trim().slice(0, 160) : undefined,
-    outputFilenameBase: typeof input.outputFilenameBase === "string" ? safeFilenameBase(input.outputFilenameBase) : undefined,
+    outputTitle: typeof rawInput.outputTitle === "string" ? rawInput.outputTitle.trim().slice(0, 160) : undefined,
+    outputFilenameBase: typeof rawInput.outputFilenameBase === "string" ? safeFilenameBase(rawInput.outputFilenameBase) : undefined,
     operations,
-    warnings: Array.isArray(input.warnings) ? input.warnings.filter((item): item is string => typeof item === "string").map((item) => item.slice(0, 500)) : [],
+    warnings: Array.isArray(rawInput.warnings) ? rawInput.warnings.filter((item): item is string => typeof item === "string").map((item) => item.slice(0, 500)) : [],
+  }
+  return {
+    plan,
+    diagnostics: {
+      rawOperationCount: rawOperations.length,
+      normalizedOperationCount: operations.length,
+      droppedOperationCount: Math.max(0, rawOperations.length - operations.length),
+      operationDiagnostics,
+      errors,
+    },
   }
 }
 
@@ -209,7 +308,7 @@ function validateOperation(operation: DocumentEditOperation, index: number, insp
     errors.push(`${prefix} must be an object.`)
     return
   }
-  if (!["insertSection", "replaceParagraph", "replaceParagraphWithRichParagraph", "replaceParagraphWithBlocks", "replaceText", "replaceParagraphWithTrackedChange", "replaceParagraphWithRichTrackedChange", "replaceTextWithTrackedChange", "updateHeadingLevel", "updateTable", "updateTableWithTrackedChange", "replaceTable", "updateTableHeaderRows", "updateList", "updateSectionPageSetup", "setDocumentProtection", "updateImageAltText", "replaceImage", "updateCaptionText", "updateHyperlinkText", "updateHyperlinkTarget", "updateNoteText", "addComment", "updateCommentText", "setCommentResolved", "fillContentControl", "addTextWatermark", "removeWatermark", "removeAllComments", "acceptAllTrackedChanges", "rejectAllTrackedChanges", "scrubDocumentMetadata", "redactText", "patchOoxmlPart"].includes(operation.type)) {
+  if (!SUPPORTED_DOCUMENT_EDIT_OPERATION_TYPES.has(operation.type)) {
     errors.push(`${prefix}.type is not supported.`)
     return
   }
@@ -295,6 +394,16 @@ function validateOperation(operation: DocumentEditOperation, index: number, insp
 	  if (operation.type === "replaceTable") {
 	    if (operation.locator.kind !== "table") errors.push(`${prefix}.locator must target a table returned by inspect_word_document.`)
 	    validateTables([operation.table], `${prefix}.table`, errors)
+	    return
+	  }
+	  if (operation.type === "insertTableColumn") {
+	    if (operation.locator.kind !== "table") errors.push(`${prefix}.locator must target a table returned by inspect_word_document.`)
+	    const table = inspection.tables.find((item) => locatorKey(item.locator) === locatorKey(operation.locator))
+	    if (!operation.header?.trim()) errors.push(`${prefix}.header is required.`)
+	    if (!Array.isArray(operation.values)) errors.push(`${prefix}.values must be an array.`)
+	    if (operation.values?.some((item) => typeof item !== "string")) errors.push(`${prefix}.values must contain strings only.`)
+	    if (table && operation.values.length !== Math.max(0, table.rows.length - 1)) errors.push(`${prefix}.values must contain exactly ${Math.max(0, table.rows.length - 1)} item(s), one for each non-header row in the inspected table.`)
+	    if (operation.columnIndex !== undefined && (!Number.isInteger(operation.columnIndex) || operation.columnIndex < 0)) errors.push(`${prefix}.columnIndex must be a non-negative integer when provided.`)
 	    return
 	  }
   if (operation.type === "updateTableHeaderRows") {
@@ -809,6 +918,15 @@ function normalizeOperation(input: unknown): DocumentEditOperation | undefined {
 	    if (!table) return undefined
 	    return { type: "replaceTable", locator, table }
 	  }
+	  if (raw.type === "insertTableColumn" && locator) {
+	    return {
+	      type: "insertTableColumn",
+	      locator,
+	      header: String(raw.header ?? "").trim().slice(0, 500),
+	      values: Array.isArray(raw.values) ? raw.values.map((item) => String(item ?? "").trim().slice(0, 2000)) : [],
+	      columnIndex: Number.isInteger(raw.columnIndex) ? Math.max(0, Number(raw.columnIndex)) : undefined,
+	    }
+	  }
 	  if (raw.type === "updateTableHeaderRows" && locator) {
 	    return { type: "updateTableHeaderRows", locator, headerRowCount: normalizeHeaderRowCount(raw.headerRowCount) }
 	  }
@@ -927,6 +1045,92 @@ function normalizeOperation(input: unknown): DocumentEditOperation | undefined {
     }
   }
   return undefined
+}
+
+function summarizeRawOperation(input: unknown, index: number): DocumentEditPlanOperationDiagnostic {
+  if (!input || typeof input !== "object" || Array.isArray(input)) {
+    return {
+      index,
+      keys: [],
+      typeType: input === null ? "null" : Array.isArray(input) ? "array" : typeof input,
+      locatorKeys: [],
+      textFieldBytes: {},
+    }
+  }
+  const raw = input as Record<string, unknown>
+  const locator = raw.locator && typeof raw.locator === "object" && !Array.isArray(raw.locator)
+    ? raw.locator as Record<string, unknown>
+    : undefined
+  const textFieldBytes: Record<string, number> = {}
+  for (const field of DOCUMENT_EDIT_TEXT_FIELD_NAMES) {
+    if (!(field in raw)) continue
+    textFieldBytes[field] = safeJsonByteLength(raw[field])
+  }
+  return {
+    index,
+    keys: Object.keys(raw).sort().slice(0, 32),
+    type: typeof raw.type === "string" ? raw.type.slice(0, 120) : undefined,
+    typeType: Array.isArray(raw.type) ? "array" : raw.type === null ? "null" : typeof raw.type,
+    locatorKind: typeof locator?.kind === "string" ? locator.kind.slice(0, 80) : undefined,
+    locatorKeys: locator ? Object.keys(locator).sort().slice(0, 32) : [],
+    textFieldBytes,
+  }
+}
+
+function rawOperationNormalizationError(input: unknown, index: number) {
+  const prefix = `operations[${index}]`
+  if (!input || typeof input !== "object" || Array.isArray(input)) {
+    return `${prefix} must be an object.`
+  }
+  const raw = input as Record<string, unknown>
+  const keys = Object.keys(raw).sort().slice(0, 32).join(",") || "none"
+  if (typeof raw.type !== "string" || !raw.type.trim()) {
+    return `${prefix}.type is required. Received keys=${keys}.`
+  }
+  if (!SUPPORTED_DOCUMENT_EDIT_OPERATION_TYPES.has(raw.type)) {
+    return `${prefix}.type is not supported: ${truncateDiagnosticValue(raw.type)}. Received keys=${keys}.`
+  }
+  const locator = normalizeLocator(raw.locator)
+  if (!locator) {
+    return `${prefix}.locator is missing or invalid. Received locatorKeys=${locatorKeySummary(raw.locator)}.`
+  }
+  if (raw.type === "replaceParagraphWithRichParagraph" || raw.type === "replaceParagraphWithRichTrackedChange") {
+    return `${prefix}.paragraph must be a valid rich paragraph.`
+  }
+  if (raw.type === "replaceParagraphWithBlocks") {
+    return `${prefix}.blocks must contain at least one valid block.`
+  }
+  if (raw.type === "replaceTable") {
+    return `${prefix}.table must be a valid table spec.`
+  }
+  if (raw.type === "insertTableColumn") {
+    return `${prefix}.header and ${prefix}.values must describe the new table column.`
+  }
+  if (raw.type === "replaceImage") {
+    return `${prefix}.figure must be a valid PNG FigureSpec.`
+  }
+  if (raw.type === "patchOoxmlPart") {
+    return `${prefix}.part and ${prefix}.patches must be valid OOXML patch inputs.`
+  }
+  return `${prefix} could not be normalized; check required fields for type ${truncateDiagnosticValue(raw.type)}.`
+}
+
+function locatorKeySummary(input: unknown) {
+  if (!input || typeof input !== "object" || Array.isArray(input)) return "none"
+  return Object.keys(input as Record<string, unknown>).sort().slice(0, 32).join(",") || "none"
+}
+
+function truncateDiagnosticValue(input: string) {
+  const compact = input.replace(/\s+/g, " ").trim()
+  return JSON.stringify(compact.length > 120 ? `${compact.slice(0, 117)}...` : compact)
+}
+
+function safeJsonByteLength(input: unknown) {
+  try {
+    return Buffer.byteLength(JSON.stringify(input) ?? "", "utf8")
+  } catch {
+    return 0
+  }
 }
 
 function normalizeLocator(input: unknown): WordDocumentLocator | undefined {

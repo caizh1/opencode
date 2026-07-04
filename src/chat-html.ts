@@ -700,9 +700,31 @@ ${codiconFontFace}    .codicon {
       position: sticky;
       bottom: 0;
       justify-content: flex-start;
+      flex-wrap: wrap;
       padding: 7px 0 0;
       background: var(--vscode-sideBar-background);
       z-index: 2;
+    }
+    .ragRebuildButton {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      min-width: 0;
+      max-width: 100%;
+      padding: 0 10px;
+      line-height: 1.15;
+      white-space: normal;
+      text-align: left;
+    }
+    .ragRebuildButton .oc-liquid-icon {
+      flex: 0 0 15px;
+      width: 15px;
+      height: 15px;
+    }
+    .ragRebuildButtonLabel {
+      min-width: 0;
+      overflow-wrap: anywhere;
     }
     .settingsActions { justify-content: space-between; align-items: flex-start; min-width: 0; }
     .settingsActions .row { min-width: 0; }
@@ -789,9 +811,9 @@ ${codiconFontFace}    .codicon {
       transition: background 120ms ease, border-color 120ms ease, box-shadow 120ms ease, color 120ms ease, transform 120ms ease;
     }
     .historyToolbarButton .historyToolbarGlyph {
-      width: 18px;
-      height: 18px;
-      flex: 0 0 18px;
+      width: var(--header-toolbar-glyph-size);
+      height: var(--header-toolbar-glyph-size);
+      flex: 0 0 var(--header-toolbar-glyph-size);
       display: inline-block;
       background: currentColor;
       -webkit-mask: var(--history-toolbar-icon) center / contain no-repeat;
@@ -3664,8 +3686,32 @@ ${codiconFontFace}    .codicon {
       overflow: hidden;
     }
     .suggestion:hover, .suggestion.active { background: var(--vscode-list-hoverBackground); }
-    .suggestionIcon { color: var(--vscode-descriptionForeground); font-size: 10px; text-transform: uppercase; }
+    .suggestionIcon {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 18px;
+      height: 18px;
+      min-width: 18px;
+      color: var(--vscode-descriptionForeground);
+    }
+    .suggestionIcon .oc-liquid-icon {
+      width: 16px;
+      height: 16px;
+    }
+    .suggestionMain {
+      min-width: 0;
+      display: grid;
+      gap: 2px;
+    }
     .suggestionLabel { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .suggestionDetail {
+      color: var(--vscode-descriptionForeground);
+      font-size: 10px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
     .suggestionMeta { padding: 7px 8px; color: var(--vscode-descriptionForeground); font-size: 11px; }
     .composerActions { min-width: 0; }
     .composerActionRow {
@@ -3847,6 +3893,8 @@ ${codiconFontFace}    .codicon {
       --composer-toolbar-glyph-size: 18px;
       --composer-toolbar-status-glyph-size: 13px;
       --composer-send-button-size: 34px;
+      --header-icon-button-size: 28px;
+      --header-toolbar-glyph-size: 20px;
       --diagram-zoom-button-size: 30px;
       --diagram-zoom-glyph-size: 20px;
     }
@@ -3913,10 +3961,16 @@ ${codiconFontFace}    .codicon {
     .topbar .oc-tool-btn,
     .topbar .oc-icon-btn,
     .topbar .oc-liquid-btn {
-      width: 24px;
-      min-width: 24px;
-      height: 24px;
-      min-height: 24px;
+      width: var(--header-icon-button-size);
+      min-width: var(--header-icon-button-size);
+      height: var(--header-icon-button-size);
+      min-height: var(--header-icon-button-size);
+      flex: 0 0 var(--header-icon-button-size);
+    }
+    .topbar .oc-liquid-icon {
+      width: var(--header-toolbar-glyph-size);
+      height: var(--header-toolbar-glyph-size);
+      flex: 0 0 var(--header-toolbar-glyph-size);
     }
     .oc-tool-btn::before,
     .oc-icon-btn::before,
@@ -4217,6 +4271,24 @@ ${codiconFontFace}    .codicon {
       min-width: 30px;
       height: 30px;
       min-height: 30px;
+    }
+    .ragActionbar .ragRebuildButton.oc-liquid-btn {
+      width: auto;
+      min-width: min(100%, 168px);
+      max-width: 100%;
+      height: auto;
+      min-height: 30px;
+      color: var(--vscode-foreground);
+      border-color: color-mix(in srgb, var(--vscode-focusBorder) 34%, var(--oc-border));
+      background:
+        linear-gradient(180deg, rgba(255,255,255,.12), rgba(255,255,255,.03)),
+        var(--vscode-sideBar-background);
+      box-shadow: 0 7px 18px rgba(0,0,0,.12), inset 0 1px 0 rgba(255,255,255,.12);
+    }
+    .ragActionbar .ragRebuildButton.oc-liquid-btn:hover {
+      background:
+        linear-gradient(180deg, rgba(255,255,255,.16), rgba(255,255,255,.05)),
+        var(--oc-hover-bg);
     }
     #connect {
       min-height: 32px;
@@ -5664,9 +5736,10 @@ ${codiconFontFace}    .codicon {
     @media (max-width: 300px) {
       .topbar .oc-liquid-btn,
       .topbar .oc-icon-btn {
-        width: 24px;
-        min-width: 24px;
-        height: 24px;
+        width: var(--header-icon-button-size);
+        min-width: var(--header-icon-button-size);
+        height: var(--header-icon-button-size);
+        min-height: var(--header-icon-button-size);
       }
       .composerStatusToggle,
       .composerStatusPill,
@@ -5890,6 +5963,10 @@ ${codiconFontFace}    .codicon {
         </div>
         <div class="settingsGrid">
           <label class="field checkbox"><input id="completionEnabled" type="checkbox"><span>Enable inline completion</span></label>
+          <label class="field">Provider mode<select id="completionProviderMode">
+            <option value="inherit-chat">Inherit Chat Provider</option>
+            <option value="custom">Custom Completion Provider</option>
+          </select></label>
           <label class="field">Provider<select id="completionProvider">
             <option value="qwen-direct">Qwen Direct</option>
             <option value="fim-direct">FIM Direct</option>
@@ -5902,7 +5979,8 @@ ${codiconFontFace}    .codicon {
               <option value="qwen-coder-fim">Qwen Coder FIM</option>
               <option value="deepseek-fim">DeepSeek FIM</option>
             </select></label>
-            <input id="completionApiBaseUrl" type="hidden">
+            <label class="field">API Base URL<input id="completionApiBaseUrl" type="url" spellcheck="false" placeholder="Inherit chat provider"></label>
+            <label class="field">API key<input id="completionApiKey" type="password" autocomplete="off" placeholder="Use chat key"></label>
             <label class="field">Model<select id="completionModel"></select></label>
             <label class="field">Max tokens<input id="completionMaxTokens" type="number" min="1" max="4096" step="1"></label>
             <label class="field">Context window tokens<input id="completionContextLength" type="number" min="0" max="1000000" step="1" title="0 = auto detect via /models"></label>
@@ -5915,6 +5993,7 @@ ${codiconFontFace}    .codicon {
             <button id="saveCompletionSettings" class="oc-icon-btn oc-liquid-btn" type="button" title="Save inline completion settings" aria-label="Save inline completion settings">${liquidIcons.save}<span class="srOnly">Save inline completion settings</span></button>
             <button id="testCompletionApi" class="oc-icon-btn oc-liquid-btn" type="button" title="Test completion API" aria-label="Test completion API">${liquidIcons.beaker}<span class="srOnly">Test completion API</span></button>
             <button id="refreshCompletionModels" class="oc-icon-btn oc-liquid-btn" type="button" title="Refresh completion models" aria-label="Refresh completion models">${liquidIcons.refresh}<span class="srOnly">Refresh completion models</span></button>
+            <button id="resetCompletionProvider" class="oc-icon-btn oc-liquid-btn" type="button" title="Reset completion provider to chat provider" aria-label="Reset completion provider to chat provider">${liquidIcons.discard}<span class="srOnly">Reset completion provider to chat provider</span></button>
           </div>
         </div>
         <div id="completionDetail" class="detail" aria-live="polite"></div>
@@ -5976,6 +6055,7 @@ ${codiconFontFace}    .codicon {
         <div class="ragActionbar oc-liquid-actionbar">
           <button id="saveRagSettings" class="oc-icon-btn oc-liquid-btn" type="button" title="Save RAG settings" aria-label="Save RAG settings">${liquidIcons.save}<span class="srOnly">Save RAG settings</span></button>
           <button id="testRagSettings" class="oc-icon-btn oc-liquid-btn" type="button" title="Test RAG configuration" aria-label="Test RAG configuration">${liquidIcons.beaker}<span class="srOnly">Test RAG configuration</span></button>
+          <button id="forceRebuildCodeRag" class="ragRebuildButton oc-liquid-btn" type="button" title="强制重建 Code RAG：删除旧索引并从 0 重建" aria-label="强制重建 Code RAG">${liquidIcons.retry}<span class="ragRebuildButtonLabel">强制重建 Code RAG</span></button>
           <button id="toggleRagIndexing" class="oc-icon-btn oc-liquid-btn" type="button" title="RAG indexing is not running" aria-label="RAG indexing is not running" disabled>${liquidIcons.pause}<span class="srOnly">RAG indexing is not running</span></button>
           <button id="discardRagSettings" class="oc-icon-btn oc-liquid-btn" type="button" title="Reset RAG edits" aria-label="Reset RAG edits">${liquidIcons.discard}<span class="srOnly">Reset RAG edits</span></button>
         </div>
@@ -6274,6 +6354,7 @@ ${codiconFontFace}    .codicon {
     let composerDragDepth = 0;
     let skillImportDragDepth = 0;
     let mentionResults = [];
+    let suggestionMode = "";
     let activeSuggestion = 0;
     let searchTimer = 0;
     let mentionRequestId = 0;
@@ -6290,6 +6371,7 @@ ${codiconFontFace}    .codicon {
 	    let promptHistoryDraft = "";
 	    let restoringPromptHistory = false;
 	    let optimisticQueuedSends = [];
+	    let optimisticLocalSends = [];
 	    let goalInputMode = webviewState().goalInputMode === true;
 	    let pendingGoalObjective = "";
 	    let activeActivityElapsedTimer = 0;
@@ -6316,7 +6398,7 @@ ${codiconFontFace}    .codicon {
 	        userEditedConnection = true;
 	      });
 	    }
-	    for (const id of ["completionEnabled", "completionProvider", "completionProfile", "completionApiBaseUrl", "completionModel", "completionMaxTokens", "completionContextLength", "completionTemperature", "completionTopP"]) {
+	    for (const id of ["completionEnabled", "completionProviderMode", "completionProvider", "completionProfile", "completionApiBaseUrl", "completionApiKey", "completionModel", "completionMaxTokens", "completionContextLength", "completionTemperature", "completionTopP"]) {
 	      el(id).addEventListener("input", () => {
 	        userEditedCompletionSettings = true;
 	        renderCompletionSettings();
@@ -6329,9 +6411,11 @@ ${codiconFontFace}    .codicon {
 	    for (const id of ["ragEmbeddingEndpoint", "ragEmbeddingModel", "ragEmbeddingBatchSize", "ragEmbeddingMaxTokensPerRequest", "ragEmbeddingConcurrentRequests", "ragEmbeddingMaxInFlightTokens", "ragEmbeddingEncodingFormat", "ragEmbeddingCheckpointMode", "ragEmbeddingCheckpointChunkInterval", "ragEmbeddingCheckpointIntervalMs", "ragEmbeddingRequestDelayMs", "ragEmbeddingMaxRequestsPerRun", "ragEmbeddingMaxRetries", "ragEmbeddingRetryBackoffMs", "ragEmbeddingResumeAutomatically", "ragIndexTests", "ragEmbeddingResumeDelayMs", "ragRerankEndpoint", "ragRerankModel", "ragAllowedHosts", "ragVectorTopK", "ragRerankTopK"]) {
 	      el(id).addEventListener("input", () => {
 	        userEditedRagSettings = true;
+	        renderRagRebuildControl();
 	      });
 	      el(id).addEventListener("change", () => {
 	        userEditedRagSettings = true;
+	        renderRagRebuildControl();
 	      });
 	    }
 
@@ -6420,12 +6504,14 @@ ${codiconFontFace}    .codicon {
 		    el("test").addEventListener("click", () => connectOrTest("testWithSettings"));
         el("saveCompletionSettings").addEventListener("click", saveCompletionSettings);
 		    el("testCompletionApi").addEventListener("click", testCompletionApi);
-        el("refreshCompletionModels").addEventListener("click", () => vscode.postMessage({ type: "refreshModels" }));
+        el("refreshCompletionModels").addEventListener("click", refreshCompletionModels);
+        el("resetCompletionProvider").addEventListener("click", resetCompletionProvider);
         el("importSkill").addEventListener("click", () => vscode.postMessage({ type: "pickSkillImport" }));
         el("saveSkillsSettings").addEventListener("click", saveSkillsSettings);
-			    el("saveRagSettings").addEventListener("click", saveRagSettings);
-			    el("testRagSettings").addEventListener("click", testRagSettings);
-			    el("toggleRagIndexing").addEventListener("click", toggleRagIndexing);
+				    el("saveRagSettings").addEventListener("click", saveRagSettings);
+				    el("testRagSettings").addEventListener("click", testRagSettings);
+				    el("forceRebuildCodeRag").addEventListener("click", forceRebuildCodeRag);
+				    el("toggleRagIndexing").addEventListener("click", toggleRagIndexing);
     el("discardRagSettings").addEventListener("click", discardRagSettings);
 	    el("refresh").addEventListener("click", () => vscode.postMessage({ type: "refresh" }));
     el("syncState").addEventListener("click", () => vscode.postMessage({ type: "refresh" }));
@@ -6516,6 +6602,7 @@ ${codiconFontFace}    .codicon {
       composerMoreMenuOpen = false;
       closeComposerStatusPopoverState();
       mentionResults = [];
+      suggestionMode = "";
       mentionStatus = "";
       mentionError = "";
       mentionTruncated = false;
@@ -6577,7 +6664,8 @@ ${codiconFontFace}    .codicon {
 			        state = nextState;
 	        reconcileGoalInputModeAfterState();
 			        reconcileHistorySelection();
-		        reconcileOptimisticQueuedSends(state.queuedSends);
+	        reconcileOptimisticLocalSends(nextState.messages || []);
+		        reconcileOptimisticQueuedSends(nextState.queuedSends);
 	        syncPromptHistoryFromState();
 	        if (shouldCloseSettings) settingsOpen = false;
 	        lastConnectionState = nextConnectionState;
@@ -6598,6 +6686,7 @@ ${codiconFontFace}    .codicon {
       if (event.data.type === "mentionResults") {
         if (event.data.requestId && event.data.requestId !== activeMentionRequestId) return;
         mentionResults = event.data.files || [];
+        suggestionMode = "file";
         mentionStatus = "";
         mentionTruncated = Boolean(event.data.truncated);
         mentionError = event.data.error || "";
@@ -6631,6 +6720,14 @@ ${codiconFontFace}    .codicon {
 	        renderQueuedSendList();
 	        renderComposerStatusBar();
 	        renderSendButton();
+	        return;
+	      }
+	      if (event.data.type === "sendAccepted") {
+	        handleSendAccepted(event.data);
+	        return;
+	      }
+	      if (event.data.type === "sendRejected") {
+	        handleSendRejected(event.data);
 	        return;
 	      }
 	      if (event.data.type === "queueRejected") {
@@ -6700,6 +6797,26 @@ ${codiconFontFace}    .codicon {
 	      });
 	    }
 
+	    function refreshCompletionModels() {
+	      renderCompletionStatus("Refreshing completion models...", "info");
+	      vscode.postMessage({
+	        type: "refreshCompletionModels",
+	        settings: completionSettingsPayload()
+	      });
+	    }
+
+	    function resetCompletionProvider() {
+	      userEditedCompletionSettings = false;
+	      el("completionProviderMode").value = "inherit-chat";
+	      el("completionApiBaseUrl").value = "";
+	      el("completionApiKey").value = "";
+	      renderCompletionStatus("Resetting completion provider...", "info");
+	      vscode.postMessage({
+	        type: "saveCompletionSettings",
+	        settings: completionSettingsPayload({ resetToInherit: true })
+	      });
+	    }
+
       function saveSkillsSettings() {
         const enabled = Array.from(document.querySelectorAll("[data-skill-id]"))
           .filter((input) => input.checked)
@@ -6727,7 +6844,16 @@ ${codiconFontFace}    .codicon {
 		        type: "testRagSettings",
 		        settings: ragSettingsPayload()
 			      });
-			    }
+				    }
+
+      function forceRebuildCodeRag() {
+        if (userEditedRagSettings) {
+          renderRagStatus("请先保存或丢弃未保存的 RAG 修改。强制重建只使用已保存配置。", "error");
+          return;
+        }
+        renderRagStatus("Preparing Code RAG force rebuild confirmation...", "info");
+        vscode.postMessage({ type: "forceRebuildCodeRag" });
+      }
 
       function toggleRagIndexing() {
         const rag = state.codeGraph && state.codeGraph.rag;
@@ -6749,18 +6875,24 @@ ${codiconFontFace}    .codicon {
           renderRagStatus("RAG edits discarded.", "info");
         }
 
-	    function completionSettingsPayload() {
-	      return {
+	    function completionSettingsPayload(options) {
+	      const providerMode = el("completionProviderMode").value;
+	      const payload = {
 	        enabled: el("completionEnabled").checked,
+	        providerMode,
 	        provider: el("completionProvider").value,
 	        profile: el("completionProfile").value,
-	        apiBaseUrl: el("completionApiBaseUrl").value,
+	        apiBaseUrl: providerMode === "custom" ? el("completionApiBaseUrl").value : "",
 	        model: el("completionModel").value,
 	        maxTokens: numberInputValue("completionMaxTokens", 128),
 	        contextLength: numberInputValue("completionContextLength", 200000),
 	        temperature: numberInputValue("completionTemperature", 0.1),
 	        topP: numberInputValue("completionTopP", 1)
 	      };
+	      const apiKey = el("completionApiKey").value;
+	      if (apiKey) payload.apiKey = apiKey;
+	      if (options && options.resetToInherit) payload.resetToInherit = true;
+	      return payload;
 	    }
 
 	    function ragSettingsPayload() {
@@ -6846,6 +6978,7 @@ ${codiconFontFace}    .codicon {
       agentMenuOpen = false;
       composerMoreMenuOpen = false;
       mentionResults = [];
+      suggestionMode = "";
       mentionStatus = "";
       mentionError = "";
       mentionTruncated = false;
@@ -7140,6 +7273,9 @@ ${codiconFontFace}    .codicon {
 	        renderComposerStatusBar();
 	        renderSendButton();
 	      }
+	      if (!queueing) {
+	        addOptimisticLocalSend(clientSendID, text);
+	      }
 	      appendPromptHistoryEntry(text);
 	      resetPromptHistoryNavigation();
 	      enableAutoFollowMessages();
@@ -7154,6 +7290,7 @@ ${codiconFontFace}    .codicon {
       el("input").value = "";
       mentionedFiles = [];
       mentionResults = [];
+      suggestionMode = "";
       clearComposerDraft();
       renderMentionChips();
       renderSuggestions();
@@ -7198,6 +7335,7 @@ ${codiconFontFace}    .codicon {
 		      el("input").value = "";
 		      mentionedFiles = [];
 		      mentionResults = [];
+		      suggestionMode = "";
 		      goalInputMode = false;
 		      persistGoalInputMode();
 		      clearComposerDraft();
@@ -7236,6 +7374,108 @@ ${codiconFontFace}    .codicon {
 
 	    function nextClientSendID() {
 	      return "client-send-" + Date.now() + "-" + Math.random().toString(36).slice(2);
+	    }
+
+	    function addOptimisticLocalSend(clientSendID, text) {
+	      if (!clientSendID) return;
+	      const id = localMessageIdForClientSend(clientSendID);
+	      optimisticLocalSends = [
+	        ...optimisticLocalSends.filter((item) => item.id !== id),
+	        optimisticLocalMessage(id, clientSendID, text, {
+	          stage: "pending",
+	          label: "Pending send",
+	          detail: "Waiting for the extension host."
+	        })
+	      ];
+	      enableAutoFollowMessages();
+	      renderMessages();
+	    }
+
+	    function optimisticLocalMessage(id, clientSendID, text, sendStatus) {
+	      return {
+	        id,
+	        clientSendID,
+	        role: "user",
+	        text,
+	        timeCreated: Date.now(),
+	        sendStatus,
+	        optimistic: true,
+	        parts: [{ type: "sendStatus", status: sendStatus.stage, text: sendStatus.label, detail: sendStatus.detail || "" }]
+	      };
+	    }
+
+	    function localMessageIdForClientSend(clientSendID) {
+	      return "local-" + String(clientSendID || "").trim();
+	    }
+
+	    function handleSendAccepted(message) {
+	      const id = String(message && (message.localID || localMessageIdForClientSend(message.clientSendID)) || "");
+	      if (!id) return;
+	      optimisticLocalSends = optimisticLocalSends.map((item) => {
+	        if (item.id !== id) return item;
+	        return {
+	          ...item,
+	          sendStatus: {
+	            stage: "pending",
+	            label: "Pending send",
+	            detail: "Extension host accepted the message."
+	          },
+	          parts: [{ type: "sendStatus", status: "pending", text: "Pending send", detail: "Extension host accepted the message." }]
+	        };
+	      });
+	      renderMessages();
+	    }
+
+	    function handleSendRejected(message) {
+	      const id = String(message && (message.localID || localMessageIdForClientSend(message.clientSendID)) || "");
+	      if (!id) return;
+	      if (message && message.remove) {
+	        optimisticLocalSends = optimisticLocalSends.filter((item) => item.id !== id);
+	      } else {
+	        const detail = String((message && message.message) || "Message was not sent.");
+	        optimisticLocalSends = optimisticLocalSends.map((item) => {
+	          if (item.id !== id) return item;
+	          return {
+	            ...item,
+	            sendStatus: {
+	              stage: "error",
+	              label: "Send failed",
+	              detail
+	            },
+	            parts: [{ type: "sendStatus", status: "error", text: "Send failed", detail }]
+	          };
+	        });
+	      }
+	      setNotice((message && message.message) || "Message was not sent.");
+	      renderMessages();
+	      renderSendButton();
+	    }
+
+	    function reconcileOptimisticLocalSends(messages) {
+	      if (!optimisticLocalSends.length) return;
+	      const canonical = Array.isArray(messages) ? messages : [];
+	      const canonicalIds = new Set(canonical.map((item) => String(item && item.id || "")).filter(Boolean));
+	      optimisticLocalSends = optimisticLocalSends.filter((local) => {
+	        if (canonicalIds.has(local.id)) return false;
+	        return !canonical.some((item) => remoteMatchesOptimisticLocalSend(item, local));
+	      });
+	    }
+
+	    function remoteMatchesOptimisticLocalSend(remote, local) {
+	      if (!remote || remote.role !== "user") return false;
+	      if (String(remote.id || "") === local.id) return true;
+	      if (String(remote.text || "").trim() !== String(local.text || "").trim()) return false;
+	      const remoteTime = Number(remote.timeCreated || 0);
+	      const localTime = Number(local.timeCreated || 0);
+	      return remoteTime > 0 && localTime > 0 && Math.abs(remoteTime - localTime) < 60000;
+	    }
+
+	    function messagesWithOptimisticLocalSends() {
+	      const messages = Array.isArray(state.messages) ? state.messages : [];
+	      if (!optimisticLocalSends.length) return messages;
+	      reconcileOptimisticLocalSends(messages);
+	      const merged = [...messages, ...optimisticLocalSends];
+	      return merged.sort((left, right) => (Number(left.timeCreated || 0) - Number(right.timeCreated || 0)));
 	    }
 
 	    function applyQueueSnapshot(message) {
@@ -7302,7 +7542,7 @@ ${codiconFontFace}    .codicon {
         if (event.isComposing || event.keyCode === 229) return;
         if (!modifiedEnter && suggestionsOpen && mentionResults[activeSuggestion]) {
           event.preventDefault();
-          selectMention(mentionResults[activeSuggestion]);
+          selectSuggestion(mentionResults[activeSuggestion]);
           return;
         }
         if (modifiedEnter) return;
@@ -7322,10 +7562,11 @@ ${codiconFontFace}    .codicon {
       } else if (event.key === "Tab") {
         if (mentionResults[activeSuggestion]) {
           event.preventDefault();
-          selectMention(mentionResults[activeSuggestion]);
+          selectSuggestion(mentionResults[activeSuggestion]);
         }
       } else if (event.key === "Escape") {
         mentionResults = [];
+        suggestionMode = "";
         mentionStatus = "";
         mentionSearched = false;
         renderSuggestions();
@@ -7452,6 +7693,7 @@ ${codiconFontFace}    .codicon {
 	        el("input").value = text;
 	        mentionedFiles = [];
 	        mentionResults = [];
+	        suggestionMode = "";
 	        resetPromptHistoryNavigation();
 	        saveComposerDraft();
 	        renderMentionChips();
@@ -7548,9 +7790,10 @@ ${codiconFontFace}    .codicon {
       saveComposerDraft();
       if (mentionsChanged) renderMentionChips();
       renderSendButton();
-      const mention = currentMention();
-      if (!mention) {
+      const trigger = currentComposerTrigger();
+      if (!trigger) {
         mentionResults = [];
+        suggestionMode = "";
         mentionStatus = "";
         mentionTruncated = false;
         mentionError = "";
@@ -7559,27 +7802,135 @@ ${codiconFontFace}    .codicon {
         return;
       }
       clearTimeout(searchTimer);
+      if (trigger.type === "skill") {
+        activeMentionRequestId = 0;
+        mentionResults = skillMentionResults(trigger.query);
+        suggestionMode = "skill";
+        mentionStatus = "";
+        mentionError = "";
+        mentionTruncated = false;
+        mentionSearched = true;
+        activeSuggestion = 0;
+        renderSuggestions();
+        return;
+      }
       const requestId = ++mentionRequestId;
       activeMentionRequestId = requestId;
+      suggestionMode = "file";
       mentionStatus = "searching";
       mentionError = "";
       mentionSearched = false;
       renderSuggestions();
       searchTimer = setTimeout(() => {
-        vscode.postMessage({ type: "searchFilesForMention", query: mention.query, requestId });
+        vscode.postMessage({ type: "searchFilesForMention", query: trigger.query, requestId });
       }, 120);
     }
 
-    function currentMention() {
+    function currentComposerTrigger() {
       const input = el("input");
       const before = input.value.slice(0, input.selectionStart);
-      const match = /(^|\\s)@([^\\s@]*)$/.exec(before);
+      const match = /(^|\\s)([@$])([^\\s@$]*)$/.exec(before);
       if (!match) return undefined;
+      const marker = match[2];
       return {
-        query: match[2],
-        start: before.length - match[2].length - 1,
+        type: marker === "$" ? "skill" : "file",
+        marker,
+        query: match[3],
+        start: before.length - match[3].length - 1,
         end: input.selectionStart
       };
+    }
+
+    function currentMention() {
+      const trigger = currentComposerTrigger();
+      return trigger && trigger.type === "file" ? trigger : undefined;
+    }
+
+    function currentSkillMention() {
+      const trigger = currentComposerTrigger();
+      return trigger && trigger.type === "skill" ? trigger : undefined;
+    }
+
+    function skillMentionResults(query) {
+      const normalized = normalizeSkillSuggestionText(query);
+      return enabledSkillSuggestions()
+        .map((skill) => ({ skill, score: skillSuggestionScore(skill, normalized) }))
+        .filter((item) => item.score < 100000)
+        .sort((left, right) => left.score - right.score || skillSuggestionLabel(left.skill).localeCompare(skillSuggestionLabel(right.skill)))
+        .slice(0, 50)
+        .map(({ skill }) => ({
+          kind: "skill",
+          label: skillSuggestionLabel(skill),
+          insertText: skillSuggestionInsertText(skill),
+          description: skill.description || "",
+          meta: skillSuggestionMeta(skill)
+        }));
+    }
+
+    function enabledSkillSuggestions() {
+      const skills = Array.isArray(state.skills && state.skills.available) ? state.skills.available : [];
+      return skills.filter((skill) => Boolean(skill && skill.enabled && !skill.invalid && skill.userInvocable !== false));
+    }
+
+    function skillSuggestionLabel(skill) {
+      return String((skill && (skill.name || skill.commandName || skill.id)) || "skill").trim();
+    }
+
+    function skillSuggestionInsertText(skill) {
+      return String((skill && (skill.commandName || skill.name || skill.id)) || "skill").trim();
+    }
+
+    function skillSuggestionMeta(skill) {
+      return [skill.scope, skill.sourceKind, skill.visibility].filter(Boolean).join("/") || "skill";
+    }
+
+    function normalizeSkillSuggestionText(value) {
+      return String(value || "").trim().toLowerCase().replace(/^[$/]+/, "");
+    }
+
+    function skillSuggestionScore(skill, query) {
+      const values = [skill.name, skill.commandName, skill.id, skill.description]
+        .map((value) => normalizeSkillSuggestionText(value))
+        .filter(Boolean);
+      if (!query) return 10 + skillSuggestionLabel(skill).length / 1000;
+      for (const value of values.slice(0, 3)) {
+        if (value === query) return 0;
+        if (value.startsWith(query)) return 10 + value.length / 1000;
+      }
+      for (const value of values) {
+        const index = value.indexOf(query);
+        if (index !== -1) return 100 + index + value.length / 1000;
+      }
+      return 100000;
+    }
+
+    function selectSuggestion(item) {
+      if (item && item.kind === "skill") {
+        selectSkillMention(item);
+        return;
+      }
+      selectMention(item);
+    }
+
+    function selectSkillMention(skill) {
+      const input = el("input");
+      const mention = currentSkillMention();
+      const insertText = skill && (skill.insertText || skill.label);
+      if (mention && insertText) {
+        input.value = input.value.slice(0, mention.start) + "$" + insertText + " " + input.value.slice(mention.end);
+        const cursor = mention.start + insertText.length + 2;
+        input.setSelectionRange(cursor, cursor);
+      }
+      mentionResults = [];
+      suggestionMode = "";
+      mentionStatus = "";
+      mentionError = "";
+      mentionTruncated = false;
+      mentionSearched = false;
+      renderSuggestions();
+      saveComposerDraft();
+      renderSendButton();
+      input.focus();
     }
 
     function selectMention(file) {
@@ -7594,7 +7945,9 @@ ${codiconFontFace}    .codicon {
         input.setSelectionRange(cursor, cursor);
       }
       mentionResults = [];
+      suggestionMode = "";
       mentionStatus = "";
+      mentionError = "";
       mentionTruncated = false;
       mentionSearched = false;
       renderMentionChips();
@@ -8685,26 +9038,37 @@ ${codiconFontFace}    .codicon {
 
 	    function renderCompletionSettings() {
 	      const completion = state.completion || {};
+	      const provider = state.provider || {};
 	      if (!userEditedCompletionSettings) {
 	        el("completionEnabled").checked = Boolean(completion.enabled);
+	        el("completionProviderMode").value = completion.providerMode || "inherit-chat";
 		        el("completionProvider").value = completion.provider || "qwen-direct";
 	        el("completionProfile").value = completion.profile || "qwen-coder-fim";
-	        el("completionApiBaseUrl").value = completion.apiBaseUrl || "";
+	        el("completionApiBaseUrl").value = completion.providerMode === "custom" ? (completion.apiBaseUrl || "") : (provider.apiBaseUrl || state.serverUrl || "");
+	        el("completionApiKey").value = "";
 	        el("completionMaxTokens").value = String(completion.maxTokens || 128);
 	        el("completionContextLength").value = String(completion.contextLength ?? 200000);
 	        el("completionTemperature").value = String(completion.temperature ?? 0.1);
 	        el("completionTopP").value = String(completion.topP ?? 1);
 	      }
 	      const direct = el("completionProvider").value !== "none";
+	      const customProvider = el("completionProviderMode").value === "custom";
 	      const modelState = renderCompletionModelSelect(completion.model || "qwen-coder-30b0");
 	      const unavailable = direct && !modelState.available;
 	      el("completionDirectFields").className = "completionDirectFields" + (direct ? "" : " hidden");
+	      el("completionApiBaseUrl").disabled = !direct || !customProvider;
+	      el("completionApiKey").disabled = !direct || !customProvider;
+	      el("completionApiBaseUrl").placeholder = customProvider ? "http://localhost:8000/v1" : "Inherited from chat provider";
+	      el("completionApiKey").placeholder = customProvider ? "Leave empty to keep existing key or use chat key" : "Using chat provider key";
 	      el("completionModel").disabled = !direct || unavailable;
 	      el("saveCompletionSettings").disabled = unavailable;
 	      el("testCompletionApi").disabled = !direct || unavailable;
-	      el("refreshCompletionModels").disabled = Boolean(state.loadingModels);
-	      if (direct && state.loadingModels && !modelState.available) {
+	      el("refreshCompletionModels").disabled = Boolean(state.loadingCompletionModels);
+	      el("resetCompletionProvider").disabled = !direct && (completion.providerMode || "inherit-chat") === "inherit-chat";
+	      if (direct && state.loadingCompletionModels && !modelState.available) {
 	        renderCompletionStatus("Refreshing completion models...", "info");
+	      } else if (state.completionModelError) {
+	        renderCompletionStatus(state.completionModelError, "error");
 	      } else if (unavailable) {
 	        renderCompletionStatus("无可用补全模型，补全暂不可用", "error");
 	      } else {
@@ -8728,7 +9092,7 @@ ${codiconFontFace}    .codicon {
 	          select.appendChild(modelOption(completionModelId(model), completionModelLabel(model)));
 	        }
 	      } else {
-	        select.appendChild(modelOption("", state.loadingModels ? completionLoadingLabel(profile) : noCompletionModelLabel(profile)));
+	        select.appendChild(modelOption("", state.loadingCompletionModels ? completionLoadingLabel(profile) : noCompletionModelLabel(profile)));
 	      }
 	      select.value = selected;
 	      return { available: candidates.length > 0, selected };
@@ -8741,7 +9105,8 @@ ${codiconFontFace}    .codicon {
 
 	    function completionCandidateModels(profile, savedModel) {
 	      const seen = new Set();
-	      const candidates = (state.models || [])
+	      const models = state.completionModelsLoaded ? (state.completionModels || []) : (state.models || []);
+	      const candidates = models
 	        .filter((model) => {
 	          if (!model || model.source !== "provider") return false;
 	          const id = completionModelId(model);
@@ -8753,7 +9118,7 @@ ${codiconFontFace}    .codicon {
 	        })
 	        .sort((left, right) => (left.providerIndex ?? 1e9) - (right.providerIndex ?? 1e9));
 	      const configured = String(savedModel || "").trim();
-	      if (profile === "deepseek-fim" && configured && !seen.has(configured) && configured.toLowerCase().includes("deepseek")) {
+	      if (configured && !seen.has(configured) && completionModelMatchesProfile(configured.toLowerCase(), profile)) {
 	        candidates.push({ id: configured, name: configured, modelID: configured, source: "configured", providerIndex: 1e9 });
 	      }
 	      return candidates;
@@ -8948,11 +9313,12 @@ ${codiconFontFace}    .codicon {
 	        el("ragVectorTopK").value = String(rag.vectorTopK ?? 24);
 	        el("ragRerankTopK").value = String(rag.rerankTopK ?? 16);
 	      }
-			      const currentRagStatus = state.codeGraph && state.codeGraph.rag;
-			      const statusText = codeGraphRagMeta(currentRagStatus);
-          renderRagCompactStatus(currentRagStatus, statusText);
-          renderRagIndexingControl(currentRagStatus);
-			      if (statusText && !statusText.startsWith("RAG not configured")) renderRagStatus(statusText, statusText.includes("unavailable") ? "error" : "info");
+				    const currentRagStatus = state.codeGraph && state.codeGraph.rag;
+				    const statusText = codeGraphRagMeta(currentRagStatus);
+	          renderRagCompactStatus(currentRagStatus, statusText);
+	          renderRagIndexingControl(currentRagStatus);
+          renderRagRebuildControl();
+				    if (statusText && !statusText.startsWith("RAG not configured")) renderRagStatus(statusText, statusText.includes("unavailable") ? "error" : "info");
 	          else renderRagStatus("", "info");
 			    }
 
@@ -8961,6 +9327,16 @@ ${codiconFontFace}    .codicon {
 	      detail.className = "detail " + detailStatusClass(status) + (message ? "visible" : "");
 	      detail.textContent = message || "";
 	    }
+
+      function renderRagRebuildControl() {
+        const button = el("forceRebuildCodeRag");
+        const dirty = Boolean(userEditedRagSettings);
+        button.classList.toggle("is-dirty", dirty);
+        button.title = dirty
+          ? "请先保存或丢弃未保存的 RAG 修改；强制重建只使用已保存配置"
+          : "强制重建 Code RAG：停止当前 indexing、删除旧索引并从 0 重建";
+        button.setAttribute("aria-label", button.title);
+      }
 
 	    function detailStatusClass(status) {
 	      if (status === "error") return "error ";
@@ -9670,6 +10046,7 @@ ${codiconFontFace}    .codicon {
 	        el("input").value = "";
 	        mentionedFiles = [];
 	        mentionResults = [];
+	        suggestionMode = "";
 	        clearComposerDraft();
 	        setNotice("Goal started.");
 	        return;
@@ -10222,6 +10599,44 @@ ${codiconFontFace}    .codicon {
 	      }
 	      if (!rows.childElementCount) appendStatusRow(rows, "No local context selected.");
 	      root.appendChild(rows);
+	      renderContextSummaryRows(root);
+	    }
+
+	    function renderContextSummaryRows(root) {
+	      const summary = state.contextSummary || {};
+	      const sections = Array.isArray(summary.sections) ? summary.sections : [];
+	      if (!sections.length && !summary.fallbackNotice && !summary.compactWarning && !summary.rollbackWarning) return;
+	      appendStatusPopoverHeader(root, "Context Summary", contextSummaryMeta(summary));
+	      const rows = statusRows();
+	      for (const section of sections) {
+	        appendStatusRow(rows, contextSummarySectionText(section));
+	      }
+	      if (summary.fallbackNotice) appendStatusRow(rows, "Window fallback: " + summary.fallbackNotice);
+	      if (summary.compactWarning) appendStatusRow(rows, "Compact: " + summary.compactWarning);
+	      if (summary.rollbackWarning) appendStatusRow(rows, "Rollback: " + summary.rollbackWarning);
+	      root.appendChild(rows);
+	    }
+
+	    function contextSummaryMeta(summary) {
+	      const sections = Array.isArray(summary.sections) ? summary.sections : [];
+	      const warnings = sections.filter((section) => section && (section.severity === "warning" || section.severity === "error")).length
+	        + (summary.fallbackNotice ? 1 : 0)
+	        + (summary.compactWarning ? 1 : 0)
+	        + (summary.rollbackWarning ? 1 : 0);
+	      return warnings ? warnings + " warnings or degraded states" : "Included, truncated, stale, compact and rollback state";
+	    }
+
+	    function contextSummarySectionText(section) {
+	      const label = section && section.label ? String(section.label) : "Context";
+	      const value = section && section.value ? String(section.value) : "";
+	      const detail = section && section.detail ? " · " + String(section.detail) : "";
+	      const omitted = Number(section && section.omitted || 0);
+	      const truncated = Number(section && section.truncated || 0);
+	      const counts = [
+	        omitted > 0 ? "omitted " + omitted : "",
+	        truncated > 0 ? "truncated " + truncated : "",
+	      ].filter(Boolean).join(", ");
+	      return label + ": " + value + detail + (counts ? " · " + counts : "");
 	    }
 
     function renderDiagnosticsStatusPopover(root) {
@@ -10860,7 +11275,7 @@ ${codiconFontFace}    .codicon {
 
 	    function renderMessages() {
 	      const root = el("messages");
-	      const messages = state.messages || [];
+	      const messages = messagesWithOptimisticLocalSends();
 	      const stick = autoFollowMessages && (userNearBottom || forceNextMessageFollow);
 	      const previousScrollTop = root.scrollTop;
 	      const scrollAnchor = stick ? undefined : captureMessagesScrollAnchor(root);
@@ -11200,7 +11615,7 @@ ${codiconFontFace}    .codicon {
 
 	    function renderJumpLatest() {
 	      const button = el("jumpLatest");
-	      const visible = Boolean(activeMainView !== "usage" && !autoFollowMessages && !userNearBottom && messageHasAnyContent(state.messages || []));
+	      const visible = Boolean(activeMainView !== "usage" && !autoFollowMessages && !userNearBottom && messageHasAnyContent(messagesWithOptimisticLocalSends()));
 	      button.classList.toggle("visible", visible);
         button.hidden = activeMainView === "usage";
 	      button.setAttribute("aria-hidden", visible ? "false" : "true");
@@ -11943,9 +12358,10 @@ ${codiconFontFace}    .codicon {
         + wordRenderParts.filter((part) => part.ok === false).length;
       const warningCount = turnProcessWarningList(input).length;
       const mermaidPngCount = diagramParts.filter((part) => String(part.kind || "").toLowerCase() === "mermaid" && part.pngPath).length;
-      const primaryDocument = generatedParts.find((part) => part.path) || wordRenderParts.find((part) => part.path);
+      const primaryDocument = generatedParts.slice().reverse().find((part) => part.path) || wordRenderParts.slice().reverse().find((part) => part.path);
       const progressArtifacts = turnProcessProgressArtifactPaths(input);
       const primaryDocumentPath = primaryDocument ? primaryDocument.path : "";
+      const recoveredArgumentFailureCount = primaryDocumentPath ? turnProcessRecoveredArgumentFailureCount(input) : 0;
       const fallbackCount = diagramParts.filter((part) => part.fallbackUsed).length
         + (primaryDocumentPath ? 0 : runProgressParts.reduce((sum, part) => sum + Number(part.fallbackCount || 0), 0))
         + (primaryDocumentPath ? 0 : docTimelineParts.reduce((sum, part) => sum + Number(part.fallbackCount || 0), 0));
@@ -11984,6 +12400,7 @@ ${codiconFontFace}    .codicon {
           diagramParts,
           wordRenderParts,
           currentStep: turnProcessCurrentStep(input),
+          recoveredArgumentFailureCount,
         }),
       };
     }
@@ -11993,7 +12410,8 @@ ${codiconFontFace}    .codicon {
       const skipped = model.wordRenderParts.find((part) => part.visualQaStatus === "skipped" || part.attempted === false);
       if (skipped) important.push("视觉 QA 已跳过：" + wordRenderSkipReasonText(skipped.skipReason));
       if (model.fallbackCount) important.push("Mermaid 使用 fallback");
-      if (model.failedCount) important.push(model.primaryDocumentPath ? "有重试失败" : "存在失败步骤");
+      if (model.primaryDocumentPath && model.recoveredArgumentFailureCount) important.push("已自动修复 " + String(model.recoveredArgumentFailureCount) + " 次工具参数错误");
+      if (model.failedCount && !(model.primaryDocumentPath && model.recoveredArgumentFailureCount && model.recoveredArgumentFailureCount >= model.failedCount)) important.push(model.primaryDocumentPath ? "有重试失败" : "存在失败步骤");
       if (model.primaryDocumentPath) {
         return ["Word 文档已生成", basenameForDisplay(model.primaryDocumentPath), ...important].filter(Boolean).join(" · ");
       }
@@ -12104,9 +12522,9 @@ ${codiconFontFace}    .codicon {
     }
 
     function turnProcessDeliveredDocumentPath(input) {
-      const generated = (input.generatedParts || []).find((part) => part.path);
+      const generated = (input.generatedParts || []).slice().reverse().find((part) => part.path);
       if (generated) return generated.path || "";
-      const rendered = (input.wordRenderParts || []).find((part) => part.path);
+      const rendered = (input.wordRenderParts || []).slice().reverse().find((part) => part.path);
       return rendered ? rendered.path || "" : "";
     }
 
@@ -12185,6 +12603,27 @@ ${codiconFontFace}    .codicon {
 
     function turnProcessStepLine(title, status, detail) {
       return [title, status, detail].filter(Boolean).join(" · ");
+    }
+
+    function turnProcessRecoveredArgumentFailureCount(input) {
+      let count = 0;
+      for (const part of input.runProgressParts || []) {
+        const items = Array.isArray(part.items) ? part.items : [];
+        for (const item of items) {
+          if (!isFailedStatus(item && item.status)) continue;
+          if (turnProcessLooksLikeInvalidToolArguments(item.detail || item.error || item.title || "")) count += 1;
+        }
+        if (!items.length && isFailedStatus(part.status) && turnProcessLooksLikeInvalidToolArguments(part.detail || part.error || part.title || "")) count += 1;
+      }
+      for (const part of input.toolParts || []) {
+        if (!isFailedStatus(part.status)) continue;
+        if (turnProcessLooksLikeInvalidToolArguments([part.title, part.error, part.output, part.summary].filter(Boolean).join(" "))) count += 1;
+      }
+      return count;
+    }
+
+    function turnProcessLooksLikeInvalidToolArguments(text) {
+      return /tool-arguments-invalid-json|Tool arguments were not valid JSON|Tool arguments invalid/i.test(String(text || ""));
     }
 
     function turnProcessArtifactLines(input) {
@@ -16453,8 +16892,9 @@ ${codiconFontFace}    .codicon {
     function renderSuggestions() {
       const root = el("suggestions");
       root.innerHTML = "";
-      const mention = currentMention();
-      const shouldOpen = Boolean(mention && (mentionStatus || mentionError || mentionTruncated || mentionSearched || mentionResults.length > 0));
+      const trigger = currentComposerTrigger();
+      const mode = trigger ? trigger.type : suggestionMode;
+      const shouldOpen = Boolean(trigger && (mentionStatus || mentionError || mentionTruncated || mentionSearched || mentionResults.length > 0));
       if (!shouldOpen) {
         root.className = "suggestions";
         return;
@@ -16463,7 +16903,7 @@ ${codiconFontFace}    .codicon {
       if (mentionStatus === "searching") {
         const row = document.createElement("div");
         row.className = "suggestionMeta";
-        row.textContent = "Searching workspace files...";
+        row.textContent = mode === "skill" ? "Searching enabled skills..." : "Searching workspace files...";
         root.appendChild(row);
       }
       if (mentionError) {
@@ -16475,7 +16915,7 @@ ${codiconFontFace}    .codicon {
       if (!mentionStatus && !mentionError && mentionResults.length === 0) {
         const row = document.createElement("div");
         row.className = "suggestionMeta";
-        row.textContent = "No files found.";
+        row.textContent = mode === "skill" ? skillSuggestionEmptyText() : "No files found.";
         root.appendChild(row);
       }
       if (mentionTruncated) {
@@ -16484,25 +16924,65 @@ ${codiconFontFace}    .codicon {
         row.textContent = "Index truncated; keep typing to narrow results.";
         root.appendChild(row);
       }
-      mentionResults.forEach((file, index) => {
+      mentionResults.forEach((item, index) => {
         const node = document.createElement("button");
         node.type = "button";
         node.className = "suggestion " + (index === activeSuggestion ? "active" : "");
-        node.title = file.label;
-        node.setAttribute("aria-label", file.label);
+        node.title = suggestionTitle(item);
+        node.setAttribute("aria-label", suggestionTitle(item));
         const icon = document.createElement("span");
         icon.className = "suggestionIcon";
-        icon.textContent = file.type === "folder" ? "dir" : "file";
+        icon.setAttribute("aria-hidden", "true");
+        appendLiquidIcon(icon, suggestionIconName(item));
+        const main = document.createElement("span");
+        main.className = "suggestionMain";
         const label = document.createElement("span");
         label.className = "suggestionLabel";
-        label.textContent = file.label;
-        node.append(icon, label);
+        label.textContent = suggestionLabel(item);
+        main.appendChild(label);
+        const detailText = suggestionDetail(item);
+        if (detailText) {
+          const detail = document.createElement("span");
+          detail.className = "suggestionDetail";
+          detail.textContent = detailText;
+          main.appendChild(detail);
+        }
+        node.append(icon, main);
         node.addEventListener("mousedown", (event) => {
           event.preventDefault();
-          selectMention(file);
+          selectSuggestion(item);
         });
         root.appendChild(node);
       });
+    }
+
+    function skillSuggestionEmptyText() {
+      return enabledSkillSuggestions().length ? "No matching skills." : "No enabled skills found.";
+    }
+
+    function suggestionTitle(item) {
+      if (!item) return "";
+      if (item.kind === "skill") return "$" + (item.label || item.insertText || "skill") + (item.description ? ": " + item.description : "");
+      return item.label || "";
+    }
+
+    function suggestionLabel(item) {
+      if (!item) return "";
+      if (item.kind === "skill") return "$" + (item.label || item.insertText || "skill");
+      return item.label || "";
+    }
+
+    function suggestionDetail(item) {
+      if (!item) return "";
+      if (item.kind === "skill") return item.description || item.meta || "";
+      if (item.type === "folder") return "Folder";
+      return "File";
+    }
+
+    function suggestionIconName(item) {
+      if (item && item.kind === "skill") return "skillBlocks";
+      if (item && item.type === "folder") return "file";
+      return "references";
     }
 
     function roleLabel(role) {

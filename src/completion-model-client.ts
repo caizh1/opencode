@@ -159,7 +159,10 @@ export function completionModel(settings: RemoteSettings) {
 }
 
 export function completionApiBaseUrl(settings: RemoteSettings) {
-  const baseUrl = settings.completion.apiBaseUrl.trim() || settings.provider?.apiBaseUrl?.trim() || ""
+  const completionBaseUrl = settings.completion.providerMode === "custom"
+    ? settings.completion.apiBaseUrl.trim()
+    : ""
+  const baseUrl = completionBaseUrl || settings.provider?.apiBaseUrl?.trim() || ""
   if (settings.completion.profile === "deepseek-fim") return deepseekCompletionBaseUrl(baseUrl)
   return baseUrl
 }

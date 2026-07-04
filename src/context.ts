@@ -15,6 +15,27 @@ import type { DocumentRagContextProvider, DocumentRagQueryResult } from "./docum
 import { isMentionIndexExcludedPath } from "./mention-index"
 import type { CompletionPlan, RetrievedCompletionSnippet } from "./completion-types"
 import type { ChatContextOptions, EvidenceLedgerEntry, RagStatus, RemoteSettings } from "./types"
+import {
+  UNDERSTANDING_PLAN_TEMPLATES,
+  aggregateUnderstandingEvidence,
+  createUnderstandingPlannerArtifact,
+  executeEvidencePlan,
+  type EvidencePlan,
+  type UnderstandingEvidenceAggregation,
+  type UnderstandingEvidenceCitation,
+  type UnderstandingClaim,
+  type UnderstandingPlannerArtifact,
+  type UnderstandingPlanExecutionResult,
+  type UnderstandingPlanner,
+  type UnderstandingPlannerResult,
+  type UnderstandingPlannerTrace,
+} from "./understanding-planner"
+import {
+  coverageLimitNotice,
+  draftAnswerFromUnderstandingClaims,
+  verifyUnderstandingAnswerGrounding,
+  type UnderstandingGroundingFinding,
+} from "./understanding-grounding"
 
 const CHAT_RAG_LATENCY_BUDGET_MS = 2000
 const CHAT_DOCUMENT_RAG_LATENCY_BUDGET_MS = 1000
@@ -102,6 +123,8 @@ export type BuildChatPromptInput = {
   editorContext?: TrackedEditorContext
   codeGraph?: CodeGraphContextProvider
   documentRag?: DocumentRagContextProvider
+  understandingPlanner?: UnderstandingPlanner
+  previousUnderstanding?: UnderstandingPlannerFollowupContext
   onContextSummary?: (items: ContextSummaryItem[]) => void
 }
 
@@ -109,6 +132,25 @@ export type BuildChatPromptResult = {
   prompt: string
   evidenceLedgerInput: EvidenceLedgerEntry[]
   contextSummary: ContextSummaryItem[]
+  understandingPlannerAudit?: UnderstandingPlannerAudit
+}
+
+export type UnderstandingPlannerFollowupContext = {
+  plan?: EvidencePlan
+  trace?: UnderstandingPlannerTrace
+  confirmedConcepts?: string[]
+  previousEvidenceRefs?: UnderstandingEvidenceCitation[]
+  previousGaps?: string[]
+  previousClaims?: UnderstandingClaim[]
+  userCorrections?: string[]
+}
+
+export type UnderstandingPlannerAudit = {
+  result: UnderstandingPlannerResult
+  execution?: UnderstandingPlanExecutionResult
+  aggregation?: UnderstandingEvidenceAggregation
+  artifact?: UnderstandingPlannerArtifact
+  verifierFindings?: UnderstandingGroundingFinding[]
 }
 
 export class MissingLocalContextError extends Error {
@@ -330,7 +372,17 @@ export async function buildChatPromptWithEvidence(input: BuildChatPromptInput): 
         ...retrievalOptions,
       })
     : undefined
-  const analysisEvidence = input.settings.codeGraph.enabled ? await retrieveChatAnalysisEvidence({
+  const understandingEvidence = input.settings.codeGraph.enabled ? await retrieveChatUnderstandingEvidence({
+    question: input.question,
+    settings: input.settings,
+    codeGraph: input.codeGraph,
+    planner: input.understandingPlanner,
+    previousUnderstanding: input.previousUnderstanding,
+    relatedPaths,
+    editorContext: input.editorContext,
+    retrievalOptions,
+  }) : undefined
+  const analysisEvidence = input.settings.codeGraph.enabled && (!understandingEvidence || understandingEvidence.useFallback) ? await retrieveChatAnalysisEvidence({
     question: input.question,
     settings: input.settings,
     codeGraph: input.codeGraph,
@@ -347,7 +399,7 @@ export async function buildChatPromptWithEvidence(input: BuildChatPromptInput): 
   if (input.settings.context.localOnlyMode) chunks.push(localContextContract(input.settings.tools.enabled))
   chunks.push(diagramOutputGuidance(input.settings.tools.enabled))
 
-  const hasLocalContext = hasUsableFileContext(context.summary) || Boolean(codeGraph?.text) || Boolean(analysisEvidence?.evidencePack.evidence.length) || Boolean(documentEvidence?.text)
+  const hasLocalContext = hasUsableFileContext(context.summary) || Boolean(codeGraph?.text) || Boolean(understandingEvidence?.text) || Boolean(analysisEvidence?.evidencePack.evidence.length) || Boolean(documentEvidence?.text)
 
   if (input.settings.context.localOnlyMode && looksLikeLocalFileQuestion(input.question) && !hasLocalContext) {
     throw new MissingLocalContextError()
@@ -358,6 +410,7 @@ export async function buildChatPromptWithEvidence(input: BuildChatPromptInput): 
   }
   if (context.text) chunks.push(`Local workspace context:\n${context.text}`)
   if (codeGraph?.text) chunks.push(`Local code graph evidence:\n${codeGraph.text}`)
+  if (understandingEvidence?.text) chunks.push(`Local understanding planner evidence:\n${understandingEvidence.text}`)
   if (analysisEvidence) chunks.push(`Local analysis evidence pack:\n${formatAnalysisEvidence(analysisEvidence)}`)
   if (documentEvidence?.text) chunks.push(`Local document RAG evidence:\n${documentEvidence.text}`)
   return {
@@ -370,6 +423,13 @@ export async function buildChatPromptWithEvidence(input: BuildChatPromptInput): 
       documentEvidence,
     }),
     contextSummary: context.summary,
+    understandingPlannerAudit: understandingEvidence ? {
+      result: understandingEvidence.result,
+      execution: understandingEvidence.execution,
+      aggregation: understandingEvidence.aggregation,
+      artifact: understandingEvidence.artifact,
+      verifierFindings: understandingEvidence.verifierFindings,
+    } : undefined,
   }
 }
 
@@ -498,11 +558,183 @@ async function retrieveChatAnalysisEvidence(input: {
   })
 }
 
+async function retrieveChatUnderstandingEvidence(input: {
+  question: string
+  settings: RemoteSettings
+  codeGraph?: CodeGraphContextProvider
+  planner?: UnderstandingPlanner
+  previousUnderstanding?: UnderstandingPlannerFollowupContext
+  relatedPaths: string[]
+  editorContext?: TrackedEditorContext
+  retrievalOptions: ChatRetrievalOptions
+}): Promise<{
+  result: UnderstandingPlannerResult
+  execution?: UnderstandingPlanExecutionResult
+  aggregation?: UnderstandingEvidenceAggregation
+  artifact?: UnderstandingPlannerArtifact
+  verifierFindings?: UnderstandingGroundingFinding[]
+  text?: string
+  useFallback: boolean
+} | undefined> {
+  if (!input.codeGraph || !input.planner) return undefined
+  const currentFile = input.editorContext?.uri ? relativePath(input.editorContext.uri) : input.relatedPaths[0] ?? ""
+  const relatedPaths = [...new Set([currentFile, ...input.relatedPaths].filter(Boolean))]
+  const status = input.codeGraph.status()
+  const result = await input.planner.plan({
+    question: input.question,
+    currentFile,
+    relatedPaths,
+    codeGraphState: status.state,
+    rag: status.rag,
+    previousPlan: input.previousUnderstanding?.plan,
+    previousTrace: input.previousUnderstanding?.trace,
+    confirmedConcepts: input.previousUnderstanding?.confirmedConcepts,
+    previousEvidenceRefs: input.previousUnderstanding?.previousEvidenceRefs,
+    previousGaps: input.previousUnderstanding?.previousGaps,
+    previousClaims: input.previousUnderstanding?.previousClaims,
+    userCorrections: input.previousUnderstanding?.userCorrections,
+  })
+  if (result.kind !== "planned") {
+    return {
+      result,
+      useFallback: true,
+      text: formatUnderstandingPlannerTrace(result),
+    }
+  }
+  const execution = await executeEvidencePlan({
+    plan: result.plan,
+    codeGraph: input.codeGraph,
+    relatedPaths,
+    queryOptions: {
+      maxEvidenceItems: input.settings.analysis.maxEvidenceItems,
+      maxEvidenceBytes: input.settings.analysis.maxEvidenceBytes,
+      ...input.retrievalOptions,
+    },
+    maxDepth: input.settings.codeGraph.maxGraphDepth,
+    maxFanout: input.settings.codeGraph.maxFanout,
+    maxEvidenceBytes: input.settings.analysis.maxEvidenceBytes,
+  })
+  const aggregation = aggregateUnderstandingEvidence(result.plan, execution)
+  const coverageNotice = coverageLimitNotice({
+    codeGraphState: status.state,
+    rag: status.rag,
+    retrievalMode: input.retrievalOptions.retrievalMode,
+  })
+  const draft = draftAnswerFromUnderstandingClaims(aggregation.claims)
+  if (coverageNotice) draft.coverageNotice = coverageNotice
+  const verification = verifyUnderstandingAnswerGrounding({
+    answer: draft,
+    aggregation,
+    coverage: {
+      codeGraphState: status.state,
+      rag: status.rag,
+      retrievalMode: input.retrievalOptions.retrievalMode,
+    },
+  })
+  const artifact = createUnderstandingPlannerArtifact({
+    plan: result.plan,
+    execution,
+    aggregation,
+    verifierFindings: verification.findings,
+  })
+  return {
+    result,
+    execution,
+    aggregation,
+    artifact,
+    verifierFindings: verification.findings,
+    useFallback: execution.evidenceCount === 0,
+    text: formatUnderstandingPlannerEvidence(result, execution, aggregation, {
+      coverageNotice,
+      verifierFindings: verification.findings,
+    }),
+  }
+}
+
 function chatRetrievalOptions(codeGraph?: CodeGraphContextProvider): ChatRetrievalOptions {
   const retrievalMode = isChatRagReady(codeGraph?.status().rag) ? "hybrid" : "graph-only"
   return retrievalMode === "hybrid"
     ? { retrievalMode, latencyBudgetMs: CHAT_RAG_LATENCY_BUDGET_MS }
     : { retrievalMode }
+}
+
+function formatUnderstandingPlannerTrace(result: UnderstandingPlannerResult) {
+  const trace = result.trace
+  return [
+    `Trace: planner_used=${trace.planner_used} fast_path_reason=${trace.fast_path_reason ?? "none"} fallback_reason=${trace.fallback_reason ?? "none"} task_count=${trace.task_count} evidence_count=${trace.evidence_count} latency_ms=${trace.latency_ms}`,
+    "Planner did not provide executable evidence; existing local analysis evidence is used as fallback.",
+  ].join("\n")
+}
+
+function formatUnderstandingPlannerEvidence(
+  result: Extract<UnderstandingPlannerResult, { kind: "planned" }>,
+  execution: UnderstandingPlanExecutionResult,
+  aggregation: UnderstandingEvidenceAggregation,
+  options: {
+    coverageNotice?: string
+    verifierFindings?: UnderstandingGroundingFinding[]
+  } = {},
+) {
+  const plan = result.plan
+  const rows = [
+    `Trace: planner_used=true fast_path_reason=none fallback_reason=none task_count=${execution.trace.task_count} evidence_count=${execution.trace.evidence_count} latency_ms=${execution.trace.latency_ms}`,
+    `Question summary: ${plan.questionSummary}`,
+    plan.templateId ? `Template: ${plan.templateId}` : "",
+    plan.templateId ? `Template evidence types: ${UNDERSTANDING_PLAN_TEMPLATES[plan.templateId].evidenceTypes.join(", ")}` : "",
+    plan.templateId ? `Template missing-evidence strategy: ${UNDERSTANDING_PLAN_TEMPLATES[plan.templateId].missingEvidenceStrategy}` : "",
+    plan.concepts.length ? `Concepts: ${plan.concepts.join(", ")}` : "",
+    plan.hypotheses.length ? `Hypotheses: ${plan.hypotheses.join("; ")}` : "",
+    `Answer shape: ${plan.answerShape}`,
+    plan.riskNotes.length ? `Risk notes: ${plan.riskNotes.join("; ")}` : "",
+    "Planner phase trace:",
+    ...execution.phaseTrace.map((phase) =>
+      `- phase=${phase.phase} reason=${phase.reason} input_tasks=${phase.inputTasks} output_tasks=${phase.outputTasks} evidence=${phase.evidenceCount} seeds=${phase.seedSymbols.join(",") || "none"} truncated=${phase.truncated}`,
+    ),
+    "Evidence tasks:",
+    ...execution.results.map((item, index) => {
+      const status = item.error ? `error=${item.error}` : `evidence=${item.evidenceCount}`
+      const symbol = "symbol" in item.task && item.task.symbol ? ` symbol=${item.task.symbol}` : ""
+      const evidence = understandingTaskEvidenceText(item)
+      return `${index + 1}. type=${item.task.type}${symbol} query=${item.task.query} via=${item.kind} ${status}${evidence ? `\n${evidence}` : ""}`
+    }),
+    "Aggregated evidence factors:",
+    ...aggregation.factors.map((factor) => {
+      const evidence = factor.supportingEvidence
+        .slice(0, 5)
+        .map((item) => `  - ${item.path}:${item.startLine}-${item.endLine} source=${item.source} task=${item.taskType}${item.snippet ? ` ${oneLine(item.snippet)}` : ""}`)
+        .join("\n")
+      const gaps = factor.gaps.length ? ` gaps=${factor.gaps.join(" | ")}` : ""
+      return `- ${factor.label} category=${factor.category} strength=${factor.strength} confidence=${factor.confidence} hypothesis=${factor.hypothesis}${gaps}${evidence ? `\n${evidence}` : ""}`
+    }),
+    aggregation.omittedDuplicateEvidence > 0 ? `Deduplicated evidence refs: ${aggregation.omittedDuplicateEvidence}` : "",
+    aggregation.gaps.length ? `Missing factor evidence: ${aggregation.gaps.join("; ")}` : "",
+    aggregation.claims.length ? "Evidence-aware claims:" : "",
+    ...aggregation.claims.slice(0, 12).map((claim) =>
+      `- ${claim.id} category=${claim.factorCategory} support=${claim.supportLevel} confidence=${claim.confidence} refs=${claim.evidenceRefs.length} counters=${claim.counterEvidence.length} assumptions=${claim.assumptions.length} ${oneLine(claim.claim)}`,
+    ),
+    options.coverageNotice ? options.coverageNotice : "",
+    options.verifierFindings?.length ? "Grounding verifier findings:" : "",
+    ...(options.verifierFindings ?? []).map((finding) => `- ${finding.severity} ${finding.code}: ${finding.message}`),
+    "Answer grounding rules: group broad answers by evidence-backed factors; cite the listed paths/lines for each main conclusion; keep missing or weak factors in a gaps or hypotheses section; include next-step validation suggestions for performance, root-cause, coverage, or state-flow claims.",
+    "Use this as an evidence plan and retrieval summary only. Do not treat hypotheses as proven unless supported by retrieved evidence.",
+  ]
+  return rows.filter(Boolean).join("\n")
+}
+
+function understandingTaskEvidenceText(item: UnderstandingPlanExecutionResult["results"][number]) {
+  if (item.error) return ""
+  if (item.kind === "queryEvidence") {
+    const text = item.result?.evidencePack.text
+    return text ? limitPreviewBytes(text, 1800) : ""
+  }
+  if (item.kind === "findSymbols") {
+    const rows = item.result.slice(0, 8).map((symbol) => `${symbol.kind} ${symbol.name} ${symbol.path}:${symbol.startLine}-${symbol.endLine} ${symbol.reason}`)
+    return rows.length ? limitPreviewBytes(rows.join("\n"), 1200) : ""
+  }
+  const rows = item.result?.evidence.slice(0, 8).map((evidence) =>
+    `<evidence path="${evidence.file}" lines="${evidence.startLine}-${evidence.endLine}" parser="${evidence.parserKind}" hash="${evidence.snippetHash}">${evidence.snippet ?? ""}</evidence>`,
+  ) ?? []
+  return rows.length ? limitPreviewBytes(rows.join("\n"), 1800) : ""
 }
 
 function isChatRagReady(rag: RagStatus | undefined) {

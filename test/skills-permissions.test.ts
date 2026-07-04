@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, mock, test } from "bun:test"
-import { mkdir, readFile, readdir, writeFile } from "node:fs/promises"
+import { cp, mkdir, readFile, readdir, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
@@ -15,6 +15,17 @@ class UriShim {
   static joinPath(base: UriShim, ...segments: string[]) {
     return new UriShim(join(base.fsPath, ...segments))
   }
+}
+
+class PositionShim {
+  constructor(
+    readonly line: number,
+    readonly character: number,
+  ) {}
+}
+
+class RelativePatternShim {
+  constructor(readonly base: unknown, readonly pattern: string) {}
 }
 
 mock.module("vscode", () => ({
@@ -53,10 +64,17 @@ mock.module("vscode", () => ({
     Global: "global",
   },
   FileType: {
+    Unknown: 0,
     File: 1,
     Directory: 2,
+    SymbolicLink: 64,
   },
   Uri: UriShim,
+  Position: PositionShim,
+  RelativePattern: RelativePatternShim,
+  env: {
+    remoteName: undefined,
+  },
   WorkspaceEdit: class WorkspaceEdit {
     readonly inserts: unknown[] = []
     readonly replaces: unknown[] = []
@@ -73,9 +91,11 @@ mock.module("vscode", () => ({
   },
   commands: {
     executeCommand: async () => undefined,
+    registerCommand: () => ({ dispose: () => undefined }),
   },
   languages: {
     getDiagnostics: () => [],
+    registerInlineCompletionItemProvider: () => ({ dispose: () => undefined }),
   },
   workspace: {
     get workspaceFolders() {
@@ -103,7 +123,6 @@ mock.module("vscode", () => ({
       return []
     },
   },
-  Position: class Position {},
   Selection: class Selection {},
 }))
 
@@ -594,6 +613,59 @@ describe("ChipMate skills", () => {
     ])
     expect(selectActiveSkills("解释一下当前函数的设计思路和实现机制。", skills)).toHaveLength(0)
     expect(selectActiveSkills("这个 Word 文档应该怎么排版更好？", skills)).toHaveLength(0)
+  })
+
+  test("activates source-backed-detail-design with ChipMate resources and Word tools", async () => {
+    const root = await tempDir("chipmate-skills-source-backed-")
+    workspaceFolders = [{ name: "repo", uri: UriShim.file(root) }]
+    await mkdir(join(root, ".agents", "skills"), { recursive: true })
+    await cp(
+      join(process.cwd(), ".agents", "skills", "source-backed-detail-design"),
+      join(root, ".agents", "skills", "source-backed-detail-design"),
+      { recursive: true },
+    )
+
+    const registry = new SkillRegistry(() => ({
+      enabled: [],
+      overrides: {},
+      scanUserSkills: false,
+      scanOpenCodeSkills: true,
+      scanClaudeSkills: false,
+      scanCodexSkills: true,
+      maxCatalogBytes: 64000,
+    }))
+    const skills = await registry.enabledSkills()
+    const sourceBackedSkill = skills.find((skill) => skill.name === "source-backed-detail-design")
+
+    expect(sourceBackedSkill).toMatchObject({
+      invalid: false,
+      allowedTools: expect.arrayContaining([
+        "chipmate_read_skill_resource",
+        "chipmate_run_skill_script",
+        "chipmate_render_mermaid_diagram",
+        "create_word_document",
+        "render_word_document",
+      ]),
+      resourceFiles: expect.arrayContaining([
+        "references/01-core-principles.md",
+        "references/08-mermaid-png-rendering-rules.md",
+        "references/12-word-export-rules.md",
+        "scripts/manifest.json",
+      ]),
+    })
+    expect(selectActiveSkills("$source-backed-detail-design 基于旧详设和源码继续增强详设", skills)).toEqual([
+      expect.objectContaining({
+        invocationMode: "explicit",
+        skill: expect.objectContaining({ name: "source-backed-detail-design" }),
+      }),
+    ])
+    expect(selectActiveSkills("基于旧详设和当前源码生成增强版详细设计文档。", skills)).toEqual([
+      expect.objectContaining({
+        invocationMode: "implicit",
+        skill: expect.objectContaining({ name: "source-backed-detail-design" }),
+      }),
+    ])
+    expect(selectActiveSkills("请解释 README 文档里写了什么。", skills)).toHaveLength(0)
   })
 
   test("skill eval fixtures cover explicit, implicit, and non-trigger prompts", async () => {

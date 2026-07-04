@@ -1,13 +1,44 @@
 import * as vscode from "vscode"
 import { CHIPMATE_LOCAL_AGENT_ID, CHIPMATE_SESSION_TITLE } from "./chipmate-constants"
 import { extractPluginChatQuestionText, pluginHistoryUserText } from "./chat-session"
-import { chatCompletionsUrl } from "./completion-model-client"
+import { chatCompletionsUrl, completionApiBaseUrl, completionModel } from "./completion-model-client"
 import { terminalProjectContextPrompt, type TerminalProjectContext } from "./agent-terminal-project-context"
 import { activeSkillPolicies, renderSkillsForPrompt, selectActiveSkills, skillSystemCatalog, SkillRegistry, type ActiveSkillPolicy } from "./skills"
 import { retryHeadersForError, sessionRetryableError, sessionRetryDelayMs, sessionRetryLimitFromEnv } from "./session-retry"
 import { UsageLedgerService, usageRecordFromMessage } from "./usage-ledger"
 import { estimateChatTokenUsage, normalizeProviderTokenUsage } from "./usage"
 import { GoalRuntime } from "./goal-runtime"
+import { buildConversationContextState, renderTaskStateContext, type ConversationContextEvent } from "./conversation-context"
+import { applyRequestStageTokenGate, buildContextPackShadowReport, buildContextWindowState, formatContextPackBudgetReport, formatContextWindowState } from "./context-pack"
+import { resolveChatContextWindow } from "./context-window"
+import {
+  buildCompactionCandidate,
+  buildCompactSummaryPrompt,
+  buildCompactedHistoryAdapterSnapshot,
+  buildContextCompactionEvent,
+  buildContextCompactionLifecycleEvent,
+  chooseCompactionStrategy,
+  compactSummaryOverflowRetryPlan,
+  compactStateWithTokenBudgetFreshWindow,
+  compactStateWithModelSummary,
+  compactStateWithRequestStageFallbackPrune,
+  contextCompactionBaselineMetadata,
+  formatContextCompactionEventRecord,
+  formatCompactionRecord,
+  formatCompactionStrategyDecision,
+  latestCompletedContextCompactionEvent,
+  latestContextCompactionEvent,
+  parseCompactSummaryModelOutput,
+  runCompactHooks,
+  shouldSkipRedundantCompaction,
+  validateCompactSummaryQuality,
+  type CompactHook,
+  type ContextCompactionEventRecord,
+  type CompactionStrategyDecision,
+  type CompactionState,
+  type ContextCompactionLifecycleSessionEvent,
+  type ContextCompactionSessionEvent,
+} from "./context-compaction"
 import type { ClarificationRequest, ToolApprovalDecision, ToolApprovalHandler, ToolApprovalRequest, ToolRuntime, ToolRuntimeProgressEvent, ToolRuntimeResult } from "./tool-runtime"
 import type {
   ConnectionState,
@@ -28,6 +59,14 @@ import type {
   ThreadGoalOperation,
   ThreadGoalStatus,
 } from "./types"
+import type { UnderstandingEvidenceAggregation, UnderstandingPlannerInput } from "./understanding-planner"
+import { coverageLimitNotice, type UnderstandingCoverageContext, type UnderstandingGroundingFinding } from "./understanding-grounding"
+
+export type DirectAgentUnderstandingGrounding = {
+  aggregation?: UnderstandingEvidenceAggregation
+  coverage?: UnderstandingCoverageContext
+  verifierFindings?: UnderstandingGroundingFinding[]
+}
 
 type DirectAgentClientInput = {
   context: vscode.ExtensionContext
@@ -36,6 +75,10 @@ type DirectAgentClientInput = {
   getApiKey: () => Promise<string | undefined>
   skills: SkillRegistry
   tools: ToolRuntime
+  compactHooks?: {
+    preCompact?: CompactHook[]
+    postCompact?: CompactHook[]
+  }
 }
 
 type SessionRecord = {
@@ -93,6 +136,8 @@ type SessionEvent =
   | { type: "memory"; memory: ConversationMemoryRecord }
   | { type: "evidence"; evidence: EvidenceLedgerRecord }
   | { type: "visual_evidence"; visualEvidence: VisualEvidenceRecord }
+  | ContextCompactionSessionEvent
+  | ContextCompactionLifecycleSessionEvent
 
 export type LocalHistoryMessageInput = {
   role: "user" | "assistant"
@@ -249,6 +294,8 @@ type DeliveryExpectation = {
   requiredExtensions: string[]
 }
 
+type DeliveryExpectationReason = "explicit-docx" | "word-generation" | "word-edit" | "other-artifact"
+
 type DeliveryArtifactRecord = {
   kind: string
   path: string
@@ -271,14 +318,20 @@ type DeliveryProducerFailure = {
 }
 
 type DeliveryDisciplineState = {
+  artifactRequestedThisTurn: boolean
+  expectationReason?: DeliveryExpectationReason
   expectations: DeliveryExpectation[]
   producedArtifacts: DeliveryArtifactRecord[]
   pendingNextActions: DeliveryNextAction[]
   producerFailures: DeliveryProducerFailure[]
   completedTools: string[]
+  successfulTools: string[]
+  inspectedWordDocumentPaths: string[]
+  wordRenderCompletedPaths: string[]
   convergencePromptInserted: boolean
   missingDeliverablePromptInserted: boolean
   producerFailureRepairPromptInserted: boolean
+  wordEditArgumentPromptInserted: boolean
   wordRenderCheckpointInserted: boolean
 }
 
@@ -443,6 +496,34 @@ export class DirectAgentClient {
     return this.probeChatCompletion(settings, signal)
   }
 
+  async requestUnderstandingPlan(input: UnderstandingPlannerInput, signal?: AbortSignal): Promise<string> {
+    const settings = this.deps.getSettings()
+    if (!settings.provider.apiBaseUrl || !settings.provider.chatModel) {
+      throw new Error("Understanding planner provider is not configured.")
+    }
+    const body = {
+      model: settings.provider.chatModel,
+      messages: understandingPlanMessages(input),
+      stream: false,
+      max_tokens: 900,
+      temperature: 0,
+    }
+    const promptBytes = textByteLength(JSON.stringify(body.messages))
+    this.deps.output.appendLine(`[understanding-planner] request model=${settings.provider.chatModel || "default"} promptBytes=${promptBytes} maxTokens=900`)
+    const response = await fetch(chatCompletionsUrl(settings.provider.apiBaseUrl), {
+      method: "POST",
+      headers: await this.headers(true),
+      signal,
+      body: JSON.stringify(body),
+    })
+    const text = await response.text().catch(() => "")
+    if (!response.ok) {
+      throw new Error(`Understanding planning failed: ${response.status} ${response.statusText || "HTTP error"}${text ? `: ${text}` : ""}`)
+    }
+    this.deps.output.appendLine(`[understanding-planner] response rawBytes=${textByteLength(text)}`)
+    return chatCompletionContentFromResponse(text, "Understanding planner")
+  }
+
   private async probeModels(settings: RemoteSettings, signal?: AbortSignal): Promise<HealthResponse & { fallbackToChat?: boolean }> {
     let response: Response
     try {
@@ -518,32 +599,29 @@ export class DirectAgentClient {
   async listModels(signal?: AbortSignal): Promise<ChipMateModelInfo[]> {
     const settings = this.deps.getSettings()
     const configured = configuredModels(settings)
-    try {
-      const response = await fetch(modelsUrl(settings.provider.apiBaseUrl), {
-        headers: await this.headers(false),
-        signal,
-      })
-      if (!response.ok) throw new Error(`${response.status} ${response.statusText}`)
-      const body = await response.json() as { data?: Array<{ id?: string; object?: string }> }
-      const discovered = (body.data ?? [])
-        .map((model) => model.id)
-        .filter((id): id is string => Boolean(id))
-        .map((id, providerIndex) => ({ id, providerIndex, source: "provider" as const }))
-      return normalizeModelInfos(
-        [
-          ...configured.map((id) => ({ id, source: "configured" as const })),
-          ...discovered,
-        ],
-        settings.provider.chatModel,
-      )
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error)
-      this.deps.output.appendLine(`[provider] /models unavailable, using configured models: ${message}`)
-      return normalizeModelInfos(
-        configured.map((id) => ({ id, source: "configured" as const })),
-        settings.provider.chatModel,
-      )
-    }
+    return this.listOpenAiCompatibleModels({
+      apiKey: await this.deps.getApiKey(),
+      baseUrl: settings.provider.apiBaseUrl,
+      configured,
+      defaultModel: settings.provider.chatModel,
+      logPrefix: "provider",
+      signal,
+    })
+  }
+
+  async listCompletionModels(input: {
+    apiKey?: string
+    settings: RemoteSettings
+    signal?: AbortSignal
+  }): Promise<ChipMateModelInfo[]> {
+    return this.listOpenAiCompatibleModels({
+      apiKey: input.apiKey,
+      baseUrl: completionApiBaseUrl(input.settings),
+      configured: [input.settings.completion.model.trim()].filter(Boolean),
+      defaultModel: completionModel(input.settings),
+      logPrefix: "completion-provider",
+      signal: input.signal,
+    })
   }
 
   async listAgents(_signal?: AbortSignal): Promise<ChipMateAgentInfo[]> {
@@ -637,7 +715,13 @@ export class DirectAgentClient {
   async getGoal(sessionID: string, signal?: AbortSignal): Promise<ThreadGoal | undefined> {
     signal?.throwIfAborted()
     const goal = await this.goalRuntime.getGoal(sessionID)
-    return goal ? this.goalRuntime.goalForDisplay(goal) : undefined
+    if (!goal) return undefined
+    const displayGoal = await this.goalRuntime.goalForDisplay(goal)
+    const operation = this.goalOperations.get(sessionID)
+    if (operation?.active && this.activeControllers.has(sessionID) && isTerminalGoalStatus(displayGoal.status)) {
+      return { ...displayGoal, status: operation.status ?? "active" }
+    }
+    return displayGoal
   }
 
   getGoalOperation(sessionID: string | undefined): ThreadGoalOperation | undefined {
@@ -779,6 +863,13 @@ export class DirectAgentClient {
     return latestSessionMessages(events).slice(-limit)
   }
 
+  async getLatestContextCompaction(sessionID: string, signal?: AbortSignal): Promise<ContextCompactionEventRecord | undefined> {
+    signal?.throwIfAborted()
+    const events = await this.readSessionEvents(sessionID)
+    signal?.throwIfAborted()
+    return latestContextCompactionEvent(events, ["completed", "failed", "interrupted", "fallback_pruned"])
+  }
+
   async getUsageStats(signal?: AbortSignal, options: ChipMateUsageStatsOptions = {}): Promise<ChipMateUsageStatsSnapshot> {
     signal?.throwIfAborted()
     await this.ensureUsageBackfilled(signal)
@@ -894,6 +985,122 @@ export class DirectAgentClient {
     return visualEvidence
   }
 
+  // Service-only manual compact entry; future UI or command surfaces should call this pipeline.
+  async compactSession(input: {
+    sessionID: string
+    signal?: AbortSignal
+    preferTokenBudget?: boolean
+  }): Promise<ContextCompactionEventRecord | undefined> {
+    input.signal?.throwIfAborted()
+    if (this.activeControllers.has(input.sessionID)) {
+      throw new Error("Cannot manually compact while the session is running.")
+    }
+    const settings = this.deps.getSettings()
+    this.setBusyStatus(input.sessionID, "compacting", "Compacting conversation context")
+    try {
+      const sessionEvents = await this.readSessionEvents(input.sessionID)
+      const conversationState = buildConversationContextState({
+        sessionID: input.sessionID,
+        events: sessionEvents as ConversationContextEvent[],
+      })
+      if (conversationState.transcript.visibleItemCount <= 0) {
+        this.deps.output.appendLine(`[context-compact-manual] skipped session=${input.sessionID} reason=no-visible-transcript`)
+        return undefined
+      }
+      const enabledSkillMetadata = await this.deps.skills.enabledSkills()
+      const systemMessage: ChatMessage = {
+        role: "system",
+        content: systemPrompt(
+          settings,
+          skillSystemCatalog(enabledSkillMetadata, settings.skills.maxCatalogBytes),
+          "",
+        ),
+      }
+      const historyMessages = await this.recentChatHistoryMessages(input.sessionID, settings, input.signal, sessionEvents)
+      const messages: ChatMessage[] = [
+        systemMessage,
+        ...historyMessages,
+      ]
+      const contextWindow = resolveChatContextWindow({
+        configuredContextLength: settings.provider.contextLength,
+        model: settings.provider.chatModel,
+      })
+      if (contextWindow.fallbackNotice) {
+        this.deps.output.appendLine(`[context-window] ${contextWindow.fallbackNotice}`)
+      }
+      const shadowReport = buildContextPackShadowReport({
+        messages,
+        model: settings.provider.chatModel,
+        contextWindow,
+      })
+      this.deps.output.appendLine(formatContextPackBudgetReport(shadowReport))
+      const gated = applyRequestStageTokenGate({
+        messages,
+        model: settings.provider.chatModel,
+        contextWindow,
+      })
+      if (gated.report.truncated) this.deps.output.appendLine(formatContextPackBudgetReport(gated.report))
+      const windowState = buildContextWindowState({ report: gated.report })
+      this.deps.output.appendLine(formatContextWindowState(windowState))
+      const compactState = buildCompactionCandidate({
+        state: conversationState,
+        budgetReport: gated.report,
+        windowState,
+        trigger: "manual",
+        deferRequestStageFallback: true,
+      })
+      if (!compactState) {
+        this.deps.output.appendLine(`[context-compact-manual] skipped session=${input.sessionID} reason=no-candidate`)
+        return undefined
+      }
+      this.deps.output.appendLine(formatCompactionRecord(compactState))
+      const strategyDecision = chooseCompactionStrategy({
+        compaction: compactState,
+        modelSummaryAvailable: Boolean(settings.provider.apiBaseUrl && settings.provider.chatModel),
+        preferTokenBudget: input.preferTokenBudget,
+      })
+      this.deps.output.appendLine(formatCompactionStrategyDecision(compactState, strategyDecision))
+      this.deps.output.appendLine(`[context-compact-manual] started session=${input.sessionID} id=${compactState.id} strategy=${strategyDecision.strategy}`)
+      let completed: ContextCompactionEventRecord | undefined
+      if (strategyDecision.requiresModelSummary) {
+        completed = await this.persistModelGeneratedCompactionEvent({
+          sessionID: input.sessionID,
+          compactState,
+          conversationState,
+          historyVersion: conversationState.transcript.historyVersion,
+          sourceModel: settings.provider.chatModel,
+          settings,
+          strategyDecision,
+          signal: input.signal,
+        })
+      } else if (strategyDecision.implementation === "token_budget") {
+        completed = await this.persistTokenBudgetCompactionEvent({
+          sessionID: input.sessionID,
+          compactState,
+          conversationState,
+          historyVersion: conversationState.transcript.historyVersion,
+          sourceModel: settings.provider.chatModel,
+          strategyDecision,
+        })
+      } else {
+        await this.persistFallbackCompactionEvent({
+          sessionID: input.sessionID,
+          compactState,
+          conversationState,
+          historyVersion: conversationState.transcript.historyVersion,
+          sourceModel: settings.provider.chatModel,
+          strategyDecision,
+        })
+      }
+      this.deps.output.appendLine(`[context-compact-manual] completed session=${input.sessionID} id=${completed?.id ?? compactState.id} status=${completed?.status ?? "not_completed"}`)
+      return completed
+    } finally {
+      const status: ChipMateSessionStatus = { type: "idle" }
+      this.statuses.set(input.sessionID, status)
+      this.emit("session.status", { sessionID: input.sessionID, status })
+    }
+  }
+
   async repairMermaidDiagram(input: MermaidRepairInput): Promise<ChipMateMessage> {
     const settings = this.deps.getSettings()
     this.setBusyStatus(input.sessionID, "thinking", "Repairing Mermaid diagram")
@@ -943,15 +1150,17 @@ export class DirectAgentClient {
     text: string
     historyText?: string
     messageMode?: string
-    evidenceLedger?: EvidenceLedgerEntry[]
-    model?: unknown
-    agent?: string
-    signal?: AbortSignal
-  }): Promise<ChipMateMessage> {
+  evidenceLedger?: EvidenceLedgerEntry[]
+  model?: unknown
+  agent?: string
+  understandingGrounding?: DirectAgentUnderstandingGrounding
+  signal?: AbortSignal
+}): Promise<ChipMateMessage> {
     const result = await this.runTurn(input.sessionID, input.text, {
       historyText: input.historyText,
       messageMode: input.messageMode,
       evidenceLedger: input.evidenceLedger,
+      understandingGrounding: input.understandingGrounding,
       signal: input.signal,
     })
     return result.assistant
@@ -965,6 +1174,7 @@ export class DirectAgentClient {
     evidenceLedger?: EvidenceLedgerEntry[]
     model?: unknown
     agent?: string
+    understandingGrounding?: DirectAgentUnderstandingGrounding
     signal?: AbortSignal
   }) {
     const controller = new AbortController()
@@ -975,6 +1185,7 @@ export class DirectAgentClient {
       historyText: input.historyText,
       messageMode: input.messageMode,
       evidenceLedger: input.evidenceLedger,
+      understandingGrounding: input.understandingGrounding,
       signal: controller.signal,
     })
       .catch((error) => {
@@ -1027,7 +1238,7 @@ export class DirectAgentClient {
 	        const response = await this.goalRuntime.updateGoalFromTool(sessionID, input.status)
 	        if (response.goal) {
 	          const displayGoal = await this.emitGoalUpdated(sessionID, response.goal)
-	          if (isTerminalGoalStatus(response.goal.status)) this.finishGoalOperation(sessionID, displayGoal)
+	          if (isTerminalGoalStatus(response.goal.status) && !this.activeControllers.has(sessionID)) this.finishGoalOperation(sessionID, displayGoal)
 	        }
 	        return response
 	        })
@@ -1166,7 +1377,7 @@ export class DirectAgentClient {
   private async emitGoalUpdated(sessionID: string, goal: ThreadGoal) {
     const displayGoal = await this.goalRuntime.goalForDisplay(goal)
     this.emit("goal.updated", { sessionID, goal: displayGoal })
-    if (isTerminalGoalStatus(displayGoal.status)) this.finishGoalOperation(sessionID, displayGoal)
+    if (isTerminalGoalStatus(displayGoal.status) && !this.activeControllers.has(sessionID)) this.finishGoalOperation(sessionID, displayGoal)
     return displayGoal
   }
 
@@ -1360,6 +1571,7 @@ export class DirectAgentClient {
     historyText?: string
     messageMode?: string
     evidenceLedger?: EvidenceLedgerEntry[]
+    understandingGrounding?: DirectAgentUnderstandingGrounding
     internalGoalPrompt?: string
     goalContinuation?: boolean
     skipUserMessage?: boolean
@@ -1402,18 +1614,140 @@ export class DirectAgentClient {
     const activeSkills = activeSkillPolicies(loadedSkills)
     const exposedTools = settings.tools.enabled ? this.deps.tools.toolDefinitions() : []
     const exposedToolNames = toolDefinitionNames(exposedTools)
-    const messages: ChatMessage[] = [
-      {
-        role: "system",
-        content: systemPrompt(
-          settings,
-          skillSystemCatalog(enabledSkillMetadata, settings.skills.maxCatalogBytes),
-          renderSkillsForPrompt(loadedSkills, { toolsEnabled: settings.tools.enabled, exposedToolNames: [...exposedToolNames] }),
-        ),
-      },
+    const systemMessage: ChatMessage = {
+      role: "system",
+      content: systemPrompt(
+        settings,
+        skillSystemCatalog(enabledSkillMetadata, settings.skills.maxCatalogBytes),
+        renderSkillsForPrompt(loadedSkills, { toolsEnabled: settings.tools.enabled, exposedToolNames: [...exposedToolNames] }),
+      ),
+    }
+    const currentUserMessage: ChatMessage = { role: "user", content: options.internalGoalPrompt ?? userContentForRequest(userText, visualInputs) }
+    let messages: ChatMessage[] = [
+      systemMessage,
       ...historyMessages,
-      { role: "user", content: options.internalGoalPrompt ?? userContentForRequest(userText, visualInputs) },
+      currentUserMessage,
     ]
+    const contextWindow = resolveChatContextWindow({
+      configuredContextLength: settings.provider.contextLength,
+      model: settings.provider.chatModel,
+    })
+    if (contextWindow.fallbackNotice) {
+      this.deps.output.appendLine(`[context-window] ${contextWindow.fallbackNotice}`)
+    }
+    const shadowReport = buildContextPackShadowReport({
+      messages,
+      model: settings.provider.chatModel,
+      contextWindow,
+    })
+    this.deps.output.appendLine(formatContextPackBudgetReport(shadowReport))
+    const gated = applyRequestStageTokenGate({
+      messages,
+      model: settings.provider.chatModel,
+      contextWindow,
+    })
+    if (gated.report.truncated) this.deps.output.appendLine(formatContextPackBudgetReport(gated.report))
+    const windowState = buildContextWindowState({ report: gated.report })
+    this.deps.output.appendLine(formatContextWindowState(windowState))
+    const conversationState = buildConversationContextState({
+      sessionID,
+      events: sessionEvents as ConversationContextEvent[],
+    })
+    const compactState = buildCompactionCandidate({
+      state: conversationState,
+      budgetReport: gated.report,
+      windowState,
+      deferRequestStageFallback: true,
+    })
+    let completedInlineCompact: ContextCompactionEventRecord | undefined
+    if (compactState) {
+      this.deps.output.appendLine(formatCompactionRecord(compactState))
+      const redundantCompact = shouldSkipRedundantCompaction({
+        compaction: compactState,
+        latestCompleted: latestCompletedContextCompactionEvent(sessionEvents),
+        currentHistoryVersion: conversationState.transcript.historyVersion,
+      })
+      if (redundantCompact.skip) {
+        this.deps.output.appendLine(`[context-compact-skip] id=${compactState.id} coveredBy=${redundantCompact.coveredById ?? "unknown"} reason=${redundantCompact.reason ?? "redundant compact pressure"}`)
+      } else {
+        const strategyDecision = chooseCompactionStrategy({
+          compaction: compactState,
+          modelSummaryAvailable: Boolean(settings.provider.apiBaseUrl && settings.provider.chatModel),
+        })
+        this.deps.output.appendLine(formatCompactionStrategyDecision(compactState, strategyDecision))
+        if (strategyDecision.requiresModelSummary) {
+          completedInlineCompact = await this.persistModelGeneratedCompactionEvent({
+            sessionID,
+            compactState,
+            conversationState,
+            historyVersion: conversationState.transcript.historyVersion,
+            sourceModel: settings.provider.chatModel,
+            settings,
+            strategyDecision,
+            signal,
+          })
+        } else if (strategyDecision.implementation === "token_budget") {
+          completedInlineCompact = await this.persistTokenBudgetCompactionEvent({
+            sessionID,
+            compactState,
+            conversationState,
+            historyVersion: conversationState.transcript.historyVersion,
+            sourceModel: settings.provider.chatModel,
+            strategyDecision,
+          })
+        } else {
+          await this.persistFallbackCompactionEvent({
+            sessionID,
+            compactState,
+            conversationState,
+            historyVersion: conversationState.transcript.historyVersion,
+            sourceModel: settings.provider.chatModel,
+            strategyDecision,
+          })
+        }
+      }
+      if (completedInlineCompact) {
+        const compactedEvents = await this.readSessionEvents(sessionID)
+        const compactedHistoryMessages = await this.recentChatHistoryMessages(sessionID, settings, signal, compactedEvents)
+        messages = [
+          systemMessage,
+          ...compactedHistoryMessages,
+          currentUserMessage,
+        ]
+        this.deps.output.appendLine(`[context-compact-inline] re-packed current request compact=${completedInlineCompact.id} historyVersion=${completedInlineCompact.historyVersion} messages=${messages.length}`)
+        const compactedReport = buildContextPackShadowReport({
+          messages,
+          model: settings.provider.chatModel,
+          contextWindow,
+        })
+        this.deps.output.appendLine(formatContextPackBudgetReport(compactedReport))
+        const compactedGated = applyRequestStageTokenGate({
+          messages,
+          model: settings.provider.chatModel,
+          contextWindow,
+        })
+        messages = compactedGated.messages
+        if (compactedGated.report.truncated) this.deps.output.appendLine(formatContextPackBudgetReport(compactedGated.report))
+        this.deps.output.appendLine(formatContextWindowState(buildContextWindowState({ report: compactedGated.report })))
+      }
+    }
+    if (!completedInlineCompact && gated.report.truncated) {
+      messages = gated.messages
+      this.deps.output.appendLine(`[context-compact-fallback] installed request-stage prune after incomplete compact omittedMessages=${gated.report.omittedMessages} omittedTokens=${gated.report.omittedEstimatedTokens}`)
+      if (compactState) {
+        const fallbackCompactState = compactStateWithRequestStageFallbackPrune(compactState, gated.report)
+        const fallbackDecision = chooseCompactionStrategy({ compaction: fallbackCompactState })
+        this.deps.output.appendLine(formatCompactionStrategyDecision(fallbackCompactState, fallbackDecision))
+        await this.persistFallbackCompactionEvent({
+          sessionID,
+          compactState: fallbackCompactState,
+          conversationState,
+          historyVersion: conversationState.transcript.historyVersion,
+          sourceModel: settings.provider.chatModel,
+          strategyDecision: fallbackDecision,
+        })
+      }
+    }
     if (visualInputs.length > 0) {
       this.deps.output.appendLine(`[visual-context] attached previous-turn images=${visualInputs.length}`)
     }
@@ -1438,7 +1772,17 @@ export class DirectAgentClient {
       qaBatchCount: 0,
       imageInputRejected: false,
     }
+    let goalFinalizationCheckpointInserted = false
     const deliveryDiscipline = createDeliveryDisciplineState(userText, activeSkills)
+    this.deps.output.appendLine(`[delivery] artifactRequestedThisTurn=${deliveryDiscipline.artifactRequestedThisTurn ? "true" : "false"} expectations=${deliveryDiscipline.expectations.map((item) => item.kind).join(",") || "none"} reason=${deliveryDiscipline.expectationReason || "none"} activeSkills=${activeSkills.map((skill) => skill.name).join(",") || "none"}`)
+
+    const preserveAssistantTextForFollowup = () => {
+      if (!assistantText) return
+      messages.push({ role: "assistant", content: assistantText })
+      replaceAssistantText(assistant, sessionID, "")
+      this.emitAssistantTextPart(sessionID, assistant, "")
+      assistantText = ""
+    }
 
     const enqueueWordVisualQaPrompt = () => {
       const wordQaPrompt = consumeWordVisualQaSteering(wordVisualQa)
@@ -1492,6 +1836,17 @@ export class DirectAgentClient {
       return true
     }
 
+    const enqueueWordEditArgumentPrompt = () => {
+      if (!shouldInsertWordEditArgumentPrompt(deliveryDiscipline)) return false
+      deliveryDiscipline.wordEditArgumentPromptInserted = true
+      messages.push({
+        role: "user",
+        content: wordEditArgumentConvergencePrompt(deliveryDiscipline),
+      })
+      this.deps.output.appendLine(`[tool-loop] word-edit argument checkpoint inserted inspected=${deliveryDiscipline.inspectedWordDocumentPaths.slice(-3).join(",") || "none"} successfulTools=${deliveryDiscipline.successfulTools.join(",") || "none"}`)
+      return true
+    }
+
     const enqueueWordRenderCheckpoint = () => {
       if (!settings.tools.enabled || !exposedToolNames.has("render_word_document")) return false
       if (!shouldInsertWordRenderCheckpoint(deliveryDiscipline)) return false
@@ -1501,6 +1856,19 @@ export class DirectAgentClient {
         content: wordRenderCheckpointPrompt(deliveryDiscipline),
       })
       this.deps.output.appendLine(`[tool-loop] word-render checkpoint inserted generated=${latestGeneratedDocxPath(deliveryDiscipline) || "none"} renderAttempted=${deliveryDiscipline.completedTools.includes("render_word_document")} documentSkillActive=${activeSkills.some((skill) => skill.name === "documents" || skill.name === "chip-design-doc")}`)
+      return true
+    }
+
+    const enqueueGoalFinalizationCheckpoint = async () => {
+      if (goalFinalizationCheckpointInserted) return false
+      if (!options.goalContinuation) return false
+      if (!settings.tools.enabled || !exposedToolNames.has("update_goal")) return false
+      const latestGoal = await this.goalRuntime.getGoal(sessionID)
+      if (latestGoal?.status !== "active") return false
+      goalFinalizationCheckpointInserted = true
+      preserveAssistantTextForFollowup()
+      messages.push({ role: "user", content: goalFinalizationCheckpointPrompt() })
+      this.deps.output.appendLine(`[goal] finalization checkpoint inserted session=${sessionID} step=${stepCount}/${maxAgentSteps} totalToolCalls=${totalToolCallCount}`)
       return true
     }
 
@@ -1810,23 +2178,16 @@ export class DirectAgentClient {
             if (enqueueWordVisualQaPrompt()) continue
           }
           if (settings.tools.enabled && shouldInsertMissingDeliverablePrompt(deliveryDiscipline)) {
-            if (assistantText) {
-              messages.push({ role: "assistant", content: assistantText })
-              replaceAssistantText(assistant, sessionID, "")
-              this.emitAssistantTextPart(sessionID, assistant, "")
-            }
-            assistantText = ""
+            preserveAssistantTextForFollowup()
             enqueueMissingDeliverablePrompt()
             continue
           }
           if (settings.tools.enabled && shouldInsertWordRenderCheckpoint(deliveryDiscipline) && exposedToolNames.has("render_word_document")) {
-            if (assistantText) {
-              messages.push({ role: "assistant", content: assistantText })
-              replaceAssistantText(assistant, sessionID, "")
-              this.emitAssistantTextPart(sessionID, assistant, "")
-            }
-            assistantText = ""
+            preserveAssistantTextForFollowup()
             enqueueWordRenderCheckpoint()
+            continue
+          }
+          if (await enqueueGoalFinalizationCheckpoint()) {
             continue
           }
           break
@@ -1850,11 +2211,38 @@ export class DirectAgentClient {
           break
         }
         await executeToolCallsForStep(toolCalls)
+        messages = await this.compactMidTurnMessagesAtToolBoundary({
+          sessionID,
+          settings,
+          messages,
+          contextWindow,
+          signal,
+        })
+        const terminalGoalAfterTools = options.goalContinuation ? await this.goalRuntime.getGoal(sessionID) : undefined
+        if (terminalGoalAfterTools && isTerminalGoalStatus(terminalGoalAfterTools.status)) {
+          const finalResult = await this.streamChatCompletion({
+            messages,
+            sessionID,
+            assistant,
+            exposedTools: [],
+            allowTools: false,
+            signal,
+          })
+          assistant = finalResult.assistant
+          assistantText = finalResult.text
+          toolCalls = []
+          if (finalResult.toolCalls.length > 0) {
+            this.deps.output.appendLine(`[goal] ignored ${finalResult.toolCalls.length} tool call(s) during terminal goal final text request`)
+          }
+          this.deps.output.appendLine(`[goal] terminal final text collected status=${terminalGoalAfterTools.status} textBytes=${textByteLength(assistantText)}`)
+          break
+        }
         const queuedWordQa = enqueueWordVisualQaPrompt()
         const queuedProducerRepair = !queuedWordQa && enqueueProducerFailureRepairPrompt()
-        const queuedWordRender = !queuedWordQa && !queuedProducerRepair && enqueueWordRenderCheckpoint()
+        const queuedWordEditArgs = !queuedWordQa && !queuedProducerRepair && enqueueWordEditArgumentPrompt()
+        const queuedWordRender = !queuedWordQa && !queuedProducerRepair && !queuedWordEditArgs && enqueueWordRenderCheckpoint()
         flushGoalSteering()
-        if (!queuedWordQa && !queuedProducerRepair && !queuedWordRender) enqueueEvidenceConvergencePrompt()
+        if (!queuedWordQa && !queuedProducerRepair && !queuedWordEditArgs && !queuedWordRender) enqueueEvidenceConvergencePrompt()
         if (step === maxAgentSteps - 1) reachedToolLoopLimit = true
       }
       if (reachedToolLoopLimit && toolCalls.length > 0 && settings.tools.enabled) {
@@ -1900,9 +2288,11 @@ export class DirectAgentClient {
       }
       const enforcedMissingDeliverableText = missingDeliverableFinalAnswerText(deliveryDiscipline, assistantText)
       if (enforcedMissingDeliverableText) {
+        const originalTextBytes = textByteLength(assistantText)
+        const preservedOriginal = assistantText.trim().length > 0
         assistantText = replaceAssistantText(assistant, sessionID, enforcedMissingDeliverableText)
         this.emitAssistantTextPart(sessionID, assistant, assistantText)
-        this.deps.output.appendLine(`[tool-loop] enforced missing deliverable final answer expected=${missingDeliveryExpectations(deliveryDiscipline).map((item) => item.kind).join(",")}`)
+        this.deps.output.appendLine(`[tool-loop] enforced missing deliverable final answer expected=${missingDeliveryExpectations(deliveryDiscipline).map((item) => item.kind).join(",")} preservedOriginal=${preservedOriginal ? "true" : "false"} originalTextBytes=${originalTextBytes}`)
       }
       const generatedDocumentLocation = generatedDocumentFinalLocationText(deliveryDiscipline, assistantText)
       if (generatedDocumentLocation) {
@@ -1915,6 +2305,12 @@ export class DirectAgentClient {
         assistantText = appendAssistantText(assistant, sessionID, `${assistantText.trim() ? "\n\n" : ""}${wordRenderDisclosure}`)
         this.emitAssistantTextPart(sessionID, assistant, assistantText)
         this.deps.output.appendLine(`[tool-loop] enforced word render QA disclosure generated=${latestGeneratedDocxPath(deliveryDiscipline) || "none"}`)
+      }
+      const groundingDisclosure = understandingGroundingFinalDisclosureText(options.understandingGrounding, assistantText)
+      if (groundingDisclosure) {
+        assistantText = appendAssistantText(assistant, sessionID, `${assistantText.trim() ? "\n\n" : ""}${groundingDisclosure}`)
+        this.emitAssistantTextPart(sessionID, assistant, assistantText)
+        this.deps.output.appendLine(`[understanding-grounding] enforced final disclosure findings=${options.understandingGrounding?.verifierFindings?.length ?? 0}`)
       }
     } catch (error) {
       if (!signal?.aborted) {
@@ -2134,12 +2530,152 @@ export class DirectAgentClient {
     }
   }
 
+  private async compactMidTurnMessagesAtToolBoundary(input: {
+    sessionID: string
+    settings: RemoteSettings
+    messages: ChatMessage[]
+    contextWindow: ReturnType<typeof resolveChatContextWindow>
+    signal?: AbortSignal
+  }): Promise<ChatMessage[]> {
+    const roughBytes = Buffer.byteLength(JSON.stringify(input.messages), "utf8")
+    const roughByteThreshold = Math.max(4096, Math.floor(input.contextWindow.effectiveContextWindow * 0.9))
+    if (roughBytes < roughByteThreshold) return input.messages
+
+    const suffixStart = this.midTurnToolBoundarySuffixStart(input.messages)
+    if (suffixStart === undefined) {
+      this.deps.output.appendLine(`[context-compact-mid-turn-skip] reason=unsafe_tool_boundary roughBytes=${roughBytes} thresholdBytes=${roughByteThreshold}`)
+      return input.messages
+    }
+
+    const shadowReport = buildContextPackShadowReport({
+      messages: input.messages,
+      model: input.settings.provider.chatModel,
+      contextWindow: input.contextWindow,
+    })
+    const windowState = buildContextWindowState({ report: shadowReport })
+    if (!windowState.shouldCompact) return input.messages
+
+    const toolSuffix = input.messages.slice(suffixStart)
+    const events = await this.readSessionEvents(input.sessionID)
+    const conversationState = buildConversationContextState({
+      sessionID: input.sessionID,
+      events: events as ConversationContextEvent[],
+    })
+    const compactState = buildCompactionCandidate({
+      state: conversationState,
+      budgetReport: shadowReport,
+      windowState,
+      trigger: "mid_turn_pressure",
+      deferRequestStageFallback: true,
+    })
+    if (!compactState) return input.messages
+
+    this.deps.output.appendLine(formatContextPackBudgetReport(shadowReport))
+    this.deps.output.appendLine(formatContextWindowState(windowState))
+    this.deps.output.appendLine(formatCompactionRecord(compactState))
+
+    const strategyDecision = chooseCompactionStrategy({
+      compaction: compactState,
+      modelSummaryAvailable: Boolean(input.settings.provider.apiBaseUrl && input.settings.provider.chatModel),
+    })
+    this.deps.output.appendLine(formatCompactionStrategyDecision(compactState, strategyDecision))
+
+    const latestCompleted = latestCompletedContextCompactionEvent(events)
+    const historyVersion = Math.max(conversationState.transcript.historyVersion, latestCompleted?.historyVersion ?? 0)
+    let completed: ContextCompactionEventRecord | undefined
+    if (strategyDecision.requiresModelSummary) {
+      completed = await this.persistModelGeneratedCompactionEvent({
+        sessionID: input.sessionID,
+        compactState,
+        conversationState,
+        historyVersion,
+        sourceModel: input.settings.provider.chatModel,
+        settings: input.settings,
+        strategyDecision,
+        signal: input.signal,
+      })
+    } else if (strategyDecision.implementation === "token_budget") {
+      completed = await this.persistTokenBudgetCompactionEvent({
+        sessionID: input.sessionID,
+        compactState,
+        conversationState,
+        historyVersion,
+        sourceModel: input.settings.provider.chatModel,
+        strategyDecision,
+      })
+    } else {
+      await this.persistFallbackCompactionEvent({
+        sessionID: input.sessionID,
+        compactState,
+        conversationState,
+        historyVersion,
+        sourceModel: input.settings.provider.chatModel,
+        strategyDecision,
+      })
+    }
+
+    if (!completed) {
+      this.deps.output.appendLine(`[context-compact-mid-turn] compact incomplete; preserving live tool-loop messages id=${compactState.id}`)
+      return input.messages
+    }
+
+    const compactedEvents = await this.readSessionEvents(input.sessionID)
+    const compactedHistorySnapshot = buildCompactedHistoryAdapterSnapshot(completed)
+    if (compactedHistorySnapshot.diagnostics.length > 0) {
+      const diagnostics = compactedHistorySnapshot.diagnostics.map((item) => item.sourceItemId ? `${item.code}:${item.sourceItemId}` : item.code).join(",")
+      this.deps.output.appendLine(`[context-compact-mid-turn] adapter diagnostics id=${completed.id} ${diagnostics}`)
+    }
+    const compactedHistory = compactedHistorySnapshot.messages.map((message) => ({
+      role: message.role,
+      content: message.content,
+    })) satisfies ChatMessage[]
+    const reinjectionMessage = this.compactInitialContextReinjectionMessage(completed, compactedEvents, input.settings, { mode: "mid_turn_insert" })
+    if (compactedHistory.length === 0 && !reinjectionMessage) return input.messages
+    const systemPrefix = input.messages[0]?.role === "system" ? [input.messages[0]] : []
+    const repackedMessages = [
+      ...systemPrefix,
+      ...compactedHistory,
+      reinjectionMessage,
+      ...toolSuffix,
+    ].filter((message): message is ChatMessage => Boolean(message))
+    this.deps.output.appendLine(`[context-compact-mid-turn] re-packed live tool loop compact=${completed.id} historyVersion=${completed.historyVersion} suffixMessages=${toolSuffix.length} messages=${repackedMessages.length}`)
+    const repackedReport = buildContextPackShadowReport({
+      messages: repackedMessages,
+      model: input.settings.provider.chatModel,
+      contextWindow: input.contextWindow,
+    })
+    this.deps.output.appendLine(formatContextPackBudgetReport(repackedReport))
+    this.deps.output.appendLine(formatContextWindowState(buildContextWindowState({ report: repackedReport })))
+    return repackedMessages
+  }
+
+  private midTurnToolBoundarySuffixStart(messages: ChatMessage[]) {
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+      const message = messages[index]
+      if (!message || message.role !== "assistant" || !Array.isArray(message.tool_calls) || message.tool_calls.length === 0) continue
+      const expectedToolCallIds = new Set(message.tool_calls.map((call) => call.id).filter(Boolean))
+      if (expectedToolCallIds.size !== message.tool_calls.length) return undefined
+      const seenToolCallIds = new Set<string>()
+      for (let cursor = index + 1; cursor < messages.length; cursor += 1) {
+        const suffixMessage = messages[cursor]
+        if (!suffixMessage || suffixMessage.role !== "tool" || !suffixMessage.tool_call_id) return undefined
+        if (!expectedToolCallIds.has(suffixMessage.tool_call_id)) return undefined
+        seenToolCallIds.add(suffixMessage.tool_call_id)
+      }
+      return seenToolCallIds.size === expectedToolCallIds.size ? index : undefined
+    }
+    return undefined
+  }
+
   private async recentChatHistoryMessages(sessionID: string, settings: RemoteSettings, signal?: AbortSignal, sessionEvents?: SessionEvent[]): Promise<ChatMessage[]> {
     const maxTurns = Math.max(0, Math.min(20, Math.floor(settings.context.maxHistoryTurns)))
     const maxBytes = Math.max(0, Math.min(200000, Math.floor(settings.context.maxHistoryBytes)))
 
     const events = sessionEvents ?? await this.readSessionEvents(sessionID)
     const reusableMessages = reusableHistoryMessages(events)
+    const completedCompact = latestCompletedContextCompactionEvent(events)
+    const compactedHistorySnapshot = buildCompactedHistoryAdapterSnapshot(completedCompact)
+    const compactedHistory = compactedHistorySnapshot.messages
     const recentWindow = maxTurns > 0 ? recentHistoryTurns(reusableMessages, maxTurns) : []
     const recentMessages = maxTurns === 0 || maxBytes === 0
       ? []
@@ -2154,7 +2690,123 @@ export class DirectAgentClient {
     })
     const evidenceHistoryMessage = evidenceLedgerHistoryMessage(events)
     const toolHistoryMessage = toolExecutionHistoryMessage(events)
-    return [memoryMessage, evidenceHistoryMessage, toolHistoryMessage, ...recentMessages].filter((message): message is ChatMessage => Boolean(message))
+    const taskStateMessage = await this.conversationTaskStateContextMessage(sessionID, events)
+    const initialContextReinjectionMessage = this.compactInitialContextReinjectionMessage(completedCompact, events, settings)
+    if (compactedHistory.length > 0) {
+      this.deps.output.appendLine(`[context-compact-adapter] using completed compact id=${completedCompact?.id} historyVersion=${completedCompact?.historyVersion} messages=${compactedHistory.length} omitted=${completedCompact?.omittedMessageCount ?? 0}`)
+    }
+    if (initialContextReinjectionMessage) {
+      this.deps.output.appendLine(`[context-compact-reinject] id=${completedCompact?.id} mode=${completedCompact?.initialContextReinjection ?? "unknown"}`)
+    }
+    if (completedCompact && compactedHistorySnapshot.diagnostics.length > 0) {
+      const diagnostics = compactedHistorySnapshot.diagnostics.map((item) => item.sourceItemId ? `${item.code}:${item.sourceItemId}` : item.code).join(",")
+      this.deps.output.appendLine(`[context-compact-adapter] diagnostics id=${completedCompact.id} ${diagnostics}`)
+    }
+    const history = compactedHistory.length > 0 ? compactedHistory.map((message) => ({
+      role: message.role,
+      content: message.content,
+    })) satisfies ChatMessage[] : recentMessages
+    return [taskStateMessage, initialContextReinjectionMessage, memoryMessage, evidenceHistoryMessage, toolHistoryMessage, ...history].filter((message): message is ChatMessage => Boolean(message))
+  }
+
+  private compactInitialContextReinjectionMessage(
+    record: ContextCompactionEventRecord | undefined,
+    events: SessionEvent[],
+    settings: RemoteSettings,
+    options: { mode?: "next_turn_full" | "mid_turn_insert" } = {},
+  ): ChatMessage | undefined {
+    if (!record || record.status !== "completed") return undefined
+    const hasInitialContext = record.replacementHistory.some((item) => item.kind === "initial_context")
+    const mode = options.mode ?? record.initialContextReinjection ?? (hasInitialContext ? "next_turn_full" : undefined)
+    if (!mode || mode === "not_required") return undefined
+    if (options.mode) {
+      if (record.initialContextReinjection !== options.mode) return undefined
+    } else if (mode !== "next_turn_full") {
+      return undefined
+    }
+    const baseline = record.baselineMetadata
+    const invalidations = this.compactBaselineInvalidationReasons(record, events, settings)
+    const baselineLines = baseline
+      ? [
+          `source: ${baseline.source}`,
+          baseline.workspaceRoot ? `workspaceRoot: ${baseline.workspaceRoot}` : "",
+          baseline.gitHead ? `gitHead: ${baseline.gitHead}` : "",
+          typeof baseline.gitDirty === "boolean" ? `gitDirty: ${baseline.gitDirty}` : "",
+          baseline.settingsHash ? `settingsHash: ${baseline.settingsHash}` : "",
+          baseline.ragIndexVersion ? `ragIndexVersion: ${baseline.ragIndexVersion}` : "",
+          typeof baseline.ragUpdatedAt === "number" ? `ragUpdatedAt: ${baseline.ragUpdatedAt}` : "",
+          baseline.toolVersionHash ? `toolVersionHash: ${baseline.toolVersionHash}` : "",
+          baseline.model ? `baselineModel: ${baseline.model}` : "",
+          baseline.sourceModel ? `compactSourceModel: ${baseline.sourceModel}` : "",
+          baseline.sourceWindow ? `compactSourceWindow: ${baseline.sourceWindow}` : "",
+          `fullReinjectRequired: ${baseline.fullReinjectRequired}`,
+          `diffRequired: ${baseline.diffRequired}`,
+          baseline.reason ? `reason: ${baseline.reason}` : "",
+        ].filter(Boolean)
+      : ["source: unavailable", "fullReinjectRequired: true", "reason: compact event has no baseline metadata"]
+    const tag = mode === "mid_turn_insert" ? "chipmate-mid-turn-context-reinjection" : "chipmate-initial-context-reinjection"
+    const intro = mode === "mid_turn_insert"
+      ? "ChipMate compact mid-turn context reinjection. Use it as continuity context before continuing the tool loop, not as a new user request."
+      : "ChipMate compact initial context reinjection. Use it as continuity context, not as a new user request."
+    const content = [
+      intro,
+      `<${tag}>`,
+      `compactId: ${record.id}`,
+      `historyVersion: ${record.historyVersion}`,
+      `mode: ${mode}`,
+      `trigger: ${record.trigger}`,
+      "WorldStateBaseline:",
+      ...baselineLines.map((line) => `- ${line}`),
+      invalidations.length ? "BaselineInvalidation:" : "BaselineInvalidation: none",
+      ...invalidations.map((reason) => `- ${reason}`),
+      `</${tag}>`,
+    ].join("\n")
+    return { role: "user", content }
+  }
+
+  private compactBaselineInvalidationReasons(record: ContextCompactionEventRecord, events: SessionEvent[], settings: RemoteSettings): string[] {
+    const baseline = record.baselineMetadata
+    const reasons: string[] = []
+    if (!baseline) return ["compact event has no baseline metadata; full initial context reinjection required"]
+    if (baseline.source === "missing") reasons.push("compact event was created without a world baseline")
+    if (baseline.fullReinjectRequired) reasons.push(`compact baseline requested full reinject${baseline.reason ? `: ${baseline.reason}` : ""}`)
+    if (record.sourceModel && settings.provider.chatModel && record.sourceModel !== settings.provider.chatModel) {
+      reasons.push(`chat model changed since compact: ${record.sourceModel} -> ${settings.provider.chatModel}`)
+    }
+    const state = buildConversationContextState({
+      sessionID: latestSessionRecord(events)?.id ?? record.id,
+      events: events as ConversationContextEvent[],
+    })
+    const latest = state.world.latest
+    if (!latest) return uniqueStrings(reasons)
+    if (latest.gitDirty === true) reasons.push("current workspace has dirty git state")
+    for (const [label, previous, current] of [
+      ["workspace root", baseline.workspaceRoot, latest.workspaceRoot],
+      ["git head", baseline.gitHead, latest.gitHead],
+      ["settings hash", baseline.settingsHash, latest.settingsHash],
+      ["RAG index version", baseline.ragIndexVersion, latest.ragIndexVersion],
+      ["tool version hash", baseline.toolVersionHash, latest.toolVersionHash],
+      ["world model", baseline.model, latest.model],
+    ] as Array<[string, string | undefined, string | undefined]>) {
+      if (previous && current && previous !== current) reasons.push(`${label} changed since compact: ${previous} -> ${current}`)
+    }
+    return uniqueStrings(reasons)
+  }
+
+  private async conversationTaskStateContextMessage(sessionID: string, events: SessionEvent[]): Promise<ChatMessage | undefined> {
+    const goal = await this.goalRuntime.getGoal(sessionID).catch((error) => {
+      this.deps.output.appendLine(`[context-state] goal snapshot unavailable: ${formatErrorMessage(error)}`)
+      return undefined
+    })
+    const state = buildConversationContextState({
+      sessionID,
+      events: events as ConversationContextEvent[],
+      goal,
+    })
+    const content = renderTaskStateContext(state)
+    if (!content) return undefined
+    this.deps.output.appendLine(`[context-state] injected taskState recaps=${state.task.turnRecaps.length} corrections=${state.task.corrections.length} failure=${state.task.latestFailure ? "yes" : "no"}`)
+    return { role: "user", content: `ChipMate internal task-state context for this turn. Use it as continuity context, not as a new user request.\n\n${content}` }
   }
 
   private async previousAssistantVisualInputs(sessionID: string, events: SessionEvent[]): Promise<ChatMessageImageContent[]> {
@@ -2625,6 +3277,16 @@ export class DirectAgentClient {
     let rawPreview = ""
     let emptySsePreview = ""
     let firstChunkMs: number | undefined
+    let contentDeltaCount = 0
+    let contentBytes = 0
+    let emptyContentDeltaCount = 0
+    let reasoningDeltaCount = 0
+    let reasoningBytes = 0
+    let reasoningPreview = ""
+    let toolCallDeltaCount = 0
+    let usageDeltaCount = 0
+    const choiceKeys = new Set<string>()
+    const deltaKeys = new Set<string>()
     const announcedToolCallIDs = new Set<string>()
     const stableToolCallIDsByIndex = new Map<number, string>()
     const processSseBlock = (raw: string) => {
@@ -2643,7 +3305,10 @@ export class DirectAgentClient {
         const delta = parseDelta(data)
         deltaCount += 1
         if (delta.error) throw new Error(`Chat completion stream failed: ${delta.error}`)
+        for (const key of delta.diagnostics.choiceKeys) choiceKeys.add(key)
+        for (const key of delta.diagnostics.deltaKeys) deltaKeys.add(key)
         if (delta.usage) {
+          usageDeltaCount += 1
           reportedUsage = delta.usage
           input.assistant.info.tokens = reportedUsage
           input.assistant.info.usageKind = "reported"
@@ -2652,6 +3317,19 @@ export class DirectAgentClient {
         if (delta.finishReason) {
           completed = true
           finishReason = delta.finishReason
+        }
+        if (delta.diagnostics.hasContent) {
+          if (delta.content) {
+            contentDeltaCount += 1
+            contentBytes += textByteLength(delta.content)
+          } else {
+            emptyContentDeltaCount += 1
+          }
+        }
+        if (delta.diagnostics.reasoning) {
+          reasoningDeltaCount += 1
+          reasoningBytes += textByteLength(delta.diagnostics.reasoning)
+          if (!reasoningPreview) reasoningPreview = streamPreview(delta.diagnostics.reasoning)
         }
         if (delta.content) {
           text += delta.content
@@ -2671,6 +3349,7 @@ export class DirectAgentClient {
             delta: delta.content,
           })
         }
+        if (delta.toolCalls.length > 0) toolCallDeltaCount += 1
         for (const call of delta.toolCalls) {
           const existing = toolCalls.get(call.index) ?? {
             id: call.id || `tool-${messageID}-${call.index}`,
@@ -2737,9 +3416,12 @@ export class DirectAgentClient {
     }
     if (buffer.trim()) processSseBlock(buffer)
     const streamElapsedMs = Date.now() - requestStarted
-    const streamSummary = `deltaCount=${deltaCount} sseDataCount=${sseDataCount} textBytes=${textByteLength(text)} rawBytes=${rawByteCount} firstChunkMs=${firstChunkMs ?? "none"} streamElapsedMs=${streamElapsedMs} doneMarker=${doneMarker ? "true" : "false"} finishReason=${finishReason || "none"} contentType=${responseContentType} emptySseBlocks=${emptySseBlockCount}${emptySsePreview ? ` emptySsePreview=${emptySsePreview}` : ""}${!completed && rawPreview ? ` rawPreview=${streamPreview(rawPreview)}` : ""}`
+    const streamSummary = `deltaCount=${deltaCount} sseDataCount=${sseDataCount} textBytes=${textByteLength(text)} contentDeltaCount=${contentDeltaCount} contentBytes=${contentBytes} emptyContentDeltaCount=${emptyContentDeltaCount} reasoningDeltaCount=${reasoningDeltaCount} reasoningBytes=${reasoningBytes} toolCallDeltaCount=${toolCallDeltaCount} usageDeltaCount=${usageDeltaCount} rawBytes=${rawByteCount} firstChunkMs=${firstChunkMs ?? "none"} streamElapsedMs=${streamElapsedMs} doneMarker=${doneMarker ? "true" : "false"} finishReason=${finishReason || "none"} contentType=${responseContentType} choiceKeys=${streamKeySummary(choiceKeys)} deltaKeys=${streamKeySummary(deltaKeys)} emptySseBlocks=${emptySseBlockCount}${emptySsePreview ? ` emptySsePreview=${emptySsePreview}` : ""}${!completed && rawPreview ? ` rawPreview=${streamPreview(rawPreview)}` : ""}`
     this.deps.output.appendLine(`[chat-stream] closed ${streamSummary}`)
     if (!completed) throw new Error(`Chat completion stream closed before completion marker. ${streamSummary}`)
+    if (!text.trim()) {
+      this.deps.output.appendLine(`[chat-stream] empty assistant content reasoning=${reasoningDeltaCount > 0 ? "present" : "absent"} toolCalls=${toolCalls.size} usage=${usageDeltaCount > 0 ? "present" : "absent"} finishReason=${finishReason || "none"} doneMarker=${doneMarker ? "true" : "false"} contentDeltaCount=${contentDeltaCount} emptyContentDeltaCount=${emptyContentDeltaCount} reasoningBytes=${reasoningBytes} choiceKeys=${streamKeySummary(choiceKeys)} deltaKeys=${streamKeySummary(deltaKeys)}${reasoningPreview ? ` reasoningPreview=${reasoningPreview}` : ""}${rawPreview ? ` rawPreview=${streamPreview(rawPreview)}` : ""}`)
+    }
     if (!reportedUsage) {
       const estimated = estimateChatTokenUsage({
         messages: input.messages,
@@ -2783,11 +3465,51 @@ export class DirectAgentClient {
   }
 
   private async headers(hasBody: boolean) {
+    return this.headersForApiKey(await this.deps.getApiKey(), hasBody)
+  }
+
+  private headersForApiKey(apiKey: string | undefined, hasBody: boolean) {
     const headers: Record<string, string> = {}
     if (hasBody) headers["Content-Type"] = "application/json"
-    const apiKey = await this.deps.getApiKey()
     if (apiKey?.trim()) headers.Authorization = `Bearer ${apiKey.trim()}`
     return headers
+  }
+
+  private async listOpenAiCompatibleModels(input: {
+    apiKey?: string
+    baseUrl: string
+    configured: string[]
+    defaultModel: string
+    logPrefix: string
+    signal?: AbortSignal
+  }): Promise<ChipMateModelInfo[]> {
+    const configured = input.configured.map((model) => model.trim()).filter(Boolean)
+    try {
+      const response = await fetch(modelsUrl(input.baseUrl), {
+        headers: this.headersForApiKey(input.apiKey, false),
+        signal: input.signal,
+      })
+      if (!response.ok) throw new Error(`${response.status} ${response.statusText}`)
+      const body = await response.json() as { data?: Array<{ id?: string; object?: string }> }
+      const discovered = (body.data ?? [])
+        .map((model) => model.id)
+        .filter((id): id is string => Boolean(id))
+        .map((id, providerIndex) => ({ id, providerIndex, source: "provider" as const }))
+      return normalizeModelInfos(
+        [
+          ...configured.map((id) => ({ id, source: "configured" as const })),
+          ...discovered,
+        ],
+        input.defaultModel,
+      )
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      this.deps.output.appendLine(`[${input.logPrefix}] /models unavailable, using configured models: ${message}`)
+      return normalizeModelInfos(
+        configured.map((id) => ({ id, source: "configured" as const })),
+        input.defaultModel,
+      )
+    }
   }
 
   private emit(type: string, properties: Record<string, unknown>) {
@@ -2819,6 +3541,419 @@ export class DirectAgentClient {
     const uri = await this.sessionUri(sessionID)
     const previous = await readText(uri)
     await vscode.workspace.fs.writeFile(uri, new TextEncoder().encode(`${previous}${JSON.stringify(event)}\n`))
+  }
+
+  private async persistModelGeneratedCompactionEvent(input: {
+    sessionID: string
+    compactState: CompactionState
+    conversationState: ReturnType<typeof buildConversationContextState>
+    historyVersion: number
+    sourceModel: string
+    settings: RemoteSettings
+    strategyDecision: CompactionStrategyDecision
+    signal?: AbortSignal
+  }): Promise<ContextCompactionEventRecord | undefined> {
+    if (input.compactState.status !== "candidate" || !input.strategyDecision.requiresModelSummary) return
+    const now = Date.now()
+    const phase = input.strategyDecision.phase
+    const hookContext = {
+      compactionId: input.compactState.id,
+      trigger: input.compactState.trigger,
+      phase,
+      status: input.strategyDecision.status,
+      compaction: input.compactState,
+    }
+    const started = buildContextCompactionLifecycleEvent({
+      compactionId: input.compactState.id,
+      status: "started",
+      trigger: input.compactState.trigger,
+      phase,
+      now,
+      message: input.strategyDecision.lifecycleStartMessage,
+    })
+    await this.appendSessionEvent(input.sessionID, started)
+    const preHookOutcome = await this.runCompactHookBoundary("pre", hookContext)
+    if (preHookOutcome !== "continue") {
+      await this.appendSessionEvent(input.sessionID, buildContextCompactionLifecycleEvent({
+        compactionId: input.compactState.id,
+        status: preHookOutcome === "stopped" ? "interrupted" : "failed",
+        trigger: input.compactState.trigger,
+        phase,
+        now,
+        failureReason: preHookOutcome,
+      }))
+      return undefined
+    }
+    let compactPromptSource: "default" | "override" | "not_used" = "default"
+    try {
+      const compactSummaryResponse = await this.requestCompactSummaryWithOverflowRetry({
+        settings: input.settings,
+        state: input.conversationState,
+        compaction: input.compactState,
+        signal: input.signal,
+      })
+      compactPromptSource = compactSummaryResponse.prompt.promptSource
+      const summary = parseCompactSummaryModelOutput(compactSummaryResponse.responseText)
+      const quality = validateCompactSummaryQuality({ result: summary, state: input.conversationState })
+      if (!quality.ok) {
+        throw new Error(`Compact summary quality gate failed: ${quality.issues.map((issue) => issue.code).join(",")}`)
+      }
+      const completedState = compactStateWithModelSummary(input.compactState, summary, now + 1)
+      const completed = buildContextCompactionLifecycleEvent({
+        compactionId: input.compactState.id,
+        status: "completed",
+        trigger: input.compactState.trigger,
+        phase,
+        now: now + 1,
+        completedAt: now + 1,
+        message: input.strategyDecision.lifecycleCompletedMessage,
+      })
+      const compactEvent = buildContextCompactionEvent({
+        compaction: completedState,
+        status: "completed",
+        historyVersion: input.historyVersion + 1,
+        baseEventId: input.compactState.retainedMessageIds.at(-1),
+        sourceModel: input.sourceModel,
+        sourceWindow: input.compactState.window.source,
+        compactPromptSource: compactSummaryResponse.prompt.promptSource,
+        lifecycleItemId: completed.contextCompactionLifecycle.id,
+        implementation: input.strategyDecision.implementation,
+        strategy: input.strategyDecision.strategy,
+        reason: input.strategyDecision.reason,
+        phase,
+        fallbackReason: compactSummaryResponse.degradedReason,
+        baselineMetadata: contextCompactionBaselineMetadata({
+          state: input.conversationState,
+          sourceModel: input.sourceModel,
+          sourceWindow: input.compactState.window.source,
+        }),
+        now: now + 1,
+      })
+      await this.appendSessionEvent(input.sessionID, compactEvent)
+      this.deps.output.appendLine(formatContextCompactionEventRecord(compactEvent.contextCompaction))
+      const postHookOutcome = await this.runCompactHookBoundary("post", { ...hookContext, compaction: completedState, event: compactEvent.contextCompaction })
+      if (postHookOutcome !== "continue") {
+        await this.appendSessionEvent(input.sessionID, buildContextCompactionLifecycleEvent({
+          compactionId: input.compactState.id,
+          status: postHookOutcome === "stopped" ? "interrupted" : "failed",
+          trigger: input.compactState.trigger,
+          phase,
+          now: now + 1,
+          failureReason: postHookOutcome,
+        }))
+        return undefined
+      }
+      await this.appendSessionEvent(input.sessionID, completed)
+      return compactEvent.contextCompaction
+    } catch (error) {
+      const reason = formatErrorMessage(error)
+      this.deps.output.appendLine(`[context-compact-summary] failed id=${input.compactState.id} ${reason}`)
+      const failed = buildContextCompactionLifecycleEvent({
+        compactionId: input.compactState.id,
+        status: "failed",
+        trigger: input.compactState.trigger,
+        phase,
+        now: now + 1,
+        failureReason: reason,
+      })
+      const failedEvent = buildContextCompactionEvent({
+        compaction: { ...input.compactState, status: "failed", failureReason: reason },
+        status: "failed",
+        historyVersion: input.historyVersion + 1,
+        baseEventId: input.compactState.retainedMessageIds.at(-1),
+        sourceModel: input.sourceModel,
+        sourceWindow: input.compactState.window.source,
+        compactPromptSource,
+        lifecycleItemId: failed.contextCompactionLifecycle.id,
+        implementation: input.strategyDecision.implementation,
+        strategy: input.strategyDecision.strategy,
+        reason: input.strategyDecision.reason,
+        phase,
+        failureReason: reason,
+        baselineMetadata: contextCompactionBaselineMetadata({
+          state: input.conversationState,
+          sourceModel: input.sourceModel,
+          sourceWindow: input.compactState.window.source,
+        }),
+        now: now + 1,
+      })
+      await this.appendSessionEvent(input.sessionID, failedEvent)
+      this.deps.output.appendLine(formatContextCompactionEventRecord(failedEvent.contextCompaction))
+      await this.appendSessionEvent(input.sessionID, failed)
+      return undefined
+    }
+  }
+
+  private async requestCompactSummaryWithOverflowRetry(input: {
+    settings: RemoteSettings
+    state: ReturnType<typeof buildConversationContextState>
+    compaction: CompactionState
+    signal?: AbortSignal
+  }) {
+    let maxTranscriptMessages: number | undefined
+    let retryCount = 0
+    let totalTrimmedOldestMessages = 0
+    let prompt = buildCompactSummaryPrompt({
+      state: input.state,
+      compaction: input.compaction,
+      maxTranscriptMessages,
+    })
+    let initialTranscriptMessageCount = prompt.transcriptMessageCount
+    while (true) {
+      try {
+        const responseText = await this.requestCompactSummary(input.settings, prompt.messages, input.signal)
+        const degradedReason = retryCount > 0
+          ? `compact summary request exceeded model context; trimmed ${totalTrimmedOldestMessages} oldest compact input message(s) over ${retryCount} retry attempt(s)`
+          : undefined
+        if (degradedReason) {
+          this.deps.output.appendLine(`[context-compact-summary] overflow recovered id=${input.compaction.id} retries=${retryCount} trimmedOldestMessages=${totalTrimmedOldestMessages} transcriptMessages=${prompt.transcriptMessageCount}/${initialTranscriptMessageCount}`)
+        }
+        return { responseText, prompt, degradedReason }
+      } catch (error) {
+        if (!isCompactSummaryContextOverflowError(error)) throw error
+        const retryPlan = compactSummaryOverflowRetryPlan(prompt)
+        if (!retryPlan.canRetry || !retryPlan.nextMaxTranscriptMessages) throw error
+        retryCount += 1
+        totalTrimmedOldestMessages += retryPlan.trimmedOldestMessageCount
+        maxTranscriptMessages = retryPlan.nextMaxTranscriptMessages
+        this.deps.output.appendLine(`[context-compact-summary] overflow retry id=${input.compaction.id} attempt=${retryCount} nextTranscriptMessages=${maxTranscriptMessages} trimmedOldestMessages=${retryPlan.trimmedOldestMessageCount} reason=${logOneLine(formatErrorMessage(error))}`)
+        prompt = buildCompactSummaryPrompt({
+          state: input.state,
+          compaction: input.compaction,
+          maxTranscriptMessages,
+        })
+        if (initialTranscriptMessageCount <= 0) initialTranscriptMessageCount = prompt.transcriptMessageCount
+      }
+    }
+  }
+
+  private async requestCompactSummary(settings: RemoteSettings, messages: ChatMessage[], signal?: AbortSignal) {
+    const maxTokens = Math.max(512, Math.min(4096, Number.isFinite(settings.provider.maxTokens) ? Math.floor(settings.provider.maxTokens) : 2048))
+    const body = {
+      model: settings.provider.chatModel,
+      messages,
+      stream: false,
+      max_tokens: maxTokens,
+      temperature: 0,
+    }
+    const promptBytes = textByteLength(JSON.stringify(messages))
+    this.deps.output.appendLine(`[context-compact-summary] request model=${settings.provider.chatModel || "default"} messages=${messages.length} promptBytes=${promptBytes} maxTokens=${maxTokens}`)
+    const response = await fetch(chatCompletionsUrl(settings.provider.apiBaseUrl), {
+      method: "POST",
+      headers: await this.headers(true),
+      signal,
+      body: JSON.stringify(body),
+    })
+    const text = await response.text().catch(() => "")
+    if (!response.ok) {
+      const preview = truncateString(text.trim(), 600)
+      throw new ChatCompletionHttpError(
+        `Compact summary failed: ${response.status} ${response.statusText || "HTTP error"}${preview ? `: ${preview}` : ""}`,
+        response.status,
+        response.statusText || "HTTP error",
+        preview,
+        response.headers,
+      )
+    }
+    this.deps.output.appendLine(`[context-compact-summary] response rawBytes=${textByteLength(text)}`)
+    return chatCompletionContentFromResponse(text, "Compact summary")
+  }
+
+  private async persistTokenBudgetCompactionEvent(input: {
+    sessionID: string
+    compactState: CompactionState
+    conversationState: ReturnType<typeof buildConversationContextState>
+    historyVersion: number
+    sourceModel: string
+    strategyDecision: CompactionStrategyDecision
+  }): Promise<ContextCompactionEventRecord | undefined> {
+    if (input.strategyDecision.implementation !== "token_budget") return
+    const now = Date.now()
+    const compactState = compactStateWithTokenBudgetFreshWindow(input.compactState)
+    const phase = input.strategyDecision.phase
+    const hookContext = {
+      compactionId: compactState.id,
+      trigger: compactState.trigger,
+      phase,
+      status: input.strategyDecision.status,
+      compaction: compactState,
+    }
+    const started = buildContextCompactionLifecycleEvent({
+      compactionId: compactState.id,
+      status: "started",
+      trigger: compactState.trigger,
+      phase,
+      now,
+      message: input.strategyDecision.lifecycleStartMessage,
+    })
+    await this.appendSessionEvent(input.sessionID, started)
+    const preHookOutcome = await this.runCompactHookBoundary("pre", hookContext)
+    if (preHookOutcome !== "continue") {
+      await this.appendSessionEvent(input.sessionID, buildContextCompactionLifecycleEvent({
+        compactionId: compactState.id,
+        status: preHookOutcome === "stopped" ? "interrupted" : "failed",
+        trigger: compactState.trigger,
+        phase,
+        now,
+        failureReason: preHookOutcome,
+      }))
+      return undefined
+    }
+    const completed = buildContextCompactionLifecycleEvent({
+      compactionId: compactState.id,
+      status: "completed",
+      trigger: compactState.trigger,
+      phase,
+      now: now + 1,
+      completedAt: now + 1,
+      message: input.strategyDecision.lifecycleCompletedMessage,
+    })
+    const compactEvent = buildContextCompactionEvent({
+      compaction: compactState,
+      status: input.strategyDecision.status,
+      historyVersion: input.historyVersion + 1,
+      baseEventId: compactState.retainedMessageIds.at(-1),
+      sourceModel: input.sourceModel,
+      sourceWindow: compactState.window.source,
+      compactPromptSource: input.strategyDecision.compactPromptSource,
+      lifecycleItemId: completed.contextCompactionLifecycle.id,
+      implementation: input.strategyDecision.implementation,
+      strategy: input.strategyDecision.strategy,
+      reason: input.strategyDecision.reason,
+      phase,
+      baselineMetadata: contextCompactionBaselineMetadata({
+        state: input.conversationState,
+        sourceModel: input.sourceModel,
+        sourceWindow: compactState.window.source,
+      }),
+      now: now + 1,
+    })
+    await this.appendSessionEvent(input.sessionID, compactEvent)
+    this.deps.output.appendLine(formatContextCompactionEventRecord(compactEvent.contextCompaction))
+    const postHookOutcome = await this.runCompactHookBoundary("post", { ...hookContext, event: compactEvent.contextCompaction })
+    if (postHookOutcome !== "continue") {
+      await this.appendSessionEvent(input.sessionID, buildContextCompactionLifecycleEvent({
+        compactionId: compactState.id,
+        status: postHookOutcome === "stopped" ? "interrupted" : "failed",
+        trigger: compactState.trigger,
+        phase,
+        now: now + 1,
+        failureReason: postHookOutcome,
+      }))
+      return undefined
+    }
+    await this.appendSessionEvent(input.sessionID, completed)
+    return compactEvent.contextCompaction
+  }
+
+  private async persistFallbackCompactionEvent(input: {
+    sessionID: string
+    compactState: CompactionState
+    conversationState: ReturnType<typeof buildConversationContextState>
+    historyVersion: number
+    sourceModel: string
+    strategyDecision: CompactionStrategyDecision
+  }) {
+    const { compactState } = input
+    if (compactState.status !== "fallback_pruned" || input.strategyDecision.implementation !== "fallback_pruned") return
+    const now = Date.now()
+    const phase = input.strategyDecision.phase
+    const hookContext = {
+      compactionId: compactState.id,
+      trigger: compactState.trigger,
+      phase,
+      status: input.strategyDecision.status,
+      compaction: compactState,
+    }
+    const started = buildContextCompactionLifecycleEvent({
+      compactionId: compactState.id,
+      status: "started",
+      trigger: compactState.trigger,
+      phase,
+      now,
+      message: input.strategyDecision.lifecycleStartMessage,
+    })
+    const preHookOutcome = await this.runCompactHookBoundary("pre", hookContext)
+    if (preHookOutcome !== "continue") {
+      await this.appendSessionEvent(input.sessionID, buildContextCompactionLifecycleEvent({
+        compactionId: compactState.id,
+        status: preHookOutcome === "stopped" ? "interrupted" : "failed",
+        trigger: compactState.trigger,
+        phase,
+        now,
+        failureReason: preHookOutcome,
+      }))
+      return
+    }
+    const completed = buildContextCompactionLifecycleEvent({
+      compactionId: compactState.id,
+      status: "completed",
+      trigger: compactState.trigger,
+      phase,
+      now: now + 1,
+      completedAt: now + 1,
+      message: input.strategyDecision.lifecycleCompletedMessage,
+    })
+    await this.appendSessionEvent(input.sessionID, started)
+    const compactEvent = buildContextCompactionEvent({
+      compaction: compactState,
+      status: input.strategyDecision.status,
+      historyVersion: input.historyVersion + 1,
+      baseEventId: compactState.retainedMessageIds.at(-1),
+      sourceModel: input.sourceModel,
+      sourceWindow: compactState.window.source,
+      compactPromptSource: input.strategyDecision.compactPromptSource,
+      lifecycleItemId: completed.contextCompactionLifecycle.id,
+      implementation: input.strategyDecision.implementation,
+      strategy: input.strategyDecision.strategy,
+      reason: input.strategyDecision.reason,
+      phase,
+      baselineMetadata: contextCompactionBaselineMetadata({
+        state: input.conversationState,
+        sourceModel: input.sourceModel,
+        sourceWindow: compactState.window.source,
+      }),
+      now: now + 1,
+    })
+    await this.appendSessionEvent(input.sessionID, compactEvent)
+    this.deps.output.appendLine(formatContextCompactionEventRecord(compactEvent.contextCompaction))
+    const postHookOutcome = await this.runCompactHookBoundary("post", { ...hookContext, event: compactEvent.contextCompaction })
+    if (postHookOutcome !== "continue") {
+      await this.appendSessionEvent(input.sessionID, buildContextCompactionLifecycleEvent({
+        compactionId: compactState.id,
+        status: postHookOutcome === "stopped" ? "interrupted" : "failed",
+        trigger: compactState.trigger,
+        phase,
+        now: now + 1,
+        failureReason: postHookOutcome,
+      }))
+      return
+    }
+    await this.appendSessionEvent(input.sessionID, completed)
+  }
+
+  private async runCompactHookBoundary(
+    boundary: "pre" | "post",
+    context: Parameters<typeof runCompactHooks>[1],
+  ): Promise<"continue" | "stopped" | string> {
+    const hooks = boundary === "pre" ? this.deps.compactHooks?.preCompact : this.deps.compactHooks?.postCompact
+    try {
+      const outcome = await runCompactHooks(hooks ?? [], context)
+      if (outcome.status === "stopped") {
+        const reason = outcome.reason ?? `${boundary} compact hook stopped`
+        this.deps.output.appendLine(`[context-compact-hook] ${boundary} stopped id=${context.compactionId} reason=${reason}`)
+        return "stopped"
+      }
+      if (outcome.status === "error") {
+        this.deps.output.appendLine(`[context-compact-hook] ${boundary} failed id=${context.compactionId}: ${outcome.reason}`)
+        return outcome.reason
+      }
+      return "continue"
+    } catch (error) {
+      const reason = formatErrorMessage(error)
+      this.deps.output.appendLine(`[context-compact-hook] ${boundary} failed id=${context.compactionId}: ${reason}`)
+      return reason
+    }
   }
 
   private async appendMessage(sessionID: string, message: ChipMateMessage) {
@@ -2952,39 +4087,52 @@ function drawioWorkflowRepairPrompt() {
 }
 
 function createDeliveryDisciplineState(userText: string, activeSkills: ActiveSkillPolicy[]): DeliveryDisciplineState {
+  const expectation = deliveryExpectationPlanFromTurn(userText, activeSkills)
   return {
-    expectations: deliveryExpectationsFromTurn(userText, activeSkills),
+    artifactRequestedThisTurn: expectation.artifactRequestedThisTurn,
+    expectationReason: expectation.reason,
+    expectations: expectation.expectations,
     producedArtifacts: [],
     pendingNextActions: [],
     producerFailures: [],
     completedTools: [],
+    successfulTools: [],
+    inspectedWordDocumentPaths: [],
+    wordRenderCompletedPaths: [],
     convergencePromptInserted: false,
     missingDeliverablePromptInserted: false,
     producerFailureRepairPromptInserted: false,
+    wordEditArgumentPromptInserted: false,
     wordRenderCheckpointInserted: false,
   }
 }
 
-function deliveryExpectationsFromTurn(userText: string, activeSkills: ActiveSkillPolicy[]): DeliveryExpectation[] {
+function deliveryExpectationPlanFromTurn(userText: string, activeSkills: ActiveSkillPolicy[]): {
+  artifactRequestedThisTurn: boolean
+  reason?: DeliveryExpectationReason
+  expectations: DeliveryExpectation[]
+} {
+  const expectations = deliveryExpectationsFromTurn(userText, activeSkills)
+  const reason = deliveryExpectationReasonFromTurn(userText)
+  return {
+    artifactRequestedThisTurn: expectations.length > 0,
+    reason,
+    expectations,
+  }
+}
+
+function deliveryExpectationsFromTurn(userText: string, _activeSkills: ActiveSkillPolicy[]): DeliveryExpectation[] {
   const text = compactSummaryText(userText)
   const lower = text.toLowerCase()
-  const hasDocumentSkill = activeSkills.some((skill) => skill.name === "documents" || skill.name === "chip-design-doc")
-  const asksForCreation = /生成|创建|建立|制作|产出|输出|写入|导出|保存|编辑|修改|审阅|generate|create|write|produce|export|save|edit|revise|review/i.test(text)
-  const mentionsWordDocument = /\.docx\b/i.test(lower) ||
-    /Word\s*文档/i.test(text) ||
-    /Word\s*文件/i.test(text) ||
-    /\bword\s+document\b/i.test(lower) ||
-    /\bword\s+file\b/i.test(lower) ||
-    /(生成|创建|导出|输出)\s*Word\b/i.test(text) ||
-    /文档|报告|方案|规范|设计文档|详细设计/.test(text)
-  if ((hasDocumentSkill && asksForCreation && mentionsWordDocument) || /\.docx\b/i.test(lower)) {
+  const reason = deliveryExpectationReasonFromTurn(text)
+  if (reason === "explicit-docx" || reason === "word-generation" || reason === "word-edit") {
     return [{
       kind: "docx",
       label: "Word .docx document",
       requiredExtensions: [".docx"],
     }]
   }
-  if (asksForCreation && /\.(png|mmd|drawio|csv|pdf)\b/i.test(lower)) {
+  if (reason === "other-artifact" || (isArtifactCreationRequest(text) && /\.(png|mmd|drawio|csv|pdf)\b/i.test(lower))) {
     return [{
       kind: "artifact",
       label: "local artifact file",
@@ -2994,9 +4142,48 @@ function deliveryExpectationsFromTurn(userText: string, activeSkills: ActiveSkil
   return []
 }
 
+function deliveryExpectationReasonFromTurn(userText: string): DeliveryExpectationReason | undefined {
+  const text = compactSummaryText(userText)
+  const lower = text.toLowerCase()
+  const wordTarget = /(?:Word\s*(?:文档|文件)|\bword\s+(?:document|file)\b)/i.test(text)
+  const docxTarget = /\.docx\b/i.test(lower)
+  if ((wordTarget || docxTarget) && isWordEditRequest(text)) return "word-edit"
+  if ((wordTarget || docxTarget) && isArtifactCreationRequest(text)) return "word-generation"
+  if (docxTarget) return "explicit-docx"
+  if (isExplicitDocumentGenerationRequest(text)) return "word-generation"
+  if (isArtifactCreationRequest(text) && /\.(png|mmd|drawio|csv|pdf)\b/i.test(lower)) return "other-artifact"
+  return undefined
+}
+
+function isArtifactCreationRequest(text: string) {
+  return /生成|创建|建立|制作|产出|输出|写入|导出|保存|生成到|写到|生成成|generate|create|write|produce|export|save/i.test(text)
+}
+
+function isWordEditRequest(text: string) {
+  return /编辑|修改|改写|更新|修订|审阅|批注|红线|替换|补充|添加|删除|edit|revise|review|comment|redline|update|replace|append|delete/i.test(text)
+}
+
+function isExplicitDocumentGenerationRequest(text: string) {
+  const generation = /生成|创建|建立|制作|产出|输出|导出|保存|generate|create|produce|export|save/i.test(text)
+  if (!generation) return false
+  return /(?:Word\s*(?:文档|文件)|\bword\s+(?:document|file)\b|(?:文档|报告|方案|规范|设计文档|详细设计)(?:\s|$|。|，|、|：|:)|(?:生成|创建|制作|输出|导出|保存).{0,12}(?:文档|报告|方案|规范|设计文档|详细设计))/i.test(text)
+}
+
 function recordDeliveryToolResult(state: DeliveryDisciplineState, tool: string, args: Record<string, unknown>, result: ToolRuntimeResult, output?: vscode.OutputChannel) {
   state.completedTools.push(tool)
-  for (const artifact of deliveryArtifactsFromToolResult(tool, result)) {
+  if (toolStatusFromResult(result) === "completed" && result.approved) {
+    state.successfulTools.push(tool)
+    if (tool === "inspect_word_document") {
+      const outputObject = parseToolOutputObject(result.output)
+      const inspectedPath = stringValue(args.path) || stringValue(recordValue(outputObject.data).path) || stringValue(outputObject.path)
+      if (inspectedPath && !state.inspectedWordDocumentPaths.some((path) => comparableDeliveryPath(path) === comparableDeliveryPath(inspectedPath))) {
+        state.inspectedWordDocumentPaths.push(inspectedPath)
+      }
+    }
+  }
+  for (const artifact of deliveryArtifactsFromToolResult(tool, result, {
+    includeOutputPaths: isDeliverableProducerTool(tool),
+  })) {
     const key = `${artifact.kind}:${artifact.path}`
     if (!state.producedArtifacts.some((existing) => `${existing.kind}:${existing.path}` === key)) {
       state.producedArtifacts.push(artifact)
@@ -3015,6 +4202,10 @@ function recordDeliveryToolResult(state: DeliveryDisciplineState, tool: string, 
     const repeated = Boolean(producerFailure.specShapeHash && state.producerFailures.slice(0, -1).some((item) => item.tool === producerFailure.tool && item.specShapeHash === producerFailure.specShapeHash))
     output?.appendLine(`[tool-loop] producer failure recorded tool=${tool} count=${state.producerFailures.length} errorCode=${producerFailure.errorCode || "none"} missing=${missing} specShapeHash=${producerFailure.specShapeHash || "none"} repeatedInvalidSpec=${repeated}`)
   }
+  const renderPath = completedWordRenderPathFromToolResult(tool, result)
+  if (renderPath && !state.wordRenderCompletedPaths.some((path) => comparableDeliveryPath(path) === comparableDeliveryPath(renderPath))) {
+    state.wordRenderCompletedPaths.push(renderPath)
+  }
   const requestedOutput = requestedArtifactPathFromArgs(args)
   if (requestedOutput && isDeliverableProducerTool(tool) && toolStatusFromResult(result) === "completed" && result.approved) {
     const kind = artifactKindFromPath(requestedOutput)
@@ -3030,7 +4221,11 @@ function requestedArtifactPathFromArgs(args: Record<string, unknown>) {
   return path
 }
 
-function deliveryArtifactsFromToolResult(tool: string, result: ToolRuntimeResult): DeliveryArtifactRecord[] {
+function deliveryArtifactsFromToolResult(
+  tool: string,
+  result: ToolRuntimeResult,
+  options: { includeOutputPaths?: boolean } = {},
+): DeliveryArtifactRecord[] {
   if (toolStatusFromResult(result) !== "completed" || !result.approved) return []
   const artifacts: DeliveryArtifactRecord[] = []
   for (const artifact of result.artifacts ?? []) {
@@ -3046,27 +4241,29 @@ function deliveryArtifactsFromToolResult(tool: string, result: ToolRuntimeResult
       for (const item of arrayRecords(payload.artifacts)) pushArtifactPath(artifacts, tool, stringValue(item.path))
     }
   }
-  const output = parseToolOutputObject(result.output)
-  const data = recordValue(output.data)
-  for (const value of [
-    stringValue(output.path),
-    stringValue(output.file),
-    stringValue(output.artifactPath),
-    stringValue(output.pdfArtifactPath),
-    stringValue(data.path),
-    stringValue(data.file),
-    stringValue(data.artifactPath),
-    stringValue(data.pngPath),
-    stringValue(data.mmdPath),
-    stringValue(data.pdfArtifactPath),
-  ]) {
-    pushArtifactPath(artifacts, tool, value)
-  }
-  for (const path of stringArrayValue(output.pagePngPaths)) pushArtifactPath(artifacts, tool, path)
-  for (const path of stringArrayValue(data.pagePngPaths)) pushArtifactPath(artifacts, tool, path)
-  if (typeof result.output === "string") {
-    for (const path of result.output.match(/(?:\.chipmate\/docs|\/[^\s"'`<>)]*\.chipmate\/docs)\/[^\s"'`<>)]*\.(?:docx|png|mmd|pdf|csv|drawio)/gi) ?? []) {
-      pushArtifactPath(artifacts, tool, path)
+  if (options.includeOutputPaths !== false) {
+    const output = parseToolOutputObject(result.output)
+    const data = recordValue(output.data)
+    for (const value of [
+      stringValue(output.path),
+      stringValue(output.file),
+      stringValue(output.artifactPath),
+      stringValue(output.pdfArtifactPath),
+      stringValue(data.path),
+      stringValue(data.file),
+      stringValue(data.artifactPath),
+      stringValue(data.pngPath),
+      stringValue(data.mmdPath),
+      stringValue(data.pdfArtifactPath),
+    ]) {
+      pushArtifactPath(artifacts, tool, value)
+    }
+    for (const path of stringArrayValue(output.pagePngPaths)) pushArtifactPath(artifacts, tool, path)
+    for (const path of stringArrayValue(data.pagePngPaths)) pushArtifactPath(artifacts, tool, path)
+    if (typeof result.output === "string") {
+      for (const path of result.output.match(/(?:\.chipmate\/docs|\/[^\s"'`<>)]*\.chipmate\/docs)\/[^\s"'`<>)]*\.(?:docx|png|mmd|pdf|csv|drawio)/gi) ?? []) {
+        pushArtifactPath(artifacts, tool, path)
+      }
     }
   }
   return artifacts
@@ -3114,6 +4311,7 @@ function deliveryProducerFailureFromToolResult(tool: string, result: ToolRuntime
   const output = parseToolOutputObject(result.output)
   const data = recordValue(output.data)
   const validationErrors = [
+    ...stringArrayValue(data.normalizationErrors),
     ...stringArrayValue(data.validationErrors),
     ...stringArrayValue(output.gaps),
   ].map((item) => truncateString(compactSummaryText(item), MAX_TOOL_EXECUTION_FIELD_CHARS)).filter(Boolean)
@@ -3153,6 +4351,7 @@ function missingDeliveryExpectations(state: DeliveryDisciplineState) {
 
 function shouldInsertEvidenceConvergenceCheckpoint(state: DeliveryDisciplineState, stepCount: number, maxAgentSteps: number) {
   if (state.convergencePromptInserted) return false
+  if (!state.artifactRequestedThisTurn) return false
   if (maxAgentSteps < 4) return false
   const remainingAfterThisStep = maxAgentSteps - stepCount
   if (remainingAfterThisStep > EVIDENCE_CONVERGENCE_CHECKPOINT_REMAINING_STEPS) return false
@@ -3160,10 +4359,11 @@ function shouldInsertEvidenceConvergenceCheckpoint(state: DeliveryDisciplineStat
 }
 
 function shouldInsertMissingDeliverablePrompt(state: DeliveryDisciplineState) {
-  return !state.missingDeliverablePromptInserted && missingDeliveryExpectations(state).length > 0
+  return state.artifactRequestedThisTurn && !state.missingDeliverablePromptInserted && missingDeliveryExpectations(state).length > 0
 }
 
 function shouldInsertProducerFailureRepairPrompt(state: DeliveryDisciplineState) {
+  if (!state.artifactRequestedThisTurn) return false
   const createWordFailedWithoutDocx = state.producerFailures.some((failure) => failure.tool === "create_word_document") &&
     !state.producedArtifacts.some((artifact) => artifact.kind === "docx")
   return !state.producerFailureRepairPromptInserted &&
@@ -3171,11 +4371,21 @@ function shouldInsertProducerFailureRepairPrompt(state: DeliveryDisciplineState)
     state.producerFailures.length > 0
 }
 
+function shouldInsertWordEditArgumentPrompt(state: DeliveryDisciplineState) {
+  if (!state.artifactRequestedThisTurn) return false
+  if (state.wordEditArgumentPromptInserted) return false
+  if (state.inspectedWordDocumentPaths.length === 0) return false
+  if (state.successfulTools.includes("apply_word_document_edits")) return false
+  if (state.producerFailures.some((failure) => failure.tool === "apply_word_document_edits")) return false
+  return true
+}
+
 function shouldInsertWordRenderCheckpoint(state: DeliveryDisciplineState) {
   if (state.wordRenderCheckpointInserted) return false
+  if (!state.artifactRequestedThisTurn) return false
   if (!hasDocxDeliveryExpectation(state)) return false
   if (!latestGeneratedDocxPath(state)) return false
-  return !state.completedTools.includes("render_word_document")
+  return !hasCompletedWordRenderQa(state, latestGeneratedDocxPath(state))
 }
 
 function hasDocxDeliveryExpectation(state: DeliveryDisciplineState) {
@@ -3186,6 +4396,29 @@ function latestGeneratedDocxPath(state: DeliveryDisciplineState) {
   return [...state.producedArtifacts].reverse().find((artifact) =>
     artifact.kind === "docx" && isGeneratedDocxProducerTool(artifact.tool)
   )?.path ?? ""
+}
+
+function hasCompletedWordRenderQa(state: DeliveryDisciplineState, path: string) {
+  if (!path) return false
+  if (state.completedTools.includes("render_word_document")) return true
+  const target = comparableDeliveryPath(path)
+  return state.wordRenderCompletedPaths.some((item) => comparableDeliveryPath(item) === target)
+}
+
+function completedWordRenderPathFromToolResult(tool: string, result: ToolRuntimeResult) {
+  if (toolStatusFromResult(result) !== "completed" || !result.approved) return ""
+  const output = parseToolOutputObject(result.output)
+  const data = recordValue(output.data)
+  const renderCheck = recordValue(data.renderCheckResult)
+  const visualQaStatus = stringValue(renderCheck.visualQaStatus)
+  const pagePngPaths = stringArrayValue(renderCheck.pagePngPaths).length ? stringArrayValue(renderCheck.pagePngPaths) : stringArrayValue(data.pagePngPaths)
+  const completed = visualQaStatus === "completed" || Boolean(stringValue(renderCheck.pdfArtifactPath) || stringValue(data.pdfArtifactPath)) || pagePngPaths.length > 0
+  if (!completed) return ""
+  return stringValue(data.path) || stringValue(output.path)
+}
+
+function comparableDeliveryPath(path: string) {
+  return compactSummaryText(path).replace(/\\/g, "/").replace(/^\.\//, "")
 }
 
 function isGeneratedDocxProducerTool(tool: string) {
@@ -3225,14 +4458,27 @@ function missingDeliverableSteeringPrompt(state: DeliveryDisciplineState) {
 
 function producerFailureRepairPrompt(state: DeliveryDisciplineState) {
   const wordSpecRepair = wordSpecProducerFailureRepairText(state)
+  const wordEditRepair = wordEditProducerFailureRepairText(state)
   return [
     "ChipMate producer failure repair checkpoint.",
     "A final artifact producer tool failed while the requested local deliverable is still missing.",
     "Do not resume broad search/read loops. Use the tool error below to repair the producer arguments/spec and retry the same final producer tool when the current evidence is sufficient. Put unresolved content coverage into assumptions, limitations, gaps, or owner-review notes.",
     wordSpecRepair,
+    wordEditRepair,
     "If the producer arguments cannot be repaired, explicitly state that the requested local deliverable was not generated and cite the exact tool failure.",
     deliveryDisciplineSummary(state),
   ].filter(Boolean).join("\n\n")
+}
+
+function wordEditArgumentConvergencePrompt(state: DeliveryDisciplineState) {
+  const inspected = state.inspectedWordDocumentPaths.at(-1) || "the inspected .docx"
+  return [
+    "ChipMate Word edit argument checkpoint.",
+    `The document has been inspected: ${inspected}. If the next step is to edit it, call apply_word_document_edits now with one valid JSON object; do not output prose instead of the tool call.`,
+    "Keep the edit plan small: use 1-3 operations per apply call. Split larger edits into additional inspect/apply rounds instead of sending a large array, whole table, or whole document payload.",
+    "The tool arguments must be shaped as {\"path\":\"...docx\",\"plan\":{\"operations\":[...]}}. The plan value must be an object, not a quoted string or JSON.stringify(plan). Every operation must include `type` and an exact `locator` copied from inspect_word_document.",
+    "For adding or filling a column in an existing table, use insertTableColumn with the inspected table locator, header, and values[]. Do not use replaceTable for local table-column edits.",
+  ].join("\n")
 }
 
 function wordSpecProducerFailureRepairText(state: DeliveryDisciplineState) {
@@ -3251,6 +4497,40 @@ function wordSpecProducerFailureRepairText(state: DeliveryDisciplineState) {
     "Use this minimal object shape if the prior spec was long or malformed:",
     "{\"filename\":\"目标文件名.docx\",\"spec\":{\"metadata\":{\"title\":\"文档标题\",\"documentType\":\"technical-design\",\"language\":\"zh-CN\",\"generatedAt\":\"2026-06-30T00:00:00Z\"},\"sources\":[],\"sections\":[{\"id\":\"overview\",\"level\":1,\"title\":\"概述\",\"paragraphs\":[\"正文内容。\"]}],\"qualityChecklist\":{\"assumptions\":[],\"limitations\":[],\"missingInputs\":[],\"risks\":[]}}}",
     "If the same failure repeats, shrink to the smallest useful WordDocSpec and put uncovered details into assumptions/gaps instead of submitting another oversized or stringified spec.",
+  ].join("\n")
+}
+
+function wordEditProducerFailureRepairText(state: DeliveryDisciplineState) {
+  const latestEditFailure = [...state.producerFailures].reverse().find((failure) =>
+    failure.tool === "apply_word_document_edits" && (
+      failure.errorCode === "tool-arguments-invalid-json" ||
+      failure.errorCode === "tool-arguments-empty" ||
+      failure.errorCode === "tool-arguments-not-object" ||
+      failure.errorCode === "tool-arguments-truncated" ||
+      failure.errorCode === "document-edit-plan-string-disallowed" ||
+      failure.errorCode === "document-edit-plan-invalid-argument" ||
+      failure.errorCode === "document-edit-plan-validation-failed"
+    )
+  )
+  if (!latestEditFailure) return ""
+  const errors = latestEditFailure.validationErrors.length
+    ? `Last validation errors: ${latestEditFailure.validationErrors.join(" | ")}`
+    : `Last failure: ${latestEditFailure.reason}`
+  return [
+    "apply_word_document_edits DocumentEditPlan repair rule:",
+    "Do not continue broad search/read. Do not reuse the malformed prior arguments. Reuse the latest inspect_word_document result and retry apply_word_document_edits directly with one valid top-level JSON object shaped exactly like {\"path\":\"target.docx\",\"plan\":{...}}.",
+    "The `plan` value MUST be a JSON object. Do not pass plan as a quoted string. Do not use JSON.stringify(plan). Do not use Markdown or prose as plan.",
+    "If the last failure was invalid JSON, shrink the retry to the smallest useful edit: one insertTableColumn, one replaceText, one replaceParagraph, or one updateTableHeaderRows operation.",
+    "Every plan.operations[] item MUST include a supported `type`, the exact `locator` returned by inspect_word_document, and that operation's required fields.",
+    "Do not use `action`, `op`, or `operationType` instead of `type`; those fields are invalid.",
+    "If the failure says the locator was not produced by inspect_word_document, copy the exact locator object from the latest inspect result or from availableLocatorHints in the failed tool payload; do not construct a locator from tableIndex/blockId/sourceLocation by hand.",
+    "For existing table edits that add/fill one column, use insertTableColumn with the inspected table locator, header, and one values[] item per non-header row. Do not use replaceTable for local table-column edits.",
+    "If replaceTable failed with replace-table-content-loss-risk, retry with insertTableColumn or updateTable so the original table content is preserved.",
+    "Minimal valid shape:",
+    "{\"path\":\".chipmate/docs/example.docx\",\"plan\":{\"operations\":[{\"type\":\"replaceText\",\"locator\":{\"kind\":\"paragraph\",\"blockId\":\"...\"},\"oldText\":\"...\",\"newText\":\"...\"}]}}",
+    "Invalid shape to avoid: {\"plan\":\"{\\\"operations\\\":[...]}\"}.",
+    "If replaceText is not appropriate, choose a supported operation such as replaceParagraph, replaceParagraphWithBlocks, updateTable, updateHeadingLevel, or addComment, but keep the same required `type` + inspected `locator` contract.",
+    errors,
   ].join("\n")
 }
 
@@ -3292,10 +4572,11 @@ function deliveryDisciplineSummary(state: DeliveryDisciplineState) {
 }
 
 function missingDeliverableFinalAnswerText(state: DeliveryDisciplineState, assistantText: string) {
+  if (!state.artifactRequestedThisTurn) return ""
   const missing = missingDeliveryExpectations(state)
   if (missing.length === 0) return ""
   if (assistantTextDisclosesMissingDeliverable(assistantText) && !assistantTextPresentsInlineDeliverableSubstitute(assistantText)) return ""
-  return missingDeliverableFallbackMessage(state)
+  return missingDeliverableFallbackMessage(state, assistantText)
 }
 
 function generatedDocumentFinalLocationText(state: DeliveryDisciplineState, assistantText: string) {
@@ -3306,10 +4587,11 @@ function generatedDocumentFinalLocationText(state: DeliveryDisciplineState, assi
 }
 
 function wordRenderQaFinalDisclosureText(state: DeliveryDisciplineState, assistantText: string) {
+  if (!state.artifactRequestedThisTurn) return ""
   if (!hasDocxDeliveryExpectation(state)) return ""
   const docxPath = latestGeneratedDocxPath(state)
   if (!docxPath) return ""
-  if (state.completedTools.includes("render_word_document")) return ""
+  if (hasCompletedWordRenderQa(state, docxPath)) return ""
   if (assistantTextDisclosesMissingWordRenderQa(assistantText)) return ""
   return `注意：Word 文档已生成（${docxPath}），但本轮未执行 render_word_document，因此页面级视觉 QA 未完成。Mermaid PNG 渲染不等同于最终 Word 页面视觉 QA。`
 }
@@ -3336,7 +4618,7 @@ function assistantTextDisclosesMissingWordRenderQa(text: string) {
     /(未完成|未执行|未做|跳过|skipped|not completed|not run|not performed|unavailable|不可用)/i.test(text)
 }
 
-function missingDeliverableFallbackMessage(state: DeliveryDisciplineState) {
+function missingDeliverableFallbackMessage(state: DeliveryDisciplineState, assistantText = "") {
   const missing = missingDeliveryExpectations(state)
     .map((item) => `${item.label} (${item.requiredExtensions.join(", ")})`)
     .join("、")
@@ -3351,17 +4633,19 @@ function missingDeliverableFallbackMessage(state: DeliveryDisciplineState) {
     .slice(-5)
     .map((item) => `- ${item.tool}: ${item.errorCode ? `[${item.errorCode}] ` : ""}${item.reason}${item.validationErrors.length ? `；validationErrors=${item.validationErrors.join(" | ")}` : ""}`)
     .join("\n")
+  const originalDraft = assistantText.trim()
   return [
     `未生成请求的本地交付物：${missing || "未知交付物"}。`,
     "本轮已停止把内联 Markdown 当作完成结果返回，以符合 Codex-style artifact delivery discipline。",
     produced ? `本轮已经产生的相关 artifact：\n${produced}` : "本轮没有产生满足请求的最终 artifact。",
     failures ? `最终产物工具失败原因：\n${failures}` : "",
     pending ? `仍待执行的工具动作：\n${pending}` : "没有可确认的后续工具动作；需要继续时请让 ChipMate 基于当前会话证据调用最终产物工具。",
+    originalDraft ? `模型原始回答（未生成请求的本地 artifact，仅供参考，不代表 Word .docx 已交付）：\n\n${originalDraft}` : "",
   ].filter(Boolean).join("\n\n")
 }
 
 function toolLoopLimitFinalizationPrompt(maxAgentSteps: number, totalToolCallCount: number, deliveryDiscipline?: DeliveryDisciplineState) {
-  const deliverySummary = deliveryDiscipline ? deliveryDisciplineSummary(deliveryDiscipline) : ""
+  const deliverySummary = deliveryDiscipline?.artifactRequestedThisTurn ? deliveryDisciplineSummary(deliveryDiscipline) : ""
   return [
     `ChipMate reached the configured direct-chat tool loop limit after ${maxAgentSteps} agent step(s) and ${totalToolCallCount} tool call(s).`,
     "Do not call any more tools. The host will not execute additional tool calls in this finalization step.",
@@ -3749,6 +5033,36 @@ function parseTerminalCommandResultSummary(text: string): TerminalCommandResultS
   }
 }
 
+export function understandingGroundingFinalDisclosureText(input: DirectAgentUnderstandingGrounding | undefined, assistantText: string) {
+  if (!input?.aggregation) return undefined
+  const evidenceRefs = input.aggregation.factors
+    .flatMap((factor) => factor.supportingEvidence.map((evidence) => ({
+      path: evidence.path,
+      startLine: evidence.startLine,
+      endLine: evidence.endLine,
+    })))
+    .slice(0, 24)
+  const hasKnownCitation = evidenceRefs.some((ref) => answerMentionsEvidenceRef(assistantText, ref))
+  const coverageNotice = coverageLimitNotice(input.coverage)
+  const notices: string[] = []
+  if (evidenceRefs.length > 0 && !hasKnownCitation) {
+    const examples = evidenceRefs.slice(0, 3).map((ref) => `${ref.path}:${ref.startLine}-${ref.endLine}`).join(", ")
+    notices.push(`Grounding note: the broad-code answer was planned with retrieved evidence, but the final text did not cite a retrieved location. Treat unsupported conclusions as hypotheses and verify against evidence such as ${examples}.`)
+  }
+  const blockingFindings = input.verifierFindings?.filter((finding) => finding.severity === "blocking") ?? []
+  if (blockingFindings.length > 0) {
+    notices.push(`Grounding verifier note: ${blockingFindings.map((finding) => finding.code).join(", ")} remained after evidence planning; keep affected conclusions as gaps or hypotheses.`)
+  }
+  if (coverageNotice && !assistantText.includes(coverageNotice)) notices.push(coverageNotice)
+  return notices.length ? notices.join("\n") : undefined
+}
+
+function answerMentionsEvidenceRef(text: string, ref: { path: string; startLine: number; endLine: number }) {
+  if (!text.includes(ref.path)) return false
+  const escaped = ref.path.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+  return new RegExp(`${escaped}[:#L\\s]*(?:${ref.startLine}|${ref.startLine}-${ref.endLine}|L${ref.startLine})`).test(text)
+}
+
 function extractJsonObject(text: string) {
   const trimmed = text.trim()
   const fence = /^```(?:json)?\s*([\s\S]*?)\s*```$/i.exec(trimmed)
@@ -3804,6 +5118,75 @@ function sessionDisplayTitleMessages(question: string): ChatMessage[] {
   ]
 }
 
+function understandingPlanMessages(input: UnderstandingPlannerInput): ChatMessage[] {
+  return [
+    {
+      role: "system",
+      content: [
+        "You are ChipMate's code-understanding evidence planner.",
+        "Return JSON only. Do not answer the user's question.",
+        "Plan evidence collection for broad code-understanding questions using only these task types: semantic_search, symbol_discovery, module_map, call_expansion, call_chain, reference_search, state_machine_search, config_search, test_search.",
+        "You may set templateId to one of: performance-factor-analysis, root-cause-analysis, architecture-understanding, module-responsibility-map, state-flow-understanding, test-impact-analysis. The template only controls evidence task framing and answer structure.",
+        "Use multiple hypotheses for broad performance, root-cause, architecture, module, state, and optimization questions.",
+        "Do not hardcode project-specific conclusions. Tasks gather evidence; final claims come later from retrieved evidence.",
+        "Required JSON shape: {\"templateId\":\"optional-supported-template-id\",\"questionSummary\":\"...\",\"concepts\":[\"...\"],\"hypotheses\":[\"...\"],\"tasks\":[{\"type\":\"semantic_search\",\"query\":\"...\",\"reason\":\"...\",\"symbol\":\"optional\",\"target\":\"optional\"}],\"answerShape\":\"...\",\"riskNotes\":[\"...\"]}.",
+        "For call_expansion tasks, include symbol when known and direction as callers, callees, or both.",
+      ].join("\n"),
+    },
+    {
+      role: "user",
+      content: [
+        `Question: ${input.question}`,
+        input.currentFile ? `Current file: ${input.currentFile}` : "",
+        input.relatedPaths.length ? `Related paths: ${input.relatedPaths.slice(0, 20).join(", ")}` : "",
+        input.codeGraphState ? `CodeGraph state: ${input.codeGraphState}` : "",
+        input.rag ? `Code RAG: enabled=${input.rag.enabled} availability=${input.rag.availability} index=${input.rag.indexAvailability} embedding=${input.rag.embeddingEnabled}` : "",
+        input.previousPlan ? `Previous evidence plan: ${JSON.stringify({
+          templateId: input.previousPlan.templateId,
+          questionSummary: input.previousPlan.questionSummary,
+          concepts: input.previousPlan.concepts.slice(0, 12),
+          answerShape: input.previousPlan.answerShape,
+          taskTypes: input.previousPlan.tasks.map((task) => task.type).slice(0, 12),
+        })}` : "",
+        input.previousTrace ? `Previous planner trace: planner_used=${input.previousTrace.planner_used} fast_path=${input.previousTrace.fast_path_reason ?? "none"} fallback=${input.previousTrace.fallback_reason ?? "none"} tasks=${input.previousTrace.task_count} evidence=${input.previousTrace.evidence_count}` : "",
+        input.confirmedConcepts?.length ? `Confirmed concepts from previous turn: ${input.confirmedConcepts.slice(0, 20).join(", ")}` : "",
+        input.previousEvidenceRefs?.length ? `Previous evidence refs: ${JSON.stringify(input.previousEvidenceRefs.slice(0, 12).map((item) => ({
+          path: item.path,
+          lines: `${item.startLine}-${item.endLine}`,
+          taskType: item.taskType,
+          hash: item.snippetHash,
+        })))}` : "",
+        input.previousGaps?.length ? `Previous evidence gaps: ${input.previousGaps.slice(0, 12).join("; ")}` : "",
+        input.previousClaims?.length ? `Previous evidence-backed claims: ${JSON.stringify(input.previousClaims.slice(0, 12).map((item) => ({
+          id: item.id,
+          category: item.factorCategory,
+          confidence: item.confidence,
+          support: item.supportLevel,
+          refs: item.evidenceRefs.length,
+        })))}` : "",
+        input.userCorrections?.length ? `User corrections to honor: ${input.userCorrections.slice(0, 12).join("; ")}` : "",
+        input.previousPlan || input.previousClaims?.length ? "If the current question changes topic, do not reuse previous evidence except as contrast. If it is a follow-up, prefer still-valid previous high-confidence refs and unresolved gaps before broadening retrieval." : "",
+      ].filter(Boolean).join("\n"),
+    },
+  ]
+}
+
+function chatCompletionContentFromResponse(text: string, label: string) {
+  let value: unknown
+  try {
+    value = text ? JSON.parse(text) : {}
+  } catch {
+    throw new Error(`${label} provider returned malformed JSON.`)
+  }
+  if (!isRecord(value)) throw new Error(`${label} provider returned non-object JSON.`)
+  const body = value as { choices?: ChatCompletionChoice[] }
+  const choice = body.choices?.[0]
+  const content = choice?.message?.content ?? choice?.text
+  const contentText = terminalPlanTextFromContent(content)
+  if (!contentText) throw new Error(`${label} response did not include message content.`)
+  return contentText
+}
+
 function stringArrayField(record: Record<string, unknown>, key: string) {
   const value = record[key]
   if (Array.isArray(value)) return value.map((item) => typeof item === "string" ? item.trim() : "").filter(Boolean)
@@ -3854,7 +5237,7 @@ function failedToolArgumentParsing(toolName: string, error: Exclude<ToolArgument
     evidence: [],
     gaps: [error.errorMessage],
     nextActions: isDeliverableProducerTool(toolName)
-      ? [{ tool: toolName, reason: "Retry with a valid top-level JSON object argument. For create_word_document, spec must be an object, not a string.", args: {} }]
+      ? [{ tool: toolName, reason: invalidToolArgumentsNextActionReason(toolName), args: {} }]
       : [],
     truncated: error.errorCode === "tool-arguments-truncated",
     coverage: "partial",
@@ -3881,6 +5264,16 @@ function failedToolArgumentParsing(toolName: string, error: Exclude<ToolArgument
     error: error.errorMessage,
     risk: "failed",
   }
+}
+
+function invalidToolArgumentsNextActionReason(toolName: string) {
+  if (toolName === "create_word_document") {
+    return "Retry with one valid top-level JSON object argument shaped as { filename?: string, spec: {...} }. The spec value must be an object, not a string."
+  }
+  if (toolName === "apply_word_document_edits") {
+    return "Retry with one valid top-level JSON object argument shaped as { path: 'target.docx', plan: { operations: [...] } }. The plan value must be an object, not a string; keep the operation set small."
+  }
+  return "Retry with one valid top-level JSON object argument for this producer tool."
 }
 
 function toolCallForProviderHistory(call: ChatToolCall, parsed: ToolArgumentParseResult): ChatToolCall {
@@ -4112,7 +5505,7 @@ function systemPrompt(settings: RemoteSettings, skillCatalog: string, loadedSkil
     toolsEnabled
       ? [
           "Use the initial local evidence pack first. Call read-only ChipMate evidence tools only when evidence is missing, ambiguous, or needs deeper context.",
-          "Tool routing: for Mermaid-default diagram requests, use read-only evidence tools only when the content needs grounding, then answer with a fenced `mermaid` block instead of draw.io tools. When Mermaid must be embedded into a Word document or persisted as artifacts, call chipmate_render_mermaid_diagram after authoring valid Mermaid source, use scale 3 for Word figures, then place the returned PNG figure path in the matching WordDocSpec section while keeping the returned width/height as the display size. For explicit complex draw.io requests, use chipmate_graph_map_module, chipmate_graph_function_cfg, chipmate_graph_expand_flow_slice, chipmate_graph_state_flow_detail, chipmate_graph_find_state_machines/trace_state_path, chipmate_search_code, chipmate_search_documents, read_docx, and active skill resources to collect evidence; then use chipmate_validate_diagram_ir and finally chipmate_create_drawio_diagram. For controlled edits to an existing .docx, first call inspect_word_document and then call apply_word_document_edits with a DocumentEditPlan using only returned locators; supported operations are insertSection, replaceParagraph, replaceParagraphWithRichParagraph, replaceParagraphWithBlocks, replaceText, replaceParagraphWithTrackedChange, replaceParagraphWithRichTrackedChange, replaceTextWithTrackedChange, updateHeadingLevel, updateTable, replaceTable, updateTableHeaderRows, updateList, updateSectionPageSetup, updateImageAltText, replaceImage, updateCaptionText, updateHyperlinkText, updateHyperlinkTarget, updateNoteText, paragraph addComment, updateCommentText, setCommentResolved, fillContentControl, addTextWatermark, removeWatermark, removeAllComments, acceptAllTrackedChanges, rejectAllTrackedChanges, scrubDocumentMetadata, redactText, and patchOoxmlPart. Use audit_word_document_styles when the user asks why formatting looks inconsistent or before style cleanup; use normalize_word_document_styles only when the user wants a new style-normalized copy, and pass preserveRunFormatting such as ['bold','italic','underline','color'] when the user wants intentional manual emphasis or brand coloring preserved while other direct formatting drift is removed. Use apply_word_template_styles when the user asks to apply a DOTX/template DOCX/style pack to an existing .docx; warn that pagination and styling may change, pass styleAllowlist when the user asks to import only selected template style ids, and use returned templateAudit to explain style/numbering conflicts plus copied or blocked template relationships/media. Use audit_word_document_fields when the user asks why TOC/page numbers/captions/cross-references look stale or before rendering field-heavy documents; do not use refresh_word_native_fields for TOC/PAGE/NUMPAGES because remote native field refresh is not implemented and the VSIX client does not run local LibreOffice/soffice; use flatten_word_ref_fields only when deterministic headless rendering should replace cached REF/PAGEREF display text in a new copy, and use materialize_word_seq_fields only when deterministic headless rendering should recalculate cached SEQ caption/table/figure numbers while preserving live SEQ fields. Do not use flatten_word_ref_fields or materialize_word_seq_fields to refresh TOC, PAGE, or NUMPAGES. Use compare_word_documents when the user asks to compare/diff/review changes between two local .docx files; the tool handles text diff, DOCX rendering, changed page detection, copied before/after page artifacts, skipped pixel-diff warnings until a remote pixel-diff provider exists, and evidence artifacts. Use merge_word_documents when the user asks to append or merge one local .docx into another; the model must choose base vs append order. Keep allowDrawings false for object-heavy append docs, but it can be true for local image/PNG figure append docs after warning that unsupported embedded objects remain out of scope; local image media and relationships are merged deterministically, hyperlink relationships are remapped, style/numbering conflicts are reported as base-wins, and unsupported embedded object relationships fail closed. Use replaceText for small exact paragraph-local edits when the surrounding paragraph should stay intact; use replaceTextWithTrackedChange instead when that small paragraph-local edit must be visible as Word redline/revision markup; use replaceParagraph only when the whole paragraph should change, and use replaceParagraphWithBlocks when one paragraph should become ordered structural blocks such as lists, figures, tables, cards, quotes, or code. Use updateHeadingLevel only with paragraph locators returned by inspect_word_document when the user asks to fix skipped heading levels or heading hierarchy accessibility warnings. Use updateTableHeaderRows only with table locators returned by inspect_word_document when the user asks to set repeated/header rows for tables or fix table-header accessibility warnings. Use updateHyperlinkText only with hyperlink locators returned by inspect_word_document when the user asks to make link text descriptive; it changes visible text only, not URL or anchor relationships. Use fillContentControl with contentControl locators returned by inspect_word_document when the user asks to fill a Word form/template field. Use addTextWatermark with the documentEnd locator to add a simple VML text watermark; use removeWatermark only with watermark locators returned by inspect_word_document. Use inspection.lists to summarize or audit existing Word numbering/list groups, list levels, and paragraph list membership; use updateList only with a list locator returned by inspect_word_document when the user asks to replace or reorganize list items. Use inspection.notes to summarize or audit existing footnotes/endnotes; use updateNoteText only with a note locator returned by inspect_word_document when the user asks to update footnote or endnote text. Use inspection.images to summarize or audit existing drawings/images, media targets, media paths, sizes, names, and alt text; use updateImageAltText only with an image locator returned by inspect_word_document when the user asks to fix or add image alt text/title, and use replaceImage with an image locator plus PNG-backed FigureSpec when the user asks to replace a local screenshot, diagram, rendered figure, or image binary. Use inspection.captions to summarize or audit existing Figure/Table captions, SEQ fields, cached numbers, and bookmarks; use updateCaptionText only with a caption locator returned by inspect_word_document when the user asks to revise caption text, and preserve SEQ fields/bookmark anchors. Use inspection.sections to summarize or audit existing page size, orientation, margins, section type, and header/footer references; use updateSectionPageSetup only with a section locator returned by inspect_word_document when the user asks to change page size, orientation, or margins. Use inspection.fields to summarize or audit existing Word fields, instructions, cached display text, and field types such as TOC, PAGE, NUMPAGES, SEQ, REF, and PAGEREF; do not call refresh_word_native_fields unless the user explicitly asks to confirm native refresh is unavailable, and only use field materialization tools for the documented REF/PAGEREF flattening or SEQ cached-number workflows. Use inspection.styles to summarize or audit the existing Word style catalog and paragraph/run style usage; do not attempt arbitrary style edits because only audit, normalize, and template-style application tools are exposed. Use replaceParagraphWithTrackedChange for whole-paragraph plain-text redlines, replaceParagraphWithRichTrackedChange for whole-paragraph redlines that must preserve rich runs such as bold, hyperlinks, REF/PAGEREF, or true footnote/endnote note runs, and replaceTextWithTrackedChange for exact paragraph-local redlines; use these only when the user asks for redlines, tracked changes, or revision-mode edits. Use updateCommentText only with a returned comment locator when the user asks to revise existing comment text; use setCommentResolved only with a returned comment locator; use removeAllComments, acceptAllTrackedChanges, rejectAllTrackedChanges, scrubDocumentMetadata, redactText, and patchOoxmlPart only with the returned documentEnd locator for final clean/shareable copies or low-level OOXML repair. For redactText, prefer exact items for known sensitive values; use built-in patterns like {kind:'email'} and {kind:'phone'} for broad PII sweeps, set includeComments only when comment text must be redacted, and disclose that image OCR and cross-run semantic matching remain out of scope. Use patchOoxmlPart only as a last-resort controlled OOXML repair when no native Word operation covers the request; the plan must name a safe XML package part, exact oldText/anchor/closeTag preconditions, expectedOccurrences, and a reason, and it must not create external relationships, macros, OLE, ActiveX, or embedded binary object references. Use chipmate_ask_user_clarification only when a bounded user answer is required before continuing the same turn; it returns as a tool result, so continue after the answer. Use chipmate_create_drawio_diagram directly only for simple illustrative draw.io diagrams or after DiagramIR is validated. Use chipmate_search_text for exact strings/macros/registers/logs; chipmate_graph_inspect_symbol for definitions; chipmate_graph_find_references for references; chipmate_graph_callers/callees for direct function edges; chipmate_graph_trace_call_chain for source-to-target call paths; chipmate_graph_analyze_impact for bounded impact; chipmate_read_evidence for returned refIds; chipmate_read only for an explicit workspace path; chipmate_read_skill_resource only for active skill references/assets/scripts/tasks resources; chipmate_run_command when an active skill or the user asks to run local workspace commands, bundled scripts, builds, tests, scans, compilers, or gate checks such as python3, cmake, gcc, make, or bun test; command execution is controlled by ChipMate permission mode and does not require a skill scripts/manifest.json; chipmate_run_skill_script only for active ChipMate helper scripts that are explicitly opted in through scripts/manifest.json (manifest-level directExecution true or helper execution.directExecution true) with an executable entrypoint, offline networkPolicy, input schema, and bounded output/artifacts; prefer native Word tools whenever the manifest maps the helper to one; create_word_document only for a complete WordDocSpec that should be rendered as .docx, including navigation/TOC intent when appropriate; chipmate_create_directory only when the user explicitly asks to create a new local workspace folder; chipmate_create_file only when the user explicitly asks to create a new local workspace text/code file from scratch; chipmate_edit_file only when the user explicitly asks to modify an existing local workspace text/code file by exact oldString/newString replacement.",
+          "Tool routing: for Mermaid-default diagram requests, use read-only evidence tools only when the content needs grounding, then answer with a fenced `mermaid` block instead of draw.io tools. When Mermaid must be embedded into a Word document or persisted as artifacts, call chipmate_render_mermaid_diagram after authoring valid Mermaid source, use scale 3 for Word figures, then place the returned PNG figure path in the matching WordDocSpec section while keeping the returned width/height as the display size. For explicit complex draw.io requests, use chipmate_graph_map_module, chipmate_graph_function_cfg, chipmate_graph_expand_flow_slice, chipmate_graph_state_flow_detail, chipmate_graph_find_state_machines/trace_state_path, chipmate_search_code, chipmate_search_documents, read_docx, and active skill resources to collect evidence; then use chipmate_validate_diagram_ir and finally chipmate_create_drawio_diagram. For controlled edits to an existing .docx, first call inspect_word_document and then call apply_word_document_edits with a DocumentEditPlan using only returned locators; supported operations are insertSection, replaceParagraph, replaceParagraphWithRichParagraph, replaceParagraphWithBlocks, replaceText, replaceParagraphWithTrackedChange, replaceParagraphWithRichTrackedChange, replaceTextWithTrackedChange, updateHeadingLevel, updateTable, updateTableWithTrackedChange, insertTableColumn, replaceTable, updateTableHeaderRows, updateList, updateSectionPageSetup, updateImageAltText, replaceImage, updateCaptionText, updateHyperlinkText, updateHyperlinkTarget, updateNoteText, paragraph addComment, updateCommentText, setCommentResolved, fillContentControl, addTextWatermark, removeWatermark, removeAllComments, acceptAllTrackedChanges, rejectAllTrackedChanges, scrubDocumentMetadata, redactText, and patchOoxmlPart. Use audit_word_document_styles when the user asks why formatting looks inconsistent or before style cleanup; use normalize_word_document_styles only when the user wants a new style-normalized copy, and pass preserveRunFormatting such as ['bold','italic','underline','color'] when the user wants intentional manual emphasis or brand coloring preserved while other direct formatting drift is removed. Use apply_word_template_styles when the user asks to apply a DOTX/template DOCX/style pack to an existing .docx; warn that pagination and styling may change, pass styleAllowlist when the user asks to import only selected template style ids, and use returned templateAudit to explain style/numbering conflicts plus copied or blocked template relationships/media. Use audit_word_document_fields when the user asks why TOC/page numbers/captions/cross-references look stale or before rendering field-heavy documents; do not use refresh_word_native_fields for TOC/PAGE/NUMPAGES because remote native field refresh is not implemented and the VSIX client does not run local LibreOffice/soffice; use flatten_word_ref_fields only when deterministic headless rendering should replace cached REF/PAGEREF display text in a new copy, and use materialize_word_seq_fields only when deterministic headless rendering should recalculate cached SEQ caption/table/figure numbers while preserving live SEQ fields. Do not use flatten_word_ref_fields or materialize_word_seq_fields to refresh TOC, PAGE, or NUMPAGES. Use compare_word_documents when the user asks to compare/diff/review changes between two local .docx files; the tool handles text diff, DOCX rendering, changed page detection, copied before/after page artifacts, skipped pixel-diff warnings until a remote pixel-diff provider exists, and evidence artifacts. Use merge_word_documents when the user asks to append or merge one local .docx into another; the model must choose base vs append order. Keep allowDrawings false for object-heavy append docs, but it can be true for local image/PNG figure append docs after warning that unsupported embedded objects remain out of scope; local image media and relationships are merged deterministically, hyperlink relationships are remapped, style/numbering conflicts are reported as base-wins, and unsupported embedded object relationships fail closed. Use replaceText for small exact paragraph-local edits when the surrounding paragraph should stay intact; use replaceTextWithTrackedChange instead when that small paragraph-local edit must be visible as Word redline/revision markup; use replaceParagraph only when the whole paragraph should change, and use replaceParagraphWithBlocks when one paragraph should become ordered structural blocks such as lists, figures, tables, cards, quotes, or code. Use updateHeadingLevel only with paragraph locators returned by inspect_word_document when the user asks to fix skipped heading levels or heading hierarchy accessibility warnings. Use insertTableColumn, not replaceTable, when adding or filling a new column in an existing table; replaceTable is only for deliberate whole-table replacement and may fail closed when it would drop inspected table content. Use updateTableHeaderRows only with table locators returned by inspect_word_document when the user asks to set repeated/header rows for tables or fix table-header accessibility warnings. Use updateHyperlinkText only with hyperlink locators returned by inspect_word_document when the user asks to make link text descriptive; it changes visible text only, not URL or anchor relationships. Use fillContentControl with contentControl locators returned by inspect_word_document when the user asks to fill a Word form/template field. Use addTextWatermark with the documentEnd locator to add a simple VML text watermark; use removeWatermark only with watermark locators returned by inspect_word_document. Use inspection.lists to summarize or audit existing Word numbering/list groups, list levels, and paragraph list membership; use updateList only with a list locator returned by inspect_word_document when the user asks to replace or reorganize list items. Use inspection.notes to summarize or audit existing footnotes/endnotes; use updateNoteText only with a note locator returned by inspect_word_document when the user asks to update footnote or endnote text. Use inspection.images to summarize or audit existing drawings/images, media targets, media paths, sizes, names, and alt text; use updateImageAltText only with an image locator returned by inspect_word_document when the user asks to fix or add image alt text/title, and use replaceImage with an image locator plus PNG-backed FigureSpec when the user asks to replace a local screenshot, diagram, rendered figure, or image binary. Use inspection.captions to summarize or audit existing Figure/Table captions, SEQ fields, cached numbers, and bookmarks; use updateCaptionText only with a caption locator returned by inspect_word_document when the user asks to revise caption text, and preserve SEQ fields/bookmark anchors. Use inspection.sections to summarize or audit existing page size, orientation, margins, section type, and header/footer references; use updateSectionPageSetup only with a section locator returned by inspect_word_document when the user asks to change page size, orientation, or margins. Use inspection.fields to summarize or audit existing Word fields, instructions, cached display text, and field types such as TOC, PAGE, NUMPAGES, SEQ, REF, and PAGEREF; do not call refresh_word_native_fields unless the user explicitly asks to confirm native refresh is unavailable, and only use field materialization tools for the documented REF/PAGEREF flattening or SEQ cached-number workflows. Use inspection.styles to summarize or audit the existing Word style catalog and paragraph/run style usage; do not attempt arbitrary style edits because only audit, normalize, and template-style application tools are exposed. Use replaceParagraphWithTrackedChange for whole-paragraph plain-text redlines, replaceParagraphWithRichTrackedChange for whole-paragraph redlines that must preserve rich runs such as bold, hyperlinks, REF/PAGEREF, or true footnote/endnote note runs, and replaceTextWithTrackedChange for exact paragraph-local redlines; use these only when the user asks for redlines, tracked changes, or revision-mode edits. Use updateCommentText only with a returned comment locator when the user asks to revise existing comment text; use setCommentResolved only with a returned comment locator; use removeAllComments, acceptAllTrackedChanges, rejectAllTrackedChanges, scrubDocumentMetadata, redactText, and patchOoxmlPart only with the returned documentEnd locator for final clean/shareable copies or low-level OOXML repair. For redactText, prefer exact items for known sensitive values; use built-in patterns like {kind:'email'} and {kind:'phone'} for broad PII sweeps, set includeComments only when comment text must be redacted, and disclose that image OCR and cross-run semantic matching remain out of scope. Use patchOoxmlPart only as a last-resort controlled OOXML repair when no native Word operation covers the request; the plan must name a safe XML package part, exact oldText/anchor/closeTag preconditions, expectedOccurrences, and a reason, and it must not create external relationships, macros, OLE, ActiveX, or embedded binary object references. Use chipmate_ask_user_clarification only when a bounded user answer is required before continuing the same turn; it returns as a tool result, so continue after the answer. Use chipmate_create_drawio_diagram directly only for simple illustrative draw.io diagrams or after DiagramIR is validated. Use chipmate_search_text for exact strings/macros/registers/logs; chipmate_graph_inspect_symbol for definitions; chipmate_graph_find_references for references; chipmate_graph_callers/callees for direct function edges; chipmate_graph_trace_call_chain for source-to-target call paths; chipmate_graph_analyze_impact for bounded impact; chipmate_read_evidence for returned refIds; chipmate_read only for an explicit workspace path; chipmate_read_skill_resource only for active skill references/assets/scripts/tasks resources; chipmate_run_command when an active skill or the user asks to run local workspace commands, bundled scripts, builds, tests, scans, compilers, or gate checks such as python3, cmake, gcc, make, or bun test; command execution is controlled by ChipMate permission mode and does not require a skill scripts/manifest.json; chipmate_run_skill_script only for active ChipMate helper scripts that are explicitly opted in through scripts/manifest.json (manifest-level directExecution true or helper execution.directExecution true) with an executable entrypoint, offline networkPolicy, input schema, and bounded output/artifacts; prefer native Word tools whenever the manifest maps the helper to one; create_word_document only for a complete WordDocSpec that should be rendered as .docx, including navigation/TOC intent when appropriate; chipmate_create_directory only when the user explicitly asks to create a new local workspace folder; chipmate_create_file only when the user explicitly asks to create a new local workspace text/code file from scratch; chipmate_edit_file only when the user explicitly asks to modify an existing local workspace text/code file by exact oldString/newString replacement.",
           "Word document workflow: when the user asks to create, edit, review, redline, comment on, compare, diff, merge, append, normalize styles, audit formatting, apply a template/style pack, audit/flatten/materialize Word fields, render, preview, visually QA, export page PNGs, check pagination/layout, or verify a Word/DOCX document, prefer the active `documents` skill when available. The model must plan the document type, audience, design preset, preset alias when useful, header pattern when useful for a new local Word document, heading ladder, section form factors, list/table/figure intent, link/reference/note intent, navigation/TOC/field intent, form/protection intent, compare/merge/style/template/render intent, and edit strategy before calling create_word_document, apply_word_document_edits, render_word_document, compare_word_documents, merge_word_documents, audit_word_document_styles, normalize_word_document_styles, apply_word_template_styles, audit_word_document_fields, flatten_word_ref_fields, or materialize_word_seq_fields. When a Word figure should come from Mermaid, call chipmate_render_mermaid_diagram with scale 3 first and insert the returned PNG path as a FigureSpec image in the intended section; do not put raw Mermaid syntax in the Word body, and keep the returned width/height as the Word display size rather than using pixelWidth/pixelHeight. If pngGenerated=false or wordFigureUsable=false, do not use Mermaid source, source summaries, or fenced code as a Word figure substitute. Do not use refresh_word_native_fields for TOC/PAGE/NUMPAGES in this build; distinguish static TOC/page text from deterministic REF/PAGEREF/SEQ materialization. Use render_word_document directly when the user wants to see or verify existing DOCX layout, page PNGs, visual QA, clipping/overflow checks, or render evidence without modifying the source document. After create_word_document, apply_word_document_edits, or render_word_document returns render evidence, complete the Word visual QA checkpoint before finalizing: inspect attached page PNGs when available, otherwise use render warnings and pageVisualSummaries only and say image-level visual QA was not completed. If the checkpoint finds material risks, use inspect_word_document -> apply_word_document_edits -> render_word_document, or regenerate with create_word_document when locator edits are not appropriate. The Word tools execute the structure, basic a11y, style lint/cleanup, template style-part application, field inventory/REF flattening/SEQ cached numbering, rendering checks through the remote render service, deterministic navigation fields, deterministic diff artifacts, and safe body-level merges; they do not decide the user's document design by themselves.",
           "Diagram skill precedence: obey the current user request first, then any active skill workflow, then ChipMate's default DiagramIR workflow. Active skills may change evidence ordering, reference artifacts, DiagramIR organization, composition.mode, VisualPlan hints, layoutHints, styleHints, semanticHints, and output captions, but they must not bypass the Design Compiler, ELKJS layout, offline rendering, XML/style sanitization, evidence gap reporting, or PNG safety checks.",
           "When the user wants multiple new files inside a new folder, create the folder with chipmate_create_directory first, then create new files under that folder with chipmate_create_file.",
@@ -4450,8 +5843,8 @@ function generatedDocumentPartsFromToolResult(input: {
   tool: string
   result: ToolRuntimeResult
 }): GeneratedDocumentExtraction {
-  if (input.tool !== "create_word_document") {
-    return { parts: [], reason: "not a create_word_document result", payloadCount: 0 }
+  if (input.tool !== "create_word_document" && input.tool !== "apply_word_document_edits") {
+    return { parts: [], reason: "not a Word document producer result", payloadCount: 0 }
   }
   if (input.result.status && input.result.status !== "completed") {
     return { parts: [], reason: `tool status ${input.result.status}`, payloadCount: 0 }
@@ -4464,7 +5857,7 @@ function generatedDocumentPartsFromToolResult(input: {
   const part = generatedDocumentPartFromPayload(input, data)
   return {
     parts: part ? [part] : [],
-    reason: part ? undefined : "create_word_document output did not contain structured data.path",
+    reason: part ? undefined : "Word producer output did not contain structured data.path",
     payloadCount: Object.keys(data).length ? 1 : 0,
   }
 }
@@ -4527,6 +5920,22 @@ function wordRenderPayloadsFromArtifacts(result: ToolRuntimeResult) {
     const payload = recordValue(artifact.payload)
     if (stringValue(payload.kind) !== "word-render") continue
     payloads.push(payload)
+  }
+  const output = parseToolOutputObject(result.output)
+  const data = recordValue(output.data)
+  const renderCheckResult = recordValue(data.renderCheckResult)
+  if (Object.keys(renderCheckResult).length && payloads.length === 0) {
+    payloads.push({
+      kind: "word-render",
+      path: stringValue(data.path),
+      absolutePath: stringValue(data.absolutePath),
+      renderCheckResult,
+      renderArtifactDir: stringValue(renderCheckResult.renderArtifactDir),
+      pdfArtifactPath: stringValue(renderCheckResult.pdfArtifactPath),
+      pagePngPaths: stringArrayValue(renderCheckResult.pagePngPaths),
+      pageVisualSummaries: Array.isArray(renderCheckResult.pageVisualSummaries) ? renderCheckResult.pageVisualSummaries : [],
+      issues: Array.isArray(renderCheckResult.issues) ? renderCheckResult.issues : [],
+    })
   }
   return payloads
 }
@@ -4669,13 +6078,24 @@ function wordVisualQaSteeringPrompt(input: {
     `Pages in this batch: ${pageList}. Remaining batches for this render: ${Math.max(0, remaining)}.`,
     visualMode,
     "Produce a concise WordVisualQaVerdict in your reasoning and then either continue with tools or finalize:",
-    "- PASS: if the Word document is acceptable. Final answer should mention the final .docx path and only material warnings.",
-    "- NEEDS_FIX: if clipping, blank pages, table overflow, missing image alt text, missing repeated headers, stale fields, bad page breaks, or other material layout/a11y risks are visible. Use inspect_word_document -> apply_word_document_edits -> render_word_document, or regenerate with create_word_document when locator edits are not appropriate.",
+    "- PASS: if the Word document is acceptable. PASS is only your Word visual QA verdict; it does not change any active goal status by itself. Final answer should mention the final .docx path and only material warnings. If this PASS satisfies the whole active goal, call update_goal with status \"complete\" instead of only saying the QA is finished.",
+    "- NEEDS_FIX: if clipping, blank pages, table overflow, low-contrast table headers, missing image alt text, missing repeated headers, stale fields, bad page breaks, or other material layout/a11y risks are visible. If warnings include table-header-low-contrast, do not PASS until the table header style is fixed or the risk is explicitly disclosed. Use inspect_word_document -> apply_word_document_edits -> render_word_document, or regenerate with create_word_document when locator edits are not appropriate.",
     "- BLOCKED: if render dependencies failed or evidence is insufficient. State exactly which visual QA was not completed.",
     "If more Word visual QA batches are requested after this response, review those pages before giving the final document-level visual pass.",
     "Do not expose all intermediate PNG/PDF artifacts unless the user explicitly asks; use them as QA evidence.",
     "Latest Word render evidence:",
     wordVisualQaArtifactSummary(input.batch.artifact, 1, input.batch.pages),
+  ].join("\n")
+}
+
+function goalFinalizationCheckpointPrompt() {
+  return [
+    "Goal finalization checkpoint.",
+    "You are continuing an active ChipMate thread goal, and your previous draft in this turn did not call update_goal, so the goal is still active.",
+    "Decide for yourself based on the current evidence; the runtime will not infer completion from PASS, done, delivered, or other wording.",
+    "If the full user objective is actually complete, call update_goal with status \"complete\" now.",
+    "If the full objective is not complete or not fully verified, do not claim final completion. Continue with tools when useful, or state the next concrete progress while leaving the goal active.",
+    "Do not call update_goal unless the active goal is actually complete.",
   ].join("\n")
 }
 
@@ -4781,7 +6201,7 @@ function isMermaidRelevantToolResult(tool: string, result: ToolRuntimeResult, ex
 }
 
 function isGeneratedDocumentRelevantToolResult(tool: string, extraction: GeneratedDocumentExtraction) {
-  return tool === "create_word_document" || extraction.parts.length > 0
+  return tool === "create_word_document" || tool === "apply_word_document_edits" || extraction.parts.length > 0
 }
 
 function isWordRenderRelevantToolResult(tool: string, result: ToolRuntimeResult, extraction: WordRenderExtraction) {
@@ -4791,7 +6211,33 @@ function isWordRenderRelevantToolResult(tool: string, result: ToolRuntimeResult,
 }
 
 function toolResultLogLine(tool: string, result: ToolRuntimeResult, status: string) {
-  return `[tool] ${tool} status=${status} approved=${result.approved} outputBytes=${textByteLength(result.output)} artifacts=${toolArtifactSummary(result)}`
+  const failure = status === "failed" ? ` ${toolFailureLogSummary(result)}` : ""
+  return `[tool] ${tool} status=${status} approved=${result.approved} outputBytes=${textByteLength(result.output)} artifacts=${toolArtifactSummary(result)}${failure}`
+}
+
+function toolFailureLogSummary(result: ToolRuntimeResult) {
+  const output = parseToolOutputObject(result.output)
+  const data = recordValue(output.data)
+  const errorCode = stringValue(data.errorCode) || stringValue(output.errorCode)
+  const normalizationErrors = stringArrayValue(data.normalizationErrors)
+    .map((item) => truncateString(compactSummaryText(item), 220)).filter(Boolean).slice(0, 5)
+  const validationErrors = [
+    ...stringArrayValue(data.validationErrors),
+    ...stringArrayValue(output.gaps),
+  ].map((item) => truncateString(compactSummaryText(item), 220)).filter(Boolean).slice(0, 5)
+  const errorMessage = truncateString(compactSummaryText(
+    stringValue(data.errorMessage) ||
+    stringValue(output.answerSummary) ||
+    stringValue(result.error),
+  ), 500)
+  const outputPreview = truncateString(compactSummaryText(result.output), 500)
+  return [
+    `errorCode=${errorCode || "none"}`,
+    errorMessage ? `error=${errorMessage}` : "",
+    normalizationErrors.length ? `normalizationErrors=${normalizationErrors.join(" | ")}` : "",
+    validationErrors.length ? `validationErrors=${validationErrors.join(" | ")}` : "",
+    outputPreview ? `outputPreview=${outputPreview}` : "",
+  ].filter(Boolean).join(" ")
 }
 
 function toolArtifactSummary(result: ToolRuntimeResult) {
@@ -5138,6 +6584,18 @@ function isStreamUsageUnsupportedResponse(status: number, body: string) {
   if (status !== 400 && status !== 422) return false
   return /\b(?:stream_options|include_usage)\b/i.test(body) &&
     /\b(?:unsupported|unknown|invalid|not support|extra fields?|unrecognized|forbidden)\b/i.test(body)
+}
+
+function isCompactSummaryContextOverflowError(error: unknown) {
+  const status = error instanceof ChatCompletionHttpError ? error.status : undefined
+  if (status !== undefined && status !== 400 && status !== 413 && status !== 422) return false
+  const message = formatErrorMessage(error)
+  const body = error instanceof ChatCompletionHttpError ? error.bodyPreview : ""
+  const text = `${message}\n${body}`.toLowerCase()
+  const hasWindowSignal = /\b(?:context(?:[_ -]?length| window)?|tokens?|input|prompt|messages?)\b/.test(text)
+  const hasOverflowSignal = /\b(?:exceed(?:ed|s)?|too long|maximum|max(?:imum)? context|over(?:flow| limit)|length limit|token limit|reduce (?:the )?(?:input|prompt|messages?))\b/.test(text) ||
+    /context[_ -]?length[_ -]?exceeded/.test(text)
+  return hasWindowSignal && hasOverflowSignal
 }
 
 function chatCompletionHttpError(response: Response, body: string) {
@@ -5498,9 +6956,21 @@ function parseDelta(data: string) {
     usage?: ChipMateTokenUsage
     finishReason?: string
     error?: string
+    diagnostics: {
+      hasContent: boolean
+      reasoning: string
+      choiceKeys: string[]
+      deltaKeys: string[]
+    }
   } = {
     content: "",
     toolCalls: [],
+    diagnostics: {
+      hasContent: false,
+      reasoning: "",
+      choiceKeys: [],
+      deltaKeys: [],
+    },
   }
   try {
     const body = JSON.parse(data) as {
@@ -5517,9 +6987,16 @@ function parseDelta(data: string) {
     }
     result.usage = normalizeProviderTokenUsage((body as { usage?: unknown }).usage)
     const choice = body.choices?.[0]
+    result.diagnostics.choiceKeys = objectKeysForStreamDiagnostics(choice)
     if (typeof choice?.finish_reason === "string" && choice.finish_reason) result.finishReason = choice.finish_reason
     const delta = choice?.delta ?? {}
-    if (typeof delta.content === "string") result.content = delta.content
+    result.diagnostics.deltaKeys = objectKeysForStreamDiagnostics(delta)
+    if (Object.prototype.hasOwnProperty.call(delta, "content") && typeof delta.content === "string") {
+      result.diagnostics.hasContent = true
+      result.content = delta.content
+    }
+    result.diagnostics.reasoning = stringValue((delta as { reasoning_content?: unknown }).reasoning_content) ||
+      stringValue((delta as { reasoning?: unknown }).reasoning)
     const toolCalls = Array.isArray(delta.tool_calls) ? delta.tool_calls : []
     for (const rawCall of toolCalls) {
       if (!rawCall || typeof rawCall !== "object") continue
@@ -5536,6 +7013,17 @@ function parseDelta(data: string) {
     throw new Error(`Malformed chat completion stream chunk: ${formatErrorMessage(error)}`)
   }
   return result
+}
+
+function objectKeysForStreamDiagnostics(input: unknown) {
+  if (!input || typeof input !== "object" || Array.isArray(input)) return []
+  return Object.keys(input as Record<string, unknown>).sort()
+}
+
+function streamKeySummary(keys: Set<string>) {
+  const values = [...keys].filter(Boolean).sort()
+  if (values.length === 0) return "none"
+  return values.slice(0, 16).join(",")
 }
 
 function appendStreamToolArguments(call: ChatToolCall, chunk: string, exposedToolNames: Set<string>) {
@@ -5664,6 +7152,10 @@ function streamPreview(input: string) {
 
 function formatErrorMessage(error: unknown) {
   return error instanceof Error ? error.message : String(error)
+}
+
+function logOneLine(input: string) {
+  return truncateString(input.replace(/\s+/g, " ").trim(), 600)
 }
 
 function quoteLogValue(value: string, maxLength = 240) {

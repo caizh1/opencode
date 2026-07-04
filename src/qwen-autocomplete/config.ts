@@ -29,6 +29,10 @@ function provider(value: unknown): QwenAutocompleteProvider {
   return "none"
 }
 
+function providerMode(value: unknown): "inherit-chat" | "custom" {
+  return value === "custom" ? "custom" : "inherit-chat"
+}
+
 function profile(value: unknown, providerValue: QwenAutocompleteProvider): QwenAutocompleteProfile {
   if (providerValue === "qwen-direct") return "qwen-coder-fim"
   if (value === "deepseek-fim") return value
@@ -44,13 +48,15 @@ export function readQwenAutocompleteConfig(): QwenAutocompleteConfig {
   const cfg = vscode.workspace.getConfiguration(QWEN_CONFIG_SECTION)
   const providerBaseUrl = str(cfg.get("provider.apiBaseUrl"), "").trim()
   const completionBaseUrl = str(cfg.get("completion.apiBaseUrl"), "").trim()
+  const completionProviderMode = providerMode(cfg.get("completion.providerMode", "inherit-chat"))
   const providerValue = provider(cfg.get("completion.provider", "qwen-direct"))
   const profileValue = profile(cfg.get("completion.profile", "qwen-coder-fim"), providerValue)
+  const baseUrl = completionProviderMode === "custom" ? completionBaseUrl || providerBaseUrl : providerBaseUrl
   return {
     enabled: bool(cfg.get("completion.enabled"), true),
     provider: providerValue,
     profile: profileValue,
-    endpoint: completionsUrl(completionBaseUrl || providerBaseUrl, profileValue),
+    endpoint: completionsUrl(baseUrl, profileValue),
     model: str(cfg.get("completion.model"), DEFAULT_COMPLETION_MODEL).trim() || DEFAULT_COMPLETION_MODEL,
     apiKey: "",
     debounceMs: num(cfg.get("completion.debounceMs"), 350, 0, 5_000),

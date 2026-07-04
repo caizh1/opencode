@@ -4,6 +4,7 @@ import { join } from "node:path"
 
 describe("file mention flow", () => {
   const chatViewSource = readFileSync(join(import.meta.dir, "..", "src", "chat-view.ts"), "utf8")
+  const chatHtmlSource = readFileSync(join(import.meta.dir, "..", "src", "chat-html.ts"), "utf8")
   const contextSource = readFileSync(join(import.meta.dir, "..", "src", "context.ts"), "utf8")
 
   test("searches workspace files through an indexed mention flow", () => {
@@ -28,8 +29,8 @@ describe("file mention flow", () => {
 
   test("sends mentioned files into local context packing", () => {
     expect(chatViewSource).toContain("resolveExistingMentionedFiles")
-    expect(chatViewSource).toContain("mentionedFiles,")
-    expect(chatViewSource).toContain("mentionedContext: this.mentionedContextFromRefs(mentionedFileRefs)")
+    expect(chatViewSource).toContain("mentionedFiles: mentioned.uris")
+    expect(chatViewSource).toContain("mentionedContext: this.mentionedContextFromRefs(mentioned.refs)")
     expect(chatViewSource).toContain("buildChatPromptWithEvidence({")
     expect(chatViewSource).toContain("evidenceLedger: promptResult.evidenceLedgerInput")
     expect(chatViewSource).toContain("historyText: pluginHistoryUserText(trimmed || \"Please review the referenced files.\")")
@@ -85,5 +86,27 @@ describe("file mention flow", () => {
     expect(chatViewSource).toContain("contextItems: this.deps.contextStore.viewItems()")
     expect(contextSource).toContain("LocalContextViewItem")
     expect(contextSource).toContain("selectionDetailPreview")
+  })
+
+  test("suggests enabled skills from the composer dollar trigger without changing skill settings", () => {
+    expect(chatHtmlSource).toContain("currentComposerTrigger")
+    expect(chatHtmlSource).toContain('marker === "$" ? "skill" : "file"')
+    expect(chatHtmlSource).toContain('if (trigger.type === "skill")')
+    expect(chatHtmlSource).toContain("mentionResults = skillMentionResults(trigger.query)")
+    expect(chatHtmlSource).toContain("enabledSkillSuggestions")
+    expect(chatHtmlSource).toContain("skill.enabled && !skill.invalid && skill.userInvocable !== false")
+    expect(chatHtmlSource).toContain('kind: "skill"')
+    expect(chatHtmlSource).toContain('input.value.slice(0, mention.start) + "$" + insertText + " "')
+    expect(chatHtmlSource).not.toContain('vscode.postMessage({ type: "saveSkillsSettings", enabled: mentionResults')
+  })
+
+  test("keeps file mention search on the backend and renders suggestions with Liquid icons", () => {
+    expect(chatHtmlSource).toContain('vscode.postMessage({ type: "searchFilesForMention", query: trigger.query, requestId });')
+    expect(chatHtmlSource).toContain('suggestionMode = "file"')
+    expect(chatHtmlSource).toContain('suggestionMode = "skill"')
+    expect(chatHtmlSource).toContain('row.textContent = mode === "skill" ? skillSuggestionEmptyText() : "No files found."')
+    expect(chatHtmlSource).toContain("appendLiquidIcon(icon, suggestionIconName(item))")
+    expect(chatHtmlSource).toContain('if (item && item.kind === "skill") return "skillBlocks"')
+    expect(chatHtmlSource).not.toContain('icon.textContent = file.type === "folder" ? "dir" : "file"')
   })
 })

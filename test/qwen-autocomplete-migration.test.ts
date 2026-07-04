@@ -79,6 +79,10 @@ class UriShim {
   }
 }
 
+class RelativePatternShim {
+  constructor(readonly base: unknown, readonly pattern: string) {}
+}
+
 const workspaceMock = {
   workspaceFolders: [{ uri: UriShim.file("/repo") }],
   textDocuments: [],
@@ -131,7 +135,18 @@ mock.module("vscode", () => ({
   ConfigurationTarget: {
     Global: "global",
   },
+  FileType: {
+    File: 1,
+    Directory: 2,
+  },
+  DiagnosticSeverity: {
+    Error: 0,
+    Warning: 1,
+    Information: 2,
+    Hint: 3,
+  },
   Uri: UriShim,
+  RelativePattern: RelativePatternShim,
   workspace: workspaceMock,
   window: {
     activeTextEditor: undefined,
@@ -410,6 +425,7 @@ describe("ChipMate qwen autocomplete configuration", () => {
     setConfig({
       "chipmate.completion.enabled": true,
       "chipmate.completion.provider": "fim-direct",
+      "chipmate.completion.providerMode": "custom",
       "chipmate.completion.profile": "deepseek-fim",
       "chipmate.completion.apiBaseUrl": "https://api.deepseek.com",
       "chipmate.provider.apiBaseUrl": "https://chip.example.test/v1",
@@ -428,6 +444,23 @@ describe("ChipMate qwen autocomplete configuration", () => {
       topP: 0.9,
     })
     expect(qwenAutocompleteEnabled(cfg)).toBe(true)
+  })
+
+  test("ignores completion base URL until completion provider mode is custom", () => {
+    setConfig({
+      "chipmate.completion.provider": "qwen-direct",
+      "chipmate.provider.apiBaseUrl": "https://chat.example.test/v1",
+      "chipmate.completion.apiBaseUrl": "https://completion.example.test/v1",
+    })
+    expect(readQwenAutocompleteConfig().endpoint).toBe("https://chat.example.test/v1/completions")
+
+    setConfig({
+      "chipmate.completion.provider": "qwen-direct",
+      "chipmate.completion.providerMode": "custom",
+      "chipmate.provider.apiBaseUrl": "https://chat.example.test/v1",
+      "chipmate.completion.apiBaseUrl": "https://completion.example.test/v1",
+    })
+    expect(readQwenAutocompleteConfig().endpoint).toBe("https://completion.example.test/v1/completions")
   })
 
   test("maps DeepSeek official and proxy completion endpoints conservatively", () => {

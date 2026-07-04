@@ -43,6 +43,9 @@ const REL_TYPES = {
   footer: "http://schemas.openxmlformats.org/officeDocument/2006/relationships/footer",
   numbering: "http://schemas.openxmlformats.org/officeDocument/2006/relationships/numbering",
 }
+const MIN_TABLE_HEADER_CONTRAST = 4.5
+const DEFAULT_TEXT_COLOR = "000000"
+const DEFAULT_PAGE_FILL = "FFFFFF"
 
 export class DocxRenderQualityGate {
   async check(bytes: Uint8Array): Promise<QualityIssue[]> {
@@ -87,6 +90,7 @@ export class DocxRenderQualityGate {
     if (stylesXml && !/w:styleId="Heading3"[\s\S]*w:name w:val="heading 3"/.test(stylesXml)) issues.push(error("missing-heading3-style", "Generated DOCX is missing Heading 3 style."))
     if (documentXml && !documentXml.includes("<w:tbl>")) issues.push(warning("missing-tables", "Generated DOCX does not contain tables."))
     if (documentXml) issues.push(...checkTableGeometry(documentXml))
+    if (documentXml) issues.push(...checkTableHeaderContrast(documentXml, stylesXml))
     if (documentXml) issues.push(...checkAccessibility(documentXml))
     if (documentXml) issues.push(...checkDocumentXmlOrdering(documentXml))
     if (stylesXml) issues.push(...checkStylesXmlOrdering(stylesXml))
@@ -402,6 +406,127 @@ function tableCellTexts(tableXml: string) {
   return (tableXml.match(/<w:tc\b[\s\S]*?<\/w:tc>/g) ?? [])
     .map((cell) => xmlTextFrom(cell).replace(/\s+/g, " ").trim())
     .filter(Boolean)
+}
+
+function checkTableHeaderContrast(documentXml: string, stylesXml?: string) {
+  const issues: QualityIssue[] = []
+  const styleTextColors = stylesXml ? paragraphStyleTextColors(stylesXml) : new Map<string, string>()
+  const tables = documentXml.match(/<w:tbl>[\s\S]*?<\/w:tbl>/g) ?? []
+  tables.forEach((table, tableIndex) => {
+    const rows = table.match(/<w:tr\b[\s\S]*?<\/w:tr>/g) ?? []
+    const explicitHeaderRows = rows.filter((row) => /<w:tblHeader\b/.test(row))
+    const fallbackHeaderRows = explicitHeaderRows.length ? [] : firstRowLooksLikeTableHeader(rows[0]) ? rows.slice(0, 1) : []
+    const headerRows = explicitHeaderRows.length ? explicitHeaderRows : fallbackHeaderRows
+    headerRows.forEach((row, headerRowIndex) => {
+      const cells = row.match(/<w:tc\b[\s\S]*?<\/w:tc>/g) ?? []
+      cells.forEach((cell, cellIndex) => {
+        if (!xmlTextFrom(cell).trim()) return
+        const colors = tableHeaderCellColors(cell, styleTextColors)
+        const location = `table ${tableIndex + 1} header row ${headerRowIndex + 1} cell ${cellIndex + 1}`
+        if (!colors.fill) {
+          issues.push(warning("table-header-fill-missing", `Generated DOCX ${location} has no explicit table header fill; use a visible header fill instead of relying on the white page background.`))
+          return
+        }
+        if (isNearWhite(colors.fill)) {
+          issues.push(warning("table-header-fill-too-light", `Generated DOCX ${location} uses near-white header fill #${colors.fill}; use a more visible table header background.`))
+        }
+        const ratio = contrastRatio(colors.fill, colors.textColor)
+        if (ratio < MIN_TABLE_HEADER_CONTRAST) {
+          issues.push(error("table-header-low-contrast", `Generated DOCX ${location} has low table header contrast: fill #${colors.fill}, text #${colors.textColor}, contrast ${ratio.toFixed(2)}:1.`))
+        }
+      })
+    })
+  })
+  return issues
+}
+
+function firstRowLooksLikeTableHeader(rowXml: string | undefined) {
+  if (!rowXml) return false
+  const cells = rowXml.match(/<w:tc\b[\s\S]*?<\/w:tc>/g) ?? []
+  const filledCells = cells
+    .filter((cell) => xmlTextFrom(cell).trim())
+    .map((cell) => tableCellFill(cell))
+    .filter((fill): fill is string => Boolean(fill))
+  return filledCells.length >= 2 && filledCells.every((fill) => fill === filledCells[0])
+}
+
+function tableHeaderCellColors(cellXml: string, styleTextColors: Map<string, string>) {
+  const cellProperties = cellXml.match(/<w:tcPr\b[\s\S]*?<\/w:tcPr>/)?.[0] ?? ""
+  const fill = tableCellFillFromProperties(cellProperties)
+  const styleColor = paragraphStyleIds(cellXml)
+    .map((styleId) => styleTextColors.get(styleId))
+    .find((value): value is string => Boolean(value))
+  const colorTags = cellXml.match(/<w:color\b[^>]*\/?>/g) ?? []
+  const textColor = colorTags
+    .map((tag) => normalizeHexColor(parseXmlAttributes(tag)["w:val"] ?? parseXmlAttributes(tag).val))
+    .find((value): value is string => Boolean(value))
+    ?? styleColor
+    ?? DEFAULT_TEXT_COLOR
+  return { fill, textColor }
+}
+
+function tableCellFill(cellXml: string) {
+  return tableCellFillFromProperties(cellXml.match(/<w:tcPr\b[\s\S]*?<\/w:tcPr>/)?.[0] ?? "")
+}
+
+function tableCellFillFromProperties(cellProperties: string) {
+  const shdTag = cellProperties.match(/<w:shd\b[^>]*\/?>/)?.[0]
+  const shdAttrs = parseXmlAttributes(shdTag ?? "")
+  return normalizeHexColor(shdAttrs["w:fill"] ?? shdAttrs.fill)
+}
+
+function paragraphStyleTextColors(stylesXml: string) {
+  const colors = new Map<string, string>()
+  for (const style of stylesXml.match(/<w:style\b[\s\S]*?<\/w:style>/g) ?? []) {
+    const attrs = parseXmlAttributes(style.match(/<w:style\b[^>]*>/)?.[0] ?? "")
+    const styleId = attrs["w:styleId"] ?? attrs.styleId
+    if (!styleId) continue
+    const color = normalizeHexColor(parseXmlAttributes(style.match(/<w:color\b[^>]*\/?>/)?.[0] ?? "")["w:val"])
+    if (color) colors.set(styleId, color)
+  }
+  return colors
+}
+
+function paragraphStyleIds(xml: string) {
+  return [...xml.matchAll(/<w:pStyle\b[^>]*\/?>/g)]
+    .map((match) => parseXmlAttributes(match[0])["w:val"])
+    .filter((value): value is string => Boolean(value))
+}
+
+function normalizeHexColor(value: string | undefined) {
+  const raw = value?.trim().replace(/^#/, "")
+  if (!raw || /^auto$/i.test(raw)) return undefined
+  if (/^[\da-fA-F]{3}$/.test(raw)) return raw.split("").map((char) => `${char}${char}`).join("").toUpperCase()
+  if (/^[\da-fA-F]{6}$/.test(raw)) return raw.toUpperCase()
+  return undefined
+}
+
+function contrastRatio(left: string, right: string) {
+  const leftLuminance = relativeLuminance(left)
+  const rightLuminance = relativeLuminance(right)
+  const lighter = Math.max(leftLuminance, rightLuminance)
+  const darker = Math.min(leftLuminance, rightLuminance)
+  return (lighter + 0.05) / (darker + 0.05)
+}
+
+function relativeLuminance(hex: string) {
+  const red = Number.parseInt(hex.slice(0, 2), 16)
+  const green = Number.parseInt(hex.slice(2, 4), 16)
+  const blue = Number.parseInt(hex.slice(4, 6), 16)
+  return 0.2126 * linearRgb(red) + 0.7152 * linearRgb(green) + 0.0722 * linearRgb(blue)
+}
+
+function linearRgb(component: number) {
+  const channel = component / 255
+  return channel <= 0.03928 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4
+}
+
+function isNearWhite(hex: string | undefined) {
+  const color = normalizeHexColor(hex) ?? DEFAULT_PAGE_FILL
+  const red = Number.parseInt(color.slice(0, 2), 16)
+  const green = Number.parseInt(color.slice(2, 4), 16)
+  const blue = Number.parseInt(color.slice(4, 6), 16)
+  return red >= 246 && green >= 246 && blue >= 246
 }
 
 function checkAccessibility(documentXml: string) {

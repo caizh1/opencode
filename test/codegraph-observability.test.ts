@@ -188,6 +188,32 @@ describe("code graph query observability", () => {
     expect(serviceSource).toContain("resumeScheduledAt")
   })
 
+  test("lets manual RAG resume refresh status or continue provider-error indexes", () => {
+    const resumeStart = serviceSource.indexOf("resumeRagIndexing()")
+    const resumeEnd = serviceSource.indexOf("async benchmarkSyntheticRepository", resumeStart)
+    const resumeBody = serviceSource.slice(resumeStart, resumeEnd)
+    expect(resumeBody).toContain("this.resumeRagIndexFromStatus(\"manual-resume\")")
+    expect(resumeBody).not.toContain("this.scheduleRagIndexResumeFromStatus(\"manual-resume\")")
+
+    const manualStart = serviceSource.indexOf("private async resumeRagIndexFromStatus")
+    const manualEnd = serviceSource.indexOf("private ragResumeDelayMs", manualStart)
+    const manualBody = serviceSource.slice(manualStart, manualEnd)
+    expect(manualBody).toContain("pending > 0")
+    expect(manualBody).toContain("index.state !== \"stale\"")
+    expect(manualBody).toContain("await this.refreshRagIndex(undefined, { reason: trigger, continuePreviousElapsed: true })")
+    expect(manualBody).toContain("await this.probeRagConfiguration()")
+    expect(manualBody).toContain("manual resume refreshed RAG status")
+  })
+
+  test("does not surface stale last errors for ready RAG indexes", () => {
+    const statusStart = serviceSource.indexOf("private ragStatusForIndex")
+    const statusEnd = serviceSource.indexOf("private ragStatusForIndexing", statusStart)
+    const statusBody = serviceSource.slice(statusStart, statusEnd)
+    expect(statusBody).toContain("const activeIndexError = index.state === \"stale\" || pendingChunkCount > 0")
+    expect(statusBody).toContain("activeIndexError && index.indexPausedReason")
+    expect(statusBody).toContain("lastError: activeIndexError ? index.lastError : undefined")
+  })
+
   test("schedules lightweight embedding probe retries for completed RAG indexes", () => {
     const retryStart = serviceSource.indexOf("private async runRagEmbeddingProbeRetry")
     const retryEnd = serviceSource.indexOf("private currentRerankProbeStatus", retryStart)

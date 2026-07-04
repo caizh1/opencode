@@ -28,6 +28,9 @@ import {
 import type { CodeGraphContextProvider } from "./codegraph-types"
 import type { CodeIntelligenceSnapshot } from "./analysis-types"
 import { CompletionModelClient, completionApiBaseUrl, completionModel } from "./completion-model-client"
+import { buildContextSummarySnapshot, type ContextSummarySection, type ContextSummarySnapshot } from "./context-summary"
+import type { ContextCompactionEventRecord } from "./context-compaction"
+import { resolveChatContextWindow, type ChatContextWindowResolution } from "./context-window"
 import { isInlineCompletionMessage, isInlineCompletionSession } from "./completion-session"
 import { CHIPMATE_CHAT_VIEW_ID, CHIPMATE_COMMANDS, CHIPMATE_VIEW_CONTAINER_ID } from "./chipmate-constants"
 import {
@@ -39,6 +42,8 @@ import {
   LocalContextStore,
   MissingLocalContextError,
   relativePath,
+  type UnderstandingPlannerAudit,
+  type UnderstandingPlannerFollowupContext,
 } from "./context"
 import type { DocumentRagContextProvider } from "./document-rag"
 import type {
@@ -57,6 +62,7 @@ import type { SkillMetadata } from "./skills"
 import { importSkills, type SkillImportResult } from "./skill-importer"
 import { splitThinkingFromParts } from "./thinking"
 import { summarizeSessionUsage, usageFromMessageInfo } from "./usage"
+import { UnderstandingPlanner } from "./understanding-planner"
 import type {
   ChatContextOptions,
   ConnectionState,
@@ -81,7 +87,7 @@ import type {
 	  ThreadGoalOperation,
 	} from "./types"
 
-import { connectionInputHasPassword, ragSettingsInputChangesEmbeddingIdentity, ragSettingsInputMatchesCurrent, saveCompletionSettings, savePermissionMode, saveRagSettings, saveSkillsSettings, saveToolsEnabled, type CompletionSettingsInput, type ConnectionSettingsInput, type RagSettingsInput } from "./settings"
+import { classifyRagSettingsInputChange, connectionInputHasPassword, readEffectiveCompletionApiKey, saveCompletionSettings, savePermissionMode, saveRagSettings, saveSkillsSettings, saveToolsEnabled, type CompletionSettingsInput, type ConnectionSettingsInput, type RagSettingsChangeKind, type RagSettingsInput } from "./settings"
 
 const HISTORY_TOOLBAR_ICON_FILES: Record<HistoryToolbarIconName, string> = {
   enterSelection: "history-enter-selection.svg",
@@ -115,7 +121,7 @@ const MENTION_INDEX_LIMIT = 20000
 const MENTION_INDEX_EXCLUDE_GLOB = "{**/node_modules/**,**/.git/**,**/dist/**,**/out/**,**/.vscode-test/**}"
 
 type EventStreamPath = "/event" | "/global/event"
-type RagRebuildConfirmationReason = "ready" | "incomplete" | "embedding-change"
+type RagSaveConfirmationKind = Extract<RagSettingsChangeKind, "identity" | "scheduler">
 
 type MentionedFileRef = {
   uri: string
@@ -208,6 +214,7 @@ type ChatViewMessage =
   | { type: "resumeGoal" }
   | { type: "clearGoal" }
   | { type: "refreshModels" }
+  | { type: "refreshCompletionModels"; settings: CompletionSettingsInput }
   | { type: "selectModel"; model: string }
   | { type: "searchFilesForMention"; query?: string; requestId?: number }
   | { type: "indexCodeGraph" }
@@ -218,6 +225,7 @@ type ChatViewMessage =
   | { type: "pauseRagIndexing" }
   | { type: "resumeRagIndexing" }
   | { type: "cancelRagIndexing" }
+  | { type: "forceRebuildCodeRag" }
   | { type: "pauseDocumentRagIndexing" }
   | { type: "resumeDocumentRagIndexing" }
   | { type: "rebuildDocumentRag" }
@@ -418,6 +426,7 @@ type QueuedChatSend = {
 
 type RemoteChatViewProviderDeps = {
   output: vscode.OutputChannel
+  context: vscode.ExtensionContext
   extensionUri: vscode.Uri
   contextStore: LocalContextStore
   codeGraph?: CodeGraphContextProvider
@@ -451,14 +460,19 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
   private messages: RenderedMessage[] = []
   private remoteMessages: ChipMateMessage[] = []
   private readonly remoteMessagesBySession = new Map<string, ChipMateMessage[]>()
+  private readonly contextCompactionBySession = new Map<string, ContextCompactionEventRecord>()
   private connectionState: ConnectionState = "disconnected"
   private connectionDetail = "Ready. Configure an OpenAI-compatible provider to start."
   private loadingMessages = false
   private loadingModels = false
+  private loadingCompletionModels = false
   private loadingAgents = false
   private models: ChipMateModelInfo[] = []
+  private completionModels: ChipMateModelInfo[] = []
+  private completionModelsLoaded = false
   private agents: ChipMateAgentInfo[] = []
   private modelError = ""
+  private completionModelError = ""
   private agentError = ""
   private historyError = ""
   private codeGraphWaitDetail = ""
@@ -472,6 +486,7 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
   private skillsError = ""
   private loadingSkills = false
   private lastContextSummary: ContextSummaryItem[] = []
+  private lastUnderstandingPlannerAudit?: UnderstandingPlannerAudit
   private readonly flaggedSessions = new Set<string>()
   private readonly hiddenCompletionSessions = new Set<string>()
   private readonly hiddenExternalSessions = new Set<string>()
@@ -948,10 +963,12 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
   private clearRemoteMessagesForSession(sessionID?: string) {
     if (!sessionID) {
       this.remoteMessagesBySession.clear()
+      this.contextCompactionBySession.clear()
       this.remoteMessages = []
       return
     }
     this.remoteMessagesBySession.delete(sessionID)
+    this.contextCompactionBySession.delete(sessionID)
     if (this.sessionID === sessionID) this.remoteMessages = []
   }
 
@@ -1867,6 +1884,9 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
         case "refreshModels":
           await this.refreshModels()
           break
+        case "refreshCompletionModels":
+          await this.refreshCompletionModels(message.settings)
+          break
         case "selectModel":
           await this.selectModel(message.model)
           break
@@ -1902,6 +1922,9 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
         case "cancelRagIndexing":
           this.deps.codeGraph?.cancelRagIndexing("requested from RAG UI")
           this.postState()
+          break
+        case "forceRebuildCodeRag":
+          await this.forceRebuildCodeRag()
           break
         case "pauseDocumentRagIndexing":
           this.deps.documentRag?.pauseIndexing("requested from Document RAG UI")
@@ -2206,7 +2229,7 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
 
   private async saveCompletionSettings(input: CompletionSettingsInput) {
     try {
-      await saveCompletionSettings(input)
+      await saveCompletionSettings(input, this.deps.context)
       this.postState()
       this.postCompletionStatus("Inline completion settings saved.", "success")
     } catch (error) {
@@ -2218,7 +2241,7 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   private async testCompletionApi(input: CompletionSettingsInput) {
-    await saveCompletionSettings(input)
+    await saveCompletionSettings(input, this.deps.context)
     const settings = this.deps.getSettings()
     const model = completionModel(settings)
     if (!completionApiBaseUrl(settings) || !model) {
@@ -2259,48 +2282,38 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
   private async saveRagSettings(input: RagSettingsInput) {
     try {
       const currentRagSettings = this.deps.getSettings().rag
-      const unchanged = ragSettingsInputMatchesCurrent(input, currentRagSettings)
-      const embeddingIdentityChanged = ragSettingsInputChangesEmbeddingIdentity(input, currentRagSettings)
-      const contentPolicyChanged = Boolean(input.indexTests) !== currentRagSettings.indexTests
-      const existingIndexReason = ragExistingIndexConfirmationReason(this.deps.codeGraph?.status().rag)
-      let forceRebuild = false
-      let preserveExistingIndex = false
-      if (contentPolicyChanged) {
-        forceRebuild = true
-      } else if (existingIndexReason) {
-        forceRebuild = await this.confirmForceRagRebuild(embeddingIdentityChanged ? "embedding-change" : existingIndexReason)
-        if (!forceRebuild && embeddingIdentityChanged) {
+      const changeKind = classifyRagSettingsInputChange(input, currentRagSettings)
+      if (changeKind === "identity" || changeKind === "scheduler") {
+        const confirmed = await this.confirmRagSettingsSave(changeKind)
+        if (!confirmed) {
           this.postState()
-          this.postRagStatus("RAG settings not saved. Existing local RAG index kept.", "success")
+          this.postRagStatus("RAG settings not saved. Current indexing state was not changed.", "success")
           return
         }
-        preserveExistingIndex = !forceRebuild
       }
-      if (!unchanged) {
+      if (changeKind !== "unchanged") {
         this.deps.suppressNextRagConfigurationApply?.()
         await saveRagSettings(input)
       }
-      const result = await this.deps.codeGraph?.applyRagConfiguration(
-        forceRebuild
-          ? { forceRebuild: true }
-          : preserveExistingIndex
-            ? { preserveExistingIndex: true }
-            : undefined,
-      )
+      const result = await this.deps.codeGraph?.applyRagConfiguration(ragApplyOptionsForSettingsChange(changeKind))
       this.postState()
       if (!result) {
-        this.postRagStatus(unchanged ? "RAG settings unchanged." : "RAG settings saved.", "success")
+        this.postRagStatus(changeKind === "unchanged" ? "RAG settings unchanged." : "RAG settings saved.", "success")
         return
       }
-      if (forceRebuild) {
-        this.postRagStatus(ragApplyResultMessage(result, "RAG force rebuild requested."), "success")
+      if (changeKind === "identity") {
+        this.postRagStatus(ragApplyResultMessage(result, "RAG settings saved. Code RAG force rebuild requested from 0."), "success")
         return
       }
-      if (preserveExistingIndex) {
-        this.postRagStatus(`${unchanged ? "RAG settings unchanged." : "RAG settings saved."} Existing local RAG index kept. ${ragStatusMessage(result.status, "RAG status refreshed.")}`, "success")
+      if (changeKind === "scheduler") {
+        this.postRagStatus(`RAG settings saved. Existing Code RAG progress kept; indexing will continue with the new batch settings. ${ragStatusMessage(result.status, "RAG status refreshed.")}`, "success")
         return
       }
-      this.postRagStatus(ragApplyResultMessage(result, unchanged ? "RAG settings unchanged." : "RAG settings saved."), "success")
+      if (changeKind === "policy") {
+        this.postRagStatus(`RAG settings saved. RAG host policy refreshed. ${ragStatusMessage(result.status, "RAG status refreshed.")}`, "success")
+        return
+      }
+      this.postRagStatus(ragApplyResultMessage(result, changeKind === "unchanged" ? "RAG settings unchanged." : "RAG settings saved."), "success")
     } catch (error) {
       const message = formatErrorMessage(error)
       this.deps.output.appendLine(`[rag-settings] save failed: ${message}`)
@@ -2309,21 +2322,52 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
     }
   }
 
-  private async confirmForceRagRebuild(reason: RagRebuildConfirmationReason) {
-    const keep = { title: "否，保留现有索引" }
-    const force = { title: "是，强制重建" }
-    const message = reason === "embedding-change"
-      ? "Embedding endpoint 或 model 已变化，保存后旧 RAG 索引不能继续使用，需要从 0 重建。是否保存并强制重建？"
-      : reason === "ready"
-        ? "本地已有完整 RAG 索引。通常不需要重新 embedding。是否强制删除现有索引并从 0 重建？"
-        : "本地已有未完成的 RAG 索引。选择否会保留当前进度并继续索引；选择是会删除现有进度并从 0 重建。"
+  private async confirmRagSettingsSave(kind: RagSaveConfirmationKind) {
+    const cancel = { title: "取消，不保存" }
+    const save = {
+      title: kind === "identity" ? "保存并重建" : "保存并继续索引",
+    }
+    const message = kind === "identity"
+      ? "Embedding endpoint、embedding model 或 test indexing 策略已变化。保存后现有 Code RAG index 不再匹配，必须从 0 重建才能重新启用 vector retrieval。是否保存配置并立即重建 Code RAG？"
+      : "Code RAG 批量、并发、重试或 checkpoint 参数已变化。无需从 0 重建；保存后会保留已有进度，并按新参数继续未完成的 indexing。是否保存配置并继续索引？"
     const selected = await vscode.window.showWarningMessage(
       message,
       { modal: true },
-      keep,
-      force,
+      cancel,
+      save,
     )
-    return selected?.title === force.title
+    return selected?.title === save.title
+  }
+
+  private async forceRebuildCodeRag() {
+    const confirmed = await this.confirmStandaloneRagForceRebuild()
+    if (!confirmed) {
+      this.postState()
+      this.postRagStatus("Code RAG force rebuild cancelled. Existing index was not changed.", "success")
+      return
+    }
+    try {
+      const result = await this.deps.codeGraph?.applyRagConfiguration({ forceRebuild: true })
+      this.postState()
+      this.postRagStatus(result ? ragApplyResultMessage(result, "Code RAG force rebuild requested from 0.") : "Code RAG force rebuild requested.", "success")
+    } catch (error) {
+      const message = formatErrorMessage(error)
+      this.deps.output.appendLine(`[rag-settings] force rebuild failed: ${message}`)
+      this.postState()
+      this.postRagStatus(`Code RAG force rebuild failed: ${message}`, "error")
+    }
+  }
+
+  private async confirmStandaloneRagForceRebuild() {
+    const cancel = { title: "取消" }
+    const rebuild = { title: "强制重建 Code RAG" }
+    const selected = await vscode.window.showWarningMessage(
+      "强制重建 Code RAG 会停止当前 indexing、删除旧 Code RAG index，并按已保存配置从 0 重建。未保存的表单修改不会被用于本次重建。",
+      { modal: true },
+      cancel,
+      rebuild,
+    )
+    return selected?.title === rebuild.title
   }
 
   private async testRagSettings(input: RagSettingsInput) {
@@ -2340,6 +2384,26 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
       this.postRagStatus(`RAG test failed: ${formatErrorMessage(error)}`, "error")
     } finally {
       this.postState()
+    }
+  }
+
+  private completionSettingsPreview(input: CompletionSettingsInput): RemoteSettings {
+    const settings = this.deps.getSettings()
+    return {
+      ...settings,
+      completion: {
+        ...settings.completion,
+        enabled: Boolean(input.enabled),
+        providerMode: input.resetToInherit ? "inherit-chat" : input.providerMode === "custom" ? "custom" : "inherit-chat",
+        provider: input.provider,
+        profile: input.profile,
+        apiBaseUrl: input.apiBaseUrl ?? settings.completion.apiBaseUrl,
+        model: input.model?.trim() || settings.completion.model,
+        maxTokens: Number.isFinite(input.maxTokens) ? input.maxTokens : settings.completion.maxTokens,
+        contextLength: Number.isFinite(input.contextLength) ? input.contextLength : settings.completion.contextLength,
+        temperature: Number.isFinite(input.temperature) ? input.temperature : settings.completion.temperature,
+        topP: Number.isFinite(input.topP) ? input.topP : settings.completion.topP,
+      },
     }
   }
 
@@ -2770,6 +2834,41 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
     this.postState()
   }
 
+  private async refreshCompletionModels(input: CompletionSettingsInput) {
+    const client = this.deps.getClient()
+    if (!client) {
+      this.completionModelError = "Completion model refresh needs the ChipMate runtime to be ready."
+      this.postCompletionStatus(this.completionModelError, "error")
+      this.postState()
+      return
+    }
+    const settings = this.completionSettingsPreview(input)
+    this.loadingCompletionModels = true
+    this.completionModelError = ""
+    this.postState()
+    const started = Date.now()
+    try {
+      const apiKey = input.apiKey?.trim() || await readEffectiveCompletionApiKey(this.deps.context, settings)
+      this.completionModels = await withRequestTimeout("completion model list", MODEL_REFRESH_TIMEOUT_MS, (signal) => client.listCompletionModels({
+        apiKey,
+        settings,
+        signal,
+      }))
+      this.completionModelsLoaded = true
+      this.deps.output.appendLine(`[completion-model] loaded ${this.completionModels.length} model(s)`)
+      this.postCompletionStatus("Completion models refreshed.", "success")
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      this.completionModelError = `Failed to load completion models: ${message}`
+      this.deps.output.appendLine(`[completion-model] ${this.completionModelError}`)
+      this.postCompletionStatus(this.completionModelError, "error")
+    } finally {
+      this.loadingCompletionModels = false
+      this.deps.output.appendLine(`[refresh] completion models ${Date.now() - started}ms`)
+      this.postState()
+    }
+  }
+
   private async selectModel(model: string) {
     const normalized = model.trim()
     const config = vscode.workspace.getConfiguration("chipmate")
@@ -2862,7 +2961,10 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
     }
 
     const client = this.connectedClient("Configure a ChipMate provider before sending.")
-    if (!client) return false
+    if (!client) {
+      this.postSendRejected(clientSendID, "Configure a ChipMate provider before sending.", "provider")
+      return false
+    }
 
     this.clearStreamingEventSuppression()
     const controller = new AbortController()
@@ -2871,6 +2973,7 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
     const duplicate = this.duplicateSendMessage(initialSessionID, sendFingerprint)
     if (duplicate) {
       this.deps.output.appendLine(`[send] rejected duplicate: ${duplicate}`)
+      this.postSendRejected(clientSendID, duplicate, "duplicate", true)
       this.postQueueRejected(undefined, duplicate, "duplicate")
       return false
     }
@@ -2879,13 +2982,14 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
     }
     const localID = clientLocalMessageID(clientSendID)
     if (localID) optimisticOverrides.id = localID
+    this.postSendAccepted(clientSendID)
     const optimistic = localMessage("user", trimmed || "Please review the referenced files.", optimisticOverrides)
     this.addPendingLocalUserMessage(initialSessionID, sendFingerprint, optimistic)
     this.syncRenderedMessages()
     this.postState()
     let sendSessionID: string | undefined = initialSessionID
     let strictAgentHint = ""
-    let preparedMessage: { text: string; historyText?: string; messageMode?: string; evidenceLedger?: EvidenceLedgerEntry[]; model?: PromptModel; agent?: string; fingerprint?: string } | undefined
+    let preparedMessage: { text: string; historyText?: string; messageMode?: string; evidenceLedger?: EvidenceLedgerEntry[]; understandingGrounding?: Parameters<DirectAgentClient["sendMessageAsync"]>[0]["understandingGrounding"]; model?: PromptModel; agent?: string; fingerprint?: string } | undefined
     let sentStreaming = false
     try {
       const mentioned = await this.resolveExistingMentionedFiles(mentionedFileRefs)
@@ -2914,13 +3018,17 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
         question: trimmed || "Please review the referenced files.",
         options,
         settings,
-	        contextStore: this.deps.contextStore,
-	        contextItems,
-	        mentionedFiles: mentioned.uris,
-	        mentionedContext: this.mentionedContextFromRefs(mentioned.refs),
+        contextStore: this.deps.contextStore,
+        contextItems,
+        mentionedFiles: mentioned.uris,
+        mentionedContext: this.mentionedContextFromRefs(mentioned.refs),
         editorContext: this.deps.getEditorContext(),
         codeGraph: this.deps.codeGraph,
         documentRag: this.deps.documentRag,
+        previousUnderstanding: this.previousUnderstandingPlannerContext(),
+        understandingPlanner: new UnderstandingPlanner({
+          provider: (input) => client.requestUnderstandingPlan(input, controller.signal),
+        }),
         onContextSummary: (items) => {
           contextSummary = items
           this.lastContextSummary = items
@@ -2930,6 +3038,7 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
       const prompt = promptResult.prompt
       contextSummary = promptResult.contextSummary
       this.lastContextSummary = contextSummary
+      this.recordUnderstandingPlannerAudit(promptResult.understandingPlannerAudit)
       this.logContextSummary(contextSummary)
       this.deps.output.appendLine(`[agent] ${agentSelection.label}`)
       this.deps.output.appendLine(`[model] ${modelSelection.label}`)
@@ -2938,6 +3047,10 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
         historyText: pluginHistoryUserText(trimmed || "Please review the referenced files."),
         messageMode: "plugin-chat",
         evidenceLedger: promptResult.evidenceLedgerInput,
+        understandingGrounding: promptResult.understandingPlannerAudit ? {
+          aggregation: promptResult.understandingPlannerAudit.aggregation,
+          verifierFindings: promptResult.understandingPlannerAudit.verifierFindings,
+        } : undefined,
         model: modelSelection.model,
         agent: agentSelection.agent,
         fingerprint: sendFingerprint,
@@ -2976,6 +3089,7 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
           this.messages = [...this.messages, localMessage("error", message)]
         }
         this.deps.output.appendLine(`[guard] blocked send: ${message}`)
+        this.postSendRejected(clientSendID, message, "blocked")
         return false
       }
       if (error instanceof CodeGraphReadinessError || finalError instanceof CodeGraphReadinessError) {
@@ -2985,6 +3099,7 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
           this.messages = [...this.messages, localMessage("error", message)]
         }
         this.deps.output.appendLine(`[codegraph] blocked send: ${message}`)
+        this.postSendRejected(clientSendID, message, "codegraph")
         return false
       }
       this.deletePendingLocalUserMessage(optimistic.id)
@@ -2993,6 +3108,7 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
         this.messages = [...this.messages, localMessage("error", `Failed to send message: ${message}`)]
       }
       this.reportRemoteConnectionFailure(client, "Failed to send message to ChipMate", finalError, message)
+      this.postSendRejected(clientSendID, `Failed to send message: ${message}`, "error")
       return false
     } finally {
       this.codeGraphWaitDetail = ""
@@ -3083,7 +3199,7 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
 
   private async sendPreparedMessage(
     client: DirectAgentClient,
-    input: { text: string; historyText?: string; messageMode?: string; evidenceLedger?: EvidenceLedgerEntry[]; model?: PromptModel; agent?: string; fingerprint?: string },
+    input: { text: string; historyText?: string; messageMode?: string; evidenceLedger?: EvidenceLedgerEntry[]; understandingGrounding?: Parameters<DirectAgentClient["sendMessageAsync"]>[0]["understandingGrounding"]; model?: PromptModel; agent?: string; fingerprint?: string },
     signal?: AbortSignal,
     targetSessionID?: string,
   ) {
@@ -3096,6 +3212,7 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
       historyText: input.historyText,
       messageMode: input.messageMode,
       evidenceLedger: input.evidenceLedger,
+      understandingGrounding: input.understandingGrounding,
       model: input.model,
       agent: input.agent,
       signal,
@@ -3239,8 +3356,22 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
 	    if (sessionSource === "legacy-plugin") this.logAcceptedLegacyPluginSession(sessionID, session, messages)
 
 	    this.setRemoteMessagesForSession(sessionID, messages, loadGeneration)
+	    await this.refreshSessionContextCompaction(client, sessionID)
 	    await this.refreshSessionGoal(client, sessionID)
 	  }
+
+  private async refreshSessionContextCompaction(client: DirectAgentClient, sessionID: string) {
+    try {
+      const compaction = await withRequestTimeout("session compact", SESSION_STATUS_TIMEOUT_MS, (signal) =>
+        client.getLatestContextCompaction(sessionID, signal),
+      )
+      if (compaction) this.contextCompactionBySession.set(sessionID, compaction)
+      else this.contextCompactionBySession.delete(sessionID)
+      if (this.sessionID === sessionID) this.postState()
+    } catch (error) {
+      this.deps.output.appendLine(`[context-compact-ui] refresh failed for ${sessionID}: ${formatErrorMessage(error)}`)
+    }
+  }
 
   private async refreshSessionGoal(client: DirectAgentClient, sessionID: string) {
     try {
@@ -3518,6 +3649,7 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
     const explicitExport = parseExplicitExportCommand(text)
     if (explicitExport) {
       await this.exportMarkdown(explicitExport.scope, explicitExport.filenameHint)
+      this.postSendRejected(clientSendID, "Export request handled.", "handled", true)
       return false
     }
 
@@ -3527,6 +3659,7 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
 	        const decision = await this.classifyExportIntent(client, text)
 	        if (decision.intent === "export") {
 	          await this.exportMarkdown(decision.scope, decision.filenameHint)
+	          this.postSendRejected(clientSendID, "Export request handled.", "handled", true)
 	          return false
 	        }
 	      }
@@ -3838,6 +3971,91 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
     }
   }
 
+  private webviewContextSummary(settings: RemoteSettings): ContextSummarySnapshot {
+    const generatedAt = Date.now()
+    const contextWindow = this.chatContextWindowResolution(settings)
+    const usage = summarizeSessionUsage({
+      messages: this.remoteMessages,
+      models: this.models,
+      selectedModel: settings.provider.chatModel || settings.defaultModel,
+      loadedMessageLimit: SESSION_MESSAGE_LIMIT,
+      contextLimitOverride: { context: contextWindow.modelContextWindow },
+    })
+    const sentContext = this.lastContextSummary.filter((item) => !item.skipped)
+    const skippedContext = this.lastContextSummary.filter((item) => item.skipped)
+    const codeGraph = this.deps.codeGraph?.status()
+    const documentRag = this.deps.documentRag?.status()
+    const latestCompaction = this.sessionID ? this.contextCompactionBySession.get(this.sessionID) : undefined
+    const compactSummary = latestCompaction
+      ? buildContextSummarySnapshot({ contextWindow, compaction: latestCompaction, now: generatedAt })
+      : undefined
+    const sections: ContextSummarySection[] = [
+      {
+        id: "local-context",
+        label: "Local Context",
+        severity: skippedContext.length ? "warning" : sentContext.length ? "ok" : "info",
+        value: `${sentContext.length} included`,
+        detail: sentContext.map((item) => item.path).slice(0, 5).join(", ") || "No local context has been sent yet.",
+        included: sentContext.length,
+        omitted: skippedContext.length,
+      },
+      {
+        id: "window",
+        label: "Window",
+        severity: contextWindow.source === "fallback_default" ? "warning" : "ok",
+        value: `${contextWindow.modelContextWindow} tokens`,
+        detail: chatContextWindowDetail(contextWindow),
+      },
+      {
+        id: "budget",
+        label: "Budget",
+        severity: usage.level === "error" || usage.level === "warning" ? usage.level : "ok",
+        value: usage.summary || "Usage pending",
+        detail: usage.detail,
+        included: usage.context?.used,
+      },
+      {
+        id: "evidence",
+        label: "Evidence",
+        severity: codeGraph?.state === "stale" || codeGraph?.state === "degraded" ? "warning" : "info",
+        value: codeGraph?.state ? `CodeGraph ${codeGraph.state}` : "CodeGraph unavailable",
+        detail: codeGraph?.rag?.availability ? `RAG ${codeGraph.rag.availability}` : undefined,
+      },
+      {
+        id: "visual",
+        label: "Visual",
+        severity: "info",
+        value: "Artifact fallback ready",
+        detail: "Visual evidence is carried as artifact metadata unless the active model supports image input.",
+      },
+      {
+        id: "documents",
+        label: "Documents",
+        severity: documentRag?.availability === "error" || documentRag?.availability === "partial" ? "warning" : "info",
+        value: documentRag?.availability ? `Document RAG ${documentRag.availability}` : "Document RAG unavailable",
+        detail: documentRag?.chunks ? `${documentRag.embeddedChunks || 0}/${documentRag.chunks} chunks` : undefined,
+      },
+      ...(compactSummary?.sections.filter((section) => section.id === "compact") ?? []),
+    ]
+    return {
+      version: 1,
+      generatedAt,
+      sections,
+      fallbackNotice: settings.provider.contextLength > 0
+        ? undefined
+        : contextWindow.fallbackNotice,
+      compactWarning: compactSummary?.compactWarning,
+    }
+  }
+
+  private chatContextWindowResolution(settings: RemoteSettings): ChatContextWindowResolution {
+    return resolveChatContextWindow({
+      configuredContextLength: settings.provider.contextLength,
+      model: settings.provider.chatModel || settings.defaultModel,
+      providerModels: this.models,
+    })
+  }
+
   private postQueueUpdated(message = "", status = "info") {
     this.view?.webview.postMessage({
       type: "queueUpdated",
@@ -3864,6 +4082,31 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
       message,
       status: "warning",
       reason,
+    })
+  }
+
+  private postSendAccepted(clientSendID: string | undefined) {
+    const value = typeof clientSendID === "string" ? clientSendID.trim() : ""
+    if (!value) return
+    this.view?.webview.postMessage({
+      type: "sendAccepted",
+      clientSendID: value,
+      localID: clientLocalMessageID(value),
+      status: "pending",
+      message: "Message accepted.",
+    })
+  }
+
+  private postSendRejected(clientSendID: string | undefined, message: string, reason?: string, remove = false) {
+    const value = typeof clientSendID === "string" ? clientSendID.trim() : ""
+    if (!value) return
+    this.view?.webview.postMessage({
+      type: "sendRejected",
+      clientSendID: value,
+      localID: clientLocalMessageID(value),
+      message,
+      reason,
+      remove,
     })
   }
 
@@ -3917,8 +4160,12 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
         agentError: this.agentError,
         selectedModel: settings.defaultModel,
         models: this.models,
+        completionModels: this.completionModels,
+        completionModelsLoaded: this.completionModelsLoaded,
         loadingModels: this.loadingModels,
+        loadingCompletionModels: this.loadingCompletionModels,
         modelError: this.modelError,
+        completionModelError: this.completionModelError,
         historyError: this.historyError,
         localOnlyWarning: settings.context.localOnlyMode ? agentSelection.warning ?? "" : "",
         contextFiles: this.deps.contextStore.labels(),
@@ -3930,12 +4177,14 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
         loadingCodeIntelligence: this.loadingCodeIntelligence,
         codeIntelligenceError: this.codeIntelligenceError,
         lastContextSummary: this.lastContextSummary,
+        contextSummary: this.webviewContextSummary(settings),
         autoContext: this.autoContextState(),
         usage: summarizeSessionUsage({
           messages: this.remoteMessages,
           models: this.models,
-          selectedModel: settings.defaultModel,
+          selectedModel: settings.provider.chatModel || settings.defaultModel,
           loadedMessageLimit: SESSION_MESSAGE_LIMIT,
+          contextLimitOverride: { context: this.chatContextWindowResolution(settings).modelContextWindow },
         }),
         usageStats: this.usageStats,
         loadingUsageStats: this.loadingUsageStats,
@@ -4024,6 +4273,44 @@ export class RemoteChatViewProvider implements vscode.WebviewViewProvider {
       diagnosticCount: diagnostics.total,
       diagnostics,
     }
+  }
+
+  private previousUnderstandingPlannerContext(): UnderstandingPlannerFollowupContext | undefined {
+    const audit = this.lastUnderstandingPlannerAudit
+    if (!audit || audit.result.kind !== "planned") return undefined
+    return {
+      plan: audit.result.plan,
+      trace: audit.execution?.trace ?? audit.result.trace,
+      confirmedConcepts: audit.result.plan.concepts,
+      previousEvidenceRefs: audit.aggregation?.factors
+        .flatMap((factor) => factor.supportingEvidence)
+        .slice(0, 24),
+      previousGaps: audit.aggregation?.gaps.slice(0, 12),
+      previousClaims: audit.aggregation?.claims.slice(0, 12),
+    }
+  }
+
+  private recordUnderstandingPlannerAudit(audit: UnderstandingPlannerAudit | undefined) {
+    if (!audit) return
+    this.lastUnderstandingPlannerAudit = audit
+    const trace = audit.execution?.trace ?? audit.result.trace
+    const plan = audit.result.kind === "planned" ? audit.result.plan : undefined
+    const phaseSummary = audit.execution?.phaseTrace
+      .map((phase) => `${phase.phase}:${phase.outputTasks}/${phase.evidenceCount}${phase.truncated ? ":truncated" : ""}`)
+      .join(",") || "none"
+    const factorSummary = audit.aggregation?.factors
+      .slice(0, 8)
+      .map((factor) => `${factor.category}:${factor.confidence}:${factor.strength}${factor.hypothesis ? ":hypothesis" : ""}`)
+      .join(",") || "none"
+    const artifactSummary = audit.artifact
+      ? ` artifactTasks=${audit.artifact.taskResults.length} artifactClaims=${audit.artifact.claims.length}`
+      : ""
+    const verifierSummary = audit.verifierFindings?.length
+      ? ` verifier=${audit.verifierFindings.map((finding) => `${finding.severity}:${finding.code}`).join(",")}`
+      : " verifier=none"
+    this.deps.output.appendLine(
+      `[understanding-planner-audit] kind=${audit.result.kind} template=${plan?.templateId ?? "none"} concepts=${truncate(plan?.concepts.join(",") ?? "", 240)} planner_used=${trace.planner_used} fast_path=${trace.fast_path_reason ?? "none"} fallback=${trace.fallback_reason ?? "none"} tasks=${trace.task_count} evidence=${trace.evidence_count} latencyMs=${trace.latency_ms} phases=${truncate(phaseSummary, 500)} factors=${truncate(factorSummary, 500)}${artifactSummary}${truncate(verifierSummary, 500)}`,
+    )
   }
 
   private logContextSummary(items: ContextSummaryItem[]) {
@@ -4115,6 +4402,15 @@ function diagnosticSeverityName(severity: vscode.DiagnosticSeverity) {
     default:
       return { label: "Unknown", key: "unknown" as const, fileKey: "unknown" as const }
   }
+}
+
+function chatContextWindowDetail(resolution: ChatContextWindowResolution) {
+  const source =
+    resolution.source === "configured" ? "manual chipmate.provider.contextLength"
+      : resolution.source === "provider_metadata" ? "provider /models metadata"
+        : resolution.source === "builtin_table" ? "built-in public model limit table"
+          : "fallback default because model metadata was unavailable"
+  return `Source: ${source}. Effective request budget keeps ${resolution.safetyMarginTokens} tokens as safety margin.`
 }
 
 function renderSession(session: ChipMateSession, serverToolsUsed = false): RenderedSession {
@@ -4953,22 +5249,6 @@ function ragStatusMessage(rag: RagStatus | undefined, fallback: string) {
   return "RAG not configured. Add an embedding endpoint to enable vector retrieval."
 }
 
-function ragExistingIndexConfirmationReason(rag: RagStatus | undefined): Exclude<RagRebuildConfirmationReason, "embedding-change"> | undefined {
-  if (!rag) return undefined
-  if (rag.availability === "ready" || rag.indexAvailability === "ready") return "ready"
-  if (
-    rag.availability === "partial"
-    || rag.availability === "paused"
-    || rag.availability === "indexing"
-    || rag.indexAvailability === "partial"
-    || rag.indexAvailability === "paused"
-    || Boolean(rag.indexProgress)
-  ) {
-    return "incomplete"
-  }
-  return undefined
-}
-
 function ragApplyResultMessage(result: RagConfigurationApplyResult, fallback: string) {
   const detail = ragStatusMessage(result.status, fallback)
   if (result.action === "status-refreshed") return `RAG status refreshed. Existing local RAG index kept. ${detail}`
@@ -4977,6 +5257,13 @@ function ragApplyResultMessage(result: RagConfigurationApplyResult, fallback: st
   if (result.action === "disabled") return detail
   if (result.action === "unavailable") return detail
   return fallback
+}
+
+function ragApplyOptionsForSettingsChange(kind: RagSettingsChangeKind) {
+  if (kind === "identity") return { forceRebuild: true }
+  if (kind === "scheduler") return { resumeExistingIndex: true }
+  if (kind === "policy") return { stopInFlightPreserveIndex: true }
+  return { preserveExistingIndex: true }
 }
 
 function ragIndexingMessage(rag: RagStatus) {

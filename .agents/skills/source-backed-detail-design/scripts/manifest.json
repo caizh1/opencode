@@ -1,0 +1,75 @@
+{
+  "schemaVersion": 2,
+  "version": "2026-07-02.w1",
+  "name": "source-backed-detail-design-helper-scripts",
+  "description": "ChipMate helper scripts for source-backed detailed design artifact validation.",
+  "executionPolicy": {
+    "directExecution": false,
+    "networkPolicy": "none",
+    "reason": "Helpers are offline diagnostics for the active source-backed detail design skill. Direct execution is available only for helpers that opt in.",
+    "readTool": "chipmate_read_skill_resource",
+    "executionTool": "chipmate_run_skill_script"
+  },
+  "helpers": [
+    {
+      "name": "validate_artifacts",
+      "category": "quality-gate",
+      "chipmateEquivalent": [
+        "chipmate_run_skill_script"
+      ],
+      "status": "executable",
+      "description": "Validate source-backed detailed design output directories, evidence tables, Mermaid artifact pairing,正文 artifacts, resume state, and optional Word output path.",
+      "execution": {
+        "directExecution": true,
+        "runtime": "node",
+        "entrypoint": "scripts/validate_artifacts.mjs",
+        "inputSchema": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "outputRoot"
+          ],
+          "properties": {
+            "outputRoot": {
+              "type": "string",
+              "pathKind": "workspace",
+              "maxLength": 512
+            },
+            "mode": {
+              "type": "string",
+              "enum": [
+                "current",
+                "final"
+              ]
+            },
+            "wordPath": {
+              "type": "string",
+              "pathKind": "workspace",
+              "allowedExtensions": [
+                ".docx"
+              ],
+              "maxLength": 512
+            }
+          }
+        },
+        "outputArtifacts": [
+          {
+            "name": "source-backed-detail-design-validation-report",
+            "kind": "diagnostic-json",
+            "contentType": "application/json",
+            "path": "validate-artifacts-report.json",
+            "required": true,
+            "description": "Structured artifact validation report for the source-backed detail design skill."
+          }
+        ],
+        "timeoutMs": 10000,
+        "maxOutputBytes": 16384,
+        "allowedExtensions": [
+          ".docx",
+          ".json"
+        ],
+        "networkPolicy": "none"
+      }
+    }
+  ]
+}
